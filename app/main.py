@@ -15,6 +15,7 @@ from app.agent.engine import AgentEngine
 from app.agent.router import Router
 from app.config import check_config
 from app.modules.schedule import SYSTEM_PROMPT as SCHEDULE_PROMPT, build_tools as schedule_tools
+from app.store import add_message, list_messages, add_notice, list_notices
 from app.modules.faq import SYSTEM_PROMPT as FAQ_PROMPT, build_tools as faq_tools
 from app.modules.express import SYSTEM_PROMPT as EXPRESS_PROMPT, build_tools as express_tools
 from app.modules.takeout import SYSTEM_PROMPT as TAKEOUT_PROMPT, build_tools as takeout_tools
@@ -74,6 +75,40 @@ async def chat(req: Request):
         "answer": result["answer"],
         "trace": result["trace"],
     }
+
+
+# ============ 管理员侧接口（发布通知 + 接收学生消息） ============
+
+@app.post("/api/student-message")
+async def student_message(req: Request):
+    """学生端每轮对话后调用，把消息记下来，供管理员接收（人话：学生说的话先存档）。"""
+    body = await req.json()
+    item = add_message(body.get("module", ""), body.get("message", ""), body.get("answer", ""))
+    return {"ok": True, "id": item["id"]}
+
+
+@app.get("/api/admin/messages")
+async def admin_messages():
+    """管理员端拉取学生消息收件箱（倒序，最新在前）。"""
+    return {"messages": list_messages()}
+
+
+@app.post("/api/admin/notify")
+async def admin_notify(req: Request):
+    """管理员发布一条通知。"""
+    body = await req.json()
+    title = (body.get("title") or "").strip()
+    content = (body.get("content") or "").strip()
+    if not title and not content:
+        return JSONResponse({"error": "标题和内容不能都为空"}, status_code=400)
+    item = add_notice(title, content)
+    return {"ok": True, "notice": item}
+
+
+@app.get("/api/notices")
+async def notices():
+    """列出已发布通知（人话：学生端以后也能看，这里先把接口备好）。"""
+    return {"notices": list_notices()}
 
 
 def _render(name: str) -> HTMLResponse:
