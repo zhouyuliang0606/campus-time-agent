@@ -14,6 +14,12 @@ venv/
 .vscode/
 .DS_Store
 
-# ===== 运行时自动生成的数据（学生消息/通知，启动后由 app/store.py 创建） =====
+# ===== 运行时自动生成的数据（学生消息/通知/人格，启动后由 app/store.py 创建） =====
 app/data/student_messages.json
 app/data/notices.json
+# persona.json：管理员在后台配的客服人格，属运行时数据，不入库。
+# 默认值写在 app/store.py 的 DEFAULT_PERSONA 里，删掉该文件就自动回到默认值。
+app/data/persona.json
+
+# 注意：app/data/kb.json 是"入库的种子知识库"，有意保留版本管理，
+# 管理员在后台改条目后会出现 diff —— 这是知识内容本身，值得被记录。
