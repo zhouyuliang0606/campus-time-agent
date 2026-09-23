@@ -8,51 +8,101 @@
 
 ## 二、文件地图（人话作用）
 
+> 只列**真实存在**的文件。想看"将来还要做什么"，跳到第六节。
+
 | 文件 | 人话作用 |
 | --- | --- |
 | `README.md` | 项目门面：一句话介绍 + 零基础怎么跑起来 |
 | `.env.example` | 密钥样板：告诉你 .env 里要填什么（真实 .env 不提交） |
-| `.gitignore` | 守门员：保证密钥和缓存永远不进 git |
+| `.gitignore` | 守门员：保证密钥、缓存、运行时数据永远不进 git |
 | `requirements.txt` | 购物清单：项目用到哪些第三方库，一键安装 |
 | `EXPLAIN.md` | 本文件：每个关键文件的「人话作用」 |
-| `app/__init__.py` | 文件夹标记：告诉 Python 这是可导入的代码包 |
+| `app/__init__.py`<br>`app/agent/__init__.py`<br>`app/llm/__init__.py`<br>`app/modules/__init__.py` | 文件夹标记：告诉 Python 这些是可以被导入的代码包 |
 | `app/config.py` | 读配置：从 .env 拿密钥和开关，全项目统一取用 |
 | `app/llm/client.py` | 大模型电话：把我们的话发给 DeepSeek，把回答拿回来 |
 | `app/agent/engine.py` | Agent 大脑：ReAct 循环（想→做→看结果→再想） |
-| `app/agent/router.py` | 调度员：判断用户的话归哪个模块管（课表/问答/驿站…） |
+| `app/agent/router.py` | 调度员：判断用户的话归哪个模块管（课表/问答/快递/外卖/驿站） |
 | `app/agent/tools.py` | 工具箱底座：规范每个"工具"怎么描述、怎么被调用 |
 | `app/modules/schedule.py` | 旗舰模块：课表时间规划（查课表/找空闲/排任务） |
-| `app/modules/faq.py` | 学生端·校园问答：search_kb 在知识库检索，收口分散校园信息 |
+| `app/modules/faq.py` | 学生端·校园问答：search_kb 检索 `kb.json`，收口分散的校园信息 |
 | `app/modules/express.py` | 学生端·快递查询：查我的快递/取件码/自动算"滞留"预警 |
 | `app/modules/takeout.py` | 学生端·外卖查询：查外卖订单/取餐点/待取提醒 |
-| `app/data/kb.json` | 校园知识库：图书馆/食堂/校车/校医院/宿舍/奖学金等问答来源 |
-| `app/data/express.json` | 演示快递台账（含一件"滞留"件用于预警演示） |
-| `app/data/takeout.json` | 演示外卖订单（制作中/配送中/待取） |
-| `app/modules/faq.py` | 校园问答：从知识库找答案再组织语言回答 |
-| `app/modules/station.py` | 驿站助手：主动提醒取件 + 自定义人格回复 |
-| `app/modules/admin.py` | 管理台：知识库增删改 + 客服人格配置 |
-| `app/modules/lostfound.py` / `repair.py` / `notice.py` | 拓展模块：失物招领/报修/通知 |
-| `app/main.py` | 总入口：FastAPI 接网页接口；/登录、/student、/admin 路由 + 学生消息/通知管理接口 |
+| `app/modules/station.py` | **驿站/商户端·AI 客服**：① 系统提示是**函数**，每次对话现读 `persona.json` 拼人设，管理员改完不用重启；② 工具**复用** express 的台账函数——体现"几个模块共用一份数据" |
+| `app/store.py` | 文件存储层：4 张"表"的知识库 CRUD + 客服人格读写 + 学生消息 + 通知。演示阶段用 JSON 文件，真上线把这里换成数据库，接口不变 |
+| `app/main.py` | 总入口：FastAPI 接网页接口。5 个页面路由（`/` `/student` `/admin` `/station`）+ 12 个 API（对话/知识库 CRUD/人格/消息/通知） |
 | `app/data/courses.json` | 示例课表：旗舰模块用来演示的真实数据 |
-| `app/data/kb.json` | 校园知识库：问答模块的答案来源 |
-| `app/static/login.html` | 登录页：选"我是学生 / 我是管理员"进入对应端 |
+| `app/data/kb.json` | 校园知识库：图书馆/食堂/校车/校医院/宿舍/奖学金等问答来源。**有意入库**做种子数据，管理台可零代码增改删 |
+| `app/data/express.json` | 演示快递台账（含一件"滞留 5 天"件，用于预警演示） |
+| `app/data/takeout.json` | 演示外卖订单（制作中/配送中/待取） |
+| `app/static/login.html` | 登录页：三种身份入口（学生 / 管理员 / 驿站商户） |
 | `app/static/student.html` | 学生端主页：四模块卡片导航，对话自动上报管理员收件箱 |
-| `app/static/admin.html` | 管理员端：发布通知 + 学生消息收件箱（轮询） |
-| `app/store.py` | 文件存储：student_messages.json / notices.json 两张表（演示用，可换数据库） |
+| `app/static/admin.html` | 管理控制台四块：**知识库零代码维护** + **客服人格配置** + 发布通知 + 学生消息收件箱 |
+| `app/static/station.html` | 驿站/商户端：展示当前客服人格 + 五个快捷操作（列待取/写提醒/滞留预警/查取件码/自我介绍），对话固定带 `module:"station"` |
 | `ai-logs/*.md` | 开发日记：每做一个模块，把我们的对话整理成一篇 |
+
+### 运行时数据文件（不进 git，跑起来自动生成）
+
+| 文件 | 人话作用 |
+| --- | --- |
+| `app/data/student_messages.json` | 学生消息表：学生说了啥、管家怎么答的，管理员收件箱的数据源 |
+| `app/data/notices.json` | 通知表：管理员发布的通知 |
+| `app/data/persona.json` | 客服人格：**管理员在后台配出来的运行时数据**，所以不入库。删掉自动回到 `store.py` 里的 `DEFAULT_PERSONA` 默认值 |
 
 ## 三、它是怎么转起来的（粗流程图）
 ```
-用户在前端说话
+用户在前端说话（学生端 / 驿站端）
    → app/main.py 收到
-   → router 判断意图（属于哪个模块）
+   → router 判断意图（属于哪个模块）；前端也可显式指定 module
+   → 取该模块的系统提示 + 工具箱
+        · station 模块的提示是函数 → 现读 persona.json 拼入人设
    → engine 用该模块的工具 + 大模型，跑 ReAct 循环
    → 需要时调用工具（查课表/查知识库/查台账）
    → 大模型把结果组织成自然语言
-   → 返回前端展示
+   → 返回前端展示（含 Agent 思考轨迹）
 ```
 
-## 四、给评审的一句话总结
+## 四、三层业务是怎么"连"起来的（本项目的核心）
+
+一句话：**一个引擎 + 一份数据 + 一个后台，三个角色各取所需。**
+
+```
+                    ┌──────────── 管理控制台 /admin ────────────┐
+                    │  知识库 CRUD     →  写 app/data/kb.json     │
+                    │  客服人格配置    →  写 app/data/persona.json │
+                    └───────┬──────────────────────┬────────────┘
+                            │ 立刻生效（无需重启）   │
+                            ▼                      ▼
+   学生端 /student                          驿站端 /station
+   · 校园问答 faq  ──读──→ kb.json          · AI 客服 station
+                                              ─读persona.json（人设）
+                                              ─读express.json（台账）
+                                              └→ 主动推送取件提醒/滞留预警
+             学生每轮对话 ──POST /api/student-message──→ 管理员收件箱
+```
+
+三条贯通链路（演示时最有说服力）：
+
+| 链路 | 怎么走 | 看到什么效果 |
+| --- | --- | --- |
+| **① 知识库贯通** | 管理员在 `/admin` 加一条问答 → 写进 `kb.json` → 学生端「校园问答」立刻能答出来 | 零代码维护知识库，改动即时生效 |
+| **② 人格贯通** | 管理员改客服名字/语气 → 写进 `persona.json` → 驿站端点「刷新人格」，下句对话就用新人设 | 每个商户可以养一个自己的"AI 客服性格" |
+| **③ 消息贯通** | 学生在自用模块的每轮对话 → 上报 `student_messages.json` → 管理员轮询看到 | 管理者知道学生在关心什么 |
+
+另外：**驿站和快递共用同一份台账**。`station.py` 直接 import express 模块的函数，
+学生端查"我的快递"、驿站端用它答复咨询 + 主动提醒，同一份数据两种立场。
+
+## 五、给评审的一句话总结
 > 没有用现成 Agent 框架，而是自己写了一个轻量 ReAct 推理循环；
 > 三层业务（学生/驿站/管理）共用一套引擎 + 知识库 + 大模型；
+> 管理员零代码维护知识库和客服人格，改动即时贯通到另外两端；
 > 密钥全程走环境变量，不进代码；每一步都有通俗注释和文档。
+
+## 六、还没做（规划中的坑，先诚实写出来）
+下面这些是为后续拓展预留的位置，**目前代码里还没有**，别对着这页去找文件：
+
+- 对接真实平台：接入快递柜 / 外卖平台的真实 API，自动推送取件提醒
+- `lostfound.py` / `repair.py` / `notice.py` 等拓展模块（失物招领、报修、通知）
+- 真正的账号体系（现在是演示级的身份切换，没有密码）
+- 演示脚本与自动化测试沉淀（目前靠手工冒烟）
+
+接口已经按"换数据库不改调用方"的方式分层写在 `store.py` 里，后续替换成本很低。
