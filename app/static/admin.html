@@ -10,7 +10,7 @@
     header { background: linear-gradient(135deg, #ff7a59, #ff5c8a); color: #fff; padding: 16px 24px; }
     header h1 { margin: 0; font-size: 20px; }
     header a { font-size: 13px; color: #fff; float: right; opacity: .9; text-decoration: none; }
-    .wrap { max-width: 940px; margin: 18px auto; padding: 0 16px; display: grid; grid-template-columns: 1fr 1.3fr; gap: 16px; }
+    .wrap { max-width: 940px; margin: 18px auto; padding: 0 16px; display: flex; flex-direction: column; gap: 16px; }
     .card { background: #fff; border-radius: 12px; padding: 16px; box-shadow: 0 4px 16px rgba(40,60,120,.08); }
     .card h2 { margin: 0 0 12px; font-size: 16px; }
     .card label { font-size: 13px; color: #6a7388; display: block; margin: 8px 0 4px; }
@@ -18,24 +18,31 @@
       width: 100%; padding: 10px 12px; border: 1px solid #d8def0; border-radius: 8px;
       font-size: 14px; outline: none; font-family: inherit;
     }
-    .card textarea { min-height: 90px; resize: vertical; }
+    .card textarea { min-height: 80px; resize: vertical; }
     .btn {
       margin-top: 12px; padding: 10px 18px; border: none; border-radius: 8px; cursor: pointer;
       background: #ff5c8a; color: #fff; font-size: 14px;
     }
     .btn:hover { opacity: .9; }
+    .btn.ghost { background: #eef2ff; color: #4f7cff; margin-left: 8px; }
+    .mini { padding: 4px 10px; border: 1px solid #d8def0; border-radius: 6px; background: #fff; cursor: pointer; font-size: 12px; margin-right: 6px; }
+    .mini.danger { color: #e0414a; border-color: #f3c2c5; }
     .small { font-size: 12px; color: #8a93a6; }
     .notice { border-left: 3px solid #ff9a76; background: #fff7f3; padding: 8px 10px; border-radius: 6px; margin: 8px 0; }
     .notice b { font-size: 14px; }
+    .kb { border: 1px solid #eef0f6; border-radius: 10px; padding: 10px 12px; margin: 10px 0; }
+    .kb-q { font-weight: 600; }
+    .kb-a { font-size: 13px; color: #4a5366; margin: 4px 0; white-space: pre-wrap; }
     .toolbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
-    #inbox { max-height: 460px; overflow-y: auto; }
+    #inbox { max-height: 360px; overflow-y: auto; }
     .msg { border: 1px solid #eef0f6; border-radius: 10px; padding: 10px 12px; margin: 10px 0; }
     .msg .top { font-size: 12px; color: #8a93a6; display: flex; gap: 8px; align-items: center; }
     .tag { font-size: 11px; background: #eef2ff; color: #4f7cff; border-radius: 6px; padding: 1px 6px; }
     .msg .q { margin: 6px 0 4px; }
     .msg .a { font-size: 13px; color: #4a5366; background: #f8f9fc; border-radius: 6px; padding: 6px 8px; white-space: pre-wrap; }
-    .empty { color: #8a93a6; font-size: 13px; text-align: center; padding: 20px; }
-    @media (max-width: 720px) { .wrap { grid-template-columns: 1fr; } }
+    .empty { color: #8a93a6; font-size: 13px; text-align: center; padding: 16px; }
+    .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    @media (max-width: 720px) { .grid2 { grid-template-columns: 1fr; } }
   </style>
 </head>
 <body>
@@ -44,21 +51,59 @@
   </header>
 
   <div class="wrap">
-    <!-- 左：发布通知 -->
-    <div class="card">
-      <h2>📢 发布通知</h2>
-      <label>标题</label>
-      <input id="ntitle" placeholder="如：关于国庆放假安排的通知" />
-      <label>内容</label>
-      <textarea id="ncontent" placeholder="通知正文…"></textarea>
-      <button class="btn" id="publish">发布通知</button>
-      <div class="small" id="nstatus" style="margin-top:8px;"></div>
+    <!-- 第一行：发布通知 + 客服人格配置 -->
+    <div class="grid2">
+      <!-- 发布通知 -->
+      <div class="card">
+        <h2>📢 发布通知</h2>
+        <label>标题</label>
+        <input id="ntitle" placeholder="如：关于国庆放假安排的通知" />
+        <label>内容</label>
+        <textarea id="ncontent" placeholder="通知正文…"></textarea>
+        <button class="btn" id="publish">发布通知</button>
+        <div class="small" id="nstatus" style="margin-top:8px;"></div>
+        <h2 style="margin-top:18px;">已发布通知</h2>
+        <div id="noticeList"><div class="empty">还没有发布过通知</div></div>
+      </div>
 
-      <h2 style="margin-top:20px;">已发布通知</h2>
-      <div id="noticeList"><div class="empty">还没有发布过通知</div></div>
+      <!-- 客服人格配置 -->
+      <div class="card">
+        <h2>🎭 客服人格配置</h2>
+        <label>客服名字</label>
+        <input id="pname" placeholder="如：小园" />
+        <label>角色定位</label>
+        <input id="prole" placeholder="如：校园驿站客服助手" />
+        <label>语气风格</label>
+        <input id="ptone" placeholder="如：热情、耐心、亲切，像邻家学姐" />
+        <label>服务准则</label>
+        <textarea id="prules" placeholder="如：回复简洁；以台账为准不编造；不会的引导到前台"></textarea>
+        <button class="btn" id="savePersona">保存人格</button>
+        <div class="small" id="pstatus" style="margin-top:8px;"></div>
+      </div>
     </div>
 
-    <!-- 右：接收学生消息 -->
+    <!-- 第二行：知识库管理（占满整行） -->
+    <div class="card">
+      <h2>📚 知识库管理（零代码维护，学生端问答直接吃这份数据）</h2>
+      <div class="grid2">
+        <div>
+          <label>问题</label>
+          <input id="kq" placeholder="如：游泳馆怎么预约？" />
+          <label>答案</label>
+          <textarea id="ka" placeholder="标准回答…"></textarea>
+          <label>关键词（逗号分隔，用于检索）</label>
+          <input id="kk" placeholder="如：游泳馆, 预约, 场馆" />
+          <button class="btn" id="kbSave">添加条目</button>
+          <button class="btn ghost" id="kbCancel" style="display:none;" onclick="cancelKB()">取消编辑</button>
+        </div>
+        <div>
+          <div class="small" style="margin-bottom:6px;">已有条目（编辑/删除即时生效）</div>
+          <div id="kbList"><div class="empty">知识库还是空的</div></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 第三行：接收学生消息 -->
     <div class="card">
       <div class="toolbar">
         <h2 style="margin:0;">📥 学生消息收件箱</h2>
@@ -69,16 +114,17 @@
   </div>
 
   <script>
-    const MODULE_NAMES = { schedule: "课表安排", faq: "校园问答", express: "快递", takeout: "外卖" };
+    const MODULE_NAMES = { schedule: "课表安排", faq: "校园问答", express: "快递", takeout: "外卖", station: "驿站客服" };
+    let editingKb = null;
 
+    // ---------- 发布通知 ----------
     async function publish() {
       const title = document.getElementById("ntitle").value.trim();
       const content = document.getElementById("ncontent").value.trim();
       const status = document.getElementById("nstatus");
       if (!title && !content) { status.textContent = "标题和内容不能都为空"; return; }
       const resp = await fetch("/api/admin/notify", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
+        method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ title, content }),
       });
       const data = await resp.json();
@@ -87,11 +133,8 @@
         document.getElementById("ntitle").value = "";
         document.getElementById("ncontent").value = "";
         loadNotices();
-      } else {
-        status.textContent = "发布失败：" + (data.error || "");
-      }
+      } else { status.textContent = "发布失败：" + (data.error || ""); }
     }
-
     async function loadNotices() {
       const data = await (await fetch("/api/notices")).json();
       const box = document.getElementById("noticeList");
@@ -101,6 +144,84 @@
       ).join("");
     }
 
+    // ---------- 客服人格 ----------
+    async function loadPersona() {
+      const data = await (await fetch("/api/persona")).json();
+      const p = data.persona;
+      document.getElementById("pname").value = p.name || "";
+      document.getElementById("prole").value = p.role || "";
+      document.getElementById("ptone").value = p.tone || "";
+      document.getElementById("prules").value = p.rules || "";
+    }
+    async function savePersona() {
+      const p = {
+        name: document.getElementById("pname").value.trim(),
+        role: document.getElementById("prole").value.trim(),
+        tone: document.getElementById("ptone").value.trim(),
+        rules: document.getElementById("prules").value.trim(),
+      };
+      const r = await fetch("/api/persona", {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(p),
+      });
+      const d = await r.json();
+      if (d.ok) document.getElementById("pstatus").textContent = "✅ 已保存，驿站客服下次对话即用新人设：" + (d.persona.name || "");
+    }
+
+    // ---------- 知识库管理 ----------
+    async function loadKB() {
+      const data = await (await fetch("/api/admin/kb")).json();
+      const box = document.getElementById("kbList");
+      if (!data.entries.length) { box.innerHTML = '<div class="empty">知识库还是空的</div>'; return; }
+      box.innerHTML = data.entries.map((e, i) => `
+        <div class="kb">
+          <div class="kb-q">${i}. ${escapeHtml(e.question)}</div>
+          <div class="kb-a">${escapeHtml(e.answer)}</div>
+          <div class="small">关键词：${escapeHtml((e.keywords || []).join("、"))}</div>
+          <div style="margin-top:6px;">
+            <button class="mini" onclick="editKB(${i})">编辑</button>
+            <button class="mini danger" onclick="deleteKB(${i})">删除</button>
+          </div>
+        </div>`).join("");
+    }
+    function editKB(i) {
+      editingKb = i;
+      fetch("/api/admin/kb").then(r => r.json()).then(d => {
+        const e = d.entries[i];
+        document.getElementById("kq").value = e.question;
+        document.getElementById("ka").value = e.answer;
+        document.getElementById("kk").value = (e.keywords || []).join(", ");
+        document.getElementById("kbSave").textContent = "保存修改";
+        document.getElementById("kbCancel").style.display = "inline-block";
+      });
+    }
+    function cancelKB() {
+      editingKb = null;
+      document.getElementById("kbSave").textContent = "添加条目";
+      document.getElementById("kbCancel").style.display = "none";
+      document.getElementById("kq").value = "";
+      document.getElementById("ka").value = "";
+      document.getElementById("kk").value = "";
+    }
+    async function saveKB() {
+      const q = document.getElementById("kq").value.trim();
+      const a = document.getElementById("ka").value.trim();
+      const k = document.getElementById("kk").value;
+      if (!q || !a) { alert("问题和答案不能为空"); return; }
+      if (editingKb === null) {
+        await fetch("/api/admin/kb", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ question: q, answer: a, keywords: k }) });
+      } else {
+        await fetch("/api/admin/kb/" + editingKb, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ question: q, answer: a, keywords: k }) });
+      }
+      cancelKB();
+      loadKB();
+    }
+    async function deleteKB(i) {
+      if (!confirm("确定删除这条知识库条目？")) return;
+      await fetch("/api/admin/kb/" + i, { method: "DELETE" });
+      loadKB();
+    }
+
+    // ---------- 学生消息收件箱 ----------
     async function loadMessages() {
       const data = await (await fetch("/api/admin/messages")).json();
       const box = document.getElementById("inbox");
@@ -121,11 +242,12 @@
     }
 
     document.getElementById("publish").addEventListener("click", publish);
+    document.getElementById("savePersona").addEventListener("click", savePersona);
+    document.getElementById("kbSave").addEventListener("click", saveKB);
     document.getElementById("refresh").addEventListener("click", loadMessages);
 
     // 进入页面先拉一次，然后每 5 秒自动刷新收件箱
-    loadNotices();
-    loadMessages();
+    loadNotices(); loadPersona(); loadKB(); loadMessages();
     setInterval(loadMessages, 5000);
   </script>
 </body>
