@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>校园时间管家 · 登录</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center;
+      font-family: "PingFang SC", "Microsoft YaHei", sans-serif;
+      background: linear-gradient(135deg, #4f7cff, #6a5cff); color: #fff;
+    }
+    .card {
+      background: rgba(255,255,255,.12); backdrop-filter: blur(6px);
+      border: 1px solid rgba(255,255,255,.25); border-radius: 18px;
+      padding: 36px 40px; width: 360px; text-align: center;
+    }
+    .card h1 { margin: 0 0 6px; font-size: 24px; }
+    .card p { margin: 0 0 26px; opacity: .9; font-size: 14px; }
+    .role {
+      display: block; width: 100%; margin: 12px 0; padding: 16px;
+      border: none; border-radius: 12px; cursor: pointer;
+      font-size: 16px; font-weight: 600; color: #4f7cff; background: #fff;
+      transition: .15s;
+    }
+    .role:hover { transform: translateY(-2px); box-shadow: 0 8px 20px rgba(0,0,0,.18); }
+    .role .sub { display: block; font-size: 12px; font-weight: 400; color: #6a7388; margin-top: 4px; }
+    .foot { margin-top: 22px; font-size: 12px; opacity: .8; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>校园时间管家</h1>
+    <p>请选择你的身份进入</p>
+
+    <button class="role" onclick="location.href='/student'">
+      🎓 我是学生
+      <span class="sub">课表安排 · 校园问答 · 快递 · 外卖</span>
+    </button>
+
+    <button class="role" onclick="location.href='/admin'">
+      🛠️ 我是管理员
+      <span class="sub">发布通知 · 接收学生消息</span>
+    </button>
+
+    <div class="foot">演示用：选择身份即可进入，无需密码</div>
+  </div>
+</body>
+</html>

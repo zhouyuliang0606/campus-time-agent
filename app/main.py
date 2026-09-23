@@ -76,11 +76,28 @@ async def chat(req: Request):
     }
 
 
+def _render(name: str) -> HTMLResponse:
+    """读取 static 目录下的某个页面并返回（人话：统一的"吐页面"小工具）。"""
+    with open(os.path.join(STATIC_DIR, name), encoding="utf-8") as f:
+        return HTMLResponse(f.read())
+
+
 @app.get("/", response_class=HTMLResponse)
-async def index():
-    """首页：返回学生端聊天页面。"""
-    with open(os.path.join(STATIC_DIR, "student.html"), encoding="utf-8") as f:
-        return f.read()
+async def login_page():
+    """登录页：选择身份（学生 / 管理员）。"""
+    return _render("login.html")
+
+
+@app.get("/student", response_class=HTMLResponse)
+async def student_page():
+    """学生端主页（四模块）。"""
+    return _render("student.html")
+
+
+@app.get("/admin", response_class=HTMLResponse)
+async def admin_page():
+    """管理员端（发布通知 + 接收学生消息）。"""
+    return _render("admin.html")
 
 
 # 把 static 目录挂到 /static，方便以后放图片、脚本等静态资源
