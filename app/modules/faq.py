@@ -32,13 +32,11 @@ def search_kb(query: str) -> str:
     """工具：在校园知识库里按关键词检索，返回最相关的内容（人话：像在手册里翻目录）。"""
     data = _load()
     q = (query or "").lower()
-    # 把查询拆成词，只要知识库条目里命中任一关键词就收进来
     hits = []
     for item in data["entries"]:
-        hay = (item["question"] + " " + " ".join(item.get("keywords", []))).lower()
-        # 任一长度>=2 的词命中，或整句包含，就算相关
-        matched = any(k in hay for k in q.split() if len(k) >= 2) or q in hay
-        if matched:
+        # 中文没有空格，最稳的办法是：知识库条目的"关键词"里，有没有出现在用户问题里
+        keywords = [k.lower() for k in item.get("keywords", [])]
+        if any(kw and kw in q for kw in keywords):
             hits.append(item)
 
     if not hits:
