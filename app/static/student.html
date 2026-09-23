@@ -29,6 +29,20 @@
     .mod .ico { font-size: 26px; }
     .mod .nm { margin-top: 6px; font-size: 14px; font-weight: 600; }
 
+    /* 校园通知：管理员在后台发布，学生在这里看到 */
+    .notices {
+      background: #fff; border-radius: 12px; margin-bottom: 14px;
+      box-shadow: 0 4px 16px rgba(40,60,120,.08); overflow: hidden;
+    }
+    .notices-head {
+      display: flex; align-items: center; gap: 8px; padding: 12px 16px;
+      cursor: pointer; font-size: 14px; font-weight: 600;
+    }
+    .badge { background: #ff5c8a; color: #fff; border-radius: 10px; padding: 1px 8px; font-size: 12px; }
+    .notice-item { border-top: 1px solid #eef0f6; padding: 10px 16px; }
+    .notice-item b { font-size: 14px; }
+    .notice-item .body { font-size: 13px; color: #4a5366; margin-top: 4px; white-space: pre-wrap; }
+
     .hint { font-size: 13px; color: #6a7388; margin: 12px 2px 6px; }
 
     .chips { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; min-height: 4px; }
@@ -84,6 +98,16 @@
   </header>
 
   <div class="wrap">
+    <!-- 校园通知（管理员在控制台发布，含附件可直接下载） -->
+    <div class="notices">
+      <div class="notices-head" id="noticesHead">
+        <span>📢 校园通知</span>
+        <span class="badge" id="noticeCount">0</span>
+        <span class="small" id="noticesToggle" style="margin-left:auto;color:#8a93a6;font-weight:400;">展开 ▾</span>
+      </div>
+      <div id="noticeList" style="display:none;"></div>
+    </div>
+
     <!-- 四个模块导航 -->
     <div class="modules" id="modules"></div>
     <div class="hint" id="hint">点上面的模块进入对应助手，或直接提问（我会自动识别意图）。</div>
@@ -206,6 +230,37 @@
       }).catch(() => {});
     }
 
+    // ---------- 校园通知（管理员发布，学生看到，含附件可下载） ----------
+    // 这条链路补齐了「管理员发布 → 学生接收」的最后一段闭环
+    let noticesOpen = false;
+    async function loadNotices() {
+      const box = document.getElementById("noticeList");
+      try {
+        const ns = (await (await fetch("/api/notices")).json()).notices || [];
+        document.getElementById("noticeCount").textContent = ns.length;
+        if (!ns.length) {
+          box.innerHTML = '<div class="notice-item"><span class="small">暂无通知</span></div>';
+          return;
+        }
+        box.innerHTML = ns.map(n => {
+          const att = n.attachment
+            ? `<div style="margin-top:6px;"><a class="chip" style="display:inline-block;text-decoration:none;" href="/api/uploads/${n.attachment.id}/download" target="_blank">📎 ${escapeHtml(n.attachment.name)}（下载）</a></div>`
+            : "";
+          return `<div class="notice-item">
+            <b>${escapeHtml(n.title || "(无标题)")}</b> <span class="small">${n.ts}</span>
+            <div class="body">${escapeHtml(n.content)}</div>${att}
+          </div>`;
+        }).join("");
+      } catch (e) {
+        box.innerHTML = '<div class="notice-item"><span class="small">通知加载失败</span></div>';
+      }
+    }
+    document.getElementById("noticesHead").addEventListener("click", () => {
+      noticesOpen = !noticesOpen;
+      document.getElementById("noticeList").style.display = noticesOpen ? "block" : "none";
+      document.getElementById("noticesToggle").textContent = noticesOpen ? "收起 ▴" : "展开 ▾";
+    });
+
     // ---------- 上传资料给管家读 ----------
     // 流程：选文件 → POST /api/upload 存起来 → 管家之后就能用工具读到它的真实内容
     const fileInput = document.getElementById("file");
@@ -243,6 +298,10 @@
 
     send.addEventListener("click", () => sendMsg(text.value));
     text.addEventListener("keydown", e => { if (e.key === "Enter") sendMsg(text.value); });
+
+    // 进页面拉一次通知，之后每 30 秒刷新（管理员新发的通知会自己冒出来）
+    loadNotices();
+    setInterval(loadNotices, 30000);
   </script>
 </body>
 </html>
