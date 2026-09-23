@@ -34,6 +34,8 @@ _QUICK_MAP = {
     "课表": "schedule", "复习": "schedule", "排任务": "schedule", "没课": "schedule", "空闲": "schedule",
     # 学生端·问答
     "图书馆": "faq", "食堂": "faq", "校车": "faq", "校医院": "faq", "宿舍": "faq", "奖学金": "faq", "校园网": "faq", "学生证": "faq",
+    # 驿站商户侧
+    "驿站": "station", "商户": "station", "客服": "station", "取件提醒": "station",
     # 拓展
     "丢": "lostfound", "捡": "lostfound", "失物": "lostfound",
     "报修": "repair", "维修": "repair", "坏了": "repair",
