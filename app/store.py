@@ -294,6 +294,11 @@ def get_timetable() -> list:
     return _sread("timetable.json", {"courses": []}).get("courses", [])
 
 
+def get_timetable_data() -> dict:
+    """读周表整份数据（含"上次更新时间"，前端要显示课表是什么时候导入的）。"""
+    return _sread("timetable.json", {"updated_at": "", "courses": []})
+
+
 def save_timetable(courses: list) -> dict:
     """整体覆盖保存周表（人话：学生在聊天里传课表后，AI 整理好存进来）。"""
     data = {"updated_at": _now(), "courses": courses}

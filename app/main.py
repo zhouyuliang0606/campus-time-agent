@@ -4,7 +4,9 @@
   前端说话 → /api/chat → router 判断意图 → 取对应模块的工具箱+系统提示
           → engine 跑 ReAct 循环（必要时调工具）→ 返回回答 + 思考轨迹
 """
+import datetime
 import os
+import uuid
 from typing import Any
 
 from fastapi import FastAPI, File, Request, UploadFile
@@ -24,6 +26,9 @@ from app.store import (
     get_settings, set_settings,
     MAX_UPLOAD_BYTES,
     save_upload, list_uploads, get_upload, get_upload_meta, get_upload_raw_path,
+    get_conversation, append_conversation, clear_conversation,
+    get_timetable_data, list_todos, list_todos_in_month,
+    add_todo, update_todo, delete_todo,
 )
 from app.modules.faq import SYSTEM_PROMPT as FAQ_PROMPT, build_tools as faq_tools
 from app.modules.express import SYSTEM_PROMPT as EXPRESS_PROMPT, build_tools as express_tools
@@ -103,14 +108,22 @@ async def chat(req: Request):
     # 3) 组装引擎并跑 ReAct 循环（会按需调用工具）
     engine = AgentEngine(system_prompt=prompt, tools=tools)
 
+    # 会话 id：前端带上，服务端就能把几轮对话串起来。
+    # 没带就服务端生成一个并在响应里返回，前端存起来下次继续用。
+    session_id = (body.get("session_id") or "").strip() or uuid.uuid4().hex[:12]
+
+    # 之前聊过的内容（让 Agent 记得住上一轮商量到哪了）
+    history = get_conversation(session_id)
+
     # 大模型可能因为"没配 Key / Key 无效 / 网络不通"失败。
     # 与其让前端收到一个看不懂的 500，不如把原因说成人话，直接显示在对话里。
     try:
-        result = await engine.run(message)
+        result = await engine.run(message, history=history)
     except LLMError as e:
         # 已知原因：密钥或网络问题，提示用户怎么补救
         return {
             "module": module_key,
+            "session_id": session_id,
             "answer": f"⚠️ {e}",
             "trace": [{"step": 1, "phase": "❌ 调用大模型失败", "answer": str(e)}],
         }
@@ -120,13 +133,19 @@ async def chat(req: Request):
             traceback.print_exc()  # 开了 DEBUG 就打印完整堆栈，方便排查
         return {
             "module": module_key,
+            "session_id": session_id,
             "answer": f"⚠️ 助手处理时出了点问题：{type(e).__name__}：{e}",
             "trace": [{"step": 1, "phase": "❌ 内部错误", "answer": f"{type(e).__name__}: {e}"}],
         }
 
+    # 把本轮对话记进会话历史，下一轮才能接着聊
+    append_conversation(session_id, "user", message)
+    append_conversation(session_id, "assistant", result["answer"])
+
     # 4) 返回最终回答 + 思考轨迹（前端可展示 Agent 怎么一步步想的）
     return {
         "module": module_key,
+        "session_id": session_id,
         "answer": result["answer"],
         "trace": result["trace"],
     }
@@ -372,6 +391,74 @@ async def settings_test():
     except LLMError as e:
         return {"ok": False, "message": str(e)}
     return {"ok": True, "message": f"连通正常 · 模型 {cfg['model']} · 配置来源：{cfg['source']}"}
+
+
+# ============ 学生个人库：周表（课程）与待办 ============
+
+@app.get("/api/timetable")
+async def timetable_get():
+    """读周表课程（人话：日程页周视图的课程格子数据源）。"""
+    data = get_timetable_data()
+    return {"courses": data.get("courses", []), "updated_at": data.get("updated_at", "")}
+
+
+@app.get("/api/todos")
+async def todos_list(date: str | None = None):
+    """列待办。带 date 查某一天，不带就全给（前端自己按日期分组）。"""
+    return {"todos": list_todos(date)}
+
+
+@app.get("/api/todos/month")
+async def todos_month(month: str = ""):
+    """按日期聚合某个月的待办（人话：月视图要给每天标"有几项待办"）。"""
+    if not month:  # 没传月份就默认当月
+        month = datetime.date.today().strftime("%Y-%m")
+    return {"month": month, "days": list_todos_in_month(month)}
+
+
+@app.post("/api/todos")
+async def todo_add(req: Request):
+    """手动加一条待办（人话：不走 AI 也能自己往日程里塞一件事）。"""
+    body = await req.json()
+    date = (body.get("date") or "").strip()
+    start = (body.get("start") or "").strip()
+    end = (body.get("end") or "").strip()
+    title = (body.get("title") or "").strip()
+    if not (date and start and end and title):
+        return JSONResponse({"error": "标题、日期、开始与结束时间都要填"}, status_code=400)
+    item = add_todo(title, date, start, end,
+                    note=(body.get("note") or "").strip(),
+                    category=(body.get("category") or "").strip())
+    return {"ok": True, "todo": item}
+
+
+@app.put("/api/todos/{tid}")
+async def todo_update(tid: str, req: Request):
+    """改一条待办（目前主要用来标记完成 / 取消完成）。"""
+    body = await req.json()
+    patch = {k: v for k, v in body.items() if k in ("title", "date", "start", "end", "note", "status")}
+    item = update_todo(tid, patch)
+    if not item:
+        return JSONResponse({"error": "待办不存在"}, status_code=404)
+    return {"ok": True, "todo": item}
+
+
+@app.delete("/api/todos/{tid}")
+async def todo_delete(tid: str):
+    """删一条待办。"""
+    if not delete_todo(tid):
+        return JSONResponse({"error": "待办不存在"}, status_code=404)
+    return {"ok": True}
+
+
+@app.post("/api/chat/reset")
+async def chat_reset(req: Request):
+    """清空一段会话（人话：聊跑偏了或想重开一局时用）。"""
+    body = await req.json()
+    sid = (body.get("session_id") or "").strip()
+    if sid:
+        clear_conversation(sid)
+    return {"ok": True}
 
 
 def _render(name: str) -> HTMLResponse:

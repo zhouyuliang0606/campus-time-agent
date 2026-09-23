@@ -43,13 +43,17 @@ class AgentEngine:
             return None
         return [t.to_schema() for t in self.tools.values()]
 
-    async def run(self, user_input: str, context: dict | None = None) -> dict:
+    async def run(self, user_input: str, context: dict | None = None,
+                  history: list[dict] | None = None) -> dict:
         """跑一轮 ReAct，返回 {answer: 最终回答, trace: 思考轨迹}。
 
-        :param user_input: 用户说的话
+        :param user_input: 用户这次说的话
         :param context: 可选背景信息（比如当前用户、当前周次），会作为系统提示补充
+        :param history: 之前聊过的若干轮 [{role: user/assistant, content: ...}]。
+                       带上它 Agent 才知道"上一轮我们商量到哪了"——比如提完一个
+                       时间安排建议后，学生说"可以"，它得知道"可以"指的是哪个方案。
         """
-        # 1) 组装对话历史：系统设定 + 可选背景 + 用户问题
+        # 1) 组装对话历史：系统设定 + 可选背景 + 过往对话 + 本次问题
         messages: list[dict] = [{"role": "system", "content": self.system_prompt}]
         if context:
             messages.append(
@@ -58,6 +62,14 @@ class AgentEngine:
                     "content": "已知背景信息：" + json.dumps(context, ensure_ascii=False),
                 }
             )
+        # 只接收 user / assistant 两种角色的纯文字消息。
+        # 中间的工具调用过程不回溯 —— 少了些细节，但换来稳定（不会出现
+        # tool_call_id 对不上的报错），而且最终答案里本就包含结论。
+        if history:
+            for h in history:
+                role = h.get("role")
+                if role in ("user", "assistant") and h.get("content"):
+                    messages.append({"role": role, "content": h["content"]})
         messages.append({"role": "user", "content": user_input})
 
         # 最多思考 6 轮，防止模型死循环（人话：想太久就停下，给个兜底回答）
