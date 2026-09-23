@@ -21,5 +21,13 @@
 4. 启动：`uvicorn app.main:app --reload`
 5. 浏览器打开：`http://127.0.0.1:8000`
 
+想验证一下功能有没有坏（不用装任何额外包，100 项自检）：
+
+```bash
+python tests/run_all.py
+```
+
+测试跑在临时数据副本上，不会碰你的演示数据。详见 [tests/README.md](tests/README.md)。
+
 更详细的"人话说明"请看 [EXPLAIN.md](EXPLAIN.md)。
 每一步的开发对话记录在 [ai-logs/](ai-logs/) 目录。
