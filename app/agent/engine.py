@@ -11,7 +11,7 @@ ReAct = Reason(推理) + Act(行动)。
 """
 import asyncio
 import json
-from typing import Any
+from typing import Any, Callable
 
 from app.agent.tools import Tool
 from app.llm.client import DeepSeekClient

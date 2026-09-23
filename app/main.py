@@ -14,7 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from app.agent.engine import AgentEngine
 from app.agent.router import Router
 from app.config import check_config
-from app.modules.schedule import SCHEDULE_PROMPT, build_tools as schedule_tools
+from app.modules.schedule import SYSTEM_PROMPT, build_tools as schedule_tools
 
 # 项目根目录（本文件在 app/ 下，根目录是上一级）
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -26,7 +26,7 @@ check_config()
 # —— 模块注册表（人话：每个模块在这里登记一下，路由命中后就能取用）——
 # 以后每做一个模块（faq/station/admin…），只要在这里加一行就行
 REGISTRY: dict[str, tuple[str, Any]] = {
-    "schedule": (SCHEDULE_PROMPT, schedule_tools),
+    "schedule": (SYSTEM_PROMPT, schedule_tools),
 }
 # 没命中任何模块时的兜底提示
 DEFAULT_PROMPT = "你是校园时间管家，一个友好、靠谱的校园 AI 助手。"
