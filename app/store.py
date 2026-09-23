@@ -135,3 +135,78 @@ def set_persona(name: str, role: str, tone: str, rules: str) -> dict:
     p = {"name": name, "role": role, "tone": tone, "rules": rules}
     _write("persona.json", p)
     return p
+
+
+# ============ 运行时设置（管理台零代码配置的 AI 接口参数） ============
+# 注意：这个文件里可能有真实的 API Key，所以它必须放进 .gitignore，
+# 并且读取给前端看的时候要脱敏（由 main.py 负责掩码）。
+
+def get_settings() -> dict:
+    """读取管理台保存的设置（人话：管理员在后台填的 AI 接口参数）。
+
+    返回空字典表示"管理员没在后台配过"，此时 config 层会回落到 .env。
+    """
+    return _read("settings.json", {})
+
+
+def set_settings(data: dict) -> dict:
+    """保存管理台设置（人话：把管理员填的接口参数存档，config 层每次会来读）。
+
+    用"增量更新"而不是整体覆盖：管理员只想改模型名时，不至于把 Key 冲掉。
+    """
+    current = get_settings()
+    # 空字符串视为"没填"，不落盘，这样它会自动回落到 .env 的默认值
+    for k, v in data.items():
+        if isinstance(v, str) and not v.strip():
+            current.pop(k, None)
+        else:
+            current[k] = v
+    _write("settings.json", current)
+    return current
+
+
+# ============ 上传文件（给 AI 助手读的资料） ============
+# 正文存在 uploads/<id>.txt，元信息存在 uploads.json。
+# 分开存是为了让 uploads.json 保持能人肉阅读，不会被大段正文撑爆。
+
+UPLOAD_DIR = os.path.join(DATA_DIR, "uploads")
+MAX_UPLOAD_BYTES = 5 * 1024 * 1024  # 单个文件上限 5MB，防止演示机被撑爆
+
+
+def _upload_body_path(fid: str) -> str:
+    """某个上传文件正文的存放路径。"""
+    return os.path.join(UPLOAD_DIR, fid + ".txt")
+
+
+def save_upload(filename: str, content: str, size: int = 0) -> dict:
+    """保存一个上传文件（人话：把文件里的字提取出来，存好，让 AI 能读）。"""
+    os.makedirs(UPLOAD_DIR, exist_ok=True)
+    fid = uuid.uuid4().hex[:12]
+    with open(_upload_body_path(fid), "w", encoding="utf-8") as f:
+        f.write(content)
+    item = {
+        "id": fid,
+        "name": filename,
+        "size": size or len(content.encode("utf-8")),
+        "ts": _now(),
+        "chars": len(content),
+        "preview": content[:200],  # 列表页给个预览，不用真的再读一遍文件
+    }
+    data = _read("uploads.json", {"files": []})
+    data.setdefault("files", []).append(item)
+    _write("uploads.json", data)
+    return item
+
+
+def list_uploads() -> list:
+    """列出所有上传文件，倒序（最新在前）。"""
+    return list(reversed(_read("uploads.json", {"files": []}).get("files", [])))
+
+
+def get_upload(fid: str) -> str | None:
+    """读某个上传文件的正文；找不到返回 None。"""
+    try:
+        with open(_upload_body_path(fid), encoding="utf-8") as f:
+            return f.read()
+    except FileNotFoundError:
+        return None
