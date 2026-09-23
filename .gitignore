@@ -13,3 +13,7 @@ venv/
 .idea/
 .vscode/
 .DS_Store
+
+# ===== 运行时自动生成的数据（学生消息/通知，启动后由 app/store.py 创建） =====
+app/data/student_messages.json
+app/data/notices.json
