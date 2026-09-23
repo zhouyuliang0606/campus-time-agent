@@ -35,6 +35,9 @@ from app.modules.express import SYSTEM_PROMPT as EXPRESS_PROMPT, build_tools as 
 from app.modules.takeout import SYSTEM_PROMPT as TAKEOUT_PROMPT, build_tools as takeout_tools
 from app.modules.files import build_tools as files_tools
 from app.modules.station import build_system_prompt as STATION_PROMPT, build_tools as station_tools
+# planner 也是"可调用提示"：每次对话都要把**今天的日期**动态拼进去，
+# 否则学生说"明天"，AI 根本算不出是哪一天
+from app.modules.planner import build_system_prompt as PLANNER_PROMPT, build_tools as planner_tools
 
 # 项目根目录（本文件在 app/ 下，根目录是上一级）
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -52,6 +55,8 @@ REGISTRY: dict[str, tuple[Any, Any]] = {
     "takeout": (TAKEOUT_PROMPT, takeout_tools),
     # station 的提示是"可调用的"：每次对话时动态拼入管理员配置的客服人格
     "station": (STATION_PROMPT, station_tools),
+    # planner 学生个人日程：提示里动态注入今天日期，才能听懂"明天/后天"
+    "planner": (PLANNER_PROMPT, planner_tools),
 }
 # 没命中任何模块时的兜底提示
 DEFAULT_PROMPT = "你是校园时间管家，一个友好、靠谱的校园 AI 助手。"

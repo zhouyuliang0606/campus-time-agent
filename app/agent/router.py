@@ -8,7 +8,8 @@ import json
 from app.llm.client import DeepSeekClient
 
 # 所有模块的关键字白名单：router 分类时只许返回这些之一
-MODULE_KEYS = ["schedule", "faq", "express", "takeout", "station", "lostfound", "repair", "notice", "admin"]
+MODULE_KEYS = ["schedule", "faq", "express", "takeout", "station",
+               "planner", "lostfound", "repair", "notice", "admin"]
 
 # 给大模型看的分类说明书（人话：只让它输出一个 JSON 告诉我归属哪个模块）
 _SYSTEM_PROMPT = """你是校园助手的意图分类器。根据用户的话，只输出一个 JSON：{"module": "..."}。
@@ -18,6 +19,7 @@ _SYSTEM_PROMPT = """你是校园助手的意图分类器。根据用户的话，
 - express：学生查自己的快递/取件码/滞留
 - takeout：学生查外卖订单/取餐点/待取
 - station：驿站商户侧（监听台账/主动推送/人格回复）
+- planner：学生个人日程（上传课表生成周表、给待办排时间、月表查看）
 - lostfound：丢东西/捡到东西/失物招领
 - repair：设施报修/东西坏了/维修
 - notice：公告/通知
@@ -26,6 +28,11 @@ _SYSTEM_PROMPT = """你是校园助手的意图分类器。根据用户的话，
 
 # 关键词兜底：命中就直接归类，省一次大模型调用，也更稳
 _QUICK_MAP = {
+    # 学生个人日程（要排在"课表""复习"这些通用词**前面**：
+    # 否则"上传课表"会被 schedule 先截走，导入流程就走不到了）
+    "待办": "planner", "日程": "planner", "todo": "planner",
+    "上传课表": "planner", "导入课表": "planner", "课表导入": "planner",
+    "周表": "planner", "月表": "planner", "加到日程": "planner", "排进": "planner",
     # 学生端·快递
     "取快递": "express", "取件码": "express", "驿站取": "express", "快递": "express", "取件": "express",
     # 学生端·外卖
