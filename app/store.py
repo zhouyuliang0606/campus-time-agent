@@ -9,7 +9,10 @@ import json
 import os
 import uuid
 
-DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
+# 数据目录默认是 app/data；但可以用环境变量指到别处。
+# 为什么留这个开关：跑自动化测试时，让测试写一份临时副本，
+# 这样测试再怎么折腾（写假密钥、传文件）都碰不到真实演示数据。
+DATA_DIR = os.environ.get("CAMPUSTIME_DATA_DIR") or os.path.join(os.path.dirname(__file__), "data")
 
 
 def _path(name: str) -> str:

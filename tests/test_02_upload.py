@@ -11,10 +11,10 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from _harness import Checker, data_path, isolate, make_client, title  # noqa: E402
+from _harness import Checker, data_path, make_client, sandbox, title  # noqa: E402
 
-# 会往 settings.json 里写假密钥、往 uploads/ 里写文件，务必隔离
-with isolate("settings.json", "uploads.json", "uploads", "notices.json", "student_messages.json"):
+# 这一组会保存假密钥、上传临时文件，全部关进沙箱里跑
+with sandbox():
     client = make_client()
     c = Checker()
 
@@ -72,10 +72,12 @@ with isolate("settings.json", "uploads.json", "uploads", "notices.json", "studen
     c.check("空字符串会回落到默认模型",
             client.get("/api/admin/settings").json()["settings"]["model"] == "deepseek-chat")
 
-    os.remove(data_path("settings.json"))  # 清掉假密钥，回到"没配过"的状态
+    # 把配置清空，模拟"管理员还没填过"的状态：
+    # 这里写成空对象而不是删文件，因为 store 每次现读，写空就等于没配过
+    with open(data_path("settings.json"), "w", encoding="utf-8") as f:
+        f.write("{}")
 
     title("6. 连通性自检（无密钥时快速失败，不发网络请求）")
-    os.remove(data_path("settings.json"))
     r = client.post("/api/admin/settings/test")
     c.check("无密钥时提示先配置", r.status_code == 200 and r.json()["ok"] is False, r.json().get("message", "")[:40])
 

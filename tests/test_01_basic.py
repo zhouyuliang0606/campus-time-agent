@@ -8,10 +8,10 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from _harness import Checker, isolate, make_client, title  # noqa: E402
+from _harness import Checker, make_client, sandbox, title  # noqa: E402
 
-# 这一组会改 kb.json（种子数据，受版本控制）和 persona.json，必须隔离
-with isolate("kb.json", "persona.json", "notices.json", "student_messages.json"):
+# with sandbox() 包住整段测试：所有读写都发生在临时副本上，真实数据一动不动
+with sandbox():
     client = make_client()
     c = Checker()
 
