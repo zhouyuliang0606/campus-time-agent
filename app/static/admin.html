@@ -60,6 +60,11 @@
         <input id="ntitle" placeholder="如：关于国庆放假安排的通知" />
         <label>内容</label>
         <textarea id="ncontent" placeholder="通知正文…"></textarea>
+
+        <label>附件（可选，支持 txt / csv / json 等文本和 PDF）</label>
+        <input type="file" id="nfile" />
+        <div class="small" id="attachStatus" style="margin:6px 0;">还没上传附件</div>
+
         <button class="btn" id="publish">发布通知</button>
         <div class="small" id="nstatus" style="margin-top:8px;"></div>
         <h2 style="margin-top:18px;">已发布通知</h2>
@@ -82,7 +87,36 @@
       </div>
     </div>
 
-    <!-- 第二行：知识库管理（占满整行） -->
+    <!-- 第二行：大模型 API 配置（在线改，改完不用重启） -->
+    <div class="card">
+      <h2>🔑 API 配置（在线修改，下一次对话立即生效，不用重启服务）</h2>
+      <div class="grid2">
+        <div>
+          <label>API Key（留空表示不改；页面只会显示打码后的值）</label>
+          <input id="akey" type="password" placeholder="sk-…" />
+          <label>接口地址 Base URL</label>
+          <input id="abase" placeholder="https://api.deepseek.com" />
+          <label>模型名 model</label>
+          <input id="amodel" placeholder="deepseek-chat" />
+          <div style="margin-top:12px;">
+            <button class="btn" id="saveApi">保存配置</button>
+            <button class="btn ghost" id="testApi">测试连通</button>
+          </div>
+          <div class="small" id="apistatus" style="margin-top:8px;"></div>
+        </div>
+        <div>
+          <div class="small" style="margin-bottom:6px;">当前生效状态</div>
+          <div id="apiNow" class="kb"><div class="small">读取中…</div></div>
+          <div class="small" style="margin-top:10px;">
+            配置优先级：<b>管理后台填写的值 &gt; .env 环境变量</b>。<br />
+            API Key 只会以 <b>打码</b> 形式返回到页面，不会被完整展示；<br />
+            被打码的串回传时会被自动忽略，不用担心存错。
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 第三行：知识库管理（占满整行） -->
     <div class="card">
       <h2>📚 知识库管理（零代码维护，学生端问答直接吃这份数据）</h2>
       <div class="grid2">
@@ -117,21 +151,55 @@
     const MODULE_NAMES = { schedule: "课表安排", faq: "校园问答", express: "快递", takeout: "外卖", station: "驿站客服" };
     let editingKb = null;
 
-    // ---------- 发布通知 ----------
+    // ---------- 发布通知（支持附件） ----------
+    let noticeAttachment = null; // 本次要随通知一起发出的附件 {id, name}
+
+    // 选中文件后立刻上传，拿到 id 等着发布时一起提交
+    async function handleNoticeFile() {
+      const input = document.getElementById("nfile");
+      const st = document.getElementById("attachStatus");
+      if (!input.files || !input.files[0]) { noticeAttachment = null; st.textContent = "还没上传附件"; return; }
+      const form = new FormData();
+      form.append("file", input.files[0]);
+      st.textContent = "⏳ 上传中…";
+      try {
+        const resp = await fetch("/api/upload", { method: "POST", body: form });
+        const d = await resp.json();
+        if (d.ok) {
+          noticeAttachment = { id: d.file.id, name: d.file.name };
+          st.innerHTML = `📎 已附加：<b>${escapeHtml(d.file.name)}</b>（${d.file.chars} 字） <button class="mini" onclick="clearAttachment()">移除</button>`;
+        } else {
+          noticeAttachment = null;
+          st.textContent = "❌ 上传失败：" + (d.error || "未知原因");
+        }
+      } catch (e) {
+        noticeAttachment = null;
+        st.textContent = "❌ 上传异常：" + e.message;
+      }
+    }
+    function clearAttachment() {
+      noticeAttachment = null;
+      document.getElementById("nfile").value = "";
+      document.getElementById("attachStatus").textContent = "还没上传附件";
+    }
+
     async function publish() {
       const title = document.getElementById("ntitle").value.trim();
       const content = document.getElementById("ncontent").value.trim();
       const status = document.getElementById("nstatus");
-      if (!title && !content) { status.textContent = "标题和内容不能都为空"; return; }
+      if (!title && !content && !noticeAttachment) {
+        status.textContent = "标题、内容、附件至少要填一个"; return;
+      }
       const resp = await fetch("/api/admin/notify", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ title, content }),
+        body: JSON.stringify({ title, content, attachment: noticeAttachment }),
       });
       const data = await resp.json();
       if (data.ok) {
-        status.textContent = "✅ 已发布：" + (title || "(无标题)");
+        status.textContent = "✅ 已发布：" + (title || "(无标题)") + (noticeAttachment ? "（含附件）" : "");
         document.getElementById("ntitle").value = "";
         document.getElementById("ncontent").value = "";
+        clearAttachment();
         loadNotices();
       } else { status.textContent = "发布失败：" + (data.error || ""); }
     }
@@ -139,9 +207,51 @@
       const data = await (await fetch("/api/notices")).json();
       const box = document.getElementById("noticeList");
       if (!data.notices.length) { box.innerHTML = '<div class="empty">还没有发布过通知</div>'; return; }
-      box.innerHTML = data.notices.map(n =>
-        `<div class="notice"><b>${escapeHtml(n.title || "(无标题)")}</b> <span class="small">${n.ts}</span><div>${escapeHtml(n.content)}</div></div>`
-      ).join("");
+      box.innerHTML = data.notices.map(n => {
+        let att = "";
+        if (n.attachment) {
+          att = `<div style="margin-top:6px;"><a class="mini" href="/api/uploads/${n.attachment.id}/download" target="_blank" style="text-decoration:none;">📎 ${escapeHtml(n.attachment.name)}（下载）</a></div>`;
+        }
+        return `<div class="notice"><b>${escapeHtml(n.title || "(无标题)")}</b> <span class="small">${n.ts}</span><div>${escapeHtml(n.content)}</div>${att}</div>`;
+      }).join("");
+    }
+
+    // ---------- API 配置 ----------
+    async function loadApiSettings() {
+      const d = await (await fetch("/api/admin/settings")).json();
+      const s = d.settings;
+      // 密码框里回填的是打码串：管理员不改就能原样留着，不会被当成新密钥
+      document.getElementById("akey").value = s.api_key || "";
+      document.getElementById("abase").value = s.base_url || "";
+      document.getElementById("amodel").value = s.model || "";
+      const now = document.getElementById("apiNow");
+      now.innerHTML = `
+        <div class="kb-q">${d.configured ? "✅ 已配置" : "⚠️ 尚未配置密钥"}</div>
+        <div class="kb-a">当前密钥（打码）：<code>${escapeHtml(s.api_key || "（无）")}</code></div>
+        <div class="kb-a">接口地址：${escapeHtml(s.base_url)}</div>
+        <div class="kb-a">模型：${escapeHtml(s.model)}</div>
+        <div class="small">配置来源：${escapeHtml(d.source)}</div>`;
+    }
+    async function saveApi() {
+      const st = document.getElementById("apistatus");
+      st.textContent = "⏳ 保存中…";
+      const r = await fetch("/api/admin/settings", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          api_key: document.getElementById("akey").value.trim(),
+          base_url: document.getElementById("abase").value.trim(),
+          model: document.getElementById("amodel").value.trim(),
+        }),
+      });
+      const d = await r.json();
+      st.textContent = "✅ " + (d.message || "已保存");
+      loadApiSettings();
+    }
+    async function testApi() {
+      const st = document.getElementById("apistatus");
+      st.textContent = "⏳ 正在用当前配置问大模型一句…";
+      const d = await (await fetch("/api/admin/settings/test", { method: "POST" })).json();
+      st.textContent = (d.ok ? "✅ " : "❌ ") + (d.message || "");
     }
 
     // ---------- 客服人格 ----------
@@ -242,12 +352,15 @@
     }
 
     document.getElementById("publish").addEventListener("click", publish);
+    document.getElementById("nfile").addEventListener("change", handleNoticeFile);
     document.getElementById("savePersona").addEventListener("click", savePersona);
     document.getElementById("kbSave").addEventListener("click", saveKB);
     document.getElementById("refresh").addEventListener("click", loadMessages);
+    document.getElementById("saveApi").addEventListener("click", saveApi);
+    document.getElementById("testApi").addEventListener("click", testApi);
 
     // 进入页面先拉一次，然后每 5 秒自动刷新收件箱
-    loadNotices(); loadPersona(); loadKB(); loadMessages();
+    loadNotices(); loadPersona(); loadKB(); loadMessages(); loadApiSettings();
     setInterval(loadMessages, 5000);
   </script>
 </body>
