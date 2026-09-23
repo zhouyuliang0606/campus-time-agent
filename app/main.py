@@ -496,5 +496,11 @@ async def station_page():
     return _render("station.html")
 
 
+@app.get("/plan", response_class=HTMLResponse)
+async def plan_page():
+    """学生个人日程（周表看课程与待办，月表看哪天有几件事）。"""
+    return _render("plan.html")
+
+
 # 把 static 目录挂到 /static，方便以后放图片、脚本等静态资源
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")

@@ -1,0 +1,416 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>校园时间管家 · 我的日程</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; font-family: "PingFang SC", "Microsoft YaHei", sans-serif;
+      background: #f4f6fb; color: #1f2733;
+    }
+    header {
+      background: linear-gradient(135deg, #4f7cff, #6a5cff);
+      color: #fff; padding: 16px 24px;
+    }
+    header h1 { margin: 0; font-size: 20px; }
+    header p { margin: 4px 0 0; opacity: .9; font-size: 13px; }
+    header a { font-size: 13px; color: #fff; float: right; opacity: .9; text-decoration: none; margin-left: 14px; }
+    .wrap { max-width: 1080px; margin: 18px auto; padding: 0 16px; }
+
+    /* 顶部两个视图切换 */
+    .tabs { display: flex; gap: 8px; margin-bottom: 14px; }
+    .tab {
+      padding: 8px 20px; border: 1px solid #d8def0; background: #fff; color: #4a5366;
+      border-radius: 10px; cursor: pointer; font-size: 14px;
+    }
+    .tab.active { background: #4f7cff; color: #fff; border-color: #4f7cff; }
+
+    .card {
+      background: #fff; border-radius: 12px; padding: 16px;
+      box-shadow: 0 4px 16px rgba(40,60,120,.08);
+    }
+    .bar { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+    .bar .title { font-size: 15px; font-weight: 600; }
+    .bar .grow { flex: 1; }
+    .btn {
+      padding: 7px 14px; border: none; border-radius: 8px; cursor: pointer;
+      background: #4f7cff; color: #fff; font-size: 13px;
+    }
+    .btn.ghost { background: #eef2ff; color: #4f7cff; }
+    .btn:hover { opacity: .88; }
+    .small { font-size: 12px; color: #8a93a6; }
+    .empty { color: #8a93a6; font-size: 13px; text-align: center; padding: 22px; }
+    .legend { display: flex; gap: 14px; font-size: 12px; color: #6a7388; margin-left: 8px; }
+    .legend i { display: inline-block; width: 12px; height: 12px; border-radius: 3px; margin-right: 4px; vertical-align: -1px; }
+
+    /* ============ 周表 ============ */
+    .week { display: grid; grid-template-columns: 56px repeat(7, 1fr); }
+    .week-head { position: sticky; top: 0; z-index: 2; background: #fff; }
+    .week-head div {
+      padding: 8px 4px; text-align: center; font-size: 13px; font-weight: 600;
+      border-bottom: 1px solid #e6eaf5; color: #4a5366;
+    }
+    .week-head div.today { color: #4f7cff; }
+    .week-body { position: relative; }
+    .gutter { position: relative; }
+    .gutter span {
+      position: absolute; right: 6px; font-size: 11px; color: #a0a8bb;
+      transform: translateY(-50%);
+    }
+    .col {
+      position: relative; border-left: 1px solid #eef0f6;
+      /* 高度由 JS 按「1 分钟 = 1 像素」算，这样 11:40 这种零碎时间也能精准落位 */
+    }
+    .col.today { background: #f7faff; }
+    .blk {
+      position: absolute; left: 3px; right: 3px; border-radius: 6px;
+      padding: 3px 6px; font-size: 12px; line-height: 1.35; overflow: hidden;
+      border-left: 3px solid; cursor: default;
+    }
+    .blk.course { background: #eaf1ff; border-color: #4f7cff; color: #24406e; }
+    .blk.todo   { background: #fff5e6; border-color: #f0a03c; color: #7a5212; }
+    .blk.done   { background: #eef7ef; border-color: #7dc48a; color: #3f6b48; text-decoration: line-through; }
+    .blk b { display: block; font-weight: 600; }
+    .blk .tm { font-size: 11px; opacity: .8; }
+
+    /* ============ 月表 ============ */
+    .month { display: grid; grid-template-columns: repeat(7, 1fr); gap: 6px; }
+    .month .wd { text-align: center; font-size: 12px; color: #8a93a6; padding: 4px 0; }
+    .day {
+      min-height: 84px; border: 1px solid #eef0f6; border-radius: 10px; padding: 6px;
+      cursor: pointer; background: #fff; position: relative;
+    }
+    .day:hover { border-color: #4f7cff; }
+    .day.out { opacity: .38; }
+    .day.today { border-color: #4f7cff; background: #f7faff; box-shadow: inset 0 0 0 1px #4f7cff; }
+    .day.sel { background: #eef2ff; }
+    .day .num { font-size: 13px; font-weight: 600; }
+    .day .badge {
+      position: absolute; right: 6px; top: 6px; background: #f0a03c; color: #fff;
+      border-radius: 9px; font-size: 11px; padding: 0 6px; min-width: 18px; text-align: center;
+    }
+    /* 当天直接在格子里显示待办标题（用户明确要求：当天的要能直接看见） */
+    .day .titles { margin-top: 4px; font-size: 11px; color: #7a5212; }
+    .day .titles div {
+      background: #fff5e6; border-radius: 4px; padding: 1px 4px; margin-top: 2px;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .day .titles div.done { background: #eef7ef; color: #3f6b48; text-decoration: line-through; }
+
+    /* 某一天的详情面板 */
+    .detail { margin-top: 14px; border-top: 1px dashed #d8def0; padding-top: 12px; }
+    .detail h3 { margin: 0 0 8px; font-size: 15px; }
+    .titem {
+      display: flex; align-items: center; gap: 10px; padding: 8px 10px;
+      border: 1px solid #eef0f6; border-radius: 8px; margin-bottom: 8px;
+    }
+    .titem .tm { font-size: 12px; color: #6a7388; min-width: 96px; }
+    .titem .tt { flex: 1; font-size: 14px; }
+    .titem.done .tt { text-decoration: line-through; color: #8a93a6; }
+    .titem .mini {
+      padding: 4px 10px; border: 1px solid #d8def0; border-radius: 6px;
+      background: #fff; cursor: pointer; font-size: 12px;
+    }
+    .mini.danger { color: #e0414a; border-color: #f3c2c5; }
+    #status { font-size: 12px; color: #4a5366; margin-left: 8px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>我的日程
+      <a href="/">← 登录</a>
+      <a href="/student">去问 AI →</a>
+    </h1>
+    <p>周表照课表排，待办插在课程之间；月表一眼看见哪天有几件事</p>
+  </header>
+
+  <div class="wrap">
+    <div class="tabs">
+      <button class="tab active" id="tabWeek">周表</button>
+      <button class="tab" id="tabMonth">月表</button>
+    </div>
+
+    <!-- ============ 周表视图 ============ -->
+    <div class="card" id="weekCard">
+      <div class="bar">
+        <span class="title">周表</span>
+        <span class="small" id="weekRange"></span>
+        <span class="grow"></span>
+        <button class="btn ghost" id="prevWeek">← 上周</button>
+        <button class="btn ghost" id="thisWeek">本周</button>
+        <button class="btn ghost" id="nextWeek">下周 →</button>
+      </div>
+
+      <div class="bar" style="margin-bottom:12px;">
+        <input type="file" id="ttFile" style="display:none;" accept=".docx,.xlsx,.pptx,.pdf,.txt,.csv,.json,.md" />
+        <button class="btn" id="uploadTt">📤 上传课表生成周表</button>
+        <span class="small">上传后我会让 AI 读文件并把课程整理进周表</span>
+        <span class="legend">
+          <span><i style="background:#eaf1ff;border-left:3px solid #4f7cff"></i>课程</span>
+          <span><i style="background:#fff5e6;border-left:3px solid #f0a03c"></i>待办</span>
+          <span><i style="background:#eef7ef;border-left:3px solid #7dc48a"></i>已完成</span>
+        </span>
+      </div>
+
+      <div class="week">
+        <div class="week-head" id="weekHead" style="display:contents;"></div>
+      </div>
+      <div class="week" id="weekGrid"></div>
+      <div id="weekEmpty" class="empty" style="display:none;"></div>
+      <span id="status"></span>
+    </div>
+
+    <!-- ============ 月表视图 ============ -->
+    <div class="card" id="monthCard" style="display:none;">
+      <div class="bar">
+        <span class="title">月表</span>
+        <span class="small" id="monthLabel"></span>
+        <span class="grow"></span>
+        <button class="btn ghost" id="prevMonth">← 上月</button>
+        <button class="btn ghost" id="thisMonth">本月</button>
+        <button class="btn ghost" id="nextMonth">下月 →</button>
+      </div>
+      <div class="small" style="margin-bottom:8px;">
+        点任意一天，下面会列出当天的待办；今天是 <b id="todayLabel"></b>，当天待办直接显示在格子里。
+      </div>
+      <div class="month" id="monthGrid"></div>
+      <div class="detail" id="dayDetail"></div>
+    </div>
+  </div>
+
+  <script>
+    // ---------- 共用小工具 ----------
+    const DAY_START = 7 * 60;   // 07:00
+    const DAY_END = 22 * 60;    // 22:00
+    const WD = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"];
+
+    // 会话 id 跟学生端共用，这样 AI 记得住「刚才商量到哪了」
+    function sessionId() {
+      let sid = localStorage.getItem("campustime_session");
+      if (!sid) { sid = "s" + Math.random().toString(16).slice(2, 12); localStorage.setItem("campustime_session", sid); }
+      return sid;
+    }
+    const iso = d => d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+    const parseISO = s => { const [y, m, d] = s.split("-").map(Number); return new Date(y, m - 1, d); };
+    const mins = hhmm => { const [h, m] = String(hhmm).split(":").map(Number); return h * 60 + m; };
+    // JS 的 getDay() 周日=0，我们要周一=1…周日=7
+    const isoWd = d => d.getDay() === 0 ? 7 : d.getDay();
+    function mondayOf(d) { const t = new Date(d); t.setDate(t.getDate() - (isoWd(d) - 1)); t.setHours(0, 0, 0, 0); return t; }
+    function esc(s) {
+      return String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+    }
+
+    let weekOffset = 0;    // 周表往前/往后翻几周
+    let monthOffset = 0;   // 月表翻几个月
+    let courses = [], todos = [];
+    let selectedDate = null;
+
+    // ---------- 拉数据 ----------
+    async function loadAll() {
+      const t = await (await fetch("/api/timetable")).json();
+      courses = t.courses || [];
+      const td = await (await fetch("/api/todos")).json();
+      todos = td.todos || [];
+      renderWeek();
+      renderMonth();
+    }
+    function setStatus(msg) { document.getElementById("status").textContent = msg || ""; }
+
+    // ---------- 周表渲染 ----------
+    function renderWeek() {
+      const base = mondayOf(new Date());
+      base.setDate(base.getDate() + weekOffset * 7);
+      const days = [];
+      for (let i = 0; i < 7; i++) { const d = new Date(base); d.setDate(d.getDate() + i); days.push(d); }
+      const range = iso(days[0]) + " ~ " + iso(days[6]);
+      document.getElementById("weekRange").textContent = range + (weekOffset === 0 ? "（本周）" : "");
+
+      const todayIso = iso(new Date());
+
+      // 表头：一个空的时间格 + 七天的名字
+      const head = document.getElementById("weekHead");
+      head.innerHTML = "<div></div>" + days.map(d =>
+        `<div class="${iso(d) === todayIso ? "today" : ""}">${WD[isoWd(d) - 1]}<br><span class="small">${d.getMonth() + 1}/${d.getDate()}</span></div>`
+      ).join("");
+
+      // 时间刻度 + 七列
+      const height = (DAY_END - DAY_START);   // 1 分钟 = 1 像素
+      const grid = document.getElementById("weekGrid");
+      let html = `<div class="gutter" style="height:${height}px;">`;
+      for (let h = 7; h <= 22; h++) {
+        html += `<span style="top:${h * 60 - DAY_START}px;">${String(h).padStart(2, "0")}:00</span>`;
+      }
+      html += `</div>`;
+
+      days.forEach(d => {
+        const dIso = iso(d);
+        const wd = isoWd(d);
+        html += `<div class="col ${dIso === todayIso ? "today" : ""}" style="height:${height}px;">`;
+        // 课程（按周表 day 字段匹配星期）
+        courses.filter(c => Number(c.day) === wd).forEach(c => {
+          const s = mins(c.start), e = mins(c.end);
+          if (e <= s) return;
+          const top = Math.max(0, s - DAY_START), hgt = Math.min(e, DAY_END) - Math.max(s, DAY_START);
+          if (hgt <= 0) return;
+          html += `<div class="blk course" style="top:${top}px;height:${hgt}px;" title="${esc(c.course)} ${c.start}-${c.end} ${esc(c.location || "")}">
+            <b>${esc(c.course)}</b><span class="tm">${c.start}-${c.end}${c.location ? " · " + esc(c.location) : ""}</span></div>`;
+        });
+        // 待办（按日期精确匹配，所以能插在课程之间的空隙里）
+        todos.filter(t => t.date === dIso).forEach(t => {
+          const s = mins(t.start), e = mins(t.end);
+          const top = Math.max(0, s - DAY_START), hgt = Math.min(e, DAY_END) - Math.max(s, DAY_START);
+          if (hgt <= 0) return;
+          const cls = t.status === "done" ? "todo done" : "todo";
+          html += `<div class="blk ${cls}" style="top:${top}px;height:${hgt}px;" title="${esc(t.title)} ${t.start}-${t.end}">
+            <b>📌 ${esc(t.title)}</b><span class="tm">${t.start}-${t.end}</span></div>`;
+        });
+        html += `</div>`;
+      });
+      grid.innerHTML = html;
+
+      const empty = document.getElementById("weekEmpty");
+      if (!courses.length) {
+        empty.style.display = "block";
+        empty.innerHTML = '周表还是空的 —— 点上面的「上传课表生成周表」，或去学生端跟 AI 说一声';
+      } else { empty.style.display = "none"; }
+    }
+
+    // ---------- 月表渲染 ----------
+    function renderMonth() {
+      const now = new Date();
+      const view = new Date(now.getFullYear(), now.getMonth() + monthOffset, 1);
+      const y = view.getFullYear(), m = view.getMonth();
+      document.getElementById("monthLabel").textContent = `${y} 年 ${m + 1} 月`;
+      document.getElementById("todayLabel").textContent = iso(now);
+
+      // 当月一号是周几，以及这个月一共几天
+      const first = new Date(y, m, 1);
+      const startIdx = isoWd(first) - 1;             // 前面要空几格（按周一开始）
+      const daysInMonth = new Date(y, m + 1, 0).getDate();
+
+      const byDate = {};
+      todos.forEach(t => { (byDate[t.date] = byDate[t.date] || []).push(t); });
+
+      const todayIso = iso(now);
+      let html = WD.map(w => `<div class="wd">${w}</div>`).join("");
+      for (let i = 0; i < startIdx; i++) html += `<div class="day out"></div>`;
+      for (let d = 1; d <= daysInMonth; d++) {
+        const date = new Date(y, m, d);
+        const dIso = iso(date);
+        const list = byDate[dIso] || [];
+        const isToday = dIso === todayIso;
+        const isSel = dIso === selectedDate;
+        let inner = `<div class="num">${d}</div>`;
+        // 非当天：显示「有几项待办」的角标；当天：直接把待办标题列出来
+        if (list.length && !isToday) {
+          inner += `<span class="badge">${list.length} 项</span>`;
+        }
+        if (isToday && list.length) {
+          inner += `<div class="titles">` + list.slice(0, 3).map(t =>
+            `<div class="${t.status === "done" ? "done" : ""}">${t.start} ${esc(t.title)}</div>`).join("") + `</div>`;
+        }
+        html += `<div class="day ${isToday ? "today" : ""} ${isSel ? "sel" : ""}" data-date="${dIso}">${inner}</div>`;
+      }
+      document.getElementById("monthGrid").innerHTML = html;
+      document.querySelectorAll(".day[data-date]").forEach(el => {
+        el.addEventListener("click", () => { selectedDate = el.dataset.date; renderMonth(); renderDayDetail(); });
+      });
+      renderDayDetail();
+    }
+
+    function renderDayDetail() {
+      const box = document.getElementById("dayDetail");
+      if (!selectedDate) {
+        box.innerHTML = `<div class="empty">点上面任意一天，查看当天安排了什么</div>`;
+        return;
+      }
+      const list = todos.filter(t => t.date === selectedDate)
+        .sort((a, b) => a.start.localeCompare(b.start));
+      const d = parseISO(selectedDate);
+      let html = `<h3>${selectedDate}（${WD[isoWd(d) - 1]}）的待办</h3>`;
+      if (!list.length) { box.innerHTML = html + `<div class="empty">这天还没有安排待办</div>`; return; }
+      html += list.map(t => `
+        <div class="titem ${t.status === "done" ? "done" : ""}">
+          <span class="tm">${t.start} - ${t.end}</span>
+          <span class="tt">${esc(t.title)}${t.note ? " <span class='small'>（" + esc(t.note) + "）</span>" : ""}</span>
+          <button class="mini" onclick="toggleTodo('${t.id}','${t.status}')">${t.status === "done" ? "撤销完成" : "标记完成"}</button>
+          <button class="mini danger" onclick="delTodo('${t.id}')">删除</button>
+        </div>`).join("");
+      box.innerHTML = html;
+    }
+
+    async function toggleTodo(id, status) {
+      await fetch("/api/todos/" + id, {
+        method: "PUT", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: status === "done" ? "planned" : "done" }),
+      });
+      loadAll();
+    }
+    async function delTodo(id) {
+      if (!confirm("确定删除这条待办？")) return;
+      await fetch("/api/todos/" + id, { method: "DELETE" });
+      loadAll();
+    }
+
+    // ---------- 上传课表 → 交给 AI 整理进周表 ----------
+    // 为什么不自己解析？课表格式千变万化（有的按表格、有的按第几节），
+    // 交给 Agent 读文件再调 import_timetable 更稳，也更符合本项目的设计。
+    document.getElementById("uploadTt").addEventListener("click", () => document.getElementById("ttFile").click());
+    document.getElementById("ttFile").addEventListener("change", async () => {
+      const f = document.getElementById("ttFile").files[0];
+      if (!f) return;
+      setStatus("⏳ 正在上传并让 AI 整理课表…（要读文件，稍等几秒）");
+      const form = new FormData();
+      form.append("file", f);
+      try {
+        const up = await (await fetch("/api/upload", { method: "POST", body: form })).json();
+        if (!up.ok) { setStatus("❌ 上传失败：" + (up.error || "")); return; }
+        const r = await fetch("/api/chat", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            message: `我刚才上传了一份课表文件《${up.file.name}》（共 ${up.file.chars} 字）。` +
+                     `请先用 read_uploaded_file 读取它的内容，把里面的课程整理成结构化数据，` +
+                     `再调用 import_timetable 写进我的周表。day 用 1=周一 到 7=周日，时间用 HH:MM。` +
+                     `如果文件里有"第几节"这类表述，请按其学校的常见上课时间换算成具体时刻。` +
+                     `写完之后用一句话告诉我导入了几门课。`,
+            module: "planner",
+            session_id: sessionId(),
+          }),
+        });
+        const d = await r.json();
+        setStatus(d.answer ? "AI：" + d.answer.slice(0, 80) : "已请求 AI 导入");
+        await loadAll();
+      } catch (e) {
+        setStatus("❌ 出错了：" + e.message);
+      }
+      document.getElementById("ttFile").value = "";
+    });
+
+    // ---------- 视图切换与翻页 ----------
+    const weekCard = document.getElementById("weekCard");
+    const monthCard = document.getElementById("monthCard");
+    const tabWeek = document.getElementById("tabWeek");
+    const tabMonth = document.getElementById("tabMonth");
+    function showWeek() {
+      tabWeek.classList.add("active"); tabMonth.classList.remove("active");
+      weekCard.style.display = "block"; monthCard.style.display = "none";
+    }
+    function showMonth() {
+      tabMonth.classList.add("active"); tabWeek.classList.remove("active");
+      monthCard.style.display = "block"; weekCard.style.display = "none";
+    }
+    tabWeek.addEventListener("click", showWeek);
+    tabMonth.addEventListener("click", showMonth);
+    document.getElementById("prevWeek").addEventListener("click", () => { weekOffset--; renderWeek(); });
+    document.getElementById("nextWeek").addEventListener("click", () => { weekOffset++; renderWeek(); });
+    document.getElementById("thisWeek").addEventListener("click", () => { weekOffset = 0; renderWeek(); });
+    document.getElementById("prevMonth").addEventListener("click", () => { monthOffset--; renderMonth(); });
+    document.getElementById("nextMonth").addEventListener("click", () => { monthOffset++; renderMonth(); });
+    document.getElementById("thisMonth").addEventListener("click", () => { monthOffset = 0; renderMonth(); });
+
+    loadAll();
+  </script>
+</body>
+</html>

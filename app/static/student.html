@@ -95,6 +95,7 @@
   <header>
     <h1>校园时间管家 · 学生端 <a href="/" style="font-size:13px;color:#fff;float:right;opacity:.9;text-decoration:none;">← 返回登录</a></h1>
     <p>一个入口办四件事：课表安排 · 校园问答 · 快递 · 外卖</p>
+    <a href="/plan" style="float:right;margin-top:-26px;color:#fff;font-size:13px;opacity:.95;text-decoration:none;background:rgba(255,255,255,.18);padding:4px 12px;border-radius:8px;">📅 我的日程 →</a>
   </header>
 
   <div class="wrap">
@@ -195,13 +196,21 @@
       return String(s).replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
     }
 
+    // 会话 id：和日程页共用同一个，后端靠它把几轮对话串起来，
+    // 这样 AI 才记得住上一轮跟我们商量好的时间安排
+    function sessionId() {
+      let sid = localStorage.getItem("campustime_session");
+      if (!sid) { sid = "s" + Math.random().toString(16).slice(2, 12); localStorage.setItem("campustime_session", sid); }
+      return sid;
+    }
+
     async function sendMsg(msg) {
       if (!msg.trim()) return;
       addMsg("我", msg);
       text.value = "";
       send.disabled = true;
       try {
-        const body = { message: msg };
+        const body = { message: msg, session_id: sessionId() };
         if (currentModule) body.module = currentModule; // 显式锁定模块
         const resp = await fetch("/api/chat", {
           method: "POST",
