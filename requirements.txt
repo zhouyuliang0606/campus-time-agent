@@ -6,3 +6,6 @@ uvicorn>=0.27
 httpx>=0.27
 # 读取 .env 文件：把密钥放在文件里，不写进代码
 python-dotenv>=1.0
+# 解析 PDF：支持用户上传 PDF 后提取文字给 AI 读
+# 不装也行，只是 PDF 上传会不可用，其余功能不受影响
+pypdf>=4.0
