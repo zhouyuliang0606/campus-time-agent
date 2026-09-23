@@ -56,14 +56,19 @@ def list_messages() -> list:
     return list(reversed(_read("student_messages.json", [])))
 
 
-def add_notice(title: str, content: str) -> dict:
-    """发一条通知（人话：管理员写一条通知，存进通知表）。"""
+def add_notice(title: str, content: str, attachment: dict | None = None) -> dict:
+    """发一条通知（人话：管理员写一条通知，存进通知表）。
+
+    :param attachment: 可选的附件信息，形如 {"id": "...", "name": "xxx.pdf"}
+                       （人话：通知可以挂个文件，比如放假安排表）
+    """
     ns = _read("notices.json", [])
     item = {
         "id": uuid.uuid4().hex[:8],
         "ts": _now(),
         "title": title,
         "content": content,
+        "attachment": attachment,  # 没有附件时就是 None，前端按字段判断即可
     }
     ns.append(item)
     _write("notices.json", ns)
@@ -174,20 +179,36 @@ MAX_UPLOAD_BYTES = 5 * 1024 * 1024  # 单个文件上限 5MB，防止演示机�
 
 
 def _upload_body_path(fid: str) -> str:
-    """某个上传文件正文的存放路径。"""
+    """提取出来的文字放在这里（AI 读的就是这份）。"""
     return os.path.join(UPLOAD_DIR, fid + ".txt")
 
 
-def save_upload(filename: str, content: str, size: int = 0) -> dict:
-    """保存一个上传文件（人话：把文件里的字提取出来，存好，让 AI 能读）。"""
+def save_upload(filename: str, content: str, raw: bytes | None = None) -> dict:
+    """保存一个上传文件（人话：既留原件供下载，也提取文字给 AI 读）。
+
+    为什么要存两份？
+    - 原件：通知的附件要能让学生下载回去（丢了就只剩摘要，体验不完整）
+    - 文字：AI 真正能"看懂"的形态
+
+    :param raw: 文件原始字节；不传就只有文字、没有原件可下载
+    """
     os.makedirs(UPLOAD_DIR, exist_ok=True)
     fid = uuid.uuid4().hex[:12]
+    # 1) 提取出的文字
     with open(_upload_body_path(fid), "w", encoding="utf-8") as f:
         f.write(content)
+    # 2) 原件（保留原始后缀，下载回去才打得开）
+    ext = os.path.splitext(filename or "")[1].lower()
+    if raw is not None:
+        with open(os.path.join(UPLOAD_DIR, fid + ext), "wb") as f:
+            f.write(raw)
+
     item = {
         "id": fid,
         "name": filename,
-        "size": size or len(content.encode("utf-8")),
+        "size": len(raw) if raw is not None else len(content.encode("utf-8")),
+        "ext": ext,
+        "has_raw": raw is not None,
         "ts": _now(),
         "chars": len(content),
         "preview": content[:200],  # 列表页给个预览，不用真的再读一遍文件
@@ -204,9 +225,26 @@ def list_uploads() -> list:
 
 
 def get_upload(fid: str) -> str | None:
-    """读某个上传文件的正文；找不到返回 None。"""
+    """读某个上传文件提取出的文字；找不到返回 None。"""
     try:
         with open(_upload_body_path(fid), encoding="utf-8") as f:
             return f.read()
     except FileNotFoundError:
         return None
+
+
+def get_upload_meta(fid: str) -> dict | None:
+    """查某个文件的元信息（名字/后缀等），下载原件时要靠它还原文件名。"""
+    for f in _read("uploads.json", {"files": []}).get("files", []):
+        if f.get("id") == fid:
+            return f
+    return None
+
+
+def get_upload_raw_path(fid: str) -> str | None:
+    """取原件在磁盘上的路径；没有原件（比如只有文字）或文件不存在时返回 None。"""
+    meta = get_upload_meta(fid)
+    if not meta or not meta.get("has_raw"):
+        return None
+    p = os.path.join(UPLOAD_DIR, fid + (meta.get("ext") or ""))
+    return p if os.path.exists(p) else None

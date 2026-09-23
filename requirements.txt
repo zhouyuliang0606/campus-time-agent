@@ -9,3 +9,5 @@ python-dotenv>=1.0
 # 解析 PDF：支持用户上传 PDF 后提取文字给 AI 读
 # 不装也行，只是 PDF 上传会不可用，其余功能不受影响
 pypdf>=4.0
+# 接收文件上传：FastAPI 处理 multipart/form-data 表单必需
+python-multipart>=0.0.9

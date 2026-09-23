@@ -7,19 +7,23 @@
 import os
 from typing import Any
 
-from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi import FastAPI, File, Request, UploadFile
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.agent.engine import AgentEngine
 from app.agent.router import Router
-from app.config import DEBUG, check_config
-from app.llm.client import LLMError
+from app.config import DEBUG, check_config, get_llm_config
+from app.llm.client import DeepSeekClient, LLMError
+from app.upload import UploadError, extract_text, ext_supported, supported_desc
 from app.modules.schedule import SYSTEM_PROMPT as SCHEDULE_PROMPT, build_tools as schedule_tools
 from app.store import (
     add_message, list_messages, add_notice, list_notices,
     list_kb, add_kb_entry, update_kb_entry, delete_kb_entry,
     get_persona, set_persona,
+    get_settings, set_settings,
+    MAX_UPLOAD_BYTES,
+    save_upload, list_uploads, get_upload, get_upload_meta, get_upload_raw_path,
 )
 from app.modules.faq import SYSTEM_PROMPT as FAQ_PROMPT, build_tools as faq_tools
 from app.modules.express import SYSTEM_PROMPT as EXPRESS_PROMPT, build_tools as express_tools
@@ -125,13 +129,26 @@ async def admin_messages():
 
 @app.post("/api/admin/notify")
 async def admin_notify(req: Request):
-    """管理员发布一条通知。"""
+    """管理员发布一条通知，可以挂一个附件（人话：比如把放假安排表一起发出去）。"""
     body = await req.json()
     title = (body.get("title") or "").strip()
     content = (body.get("content") or "").strip()
-    if not title and not content:
-        return JSONResponse({"error": "标题和内容不能都为空"}, status_code=400)
-    item = add_notice(title, content)
+
+    # 附件：前端会把 /api/upload 返回的 {id, name} 传过来。
+    # 这里要校验 id 真的存在，不能让管理员挂上一个查无此文件的"幽灵附件"。
+    attachment = None
+    raw_attach = body.get("attachment")
+    if raw_attach and raw_attach.get("id"):
+        meta = get_upload_meta(raw_attach["id"])
+        if not meta:
+            return JSONResponse({"error": "附件不存在或已被删除，请重新上传"}, status_code=400)
+        attachment = {"id": meta["id"], "name": meta["name"]}
+
+    # 允许"只有附件"的通知（比如直接甩一份表格），所以三种内容有一个就行
+    if not (title or content or attachment):
+        return JSONResponse({"error": "标题、内容、附件至少要填一个"}, status_code=400)
+
+    item = add_notice(title, content, attachment)
     return {"ok": True, "notice": item}
 
 
@@ -203,6 +220,135 @@ async def persona_set(req: Request):
     rules = (body.get("rules") or "").strip()
     item = set_persona(name, role, tone, rules)
     return {"ok": True, "persona": item}
+
+
+# ============ 文件上传（给 AI 助手读资料 / 给通知挂附件） ============
+
+@app.post("/api/upload")
+async def upload_file(file: UploadFile = File(...)):
+    """接收一个上传文件，提取成文字存档（人话：让用户把资料交给 AI 读）。
+
+    同时保留原件，这样通知的附件还能让学生下载回去。
+    """
+    data = await file.read()
+    # 三道校验：空文件、过大、不支持的格式，都要给出说得清楚的提示
+    if not data:
+        return JSONResponse({"error": "这个文件是空的"}, status_code=400)
+    if len(data) > MAX_UPLOAD_BYTES:
+        mb = MAX_UPLOAD_BYTES // 1024 // 1024
+        return JSONResponse({"error": f"文件太大了，单个上限 {mb}MB"}, status_code=413)
+    if not ext_supported(file.filename):
+        return JSONResponse(
+            {"error": f"暂不支持 {file.filename} 这种类型，目前支持：{supported_desc()}"},
+            status_code=415,
+        )
+
+    try:
+        text = extract_text(file.filename, data)
+    except UploadError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+
+    item = save_upload(file.filename, text, raw=data)
+    return {"ok": True, "file": item}
+
+
+@app.get("/api/uploads")
+async def uploads_list():
+    """列出上传到过的文件（倒序）。"""
+    return {"files": list_uploads()}
+
+
+@app.get("/api/uploads/{fid}")
+async def uploads_content(fid: str):
+    """查看某个文件提取出的文字（人话：AI 眼里的这份资料长什么样）。"""
+    content = get_upload(fid)
+    if content is None:
+        return JSONResponse({"error": "文件不存在"}, status_code=404)
+    meta = get_upload_meta(fid) or {}
+    return {"id": fid, "name": meta.get("name", ""), "content": content}
+
+
+@app.get("/api/uploads/{fid}/download")
+async def uploads_download(fid: str):
+    """下载文件原件（人话：通知附件要能原样下载回去）。"""
+    path = get_upload_raw_path(fid)
+    if not path:
+        return JSONResponse({"error": "文件不存在，或当时没有保留原件"}, status_code=404)
+    meta = get_upload_meta(fid) or {}
+    return FileResponse(path, filename=meta.get("name") or "file")
+
+
+# ============ 管理控制台：在线配置大模型 API ============
+
+def _mask(key: str) -> str:
+    """把密钥打码后再给前端（人话：只露前后几个字符，中间用星号盖住）。
+
+    密钥是敏感信息：网页可能会被人瞄到、也可能被浏览器插件抓走，
+    所以"够不够返回"这件事宁可保守——管理员不需要看到完整 Key 才能改 Key。
+    """
+    if not key:
+        return ""
+    if len(key) <= 10:
+        return key[0] + "*" * (len(key) - 1)
+    return f"{key[:6]}{'*' * 8}{key[-4:]}"
+
+
+@app.get("/api/admin/settings")
+async def settings_get():
+    """读取当前生效的 API 配置。注意：密钥是**打码后**返回的。"""
+    cfg = get_llm_config()
+    return {
+        "settings": {
+            "api_key": _mask(cfg["api_key"]),
+            "base_url": cfg["base_url"],
+            "model": cfg["model"],
+        },
+        "source": cfg["source"],        # 告诉管理员当前这套值是从哪来的
+        "configured": bool(cfg["api_key"]),
+    }
+
+
+@app.post("/api/admin/settings")
+async def settings_set(req: Request):
+    """保存 API 配置（人话：管理员在线改，改完对话立即用新的，不用重启）。"""
+    body = await req.json()
+    patch: dict[str, str] = {}
+
+    # 关键防呆：前端回传的密钥可能是打码串（含星号）。
+    # 这种情况说明管理员没改过这一项，千万别把星号存进去当真密钥用。
+    key = (body.get("api_key") or "").strip()
+    if key and "*" not in key:
+        patch["api_key"] = key
+    if "base_url" in body:
+        patch["base_url"] = (body.get("base_url") or "").strip()
+    if "model" in body:
+        patch["model"] = (body.get("model") or "").strip()
+
+    set_settings(patch)
+    cfg = get_llm_config()
+    return {
+        "ok": True,
+        "message": "已保存，下一次对话立即生效（不用重启服务）",
+        "source": cfg["source"],
+        "configured": bool(cfg["api_key"]),
+    }
+
+
+@app.post("/api/admin/settings/test")
+async def settings_test():
+    """拿当前配置真的去问大模型一句（人话：配完点一下就知道通不通）。"""
+    cfg = get_llm_config()
+    if not cfg["api_key"]:
+        return {"ok": False, "message": "还没配置密钥，请先填写 API Key"}
+
+    try:
+        # 问个极短的问题，目的只是验证鉴权和网络，
+        # 顺便把模型名回显出来，方便确认连的是不是自己想用的那个
+        client = DeepSeekClient()
+        await client.chat([{"role": "user", "content": "回复两个字：正常"}])
+    except LLMError as e:
+        return {"ok": False, "message": str(e)}
+    return {"ok": True, "message": f"连通正常 · 模型 {cfg['model']} · 配置来源：{cfg['source']}"}
 
 
 def _render(name: str) -> HTMLResponse:
