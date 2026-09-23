@@ -73,3 +73,65 @@ def add_notice(title: str, content: str) -> dict:
 def list_notices() -> list:
     """列出通知，倒序。"""
     return list(reversed(_read("notices.json", [])))
+
+
+# ============ 知识库管理（管理员零代码维护，faq 模块直接吃这份数据） ============
+
+def list_kb() -> list:
+    """列出知识库全部条目。"""
+    return _read("kb.json", {"entries": []}).get("entries", [])
+
+
+def add_kb_entry(question: str, answer: str, keywords: list) -> dict:
+    """新增一条知识库条目（人话：管理员在后台加一条问答）。"""
+    data = _read("kb.json", {"entries": []})
+    entries = data.setdefault("entries", [])
+    item = {"question": question, "answer": answer, "keywords": keywords or []}
+    entries.append(item)
+    _write("kb.json", data)
+    return item
+
+
+def update_kb_entry(index: int, question: str, answer: str, keywords: list) -> dict:
+    """按序号修改一条知识库条目（人话：管理员编辑一条问答）。"""
+    data = _read("kb.json", {"entries": []})
+    entries = data.setdefault("entries", [])
+    if index < 0 or index >= len(entries):
+        raise IndexError("知识库条目不存在")
+    entries[index] = {"question": question, "answer": answer, "keywords": keywords or []}
+    _write("kb.json", data)
+    return entries[index]
+
+
+def delete_kb_entry(index: int) -> bool:
+    """按序号删除一条知识库条目（人话：管理员删掉一条问答）。"""
+    data = _read("kb.json", {"entries": []})
+    entries = data.setdefault("entries", [])
+    if index < 0 or index >= len(entries):
+        return False
+    entries.pop(index)
+    _write("kb.json", data)
+    return True
+
+
+# ============ 客服人格配置（管理员配置，驿站/商户客服模块吃这份数据） ============
+
+# 默认人格：管理员没配过时先用这个
+DEFAULT_PERSONA = {
+    "name": "小园",
+    "role": "校园驿站客服助手",
+    "tone": "热情、耐心、亲切，像邻家学姐",
+    "rules": "回复简洁；涉及取件码/物流以台账为准，不编造；遇到不会的引导到驿站前台。",
+}
+
+
+def get_persona() -> dict:
+    """读取当前客服人格（人话：驿站客服用这个语气说话）。"""
+    return _read("persona.json", DEFAULT_PERSONA)
+
+
+def set_persona(name: str, role: str, tone: str, rules: str) -> dict:
+    """保存客服人格（人话：管理员改了客服的人设，下次对话立即生效）。"""
+    p = {"name": name, "role": role, "tone": tone, "rules": rules}
+    _write("persona.json", p)
+    return p
