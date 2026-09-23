@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>校园时间管家 · 驿站/商户端</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; font-family: "PingFang SC", "Microsoft YaHei", sans-serif;
+      background: #f4f6fb; color: #1f2733;
+    }
+    header {
+      background: linear-gradient(135deg, #17b8a6, #2f9e6f);
+      color: #fff; padding: 18px 24px;
+    }
+    header h1 { margin: 0; font-size: 20px; }
+    header p { margin: 4px 0 0; opacity: .9; font-size: 13px; }
+    .wrap { max-width: 900px; margin: 18px auto; padding: 0 16px; }
+
+    /* 客服人格卡片：显示管理后台配的人设，让人一眼看到"人格是活的" */
+    .persona {
+      background: #fff; border-radius: 12px; padding: 14px 16px;
+      border-left: 5px solid #17b8a6; box-shadow: 0 4px 16px rgba(40,60,120,.08);
+      display: flex; justify-content: space-between; align-items: flex-start; gap: 12px;
+    }
+    .persona .left { flex: 1; }
+    .persona .nm { font-size: 15px; font-weight: 600; }
+    .persona .rl { font-size: 13px; color: #6a7388; margin: 2px 0 6px; }
+    .persona .tm { font-size: 12px; color: #4a5366; }
+    .persona .tm div { margin: 3px 0; }
+    .persona .tm b { color: #17b8a6; }
+    .refresh {
+      border: 1px solid #17b8a6; background: #fff; color: #17b8a6;
+      border-radius: 8px; padding: 6px 12px; font-size: 12px; cursor: pointer; white-space: nowrap;
+    }
+    .refresh:hover { background: #e8f8f6; }
+    .persona a { font-size: 12px; color: #6a7388; display: inline-block; margin-top: 6px; }
+
+    .hint { font-size: 13px; color: #6a7388; margin: 14px 2px 6px; }
+    .chips { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
+    .chip {
+      background: #fff; border: 1px solid #d8def0; border-radius: 16px;
+      padding: 6px 12px; font-size: 13px; cursor: pointer; color: #17b8a6;
+    }
+    .chip:hover { background: #e8f8f6; }
+    .chip.warn { color: #e08c2a; border-color: #f3d9b0; }
+    .chip.warn:hover { background: #fff7ec; }
+
+    #log {
+      background: #fff; border-radius: 12px; padding: 16px;
+      min-height: 300px; max-height: 440px; overflow-y: auto;
+      box-shadow: 0 4px 16px rgba(40,60,120,.08);
+    }
+    .msg { margin: 10px 0; }
+    .msg .who { font-size: 12px; color: #8a93a6; margin-bottom: 3px; }
+    .msg .bubble {
+      display: inline-block; padding: 10px 14px; border-radius: 12px;
+      line-height: 1.55; white-space: pre-wrap; max-width: 92%;
+    }
+    .user .bubble { background: #17b8a6; color: #fff; border-bottom-right-radius: 2px; }
+    .bot .bubble { background: #f0f3fa; color: #1f2733; border-bottom-left-radius: 2px; }
+    .sys .bubble { background: #fff7e6; color: #8a6d3b; border: 1px dashed #ffd591; font-size: 13px; }
+    .trace {
+      margin-top: 6px; font-size: 12px; color: #6a7388;
+      background: #fafbff; border: 1px dashed #d8def0; border-radius: 8px;
+      padding: 8px 10px; white-space: pre-wrap;
+    }
+    .tag { display:inline-block; font-size:11px; background:#e8f8f6; color:#17b8a6; border-radius:6px; padding:1px 6px; margin-left:6px;}
+    .inputbar { display: flex; gap: 10px; margin-top: 14px; }
+    .inputbar input {
+      flex: 1; padding: 12px 14px; border: 1px solid #d8def0; border-radius: 10px;
+      font-size: 14px; outline: none;
+    }
+    .inputbar button {
+      padding: 0 22px; border: none; border-radius: 10px; cursor: pointer;
+      background: #17b8a6; color: #fff; font-size: 14px;
+    }
+    .inputbar button:disabled { opacity: .6; cursor: not-allowed; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>校园时间管家 · 驿站/商户端 <a href="/" style="font-size:13px;color:#fff;float:right;opacity:.9;text-decoration:none;">← 返回登录</a></h1>
+    <p>用自定义人格回复咨询 · 主动推送取件提醒与滞留预警</p>
+  </header>
+
+  <div class="wrap">
+    <!-- 人格展示区：数据来自管理后台的客服人格配置，改完点刷新立即生效 -->
+    <div class="persona">
+      <div class="left" id="personaBox">
+        <div class="nm">加载中…</div>
+      </div>
+      <div>
+        <button class="refresh" id="refreshPersona">刷新人格</button>
+      </div>
+    </div>
+
+    <div class="hint">点下面的快捷操作让客服干活，或直接提问（回复都用上面这个人格的语气）。</div>
+    <div class="chips" id="chips"></div>
+
+    <div id="log">
+      <div class="msg bot">
+        <div class="who">客服</div>
+        <div class="bubble">你好，我是这里的 AI 客服 👋 我可以查台账帮你答复同学，也能主动给还没取件的同学发提醒。</div>
+      </div>
+    </div>
+
+    <div class="inputbar">
+      <input id="text" placeholder="问点什么，或让我写提醒文案…" />
+      <button id="send">发送</button>
+    </div>
+  </div>
+
+  <script>
+    // 快捷操作：前两个是"主动推送"，后面是常见咨询
+    // 提示词都故意写成让 Agent 去调工具，这样页面上能看到它真的读了台账
+    const CHIPS = [
+      { t: "📦 列出还没取走的快递", q: "现在有哪些快递还没取走？按待取和滞留分开说明", cls: "" },
+      { t: "🔔 写一条取件提醒", q: "用你的人设语气，给还没取件的同学写一条取件提醒，附上每个人的取件码", cls: "" },
+      { t: "⚠️ 滞留件预警", q: "有哪些快递滞留超过 3 天了？用你的人设语气写一条滞留预警提醒", cls: "warn" },
+      { t: "🔍 查取件码 B-5678", q: "帮我查一下取件码 B-5678 是什么东西", cls: "" },
+      { t: "🎭 自我介绍一下", q: "用你自己的人设语气自我介绍一下，说说你是谁、说话什么风格", cls: "" },
+    ];
+
+    const log = document.getElementById("log");
+    const text = document.getElementById("text");
+    const send = document.getElementById("send");
+
+    function escapeHtml(s) {
+      return String(s).replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+    }
+
+    // ---------- 渲染快捷操作按钮 ----------
+    const chipsBox = document.getElementById("chips");
+    CHIPS.forEach(c => {
+      const el = document.createElement("div");
+      el.className = "chip " + c.cls;
+      el.textContent = c.t;
+      el.addEventListener("click", () => sendMsg(c.q));
+      chipsBox.appendChild(el);
+    });
+
+    // ---------- 加载并展示当前客服人格 ----------
+    // 数据来源：管理后台「客服人格配置」，存 persona.json
+    // 每次对话后端都会重新读一次人格，所以管理员改完不用重启服务
+    async function loadPersona() {
+      try {
+        const data = await (await fetch("/api/persona")).json();
+        const p = data.persona;
+        document.getElementById("personaBox").innerHTML = `
+          <div class="nm">🎭 当前客服人格：${escapeHtml(p.name || "未命名")}<span class="tag">驿站/商户端</span></div>
+          <div class="rl">${escapeHtml(p.role || "（未设置角色定位）")}</div>
+          <div class="tm">
+            <div><b>语气：</b>${escapeHtml(p.tone || "（未设置）")}</div>
+            <div><b>准则：</b>${escapeHtml(p.rules || "（未设置）")}</div>
+            <a href="/admin">← 去管理控制台改人设</a>
+          </div>`;
+      } catch (e) {
+        document.getElementById("personaBox").innerHTML = '<div class="nm">人格加载失败</div>';
+      }
+    }
+    document.getElementById("refreshPersona").addEventListener("click", () => {
+      loadPersona();
+      // 在系统消息里留一条痕迹，演示时能看出"刚刷新过"
+      addMsg("系统", "已重新读取客服人格配置（管理员刚改的人设立即生效，无需重启）", "sys");
+    });
+
+    // ---------- 对话 ----------
+    function addMsg(who, content, kind, trace, module) {
+      const el = document.createElement("div");
+      el.className = "msg " + (kind === "sys" ? "sys" : (who === "我" ? "user" : "bot"));
+      let html = `<div class="who">${who}${module ? `<span class="tag">${module}</span>` : ""}</div>`;
+      html += `<div class="bubble">${escapeHtml(content)}</div>`;
+      if (trace && trace.length) {
+        // 把 Agent 的思考轨迹铺开：能看到它调用了什么工具、拿到什么结果
+        const lines = trace.map(t => {
+          if (t.action) return `${t.phase || ""} ${t.action}(${JSON.stringify(t.args || {})})`;
+          if (t.answer) return `${t.phase || ""} ${t.answer}`;
+          return t.phase || "";
+        }).join("\n");
+        html += `<div class="trace">🧠 Agent 思考轨迹：\n${escapeHtml(lines)}</div>`;
+      }
+      el.innerHTML = html;
+      log.appendChild(el);
+      log.scrollTop = log.scrollHeight;
+    }
+
+    async function sendMsg(msg) {
+      if (!msg.trim()) return;
+      addMsg("我", msg);
+      text.value = "";
+      send.disabled = true;
+      try {
+        // 关键：显式带 module:"station"，后端就会用"客服人格 + 快递台账"这套配置来回答
+        const resp = await fetch("/api/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ message: msg, module: "station" }),
+        });
+        const data = await resp.json();
+        if (data.error) addMsg("客服", "出错了：" + data.error);
+        else addMsg("客服", data.answer, "bot", data.trace, data.module);
+      } catch (e) {
+        addMsg("客服", "网络或接口异常：" + e.message);
+      } finally {
+        send.disabled = false;
+      }
+    }
+
+    send.addEventListener("click", () => sendMsg(text.value));
+    text.addEventListener("keydown", e => { if (e.key === "Enter") sendMsg(text.value); });
+
+    // 进页面先读一次人格
+    loadPersona();
+  </script>
+</body>
+</html>
