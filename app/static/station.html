@@ -77,6 +77,12 @@
       background: #17b8a6; color: #fff; font-size: 14px;
     }
     .inputbar button:disabled { opacity: .6; cursor: not-allowed; }
+    /* 回形针：上传资料（比如一批待取清单）给客服读 */
+    .attach {
+      padding: 0 14px; border: 1px solid #d8def0; background: #fff; color: #17b8a6;
+      border-radius: 10px; cursor: pointer; font-size: 18px; line-height: 1;
+    }
+    .attach:hover { background: #e8f8f6; }
   </style>
 </head>
 <body>
@@ -107,6 +113,8 @@
     </div>
 
     <div class="inputbar">
+      <input type="file" id="file" style="display:none;" />
+      <button class="attach" id="attach" title="上传资料给客服读">📎</button>
       <input id="text" placeholder="问点什么，或让我写提醒文案…" />
       <button id="send">发送</button>
     </div>
@@ -206,6 +214,39 @@
       } finally {
         send.disabled = false;
       }
+    }
+
+    // ---------- 上传资料给客服读（比如一批待取清单） ----------
+    const fileInput = document.getElementById("file");
+    document.getElementById("attach").addEventListener("click", () => fileInput.click());
+    fileInput.addEventListener("change", handleFile);
+
+    async function handleFile() {
+      const f = fileInput.files && fileInput.files[0];
+      if (!f) return;
+      addMsg("我", `📎 上传了资料：${f.name}`, "user");
+      const form = new FormData();
+      form.append("file", f);
+      try {
+        const r = await fetch("/api/upload", { method: "POST", body: form });
+        const d = await r.json();
+        if (d.ok) {
+          addMsg("系统", `《${f.name}》已就位（${d.file.chars} 字）。可以让客服照着它干活了 —— 会以当前人格语气作答。`, "sys");
+          chipsBox.innerHTML = "";
+          ["照这份清单写一版取件提醒", "这里面有几件已经滞留了？", "帮我总结这份资料"].forEach(q => {
+            const c = document.createElement("div");
+            c.className = "chip";
+            c.textContent = q;
+            c.addEventListener("click", () => sendMsg(q));
+            chipsBox.appendChild(c);
+          });
+        } else {
+          addMsg("系统", "上传失败：" + (d.error || "未知原因"), "sys");
+        }
+      } catch (e) {
+        addMsg("系统", "上传异常：" + e.message, "sys");
+      }
+      fileInput.value = "";
     }
 
     send.addEventListener("click", () => sendMsg(text.value));
