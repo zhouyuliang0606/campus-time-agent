@@ -73,7 +73,7 @@
 </head>
 <body>
   <header>
-    <h1>校园时间管家 · 学生端</h1>
+    <h1>校园时间管家 · 学生端 <a href="/" style="font-size:13px;color:#fff;float:right;opacity:.9;text-decoration:none;">← 返回登录</a></h1>
     <p>一个入口办四件事：课表安排 · 校园问答 · 快递 · 外卖</p>
   </header>
 
@@ -178,12 +178,24 @@
         });
         const data = await resp.json();
         if (data.error) addMsg("管家", "出错了：" + data.error);
-        else addMsg("管家", data.answer, "bot", data.trace, data.module);
+        else {
+          addMsg("管家", data.answer, "bot", data.trace, data.module);
+          logToAdmin(msg, data.module, data.answer); // 上报给管理员收件箱
+        }
       } catch (e) {
         addMsg("管家", "网络或接口异常：" + e.message);
       } finally {
         send.disabled = false;
       }
+    }
+
+    // 把学生这轮对话上报给管理员收件箱（异步、失败也不影响学生使用）
+    function logToAdmin(message, module, answer) {
+      fetch("/api/student-message", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message, module, answer }),
+      }).catch(() => {});
     }
 
     send.addEventListener("click", () => sendMsg(text.value));
