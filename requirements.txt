@@ -1,0 +1,8 @@
+# 后端 Web 框架：负责把 Python 函数变成网页能调用的接口
+fastapi>=0.110
+# 启动服务的工具：让你能用 uvicorn 把网站跑起来
+uvicorn>=0.27
+# 异步发 HTTP 请求：用来调用 DeepSeek 大模型接口
+httpx>=0.27
+# 读取 .env 文件：把密钥放在文件里，不写进代码
+python-dotenv>=1.0
