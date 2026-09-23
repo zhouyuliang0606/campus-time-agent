@@ -19,7 +19,7 @@
 | `EXPLAIN.md` | 本文件：每个关键文件的「人话作用」 |
 | `app/__init__.py`<br>`app/agent/__init__.py`<br>`app/llm/__init__.py`<br>`app/modules/__init__.py` | 文件夹标记：告诉 Python 这些是可以被导入的代码包 |
 | `app/config.py` | 读配置：从 .env 拿密钥和开关，全项目统一取用 |
-| `app/llm/client.py` | 大模型电话：把我们的话发给 DeepSeek，把回答拿回来 |
+| `app/llm/client.py` | 大模型电话：把我们的话发给 DeepSeek，把回答拿回来。**并且负责把失败说成人话**——没配 Key / Key 无效（401）/ 限流（429）/ 网络不通，会统一抛出 `LLMError`，上层再转成友好提示，绝不给前端一个裸 500 |
 | `app/agent/engine.py` | Agent 大脑：ReAct 循环（想→做→看结果→再想） |
 | `app/agent/router.py` | 调度员：判断用户的话归哪个模块管（课表/问答/快递/外卖/驿站） |
 | `app/agent/tools.py` | 工具箱底座：规范每个"工具"怎么描述、怎么被调用 |
