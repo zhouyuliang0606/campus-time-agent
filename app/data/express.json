@@ -1,0 +1,9 @@
+{
+  "student": "示例同学（演示数据）",
+  "packages": [
+    { "id": "P1", "item": "《算法导论》图书",   "station": "菜鸟驿站-北区", "pickup_code": "A-1234", "arrived_at": "2026-09-22", "status": "待取" },
+    { "id": "P2", "item": "运动鞋一双",         "station": "菜鸟驿站-北区", "pickup_code": "B-5678", "arrived_at": "2026-09-18", "status": "待取" },
+    { "id": "P3", "item": "妈妈寄的护肤品",     "station": "妈妈寄顺丰",     "pickup_code": "C-9012", "arrived_at": "2026-09-23", "status": "待取" },
+    { "id": "P4", "item": "二手旧教材",         "station": "菜鸟驿站-北区", "pickup_code": "A-7788", "arrived_at": "2026-09-10", "status": "已取" }
+  ]
+}
