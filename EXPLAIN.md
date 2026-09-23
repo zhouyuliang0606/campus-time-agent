@@ -32,10 +32,13 @@
 | `app/modules/station.py` | 驿站助手：主动提醒取件 + 自定义人格回复 |
 | `app/modules/admin.py` | 管理台：知识库增删改 + 客服人格配置 |
 | `app/modules/lostfound.py` / `repair.py` / `notice.py` | 拓展模块：失物招领/报修/通知 |
-| `app/main.py` | 总入口：FastAPI 把上面所有能力接到网页接口上 |
+| `app/main.py` | 总入口：FastAPI 接网页接口；/登录、/student、/admin 路由 + 学生消息/通知管理接口 |
 | `app/data/courses.json` | 示例课表：旗舰模块用来演示的真实数据 |
 | `app/data/kb.json` | 校园知识库：问答模块的答案来源 |
-| `app/static/*.html` | 三个前端页面：学生端 / 驿站端 / 管理台 |
+| `app/static/login.html` | 登录页：选"我是学生 / 我是管理员"进入对应端 |
+| `app/static/student.html` | 学生端主页：四模块卡片导航，对话自动上报管理员收件箱 |
+| `app/static/admin.html` | 管理员端：发布通知 + 学生消息收件箱（轮询） |
+| `app/store.py` | 文件存储：student_messages.json / notices.json 两张表（演示用，可换数据库） |
 | `ai-logs/*.md` | 开发日记：每做一个模块，把我们的对话整理成一篇 |
 
 ## 三、它是怎么转起来的（粗流程图）
