@@ -8,7 +8,7 @@ from typing import Any
 
 import httpx
 
-from app.config import DEBUG, DEEPSEEK_API_KEY, DEEPSEEK_BASE_URL, DEEPSEEK_MODEL
+from app.config import DEBUG, get_llm_config
 
 
 class LLMError(Exception):
@@ -24,9 +24,14 @@ class DeepSeekClient:
     """对 DeepSeek 聊天接口的薄封装（人话：把"发请求/收回答"这件重复事包成一个简单函数）。"""
 
     def __init__(self) -> None:
-        self.api_key = DEEPSEEK_API_KEY
-        self.base_url = DEEPSEEK_BASE_URL.rstrip("/")  # 去掉结尾斜杠，避免拼 URL 出错
-        self.model = DEEPSEEK_MODEL
+        # 刻意不在构造时把配置"定死"：管理员在后台改完配置希望能立刻生效，
+        # 不能等到下一次重启。所以每次真正要发请求时才去问 config 要最新配置。
+        pass
+
+    def _config(self) -> tuple[str, str, str]:
+        """取本次调用要用配置（人话：现用现取，保证后台改完即时生效）。"""
+        cfg = get_llm_config()
+        return cfg["api_key"], cfg["base_url"].rstrip("/"), cfg["model"]
 
     async def chat(
         self,
@@ -41,9 +46,12 @@ class DeepSeekClient:
         :param tool_choice: "auto" 表示模型自己决定要不要调用工具
         :return: 模型返回的消息字典，可能含 content（文字）或 tool_calls（要调工具）
         """
+        # 本次调用要用配置：现用现取，管理员在后台改完立刻生效
+        api_key, base_url, model = self._config()
+
         # 组装请求体。temperature 越低，回答越稳重、越不容易胡说
         payload: dict[str, Any] = {
-            "model": self.model,
+            "model": model,
             "messages": messages,
             "temperature": 0.3,
         }
@@ -53,14 +61,15 @@ class DeepSeekClient:
             payload["tool_choice"] = tool_choice
 
         # 发请求前先自查：没配 Key 就别去打扰接口了，直接给个能照着做的提示
-        if not self.api_key:
+        if not api_key:
             raise LLMError(
-                "还没配置大模型密钥：请把项目根目录的 .env.example 复制成 .env，"
-                "在里面填入 DEEPSEEK_API_KEY，然后重启服务。"
+                "还没配置大模型密钥。两种办法任选其一："
+                "① 在项目根目录复制 .env.example 为 .env，填入 DEEPSEEK_API_KEY 后重启；"
+                "② 进管理控制台的「API 配置」卡片在线填写（不用重启）。"
             )
 
         headers = {
-            "Authorization": f"Bearer {self.api_key}",
+            "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
         }
 
@@ -68,7 +77,7 @@ class DeepSeekClient:
         try:
             async with httpx.AsyncClient(timeout=60.0) as client:
                 resp = await client.post(
-                    f"{self.base_url}/chat/completions",
+                    f"{base_url}/chat/completions",
                     json=payload,
                     headers=headers,
                 )
@@ -78,12 +87,12 @@ class DeepSeekClient:
         except httpx.HTTPStatusError as e:
             code = e.response.status_code
             if code in (401, 403):
-                raise LLMError(f"大模型拒绝了请求（HTTP {code}）：API Key 无效或已过期，请检查 .env 里的 DEEPSEEK_API_KEY。") from e
+                raise LLMError(f"大模型拒绝了请求（HTTP {code}）：API Key 无效或已过期，请到管理控制台「API 配置」重新填写。") from e
             if code == 429:
                 raise LLMError(f"大模型限流了（HTTP 429）：请求太密或额度用尽，稍等一会儿再试。") from e
             raise LLMError(f"大模型接口出错（HTTP {code}）：{e}") from e
         except httpx.RequestError as e:
-            raise LLMError(f"连不上大模型服务，请检查网络或代理：{e}") from e
+            raise LLMError(f"连不上大模型服务（{base_url}），请检查网络、代理或接口地址是否写对：{e}") from e
 
         # DeepSeek 返回结构里，回答在 choices[0].message
         message = data["choices"][0]["message"]

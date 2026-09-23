@@ -20,8 +20,37 @@ DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
 DEBUG = os.getenv("DEBUG", "false").lower() in ("true", "1", "yes")
 
 
+def get_llm_config() -> dict:
+    """获取当前真正生效的大模型配置（人话：管理后台配了就听它的，没配就用 .env 的）。
+
+    优先级：管理控制台的 settings.json  >  .env 环境变量
+
+    为什么做成一个函数而不是几个常量？
+    因为管理员在后台改完配置希望立刻生效。每次调用重新读一次文件，
+    开销可以忽略，但换来了"改完不用重启服务"这个很值钱的体验。
+    """
+    # 放在函数内导入：避免 config 这个底层模块在启动时就依赖 store
+    from app.store import get_settings
+
+    s = get_settings()
+    key = s.get("api_key") or DEEPSEEK_API_KEY
+    # base_url / model 允许只覆盖其中一个，另一个回落到默认值
+    base = s.get("base_url") or DEEPSEEK_BASE_URL
+    model = s.get("model") or DEEPSEEK_MODEL
+
+    if s.get("api_key"):
+        source = "管理后台配置"
+    elif DEEPSEEK_API_KEY:
+        source = ".env 环境变量"
+    else:
+        source = "未配置"
+    return {"api_key": key, "base_url": base, "model": model, "source": source}
+
+
 def check_config() -> None:
     """启动时检查密钥是否配置（人话：没填 Key 就友好提醒，别让程序莫名其妙崩）。"""
-    if not DEEPSEEK_API_KEY:
-        print("[配置提醒] 还没配置 DEEPSEEK_API_KEY，请复制 .env.example 为 .env 并填入你的 Key。")
-        print("[配置提醒] 没有 Key 时，接口会返回友好错误，但不会崩溃。")
+    if not get_llm_config()["api_key"]:
+        print("[配置提醒] 还没配置大模型密钥。两种配法任选其一：")
+        print("          1) 复制 .env.example 为 .env，在里面填 DEEPSEEK_API_KEY")
+        print("          2) 启动后进管理控制台的「API 配置」卡片在线填（不用重启）")
+        print("[配置提醒] 没有 Key 时，接口会返回友好提示，不会崩溃。")

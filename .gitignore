@@ -21,5 +21,14 @@ app/data/notices.json
 # 默认值写在 app/store.py 的 DEFAULT_PERSONA 里，删掉该文件就自动回到默认值。
 app/data/persona.json
 
+# ===== 敏感：管理台在线填的大模型密钥 =====
+# settings.json 里可能有真实 API Key，一旦入库就是事故，务必排除。
+# 密钥应该走 .env（本地）或 secrets manager（生产），这里只是演示的便利通道。
+app/data/settings.json
+
+# ===== 用户上传的文件（可能含私人资料，也不该进 git） =====
+app/data/uploads.json
+app/data/uploads/
+
 # 注意：app/data/kb.json 是"入库的种子知识库"，有意保留版本管理，
 # 管理员在后台改条目后会出现 diff —— 这是知识内容本身，值得被记录。
