@@ -26,6 +26,8 @@
     }
     .role:hover { transform: translateY(-2px); box-shadow: 0 8px 20px rgba(0,0,0,.18); }
     .role .sub { display: block; font-size: 12px; font-weight: 400; color: #6a7388; margin-top: 4px; }
+    /* 驿站在三个身份里用青绿色区分，和驿站端页面主题色保持一致 */
+    .role.station { color: #17b8a6; }
     .foot { margin-top: 22px; font-size: 12px; opacity: .8; }
   </style>
 </head>
@@ -41,7 +43,12 @@
 
     <button class="role" onclick="location.href='/admin'">
       🛠️ 我是管理员
-      <span class="sub">发布通知 · 接收学生消息</span>
+      <span class="sub">发布通知 · 接收学生消息 · 知识库 · 客服人格</span>
+    </button>
+
+    <button class="role station" onclick="location.href='/station'">
+      🏪 我是驿站 / 商户
+      <span class="sub">AI 客服答咨询 · 主动推送取件提醒与滞留预警</span>
     </button>
 
     <div class="foot">演示用：选择身份即可进入，无需密码</div>
