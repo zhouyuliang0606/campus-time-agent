@@ -13,7 +13,8 @@ from fastapi.staticfiles import StaticFiles
 
 from app.agent.engine import AgentEngine
 from app.agent.router import Router
-from app.config import check_config
+from app.config import DEBUG, check_config
+from app.llm.client import LLMError
 from app.modules.schedule import SYSTEM_PROMPT as SCHEDULE_PROMPT, build_tools as schedule_tools
 from app.store import (
     add_message, list_messages, add_notice, list_notices,
@@ -76,7 +77,28 @@ async def chat(req: Request):
     prompt = prompt_src() if callable(prompt_src) else prompt_src
     # 3) 组装引擎并跑 ReAct 循环（会按需调用工具）
     engine = AgentEngine(system_prompt=prompt, tools=build_tools())
-    result = await engine.run(message)
+
+    # 大模型可能因为"没配 Key / Key 无效 / 网络不通"失败。
+    # 与其让前端收到一个看不懂的 500，不如把原因说成人话，直接显示在对话里。
+    try:
+        result = await engine.run(message)
+    except LLMError as e:
+        # 已知原因：密钥或网络问题，提示用户怎么补救
+        return {
+            "module": module_key,
+            "answer": f"⚠️ {e}",
+            "trace": [{"step": 1, "phase": "❌ 调用大模型失败", "answer": str(e)}],
+        }
+    except Exception as e:  # 兜底：任何意外都不该让演示现场崩掉
+        if DEBUG:
+            import traceback
+            traceback.print_exc()  # 开了 DEBUG 就打印完整堆栈，方便排查
+        return {
+            "module": module_key,
+            "answer": f"⚠️ 助手处理时出了点问题：{type(e).__name__}：{e}",
+            "trace": [{"step": 1, "phase": "❌ 内部错误", "answer": f"{type(e).__name__}: {e}"}],
+        }
+
     # 4) 返回最终回答 + 思考轨迹（前端可展示 Agent 怎么一步步想的）
     return {
         "module": module_key,
