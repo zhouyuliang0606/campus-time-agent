@@ -22,6 +22,12 @@
 | `app/agent/router.py` | 调度员：判断用户的话归哪个模块管（课表/问答/驿站…） |
 | `app/agent/tools.py` | 工具箱底座：规范每个"工具"怎么描述、怎么被调用 |
 | `app/modules/schedule.py` | 旗舰模块：课表时间规划（查课表/找空闲/排任务） |
+| `app/modules/faq.py` | 学生端·校园问答：search_kb 在知识库检索，收口分散校园信息 |
+| `app/modules/express.py` | 学生端·快递查询：查我的快递/取件码/自动算"滞留"预警 |
+| `app/modules/takeout.py` | 学生端·外卖查询：查外卖订单/取餐点/待取提醒 |
+| `app/data/kb.json` | 校园知识库：图书馆/食堂/校车/校医院/宿舍/奖学金等问答来源 |
+| `app/data/express.json` | 演示快递台账（含一件"滞留"件用于预警演示） |
+| `app/data/takeout.json` | 演示外卖订单（制作中/配送中/待取） |
 | `app/modules/faq.py` | 校园问答：从知识库找答案再组织语言回答 |
 | `app/modules/station.py` | 驿站助手：主动提醒取件 + 自定义人格回复 |
 | `app/modules/admin.py` | 管理台：知识库增删改 + 客服人格配置 |
