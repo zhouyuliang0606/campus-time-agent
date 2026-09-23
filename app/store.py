@@ -248,3 +248,160 @@ def get_upload_raw_path(fid: str) -> str | None:
         return None
     p = os.path.join(UPLOAD_DIR, fid + (meta.get("ext") or ""))
     return p if os.path.exists(p) else None
+
+
+# ============ 学生个人库：周表（课程）+ 待办 + 会话历史 ============
+# 单独一个 student/ 目录，是因为这属于"某个学生的个人数据"，
+# 跟上面的公共知识库、站点台账性质不同，以后做多用户时天然按用户隔离。
+
+STUDENT_DIR = os.path.join(DATA_DIR, "student")
+
+# 会话历史最多保留多少条消息（一问一答算两条）。
+# 留太少会记不住刚才商量好的安排，留太多又白烧 token，20 条够用。
+MAX_HISTORY = 20
+
+
+def _spath(name: str) -> str:
+    """学生个人库里某个文件的路径。"""
+    return os.path.join(STUDENT_DIR, name)
+
+
+def _sread(name: str, default):
+    """读学生个人库里的一个 JSON 文件。"""
+    try:
+        with open(_spath(name), encoding="utf-8") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return default
+
+
+def _swrite(name: str, data) -> None:
+    """写学生个人库里的一个 JSON 文件。"""
+    os.makedirs(STUDENT_DIR, exist_ok=True)
+    with open(_spath(name), "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+
+# ---- 周表：学生每周固定的课程 ----
+
+def get_timetable() -> list:
+    """读周表全部课程（人话：这周哪天第几节课上什么）。
+
+    每条形如 {"day": 1, "start": "08:00", "end": "09:40",
+              "course": "高等数学", "location": "教三301"}
+    day 用 1=周一 … 7=周日。
+    """
+    return _sread("timetable.json", {"courses": []}).get("courses", [])
+
+
+def save_timetable(courses: list) -> dict:
+    """整体覆盖保存周表（人话：学生在聊天里传课表后，AI 整理好存进来）。"""
+    data = {"updated_at": _now(), "courses": courses}
+    _swrite("timetable.json", data)
+    return data
+
+
+# ---- 待办：被安排进具体日期和时间段的任务 ----
+
+def add_todo(title: str, date: str, start: str, end: str,
+             note: str = "", category: str = "") -> dict:
+    """新增一条待办（人话：把商量好的安排写进日程）。
+
+    :param date: 日期，形如 "2026-09-25"
+    :param start / end: 起止时间，形如 "14:00" / "15:30"
+    """
+    data = _sread("todos.json", {"todos": []})
+    item = {
+        "id": uuid.uuid4().hex[:8],
+        "title": title,
+        "date": date,
+        "start": start,
+        "end": end,
+        "note": note,
+        "category": category,
+        "status": "planned",       # planned（待办） / done（已完成）
+        "created_at": _now(),
+    }
+    data.setdefault("todos", []).append(item)
+    _swrite("todos.json", data)
+    return item
+
+
+def list_todos(date: str | None = None) -> list:
+    """列出待办；给了 date 就只看那一天，自动按开始时间排序。"""
+    todos = _sread("todos.json", {"todos": []}).get("todos", [])
+    if date:
+        todos = [t for t in todos if t.get("date") == date]
+    return sorted(todos, key=lambda t: (t.get("date", ""), t.get("start", "")))
+
+
+def list_todos_in_month(prefix: str) -> dict:
+    """按日期聚合某个月的待办（人话：给月视图算每天的待办数量）。
+
+    :param prefix: 形如 "2026-09"，按日期字符串前缀匹配
+    :return: {"2026-09-24": [待办1, 待办2], ...}
+    """
+    grouped: dict[str, list] = {}
+    for t in list_todos():
+        d = t.get("date", "")
+        if d.startswith(prefix):
+            grouped.setdefault(d, []).append(t)
+    return grouped
+
+
+def get_todo(tid: str) -> dict | None:
+    """按 id 查一条待办。"""
+    for t in _sread("todos.json", {"todos": []}).get("todos", []):
+        if t.get("id") == tid:
+            return t
+    return None
+
+
+def update_todo(tid: str, patch: dict) -> dict | None:
+    """改动一条待办的部分字段（比如把状态改成 done）。"""
+    data = _sread("todos.json", {"todos": []})
+    for i, t in enumerate(data.get("todos", [])):
+        if t.get("id") == tid:
+            t.update(patch)
+            data["todos"][i] = t
+            _swrite("todos.json", data)
+            return t
+    return None
+
+
+def delete_todo(tid: str) -> bool:
+    """删一条待办。"""
+    data = _sread("todos.json", {"todos": []})
+    todos = data.get("todos", [])
+    keep = [t for t in todos if t.get("id") != tid]
+    if len(keep) == len(todos):
+        return False
+    data["todos"] = keep
+    _swrite("todos.json", data)
+    return True
+
+
+# ---- 会话历史：让 Agent 记得住上一轮商量到哪了 ----
+
+def get_conversation(sid: str) -> list:
+    """读某个会话的历史消息（只返回最近 MAX_HISTORY 条）。"""
+    data = _sread("sessions.json", {"sessions": {}})
+    msgs = data.get("sessions", {}).get(sid, [])
+    return msgs[-MAX_HISTORY:]
+
+
+def append_conversation(sid: str, role: str, content: str) -> None:
+    """往会话里追加一条消息。"""
+    data = _sread("sessions.json", {"sessions": {}})
+    sessions = data.setdefault("sessions", {})
+    sessions.setdefault(sid, []).append({"role": role, "content": content})
+    # 只留最近这些条，防止文件无限长大
+    sessions[sid] = sessions[sid][-MAX_HISTORY:]
+    _swrite("sessions.json", data)
+
+
+def clear_conversation(sid: str) -> None:
+    """清空某个会话（人话：前端需要"重新开始一段对话"时用）。"""
+    data = _sread("sessions.json", {"sessions": {}})
+    data.get("sessions", {}).pop(sid, None)
+    _swrite("sessions.json", data)
