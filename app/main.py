@@ -15,7 +15,7 @@ from app.agent.engine import AgentEngine
 from app.agent.router import Router
 from app.config import DEBUG, check_config, get_llm_config
 from app.llm.client import DeepSeekClient, LLMError
-from app.upload import UploadError, extract_text, ext_supported, supported_desc
+from app.upload import UploadError, extract_text, ext_supported, unsupported_reason
 from app.modules.schedule import SYSTEM_PROMPT as SCHEDULE_PROMPT, build_tools as schedule_tools
 from app.store import (
     add_message, list_messages, add_notice, list_notices,
@@ -259,8 +259,10 @@ async def upload_file(file: UploadFile = File(...)):
         mb = MAX_UPLOAD_BYTES // 1024 // 1024
         return JSONResponse({"error": f"文件太大了，单个上限 {mb}MB"}, status_code=413)
     if not ext_supported(file.filename):
+        # 用 unsupported_reason 而不是写死的文案：老版 Office 会得到
+        # 「另存为 .docx」这种能照着做的指引，而不是一句笼统的"不支持"
         return JSONResponse(
-            {"error": f"暂不支持 {file.filename} 这种类型，目前支持：{supported_desc()}"},
+            {"error": unsupported_reason(file.filename)},
             status_code=415,
         )
 
