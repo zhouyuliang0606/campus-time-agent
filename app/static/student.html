@@ -67,6 +67,12 @@
       background: #4f7cff; color: #fff; font-size: 14px;
     }
     .inputbar button:disabled { opacity: .6; cursor: not-allowed; }
+    /* 回形针：上传资料给管家读 */
+    .attach {
+      padding: 0 14px; border: 1px solid #d8def0; background: #fff; color: #4f7cff;
+      border-radius: 10px; cursor: pointer; font-size: 18px; line-height: 1;
+    }
+    .attach:hover { background: #eef2ff; }
     .tag { display:inline-block; font-size:11px; background:#eef2ff; color:#4f7cff; border-radius:6px; padding:1px 6px; margin-left:6px;}
     @media (max-width: 600px) { .modules { grid-template-columns: repeat(2, 1fr); } }
   </style>
@@ -91,6 +97,8 @@
     </div>
 
     <div class="inputbar">
+      <input type="file" id="file" style="display:none;" />
+      <button class="attach" id="attach" title="上传资料给管家读">📎</button>
       <input id="text" placeholder="说点什么…" />
       <button id="send">发送</button>
     </div>
@@ -196,6 +204,41 @@
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ message, module, answer }),
       }).catch(() => {});
+    }
+
+    // ---------- 上传资料给管家读 ----------
+    // 流程：选文件 → POST /api/upload 存起来 → 管家之后就能用工具读到它的真实内容
+    const fileInput = document.getElementById("file");
+    document.getElementById("attach").addEventListener("click", () => fileInput.click());
+    fileInput.addEventListener("change", handleFile);
+
+    async function handleFile() {
+      const f = fileInput.files && fileInput.files[0];
+      if (!f) return;
+      addMsg("我", `📎 上传了资料：${f.name}`, "user");
+      const form = new FormData();
+      form.append("file", f);
+      try {
+        const r = await fetch("/api/upload", { method: "POST", body: form });
+        const d = await r.json();
+        if (d.ok) {
+          // 上传完给几个常见问题，让用户零思考就能用起来
+          addMsg("系统", `《${f.name}》已就位（${d.file.chars} 字）。现在可以直接问它里面的内容了 —— 我会先读文件再回答，不会瞎编。`, "sys");
+          chipsBox.innerHTML = "";
+          ["这份资料讲了什么？", "帮我提炼重点", "里面有哪些需要注意的时间安排？"].forEach(q => {
+            const c = document.createElement("div");
+            c.className = "chip";
+            c.textContent = q;
+            c.addEventListener("click", () => sendMsg(q));
+            chipsBox.appendChild(c);
+          });
+        } else {
+          addMsg("系统", "上传失败：" + (d.error || "未知原因"), "sys");
+        }
+      } catch (e) {
+        addMsg("系统", "上传异常：" + e.message, "sys");
+      }
+      fileInput.value = ""; // 清空，方便同一个文件再次上传触发 change
     }
 
     send.addEventListener("click", () => sendMsg(text.value));
