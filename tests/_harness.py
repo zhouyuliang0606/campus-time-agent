@@ -15,6 +15,13 @@ import os
 import shutil
 import sys
 import tempfile
+import warnings
+
+# 关掉第三方库的过时警告，免得满屏噪声盖住真正的 ✅ / ❌ 结果。
+# 注意 starlette 这条虽然叫 StarletteDeprecationWarning，实际继承自 UserWarning，
+# 所以按类别过滤抓不到它，只能按消息内容过滤。
+warnings.filterwarnings("ignore", category=DeprecationWarning)
+warnings.filterwarnings("ignore", message="Using `httpx` with `starlette.testclient`")
 
 # 项目根目录 = tests/ 的上一级
 TESTS_DIR = os.path.dirname(os.path.abspath(__file__))
