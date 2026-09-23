@@ -8,14 +8,16 @@ import json
 from app.llm.client import DeepSeekClient
 
 # 所有模块的关键字白名单：router 分类时只许返回这些之一
-MODULE_KEYS = ["schedule", "faq", "station", "lostfound", "repair", "notice", "admin"]
+MODULE_KEYS = ["schedule", "faq", "express", "takeout", "station", "lostfound", "repair", "notice", "admin"]
 
 # 给大模型看的分类说明书（人话：只让它输出一个 JSON 告诉我归属哪个模块）
 _SYSTEM_PROMPT = """你是校园助手的意图分类器。根据用户的话，只输出一个 JSON：{"module": "..."}。
 可选 module 含义：
 - schedule：课表/时间安排/复习计划/空闲时间
 - faq：校园规定/地点/办事流程等问答
-- station：取快递/外卖/驿站/取件码/滞留
+- express：学生查自己的快递/取件码/滞留
+- takeout：学生查外卖订单/取餐点/待取
+- station：驿站商户侧（监听台账/主动推送/人格回复）
 - lostfound：丢东西/捡到东西/失物招领
 - repair：设施报修/东西坏了/维修
 - notice：公告/通知
@@ -24,8 +26,15 @@ _SYSTEM_PROMPT = """你是校园助手的意图分类器。根据用户的话，
 
 # 关键词兜底：命中就直接归类，省一次大模型调用，也更稳
 _QUICK_MAP = {
-    "取快递": "station", "外卖": "station", "驿站": "station", "取件": "station", "快递": "station",
+    # 学生端·快递
+    "取快递": "express", "取件码": "express", "驿站取": "express", "快递": "express", "取件": "express",
+    # 学生端·外卖
+    "外卖": "takeout", "点餐": "takeout", "配送": "takeout", "取餐": "takeout", "订单": "takeout",
+    # 学生端·课表
     "课表": "schedule", "复习": "schedule", "排任务": "schedule", "没课": "schedule", "空闲": "schedule",
+    # 学生端·问答
+    "图书馆": "faq", "食堂": "faq", "校车": "faq", "校医院": "faq", "宿舍": "faq", "奖学金": "faq", "校园网": "faq", "学生证": "faq",
+    # 拓展
     "丢": "lostfound", "捡": "lostfound", "失物": "lostfound",
     "报修": "repair", "维修": "repair", "坏了": "repair",
     "公告": "notice", "通知": "notice",

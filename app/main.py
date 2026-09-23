@@ -14,7 +14,10 @@ from fastapi.staticfiles import StaticFiles
 from app.agent.engine import AgentEngine
 from app.agent.router import Router
 from app.config import check_config
-from app.modules.schedule import SYSTEM_PROMPT, build_tools as schedule_tools
+from app.modules.schedule import SYSTEM_PROMPT as SCHEDULE_PROMPT, build_tools as schedule_tools
+from app.modules.faq import SYSTEM_PROMPT as FAQ_PROMPT, build_tools as faq_tools
+from app.modules.express import SYSTEM_PROMPT as EXPRESS_PROMPT, build_tools as express_tools
+from app.modules.takeout import SYSTEM_PROMPT as TAKEOUT_PROMPT, build_tools as takeout_tools
 
 # 项目根目录（本文件在 app/ 下，根目录是上一级）
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -24,9 +27,12 @@ app = FastAPI(title="校园时间管家 CampusTime", version="0.1.0")
 check_config()
 
 # —— 模块注册表（人话：每个模块在这里登记一下，路由命中后就能取用）——
-# 以后每做一个模块（faq/station/admin…），只要在这里加一行就行
+# 学生端四个模块：课表安排 / 校园问答 / 快递 / 外卖。以后加驿站侧、管理台照此加一行。
 REGISTRY: dict[str, tuple[str, Any]] = {
-    "schedule": (SYSTEM_PROMPT, schedule_tools),
+    "schedule": (SCHEDULE_PROMPT, schedule_tools),
+    "faq": (FAQ_PROMPT, faq_tools),
+    "express": (EXPRESS_PROMPT, express_tools),
+    "takeout": (TAKEOUT_PROMPT, takeout_tools),
 }
 # 没命中任何模块时的兜底提示
 DEFAULT_PROMPT = "你是校园时间管家，一个友好、靠谱的校园 AI 助手。"
@@ -42,14 +48,21 @@ async def health():
 
 @app.post("/api/chat")
 async def chat(req: Request):
-    """对话入口（人话：前端把用户的话发到这里，返回回答 + Agent 思考轨迹）。"""
+    """对话入口（人话：前端把用户的话发到这里，返回回答 + Agent 思考轨迹）。
+
+    前端可以显式带 module 字段（如 {"message": "...", "module": "express"}）直接锁定模块，
+    方便主页四个模块各自独立对话；不带的则交给 router 自动判断意图。
+    """
     body = await req.json()
     message = (body.get("message") or "").strip()
     if not message:
         return JSONResponse({"error": "消息不能为空"}, status_code=400)
 
-    # 1) 意图路由：这句话归哪个模块管
-    module_key = await router.route(message)
+    # 1) 若前端显式指定了模块且合法，直接用；否则交给 router 自动分类意图
+    module_key = body.get("module")
+    if not (module_key and module_key in REGISTRY):
+        module_key = await router.route(message)
+
     # 2) 取该模块的系统提示和工具箱
     prompt, build_tools = REGISTRY.get(module_key, (DEFAULT_PROMPT, lambda: {}))
     # 3) 组装引擎并跑 ReAct 循环（会按需调用工具）
