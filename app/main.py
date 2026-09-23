@@ -28,6 +28,7 @@ from app.store import (
 from app.modules.faq import SYSTEM_PROMPT as FAQ_PROMPT, build_tools as faq_tools
 from app.modules.express import SYSTEM_PROMPT as EXPRESS_PROMPT, build_tools as express_tools
 from app.modules.takeout import SYSTEM_PROMPT as TAKEOUT_PROMPT, build_tools as takeout_tools
+from app.modules.files import build_tools as files_tools
 from app.modules.station import build_system_prompt as STATION_PROMPT, build_tools as station_tools
 
 # 项目根目录（本文件在 app/ 下，根目录是上一级）
@@ -49,6 +50,17 @@ REGISTRY: dict[str, tuple[Any, Any]] = {
 }
 # 没命中任何模块时的兜底提示
 DEFAULT_PROMPT = "你是校园时间管家，一个友好、靠谱的校园 AI 助手。"
+
+# 统一追加给每个模块的"读资料"能力说明。
+# 放在这里而不是逐个写进模块的 SYSTEM_PROMPT，是为了改一处所有模块都生效。
+FILE_HINT = """
+【你还具备读取资料的能力】
+用户可能会上传文件（课表、通知、名单、表格等）。当用户的提问看起来需要参考某份文件，
+或者你不确定有没有相关资料时：
+1. 先调用 list_uploaded_files 看看手头有哪些文件；
+2. 再用 read_uploaded_file 读取其中相关的文件内容；
+3. 基于读到的**真实内容**作答——文件里没有的信息千万不要编造，宁可直接说没找到。
+"""
 
 router = Router()
 
@@ -78,9 +90,18 @@ async def chat(req: Request):
 
     # 2) 取该模块的系统提示和工具箱（提示可能是函数，按需调用以拼入最新人格）
     prompt_src, build_tools = REGISTRY.get(module_key, (DEFAULT_PROMPT, lambda: {}))
-    prompt = prompt_src() if callable(prompt_src) else prompt_src
+    base_prompt = prompt_src() if callable(prompt_src) else prompt_src
+    # 统一拼上"你会读文件"的说明，每个模块因此都能利用用户上传的资料
+    prompt = base_prompt + FILE_HINT
+
+    # 工具箱 = 模块自己的工具 + 通用的文件读取工具。
+    # 把"读文件"做成通用工具而不是复制进每个模块，
+    # 以后新增模块会自动带上这个能力，不用重复实现。
+    tools = build_tools()
+    tools.update(files_tools())
+
     # 3) 组装引擎并跑 ReAct 循环（会按需调用工具）
-    engine = AgentEngine(system_prompt=prompt, tools=build_tools())
+    engine = AgentEngine(system_prompt=prompt, tools=tools)
 
     # 大模型可能因为"没配 Key / Key 无效 / 网络不通"失败。
     # 与其让前端收到一个看不懂的 500，不如把原因说成人话，直接显示在对话里。
