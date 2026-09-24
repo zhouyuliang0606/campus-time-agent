@@ -443,7 +443,7 @@ async def chat(req: Request):
                     "session_id": session_id,
                     "answer": (
                         "🗑️ 上一次的清空弹窗可能已经关掉了，我又把它请了出来——"
-                        "请在弹窗上点【确认清空】执行，点【取消】就什么都不变。<br>"
+                        "请在弹窗上点【确认清空】执行，点【取消】就什么都不变。\n"
                         "（清空课表这一步只能在弹窗上按按钮，聊天里回「确认」不作数。）"
                     ),
                     "trace": [{"step": 1, "phase": "🗑️ 确认落空 → 重新弹出清空弹窗",
@@ -482,7 +482,7 @@ async def chat(req: Request):
                 "module": "planner",
                 "session_id": session_id,
                 "answer": (
-                    "周表本来就是空的，一门课都没有，没有课可清空 🗑️<br>"
+                    "周表本来就是空的，一门课都没有，没有课可清空 🗑️\n"
                     "想往课表里加课的话：点一下「📤 上传课表」传一份文件，"
                     "或者直接跟我说「周一加一节高等数学，教三-201」就行。"
                 ),
@@ -582,7 +582,17 @@ async def chat(req: Request):
     #     学生说得明明白白，剩下"新课表长什么样"该由服务端算，不该赌模型调不调工具。
     #     实测真模型会**只在文字里给个预览、让学生回「确认」**，可它压根没调出提案工具
     #     ——暂存里什么都没有，学生回了确认也是白回：弹窗不来、确认不删、删除失败。
-    if wants_remove_course(message):
+    #
+    #     两种进路：
+    #     a) 这句话本身带着删课意图（"删除周一第一节课"）；
+    #     b) **系统上一轮刚追问过"想删哪一节"**，学生补一句"周一的第一节"——
+    #        这句话里没有"删除"两个字，wants_remove_course 认不出来，
+    #        但它是对追问的回答，必须接着处理。不接住的话又掉回模型，
+    #        模型会嘴上说"删课提案已经生成啦"（根本没生成），弹窗照样不来。
+    #        识别标记就是追问分支写进会话历史的那句"删课缺细节"。
+    recent = [m for m in get_conversation(session_id)[-4:] if m.get("role") == "assistant"]
+    asking_remove = any("删课缺细节" in (m.get("content") or "") for m in recent)
+    if wants_remove_course(message) or asking_remove:
         proposal = parse_remove_course(message)
         if proposal is not None:
             save_pending(session_id, [proposal])
@@ -608,9 +618,9 @@ async def chat(req: Request):
             "module": "planner",
             "session_id": session_id,
             "answer": (
-                "想删哪一节，说得更具体一点：<br>"
-                "· 说星期 + 节次，比如「删除周二第二节」；<br>"
-                "· 或直接说课名，比如「去掉周五的心理学选修」。<br>"
+                "想删哪一节，说得更具体一点：\n"
+                "· 说星期 + 节次，比如「删除周二第二节」；\n"
+                "· 或直接说课名，比如「去掉周五的心理学选修」。\n"
                 "我算出新课表给你确认，你点头我才写进周表。"
             ),
             "trace": [{"step": 1, "phase": "🤔 删课缺细节（系统追问）",

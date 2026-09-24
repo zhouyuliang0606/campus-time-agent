@@ -884,6 +884,28 @@ def test_confirm_ui_page_and_alt_confirm():
                 (d4.get("answer") or "")[:60])
         c.check("追问这轮周表没动", len(get_timetable()) == n_full - 1,
                 f"{n_full - 1} → {len(get_timetable())}")
+
+        # —— ⑥ 追问后的补充回答：学生只说「周一的第一节」也要出弹窗 ——
+        #     这句话里没有"删除"两个字，wants_remove_course 认不出来；
+        #     不接住就会掉回模型，模型会嘴上说"删课提案已经生成啦"（根本没生成）。
+        #     正确行为：上一轮系统刚追问过"想删哪一节"，这句补充必须接着处理。
+        client.post("/api/chat/reset", json={"session_id": "sess-rm3"})
+        _st(seed["courses"])
+        r5 = client.post("/api/chat", json={
+            "message": "删掉周一的课", "module": "planner", "session_id": "sess-rm3"})
+        d5 = r5.json()
+        c.check("周一有好几节课时先追问", not (d5.get("options") or []))
+        r6 = client.post("/api/chat", json={
+            "message": "周一的第一节", "module": "planner", "session_id": "sess-rm3"})
+        d6 = r6.json()
+        opts6 = d6.get("options") or []
+        c.check("补充「周一的第一节」直接出删课弹窗（不再掉回模型）",
+                any(o.get("kind") == "timetable_change" for o in opts6),
+                (d6.get("answer") or "")[:70])
+        c.check("提案就是周一 08:00 那节",
+                "周一" in str(opts6[-1].get("summary", "")) and "08:00" in str(opts6[-1].get("summary", ""))
+                if opts6 else False,
+                str(opts6[-1].get("summary", ""))[:50] if opts6 else "")
     return c.summary("第十二批（独立确认页面 + 聊天确认备选方式 + 确定性删课）")
 
 
