@@ -53,6 +53,7 @@ from app.modules.planner import (
     parse_add_course,
     parse_add_todo,
     parse_remove_course,
+    parse_todo_from_reply,
     is_add_todo_followup,
     pick_todo_missing,
     wants_add_course,
@@ -490,28 +491,48 @@ async def chat(req: Request):
              and not is_confirmation(m.get("content") or "")
              and wants_add_todo(m.get("content") or "")),
             "")
-        if add_req:
-            proposal = parse_add_todo(add_req)
-            if proposal is not None:
-                save_pending(session_id, [proposal])
-                append_conversation(session_id, "user", message)
-                append_conversation(session_id, "assistant",
-                                    f"已生成待办确认：{proposal['summary']}")
-                return {
-                    "module": "planner",
-                    "session_id": session_id,
-                    "answer": (
-                        "📝 刚才那次可能没接上，我把确认条又挂了出来——"
-                        f"要不要把 **{proposal['title']}** 排进日程？"
-                        f"{proposal['date']}（{proposal['weekday']}）"
-                        f"{proposal['start']}-{proposal['end']}。\n"
-                        "点【确认加入】执行；直接回一句「确认」也一样。"
-                    ),
-                    "trace": [{"step": 1, "phase": "📝 确认落空 → 重新挂出待办确认条",
-                               "answer": proposal["summary"]}],
-                    "options": [proposal],
-                    "awaiting_choice": True,
-                }
+        proposal = parse_add_todo(add_req) if add_req else None
+        from_butler = False
+        # 学生原话也解析不出来？那就捞**管家自己写的那句"提案"**。
+        # 这正是被截屏投诉的那一幕：管家在文字里写
+        # 「好，那我按这个出个提案：- 任务：健身 - 时间：周一 16:30~18:00 …
+        #   提案这就发给你，点一下【确认】就入库了！」
+        # 界面上却连一个按钮都没有——因为它压根没调工具，暂存是空的。
+        # 学生回"可以"，系统就替它把这张确认条挂出来（写库仍要学生点按钮）。
+        # 只认固定格式（"任务/事项/标题：" 配 "时间/时段："），闲聊里捞不出东西就返回 None，
+        # 宁可这条不挂，也不从闲聊里瞎猜一个待办出来。
+        if proposal is None and not already_written:
+            for m in reversed(recent_msgs):
+                if m.get("role") != "assistant":
+                    continue
+                guessed = parse_todo_from_reply(m.get("content") or "")
+                if guessed is not None:
+                    proposal, from_butler = guessed, True
+                    break
+        if proposal is not None:
+            save_pending(session_id, [proposal])
+            append_conversation(session_id, "user", message)
+            append_conversation(session_id, "assistant",
+                                f"已生成待办确认：{proposal['summary']}")
+            return {
+                "module": "planner",
+                "session_id": session_id,
+                "answer": (
+                    "📝 刚才那次可能没接上，我把确认条又挂了出来——"
+                    f"要不要把 **{proposal['title']}** 排进日程？"
+                    f"{proposal['date']}（{proposal['weekday']}）"
+                    f"{proposal['start']}-{proposal['end']}。\n"
+                    "点【确认加入】执行；直接回一句「确认」也一样。"
+                ),
+                "trace": [{
+                    "step": 1,
+                    "phase": ("📝 确认落空 → 从管家文字里的方案捞回确认条" if from_butler
+                              else "📝 确认落空 → 重新挂出待办确认条"),
+                    "answer": proposal["summary"],
+                }],
+                "options": [proposal],
+                "awaiting_choice": True,
+            }
 
     # 3b) **确定性清空分支**（人话：学生明说"课表全删了"，直接出弹窗，不劳模型判断）
     #    跟上面"一句确认即落库"是同一个思路：能由代码定死的，就别交给模型。

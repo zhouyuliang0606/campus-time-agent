@@ -143,6 +143,32 @@ class e2e_server:
         with open(p, "w", encoding="utf-8") as f:
             json.dump({"todos": todos}, f, ensure_ascii=False, indent=2)
 
+    def seed_conversation(self, sid: str, msgs: list):
+        """把一段聊天历史写进**副本**数据目录（人话：替学生"先聊过几句"）。
+
+        为什么需要它：有些报障的场景**只发生在历史里**——比如管家上一轮只在
+        文字里写了一段「任务：健身 / 时间：周一 16:30~18:00」，界面上没有按钮。
+        要在浏览器里复现这一幕，得先让页面加载出那段历史（页面是从
+        /api/conversation/<sid> 把记录捞回来渲染的），再让学生接一句「可以」。
+        msgs 形如 [{"role": "user", "content": "..."}]。
+
+        注意：前端的 session id 存在 localStorage 里，是随机生成的；
+        截图脚本要先用 page.add_init_script 把它定成这里传的 sid，两边才对得上。
+        文件路径跟 store.py 保持一致：会话存在**学生库** student/sessions.json
+        （早先写到了 data/sessions.json，服务器读的是 student/ 那份，
+        结果页面历史一片空白，白折腾一轮）。
+        """
+        p = os.path.join(self.data, "student", "sessions.json")
+        data = {"sessions": {}}
+        if os.path.exists(p):
+            try:
+                data = json.loads(open(p, encoding="utf-8").read()) or {"sessions": {}}
+            except Exception:
+                data = {"sessions": {}}
+        data.setdefault("sessions", {})[sid] = list(msgs)
+        with open(p, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+
     @property
     def demo_courses_path(self) -> pathlib.Path:
         return pathlib.Path(self.data) / "student" / "timetable.json"

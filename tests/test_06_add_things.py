@@ -497,6 +497,178 @@ def test_add_todo_chinese_clock():
     return c.summary("第五批（加待办·口语时间 / 追问 / 确认落空）")
 
 
+def test_schedule_proposal_tool():
+    """第六批：日程面板的管家只在文字里写「提案」，界面上连个确认按钮都没有。
+
+    学生报障原话（截图）：「没有确认按钮」。截图里学生停在日程面板，管家回的是——
+        好，那我按这个出个提案：
+        - 任务：健身
+        - 时间：周一 16:30~18:00
+        - 范围：本周
+        提案这就发给你，点一下【确认】就入库了！
+    文案写得像提案已经发了，可界面上**连一个按钮都没有**。
+
+    根因：课表规划模块此前只有"查课 / 找空档 / 排计划"三个**只读**工具。
+    它压根没有"出一张确认条"的手脚，找完空档只能在文字里把方案念一遍。
+    （跟上一批是同一个病根的两张脸：一个是"嘴上说写好了"，一个是"嘴上说提案发了"。）
+
+    这一批钉三件事：
+      ① 模块手里有 propose_todo_tool 了，调成功会回 __proposal__，引擎据此挂确认条；
+      ② 模块设定里写死了"没调工具就不许说提案已发"；
+      ③ 万一模型还是不调工具，学生回「可以」时系统能把它那句方案捞回来重新挂条。
+    """
+    title("6. 日程面板提案：工具出条 / 提示层兜底 / 文字方案捞回来")
+    c = Checker()
+    from app.agent.engine import AgentEngine
+    from app.modules.planner import parse_todo_from_reply
+    from app.modules import schedule as sched
+    from app.store import list_todos, append_conversation
+
+    # 截图里管家那段原文，逐字抄下来当输入——测试要盯的就是这个真实场景。
+    butler_text = (
+        "好，那我按这个出个提案：\n"
+        "- 任务：健身\n"
+        "- 时间：周一 16:30~18:00\n"
+        "- 范围：本周\n"
+        "提案这就发给你，点一下【确认】就入库了！"
+    )
+
+    # —— ① 工具得在架子上：注册了、说明书说清了"不写库" ——
+    tools = sched.build_tools()
+    c.check("课表规划模块多了 propose_todo_tool（之前只有三个只读工具）",
+            "propose_todo_tool" in tools, list(tools))
+    t = tools.get("propose_todo_tool")
+    c.check("入参里 title 是必填，还能分着给 date/start/end",
+            bool(t) and t.parameters.get("required") == ["title"]
+            and {"when", "date", "start", "end"} <= set(t.parameters["properties"]),
+            _json.dumps(t.parameters, ensure_ascii=False)[:110] if t else "None")
+    c.check("说明书里说清『只出提案，不写库』",
+            bool(t) and "只出提案" in t.description and "不写库" in t.description)
+    c.check("系统设定里点名要用这个工具出确认条",
+            "propose_todo_tool" in sched.SYSTEM_PROMPT)
+    c.check("系统设定里禁止『没调工具就说提案已发』",
+            "没调用工具就别说" in sched.SYSTEM_PROMPT
+            and "严禁" in sched.SYSTEM_PROMPT)
+
+    # —— ② 工具本身：吃口语时间、给 __proposal__；解析不出来就给提示让模型补 ——
+    got = _json.loads(sched.propose_todo_tool("健身", when="周一 16:30~18:00"))
+    prop = got.get("__proposal__") or {}
+    c.check("调一次工具就回一张能渲染的 todo_add 提案",
+            prop.get("kind") == "todo_add", _json.dumps(prop, ensure_ascii=False)[:110])
+    c.check("提案上是 16:30-18:00、星期一是对的",
+            prop.get("start") == "16:30" and prop.get("end") == "18:00"
+            and prop.get("weekday") == "周一",
+            prop.get("summary", ""))
+    c.check("工具回来的话里明说『禁止说已经写好了』",
+            "禁止说已经写好了" in (got.get("human") or ""), (got.get("human") or "")[:60])
+    oral = _json.loads(sched.propose_todo_tool("游泳", when="明天下午两点到三点"))
+    c.check("口语时间也吃：「下午两点到三点」→ 14:00-15:00",
+            (oral.get("__proposal__") or {}).get("start") == "14:00"
+            and (oral.get("__proposal__") or {}).get("end") == "15:00",
+            (oral.get("__proposal__") or {}).get("summary", ""))
+    bad = _json.loads(sched.propose_todo_tool("健身", when="随便吧"))
+    c.check("解析不出来就返回 error + hint（让模型补参数重试，绝不瞎凑一个时间）",
+            "error" in bad and "hint" in bad and "__proposal__" not in bad,
+            list(bad))
+
+    # —— ③ 引擎那一段：工具结果带 __proposal__ 就要变成确认条 ——
+    #     这里塞一个"假模型"：第一轮说要调 propose_todo_tool，第二轮给句收尾话。
+    #     不用联网、不用密钥，也能把"调工具 → 收提案 → 存暂存"这条线走通。
+    class _FakeLLM:
+        """假模型（人话：照着剧本回话，用来验引擎的接线，不验模型的智商）。"""
+
+        def __init__(self):
+            self.rounds = 0
+            self.seen_tools: list[str] = []
+
+        async def chat(self, messages, tools=None, tool_choice="auto"):
+            self.rounds += 1
+            # 顺手记下引擎有没有把工具菜单递给模型
+            self.seen_tools = [x["function"]["name"] for x in (tools or [])]
+            if self.rounds == 1:
+                return {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [{
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "propose_todo_tool",
+                            "arguments": _json.dumps(
+                                {"title": "健身", "when": "周一 16:30~18:00"},
+                                ensure_ascii=False),
+                        },
+                    }],
+                }
+            return {"role": "assistant", "content": "确认条已经挂出来了，点一下【确认加入】就好。"}
+
+    import asyncio as _asyncio
+    fake = _FakeLLM()
+    eng = AgentEngine(llm=fake, tools=tools, system_prompt=sched.SYSTEM_PROMPT,
+                      session_id="sched-tool-1")
+    res = _asyncio.run(eng.run("周一 16:30-18:00 我要健身，帮我排一下"))
+    c.check("工具菜单里带给模型了（不然它想调也调不到）",
+            "propose_todo_tool" in fake.seen_tools, fake.seen_tools)
+    eng_opts = res.get("options") or []
+    c.check("工具结果里的 __proposal__ 被引擎收成了确认条",
+            any(o.get("kind") == "todo_add" for o in eng_opts),
+            _json.dumps(eng_opts[:1], ensure_ascii=False)[:110])
+    c.check("带上去的就是《健身》那条",
+            bool(eng_opts) and eng_opts[0].get("title") == "健身",
+            (eng_opts[0].get("summary") if eng_opts else ""))
+    c.check("awaiting_choice 也置上了（前端据此知道有东西要确认）",
+            res.get("awaiting_choice") is True)
+
+    # —— ④ 捞方案这一步：截图那段原文要能捞出来，闲聊不许捞 ——
+    p = parse_todo_from_reply(butler_text)
+    c.check("从管家那句话里能捞出「健身 / 周一 / 16:30-18:00」",
+            bool(p) and p.get("title") == "健身" and p.get("start") == "16:30"
+            and p.get("end") == "18:00" and p.get("weekday") == "周一",
+            _json.dumps(p, ensure_ascii=False) if p else "None")
+    c.check("闲聊里不瞎猜（没有固定格式就返回 None）",
+            parse_todo_from_reply("今天天气不错，要不要去操场跑两圈？") is None)
+    c.check("只顾着说『点确认就入库』、没给任务时间，也不猜",
+            parse_todo_from_reply("提案这就发给你，点一下【确认】就入库了！") is None)
+
+    # —— ⑤ 整条链路（走接口）：模型没调工具、只在文字里写方案，学生回「可以」——
+    with sandbox():
+        client = make_client()
+        seed_timetable()
+        sid = "sched-text-proposal"
+        append_conversation(sid, "user", "帮我安排一下健身")
+        append_conversation(sid, "assistant", butler_text)
+
+        r = client.post("/api/chat", json={"message": "可以", "session_id": sid})
+        d = r.json()
+        opts = d.get("options") or []
+        c.check("管家只在文字里写方案、学生回「可以」时，系统替它把确认条挂出来",
+                any(o.get("kind") == "todo_add" for o in opts),
+                _json.dumps(opts[:1], ensure_ascii=False)[:110])
+        c.check("捞出来的正是它写的那条：健身 16:30-18:00",
+                bool(opts) and opts[0].get("title") == "健身"
+                and opts[0].get("start") == "16:30" and opts[0].get("end") == "18:00",
+                (opts[0].get("summary") if opts else "无"))
+        c.check("这一轮还是没写库（要等学生真的点头）",
+                not any(t["title"] == "健身" for t in list_todos()), 
+                [(t["title"], t["date"]) for t in list_todos()])
+
+        day = (opts[0].get("date") if opts else "")
+        r2 = client.post("/api/chat", json={"message": "确认", "session_id": sid})
+        c.check("再回一句「确认」就真写进日程了",
+                any(t["title"] == "健身" and t["date"] == day for t in list_todos(day)),
+                [(t["title"], t["start"]) for t in list_todos(day)])
+        c.check("回答说的是「已加入日程」而不是「搞定」",
+                "已加入日程" in (r2.json().get("answer") or ""),
+                (r2.json().get("answer") or "")[:50])
+
+        # 已经在文字里瞎承诺过的情形，不能再被同一个兜底重复挂条（多挂一次=可能多写一条）
+        r3 = client.post("/api/chat", json={"message": "好的", "session_id": sid})
+        c.check("写成功之后，再回「好的」不会又挂出一条",
+                not (r3.json().get("options") or []),
+                (r3.json().get("answer") or "")[:50])
+    return c.summary("第六批（日程面板提案：工具出条 / 捞回文字方案）")
+
+
 def main():
     global code
     print("\n" + "=" * 60)
@@ -507,6 +679,7 @@ def main():
     code |= test_conversation_history()
     code |= test_clear_conversation()
     code |= test_add_todo_chinese_clock()
+    code |= test_schedule_proposal_tool()
     return code
 
 

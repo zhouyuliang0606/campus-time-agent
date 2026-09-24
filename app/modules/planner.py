@@ -614,16 +614,16 @@ def _pick_span(text: str):
     if m:
         sh = _pm_fix(t, int(m.group(1)))
         eh = _pm_fix(t, int(m.group(3)))
-        # 止比起还早（学生说"下午2点到3点"被拨成 14→15 没问题；
-        # 但"1点到3点"在下午语境里止的 3 没被拨——止比起早说明漏拨了，补上）
-        if eh is not None and sh is not None and eh <= sh and eh <= 11:
+        # 止比起还早 = 跨过了中午（"12点到1点"其实是 12:00-13:00）。
+        # 注意必须是严格小于：写成 <= 的话 "7:00-7:40" 会被拨成 19:40。
+        if eh is not None and sh is not None and eh < sh and eh <= 11:
             eh += 12
         return (f"{sh:02d}:{m.group(2)}", f"{eh:02d}:{m.group(4)}")
     m = re.search(r"(\d{1,2})\s*点\s*(?:到|至|-|~|～)\s*(\d{1,2})\s*点?", t)
     if m:
         sh = _pm_fix(t, int(m.group(1)))
         eh = _pm_fix(t, int(m.group(2)))
-        if eh <= sh and eh <= 11:
+        if eh < sh and eh <= 11:
             eh += 12
         return f"{sh:02d}:00", f"{eh:02d}:00"
     m = re.search(r"(\d{1,2}):(\d{2})", t)
@@ -758,6 +758,101 @@ def pick_todo_missing(text: str) -> str:
     if has_time and not has_date:
         return "日期"
     return "时间和日期"
+
+
+def propose_todo_tool(title: str, when: str = "", date: str = "",
+                      start: str = "", end: str = "") -> str:
+    """给「课表时间规划」模块用的**只读**提案工具（人话：把建议变成一张能点的确认条）。
+
+    为什么这个模块需要它：学生问"哪天有空复习高数"，Agent 找完空档会给出建议，
+    可它手里一个写入工具都没有——于是它就在**文字里**自己写一句
+    「好，那我按这个出个提案：- 任务：健身 - 时间：周一 16:30~18:00」，
+    学生回「可以」之后，界面上**连个【确认】按钮都没有**（截图里就是这个）。
+    给它一张"纸"：提案由系统生成，学生点了按钮，后端才写库。
+
+    参数都能吃学生口语：when 传「周一 16:30~18:00」「明晚七点到八点」都行。
+    解析不出来就返回带 hint 的 JSON，让模型补参数重试——绝不瞎凑一个时间。
+    """
+    blob = " ".join(x for x in (date, when, start, end) if x)
+    day = _pick_date(blob) or _pick_date(f"{date} {when}")
+    begin, finish = _pick_span(blob)
+    if not begin and start:
+        begin, _ = _pick_span(start)
+    if not finish and end:
+        _, finish = _pick_span(end)
+    name = (title or "").strip().strip("\"'“”‘’『』「」")  or "待办"
+    if not day or not begin:
+        return json.dumps({
+            "error": "日期或开始时间没解析出来",
+            "hint": ("date 传 '2026-09-28' 或 '周一'/'明天'；"
+                     "when 传 '16:30-18:00'（学生说的『下午两点到三点』也认）。"
+                     "两个都给全了才会出确认条。"),
+            "got": blob,
+        }, ensure_ascii=False)
+    if not finish:
+        finish = to_hhmm(to_minutes(begin) + 60)
+    prop = {
+        "kind": "todo_add",
+        "title": name,
+        "date": day,
+        "start": begin,
+        "end": finish,
+        "weekday": _weekday_name(day),
+        "minutes": to_minutes(finish) - to_minutes(begin),
+        "summary": f"{name}｜{day}（{_weekday_name(day)}）{begin}-{finish}",
+    }
+    return json.dumps({
+        "__proposal__": prop,
+        "human": (f"确认条已经挂在下面了：《{name}》{day}（{_weekday_name(day)}）"
+                  f"{begin}-{finish}。点【确认加入】才会写进日程；"
+                  f"你只要说一句『你可以点确认条上的按钮，或直接回确认』，"
+                  f"**禁止说已经写好了**。"),
+    }, ensure_ascii=False)
+
+
+# 管家自己那句"提案"长这样（截图里学生遇到的那种）：
+#   好，那我按这个出个提案：
+#   - 任务：健身
+#   - 时间：周一 16:30~18:00
+#   - 范围：本周
+#   提案这就发给你，点一下【确认】就入库了。
+_REPLY_TASK_RE = re.compile(r"(?:任务|事项|标题|安排)\s*[：:]\s*([^\n，,。；;｜|]{1,30})")
+_REPLY_TIME_RE = re.compile(r"(?:时间|时段|几点)\s*[：:]\s*([^\n。；;｜|]{1,40})")
+
+
+def parse_todo_from_reply(text: str) -> dict | None:
+    """从**管家自己那句话**里把「任务 + 时间」捞出来（人话：它只说了没挂条，系统替它挂）。
+
+    什么时候用：学生回「可以」/「确认」，但暂存里什么都没有——
+    因为管家上一条只是把方案写在文字里，压根没调工具。
+    照「确认落空捞回学生原话」的思路，这一次是捞**管家给的方案**：
+    按固定格式（"任务/事项/标题：" + "时间/时段："）把内容还原成一张待办提案。
+
+    格式对不上就返回 None：宁可不出，也别从闲聊里瞎猜出一个待办。
+    """
+    t = text or ""
+    m_task = _REPLY_TASK_RE.search(t)
+    m_time = _REPLY_TIME_RE.search(t)
+    if not m_task or not m_time:
+        return None
+    when = m_time.group(1)
+    day = _pick_date(when) or _pick_date(t)
+    begin, finish = _pick_span(when)
+    if not day or not begin:
+        return None
+    if not finish:
+        finish = to_hhmm(to_minutes(begin) + 60)
+    name = m_task.group(1).strip().strip("\"'“”‘’『』「」") or "待办"
+    return {
+        "kind": "todo_add",
+        "title": name,
+        "date": day,
+        "start": begin,
+        "end": finish,
+        "weekday": _weekday_name(day),
+        "minutes": to_minutes(finish) - to_minutes(begin),
+        "summary": f"{name}｜{day}（{_weekday_name(day)}）{begin}-{finish}",
+    }
 
 
 def is_add_todo_followup(text: str) -> bool:
