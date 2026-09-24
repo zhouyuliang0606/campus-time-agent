@@ -71,7 +71,8 @@ class sandbox:
 
     # 这几样是"运行时痕迹"，不是种子数据：密钥配置、上传的文件、通知、学生消息。
     # 每次测试从零开始，免得上一次测试的假密钥把这一次的结果带偏。
-    SCRATCH = ("settings.json", "uploads.json", "uploads", "notices.json", "student_messages.json")
+    SCRATCH = ("settings.json", "uploads.json", "uploads", "notices.json",
+               "student_messages.json", "workorders.json")
 
     def __enter__(self):
         self.tmp = tempfile.mkdtemp(prefix="campustime-test-")

@@ -145,7 +145,9 @@ def test_timetable_import_entry():
         c.check("面板有「上传课表」按钮与文件框",
                 'id="uploadTtPanel"' in html and 'id="ttFilePanel"' in html)
         c.check("面板有导入状态提示条", 'id="ttPanelStatus"' in html)
-        c.check("聊天上传后有「把这份课表导入周表」快捷入口", "把这份课表导入周表" in html)
+        c.check("聊天上传后有「让管家读取这份课表」快捷入口", "让管家读取这份课表" in html)
+        c.check("导入消息先要预览、确认后才写（预览确认制）",
+                "预览清单" in html and "先不要写入周表" in html)
         c.check("导入消息让管家读文件并调 import_timetable",
                 "read_uploaded_file" in html and "import_timetable" in html)
         c.check("sendMsg 支持模块覆盖（导入固定走 planner）",
@@ -163,6 +165,79 @@ def test_timetable_import_entry():
     return c.summary("第六批（课表导入入口）")
 
 
+def test_persona_rules_and_workorders():
+    """第七批：学生助手人设四条规矩 + 工单上报链路（学生要求写进人设的行为）。"""
+    import pathlib
+
+    proj = pathlib.Path(__file__).resolve().parent.parent
+
+    title("7. 助手人设规矩（输出/工单/隔离/定位）+ 工单上报链路")
+    c = Checker()
+    with sandbox():
+        client = make_client()
+
+        # —— 人设规矩真的写进了系统提示 ——
+        main_src = (proj / "app" / "main.py").read_text(encoding="utf-8")
+        c.check("全局人设规矩块 ASSISTANT_RULES 存在并拼进每个模块",
+                "ASSISTANT_RULES" in main_src and "prompt = base_prompt + FILE_HINT + ASSISTANT_RULES" in main_src)
+        c.check("规矩①输出要求：简洁/不暴露内部报错/不输出低俗内容",
+                all(k in main_src for k in ("不冗长废话", "禁止把系统内部报错", "低俗")))
+        c.check("规矩②工单：先问「是否上报给管理端」，确认才生成",
+                "是否上报给管理端" in main_src and "普通日常对话、排课、规划待办一律不上报" in main_src)
+        c.check("规矩③隔离：预览方案、确认前不写库、只影响当前学生",
+                "预览方案" in main_src and "只影响当前学生" in main_src)
+        c.check("规矩④定位：决定权在学生、上传文件只读不改",
+                "决定权永远在学生本人" in main_src and "禁止修改或覆盖源文件" in main_src)
+
+        # —— 工单上报规则进了快递/外卖模块提示，工具已注册 ——
+        express_src = (proj / "app" / "modules" / "express.py").read_text(encoding="utf-8")
+        takeout_src = (proj / "app" / "modules" / "takeout.py").read_text(encoding="utf-8")
+        for name, s in (("快递", express_src), ("外卖", takeout_src)):
+            c.check(f"{name}提示含上报规则（先问确认、没确认不许调工具）",
+                    "先问一句：「是否上报给管理端？」" in s and "绝不许调用 submit_work_order" in s)
+            c.check(f"{name}模块注册了 submit_work_order 工具", '"submit_work_order"' in s)
+
+        # —— 规划模块：预览确认制写进提示与工具描述 ——
+        planner_src = (proj / "app" / "modules" / "planner.py").read_text(encoding="utf-8")
+        c.check("规划提示含【个人数据隔离 —— 预览确认制】",
+                "【个人数据隔离 —— 预览确认制" in planner_src)
+        c.check("改课表要求：预览 → 确认 → 整表写入",
+                "调整后的完整课表" in planner_src and "先不要写入" not in planner_src)
+        c.check("import_timetable 描述要求学生确认后才能调用",
+                "等学生明确确认导入后才能调用" in planner_src)
+        c.check("remove_todo 描述要求确认后才能删",
+                "得到明确确认后才能调用" in planner_src)
+
+        # —— 工单 API 链路：提交 → 管理端可见 → 改状态 ——
+        r = client.post("/api/workorders", json={
+            "kind": "疑似丢件", "desc": "3 天了驿站查不到件", "source": "panel"})
+        c.check("POST /api/workorders 提交成功", r.status_code == 200 and (r.json() or {}).get("ok"))
+        wo = (r.json() or {}).get("workorder", {})
+        c.check("工单含 编号/时间/类型/描述/状态",
+                all(wo.get(k) for k in ("id", "ts", "kind")) and wo.get("status") == "待处理")
+        rl = client.get("/api/workorders")
+        lst = (rl.json() or {}).get("workorders", [])
+        c.check("管理端 GET /api/workorders 能看到这条工单",
+                any(x["id"] == wo.get("id") for x in lst), f"共 {len(lst)} 条")
+        rs = client.post(f"/api/workorders/{wo.get('id')}/status", json={"status": "已解决"})
+        c.check("管理员改状态为 已解决", rs.status_code == 200
+                and (rs.json() or {}).get("workorder", {}).get("status") == "已解决")
+        c.check("非法状态被拒绝", client.post(
+            f"/api/workorders/{wo.get('id')}/status", json={"status": "随便"}).status_code == 400)
+        c.check("空类型被拒绝", client.post(
+            "/api/workorders", json={"kind": " "}).status_code == 400)
+
+        # —— 管理端页面有工单区块；学生端不再全量上报普通对话 ——
+        admin_html = client.get("/admin").text
+        c.check("管理端有「学生工单」区块并拉工单接口",
+                "学生工单" in admin_html and "/api/workorders" in admin_html)
+        student_html = client.get("/student").text
+        c.check("学生端已移除普通对话全量上报（logToAdmin）", "logToAdmin" not in student_html)
+        c.check("学生端报错改为友好话术（不暴露内部信息）",
+                "网络好像开小差了" in student_html and "e.message" not in student_html.split("sendMsg")[1][:2000])
+    return c.summary("第七批（人设规矩与工单）")
+
+
 if __name__ == "__main__":
     code = 0
     code |= test_express_view_api()
@@ -171,4 +246,5 @@ if __name__ == "__main__":
     code |= test_regression_existing_apis()
     code |= test_plan_month_calendar()
     code |= test_timetable_import_entry()
+    code |= test_persona_rules_and_workorders()
     sys.exit(code)
