@@ -694,10 +694,24 @@ def test_clear_intent_and_gate():
         c.check("取消后再调删除接口照样被拒", r4.status_code == 400, f"HTTP {r4.status_code}")
         c.check("取消之后课表原封不动", len(get_timetable()) == n0)
 
-        # —— ⑤ 带上 confirm 才执行，且只认当前会话 ——
+        # —— ⑤ 周表本来就是空的：要说清楚，不能把学生打发回模型反复确认 ——
+        #    实测这个状态会掉回模型，模型回一句"这个操作影响比较大，我先跟你确认一下…"
+        #    还列四条问题——学生只看到弹窗不来、卡片不出，以为是系统坏了。
+        _st([])
+        r7 = client.post("/api/chat", json={
+            "message": "把课表全部删除，一门都不留", "module": "planner", "session_id": "sess-empty",
+        }).json()
+        answer = r7.get("answer") or ""
+        c.check("空表时直接说明没有课可清", "本来就是空的" in answer, answer[:60])
+        c.check("空表时不弹提案也不留待确认", not r7.get("options") and peek_pending("sess-empty") is None)
+
+        # —— ⑥ 带上 confirm 才执行 ——
+        #    重新播一份课表（⑤ 为了测空表分支已经把它清了），确认删除真的按报告的数字删
+        _st(seed["courses"])
+        n_now = len(get_timetable())
         save_pending("sess-m", [prop])
         r5 = client.post("/api/timetable/clear", json={"session_id": "sess-m", "confirm": True})
-        c.check("点确认后删除成功", r5.json().get("removed") == n0, str(r5.json())[:80])
+        c.check("点确认后删除成功", r5.json().get("removed") == n_now, str(r5.json())[:80])
         c.check("当前登录学生的周表被清空", len(get_timetable()) == 0)
         r6 = client.post("/api/timetable/clear", json={"session_id": "sess-m", "confirm": True})
         c.check("提案用掉后再调不会重复清（已无提案）", r6.status_code == 400)

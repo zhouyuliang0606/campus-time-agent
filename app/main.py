@@ -207,7 +207,27 @@ async def chat(req: Request):
     #    这里只负责"出提案 + 弹窗"，**一个字节都不写库**；真删要等学生点弹窗上的【确认】。
     if wants_clear_timetable(message):
         proposal = _parse_clear_proposal()
-        if proposal is not None:
+        if proposal is None:
+            # 周表本来就是空的：一句话说清楚就完事。
+            # 实测这个状态会掉回模型，模型就来一句"这个操作影响比较大，我先跟你确认一下…"
+            # 还列四条问题——学生只看到"弹窗不来、卡片不出"，还以为系统坏了。
+            # 空表没得可清，本来就没得确认，交给模型只会多绕一圈。
+            append_conversation(session_id, "user", message)
+            append_conversation(session_id, "assistant", "周表本来就是空的")
+            return {
+                "module": module_key,
+                "session_id": session_id,
+                "answer": (
+                    "周表本来就是空的，一门课都没有，没有课可清空 🗑️<br>"
+                    "想往课表里加课的话：点一下「📤 上传课表」传一份文件，"
+                    "或者直接跟我说「周一加一节高等数学，教三-201」就行。"
+                ),
+                "trace": [{"step": 1, "phase": "🗑️ 周表已为空",
+                           "answer": "没有课可清，直接告知学生"}],
+                "options": [],
+                "awaiting_choice": False,
+            }
+        else:
             save_pending(session_id, [proposal])
             append_conversation(session_id, "user", message)
             append_conversation(session_id, "assistant", f"已生成清空提案：{proposal.get('summary', '')}")
