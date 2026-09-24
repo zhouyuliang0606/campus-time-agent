@@ -151,7 +151,7 @@ def test_engine_captures_propose_slots():
 
 
 def test_student_page_markup():
-    title("5. 学生端页面已带上新 UI（性格栏 / 正在思考 / 语音 / 候选卡片）")
+    title("5. 学生端页面已带上新 UI（设置入口 / 正在思考 / 语音 / 候选卡片）")
     c = Checker()
     with sandbox():
         client = make_client()
@@ -159,10 +159,9 @@ def test_student_page_markup():
         r = client.get("/student")
         c.check("学生端页面 200", r.status_code == 200)
         html = r.text or ""
-        c.check("有性格选择栏 persona-bar", "persona-bar" in html)
+        c.check("学生端有「设置」入口指向 /settings", "/settings" in html)
         c.check("有语音按钮 id=mic", 'id="mic"' in html)
         c.check("有「正在思考…」提示", "正在思考" in html)
-        c.check("前端会从 /api/student-personas 拉性格", "/api/student-personas" in html)
         c.check("接入了 Web Speech 语音识别", "webkitSpeechRecognition" in html or "SpeechRecognition" in html)
         c.check("候选卡片样式 opt-card 已定义", ".opt-card" in html)
         c.check("有「确认所选」按钮文案", "确认所选" in html)
@@ -174,6 +173,25 @@ def test_student_page_markup():
     return c.summary("第五批（学生端页面 UI）")
 
 
+def test_settings_page_markup():
+    title("6. 设置页：助手名字 + 性格选项 + 返回登录/返回学生端")
+    c = Checker()
+    with sandbox():
+        client = make_client()
+        r = client.get("/settings")
+        c.check("设置页 200", r.status_code == 200)
+        html = r.text or ""
+        c.check("有「助手名字」设置项", "助手名字" in html)
+        c.check("名字存到 localStorage(campustime_name)", "campustime_name" in html)
+        c.check("有「助手性格」设置项", "助手性格" in html)
+        c.check("从 /api/student-personas 拉性格", "/api/student-personas" in html)
+        c.check("含「返回登录」入口", "返回登录" in html and 'href="/"' in html)
+        c.check("含「返回学生端」入口", "返回学生端" in html and 'href="/student"' in html)
+        c.check("设置页也带 no-store", "no-store" in (r.headers.get("cache-control", "") or "")
+                or "no-store" in (r.headers.get("Cache-Control", "") or ""))
+    return c.summary("第六批（设置页 UI）")
+
+
 if __name__ == "__main__":
     fails = 0
     fails += test_persona_endpoint()
@@ -181,5 +199,6 @@ if __name__ == "__main__":
     fails += test_persona_injection()
     fails += test_engine_captures_propose_slots()
     fails += test_student_page_markup()
+    fails += test_settings_page_markup()
     import sys
     sys.exit(1 if fails else 0)
