@@ -210,12 +210,17 @@ let fromParent = false;   // 提案是不是父页面直接递过来的（是的
 function render(p) {
   if (!p || !KIND[p.kind]) {
     bodyEl.innerHTML = `<div class="empty">当前没有待确认的变更。<br>
-      <span style="font-size:12px;">回到聊天里跟管家说你要改什么，它会出一张确认卡。</span></div>
-      <div class="back"><a href="/student">← 回到学生端</a></div>`;
+      <span style="font-size:12px;">这个页面是"出了提案才弹出来"的——不是常驻的。<br>
+      去<b>学生端聊天</b>里说一句「把课表全部删除」或「把今天的复习线代安排到 19:00」，<br>
+      弹窗就会自己跳出来。</span><br><br>
+      <a href="/student" style="display:inline-block;padding:8px 18px;border-radius:10px;
+         background:#3a6ff0;color:#fff;text-decoration:none;font-size:13px;">← 去学生端发起</a></div>`;
     okBtn.disabled = true;
+    okBtn.style.display = "none";
     tellParent("empty", {});
     return;
   }
+  okBtn.style.display = "";
   current = p;
   const k = KIND[p.kind];
   headEl.textContent = k.icon + " " + k.title;
