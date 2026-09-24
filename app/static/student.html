@@ -465,7 +465,8 @@
               const r = await fetch("/api/timetable/apply", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ courses: tt.courses }),
+                // 带上 session_id：学生如果在聊天框回一句"确认"，系统据此找到同一张卡，不会重复写入
+                body: JSON.stringify({ courses: tt.courses, session_id: sessionId() }),
               });
               const d = await r.json();
               if (d.ok) {
@@ -570,6 +571,10 @@
           const el = addMsg(botName(), data.answer, "bot", data.module);
           // 规划模块回了候选 → 渲染成可勾选卡片（学生点卡片才真正写入日程）
           if (data.options && data.options.length) renderOptions(el, data.options);
+          // 课表可能在刚才这一轮里被改了（学生直接在聊天框回了"确认"），
+          // 正在看的日程面板要刷成最新的，不然学生还会再来问"我怎么找不到"
+          const sched = document.getElementById("view-schedule");
+          if (sched && sched.style.display !== "none") loadScheduleView();
           // 人设规矩：普通对话不上报管理端，只有学生确认的工单才进管理端（见 submitWorkOrderToServer）
         }
       } catch (e) {

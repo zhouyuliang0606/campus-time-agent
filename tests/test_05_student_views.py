@@ -203,10 +203,20 @@ def test_persona_rules_and_workorders():
         planner_src = (proj / "app" / "modules" / "planner.py").read_text(encoding="utf-8")
         c.check("规划提示含【个人数据隔离 —— 预览确认制】",
                 "【个人数据隔离 —— 预览确认制" in planner_src)
+        # 上一版提示里写过"不是你没有权限"，结果模型照样学会说"我没有权限"，
+        # 甚至把学生指到不存在的删除按钮上。现在改成正向措辞，并加护栏断言。
         c.check("改课表要求：完整课表提案 → 确认卡 → 系统写入",
-                "调整后的完整课表" in planner_src and "系统自动写入" in planner_src)
-        c.check("明确告诉模型\"不是你没有权限\"，防止它拒绝执行",
-                "不是你没有权限" in planner_src)
+                "调整后的完整课表" in planner_src and "系统负责执行" in planner_src)
+        c.check("明确告诉模型 propose_course_change 就在工具箱里、有权调用",
+                "你完全有权调用它" in planner_src)
+        # 光看源码不够——这些句子可能只出现在注释里。这里直接拿**真正会发给模型**
+        # 的那段提示来查（拼好全局规矩后的 planner 提示），查不到才说明护栏到位。
+        from app.main import ASSISTANT_RULES
+        from app.modules.planner import build_system_prompt as planner_prompt
+        sent_prompt = planner_prompt() + ASSISTANT_RULES
+        for bad in ("我没有权限", "没有工具权限", "课表页面手动操作",
+                    "麻烦你在", "点删除即可"):
+            c.check(f"真正发给模型的提示里没有误导句「{bad}」", bad not in sent_prompt)
         c.check("propose_timetable_change 是修改课表唯一途径（工具已注册）",
                 '"propose_timetable_change"' in planner_src)
         c.check("AI 工具箱已移除 import_timetable（写入权收归系统）",
@@ -344,12 +354,159 @@ def test_course_change_proposals():
         c.check("非法 op 被拒", "op 只能是" in propose_course_change("boom", day=1))
         c.check("day 越界被拒", "越界" in propose_course_change("remove", day=9, course="高数"))
 
+        # —— 模型爱把「周一」当数字传，这里要认下，不能崩 ——
+        from app.modules.planner import _coerce_day, validate_courses
+        c.check("_coerce_day 认中文星期", _coerce_day("周一") == 1 and _coerce_day("星期天") == 7)
+        c.check("_coerce_day 认纯数字字符串", _coerce_day("3") == 3)
+        c.check("_coerce_day 挡住 garbage", _coerce_day("第一节") is None)
+        c.check("_coerce_day 不会把 True 当 1", _coerce_day(True) is None)
+        rc, errs = validate_courses(
+            [{"day": "周三", "start": "08:00", "end": "09:40", "course": "毛概"}])
+        c.check("中文星期的课也能通过校验", not errs and rc and rc[0]["day"] == 3, str(errs))
+        _, errs2 = validate_courses([{"day": 9, "start": "08:00", "end": "09:40", "course": "x"}])
+        c.check("越界 day 仍被拦下", any("越界" in e for e in errs2), str(errs2))
+
+        # —— 工具层错误围栏：参数写错不该把整轮对话搞崩 ——
+        from app.agent.engine import _is_async
+        from app.agent.tools import Tool
+
+        def _is_tool_guarded(tool: "Tool") -> bool:
+            """async 版本的围栏和同步版本要都存在，别漏了一个。"""
+            import asyncio
+            return all(hasattr(tool, n) for n in ("run", "run_async")) and (
+                asyncio.iscoroutinefunction(tool.run_async))
+
+        boom = Tool(name="boom", description="d", parameters={}, func=lambda **kw: 1 / 0)
+        c.check("工具内部异常被兜住，返回人话而不是抛错",
+                "调用 boom 时出错了" in boom.run() and isinstance(boom.run(), str))
+        c.check("async 工具同样有围栏", _is_tool_guarded(boom))
+        badk = Tool(name="bad", description="d", parameters={}, func=lambda nope=1: nope)
+        c.check("参数名写错也返回提示", "参数不对" in badk.run(other=1))
+
         # —— 引擎通用捕获：源码含 __proposal__ 处理 ——
         eng = (pathlib.Path(__file__).resolve().parent.parent / "app" / "agent" / "engine.py") \
             .read_text(encoding="utf-8")
         c.check("引擎含通用 __proposal__ 捕获（结果即提案）", "__proposal__" in eng)
         c.check("引擎仍保留 propose_timetable_change 参数捕获", "propose_timetable_change" in eng)
     return c.summary("第八批（单课程级课表提案）")
+
+
+def test_chat_confirm_applies_timetable():
+    """第九批：学生回一句「确认」→ 系统确定性落库（这是踩过坑的那条链路）。
+
+    背景（真实事故）：学生打了"确认"，AI 却回"我没有权限删除"，
+    还让学生自己去课表页面找删除按钮——而界面上根本没有这个入口。
+    所以这里要证明的是：**点头和执行之间不需要经过模型**。
+    """
+    import json as _json
+    import os
+
+    from app.agent.engine import AgentEngine
+    from app.agent.pending import (
+        clear_pending, is_confirmation, mark_applied, peek_pending, save_pending,
+    )
+    from app.modules.planner import apply_pending_timetable_change, get_timetable, propose_course_change
+    from app.store import save_timetable
+
+    title("9. 聊天框「确认」→ 系统执行（不依赖模型判断）")
+    c = Checker()
+    with sandbox():
+        client = make_client()
+        seed = _json.load(open(os.path.join(REAL_DATA_DIR, "student", "timetable.json"),
+                               encoding="utf-8"))
+        save_timetable(seed["courses"])
+        base_courses = list(get_timetable())
+        base_n = len(base_courses)
+        c.check("沙箱演示周表就绪", base_n >= 10, f"{base_n} 门课")
+
+        # —— ① 什么话算"点头" ——
+        c.check("「确认」算点头", is_confirmation("确认"))
+        c.check("「可以」「好的」也算", is_confirmation("可以") and is_confirmation("好的"))
+        c.check("带标点不影响判断", is_confirmation("确认。"))
+        c.check("" "「帮我看看周一第一节是什么」不算点头""", not is_confirmation("帮我看看周一第一节是什么"))
+        c.check("" "「删掉第一节」不算点头（有新指令嫌疑）""", not is_confirmation("删掉第一节"))
+
+        # —— ② 引擎出完提案会把卡存进待确认暂存 ——
+        eng = AgentEngine(tools={}, session_id="sess-a")
+        eng.options = [{"kind": "timetable_change", "summary": "测试提案", "courses": base_courses}]
+        out = eng._finish("给你出一张确认卡")
+        c.check("引擎收尾把提案存进暂存", peek_pending("sess-a") is not None)
+        c.check("响应里带 awaiting_choice（前端据此知道在等学生）", out["awaiting_choice"] is True)
+        clear_pending("sess-a")
+        c.check("清空后暂存确实没了", peek_pending("sess-a") is None)
+
+        # —— ③ 核心链路：发一句「确认」，课表真的变 ——
+        save_pending("sess-c", [_json.loads(propose_course_change(
+            "remove", day=1, course="高等数学"))["__proposal__"]])
+        c.check("落库前暂存里确实有提案", peek_pending("sess-c") is not None)
+        r = client.post("/api/chat", json={
+            "message": "确认", "module": "planner", "session_id": "sess-c",
+        })
+        data = r.json()
+        c.check("/api/chat 返回 200", r.status_code == 200)
+        c.check("回答明确说已按确认执行", "已按你的确认执行" in (data.get("answer") or ""),
+                (data.get("answer") or "")[:40])
+        after = [x for x in get_timetable() if not (x["day"] == 1 and x["course"] == "高等数学")]
+        c.check("周一高等数学真的被删了", len(after) == base_n - 1, f"{base_n} → {len(after)}")
+        c.check("聊天确认走完后暂存已清空（不会重复写）", peek_pending("sess-c") is None)
+        c.check("" "回答里不再出现「没有权限」这类话""", "没有权限" not in (data.get("answer") or ""))
+
+        # —— ④ 界面点卡片写完之后，聊天再回一句「确认」不会重复执行 ——
+        prop = _json.loads(propose_course_change("remove", day=1, course="程序设计基础"))["__proposal__"]
+        save_pending("sess-d", [prop])
+        mark_applied("sess-d")          # 模拟前端点了确认卡
+        n_before = len(get_timetable())
+        again = apply_pending_timetable_change("sess-d")
+        c.check("已点过卡的提案不会再被聊天确认重复应用", again is None)
+        c.check("周表门数没变", len(get_timetable()) == n_before)
+
+        # —— ⑤ 同一轮两张卡：都要生效，不能被后一张覆盖掉前一张 ——
+        # 情景：学生说"周二早上的课都去掉"，服务端出了两张卡
+        p_a = _json.loads(propose_course_change("remove", day=2, course="线性代数"))["__proposal__"]
+        p_b = _json.loads(propose_course_change("remove", day=4, course="大学英语"))["__proposal__"]
+        n_expect = len(get_timetable()) - 2   # ③里已经删掉一门，这里要在这基础上接着减
+        save_pending("sess-e", [p_a, p_b])
+        res = apply_pending_timetable_change("sess-e")
+        c.check("落库后暂存清空", peek_pending("sess-e") is None)
+        n2 = len(get_timetable())
+        c.check("两张提案卡都生效（总门数减 2）", n2 == n_expect, f"预期 {n_expect} 实际 {n2}")
+        c.check("周二线代确实没了",
+                not any(x["day"] == 2 and x["course"] == "线性代数" for x in get_timetable()))
+        c.check("周四英语确实没了",
+                not any(x["day"] == 4 and x["course"] == "大学英语" for x in get_timetable()))
+
+        # —— ⑥ 学生聊别的就把旧提案作废（避免隔很久再被一句"确认"误改）——
+        save_pending("sess-g", [p_a])
+        client.post("/api/chat", json={
+            "message": "周末有什么事吗", "module": "planner", "session_id": "sess-g",
+        })
+        c.check("" "聊别的之后回「确认」不会改课表""",
+                any(x["course"] == "线性代数" for x in get_timetable()))
+
+        # —— ⑦ 路由把「确认」分到别的模块时，也不能卡住执行 ——
+        #    真实场景：学生没点模块卡片，直接打"确认"，路由往往把它分去 FAQ。
+        #    确认卡就挂在聊天里，这时候必须照样执行，不能因为走错模块就说办不到。
+        p_c = _json.loads(propose_course_change("remove", day=5,
+                                                course="心理学选修"))["__proposal__"]
+        save_pending("sess-i", [p_c])
+        r = client.post("/api/chat", json={
+            "message": "确认", "module": "faq", "session_id": "sess-i",
+        })
+        c.check("即使被路由到 FAQ 模块，一句确认照样执行",
+                "已按你的确认执行" in (r.json().get("answer") or ""),
+                (r.json().get("answer") or "")[:40])
+        c.check("目标课程确实被删",
+                not any(x["day"] == 5 and x["course"] == "心理学选修" for x in get_timetable()))
+
+        # —— ⑧ 清会话之后，残留提案作废（隔很久再一句"确认"不会误改）——
+        save_pending("sess-j", [p_a])
+        client.post("/api/chat/reset", json={"session_id": "sess-j"})
+        client.post("/api/chat", json={
+            "message": "确认", "module": "planner", "session_id": "sess-j",
+        })
+        c.check("清过会话后回「确认」不会改课表",
+                any(x["course"] == "大学英语" for x in get_timetable()))
+    return c.summary("第九批（聊天确认 → 系统执行）")
 
 
 if __name__ == "__main__":
@@ -362,4 +519,5 @@ if __name__ == "__main__":
     code |= test_timetable_import_entry()
     code |= test_persona_rules_and_workorders()
     code |= test_course_change_proposals()
+    code |= test_chat_confirm_applies_timetable()
     sys.exit(code)

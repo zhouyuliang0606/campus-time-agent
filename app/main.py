@@ -14,6 +14,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.agent.engine import AgentEngine
+from app.agent.pending import clear_pending, is_confirmation, peek_pending
 from app.agent.router import Router
 from app.config import DEBUG, check_config, get_llm_config
 from app.llm.client import DeepSeekClient, LLMError
@@ -89,8 +90,13 @@ ASSISTANT_RULES = """
    普通日常对话、排课、规划待办一律不上报。
 3. 个人数据隔离：每个学生的数据相互独立，你的操作只影响当前学生。你可以生成
    **修改课表、增删待办的预览方案**，但学生确认之前数据库绝不会变；
-   修改课表走 propose_timetable_change 提案（学生点确认卡后**由系统写入**，不经过你）；
+   修改课表走 propose_course_change / propose_timetable_change 提案（学生点确认卡、
+   或在聊天框回一句"确认"，都由**系统**写入，不经过你）；
    add_todo_tool 等写入工具必须等学生点头后才能调用。
+   ⛔ 修改课表只走提案这一条路：学生点确认卡、或在聊天框回一句"确认"，
+      都由**系统**写入。禁止说"自己办不到、权限不够"这类话（出提案的工具本来就在工具箱里），
+      也禁止让学生去界面上手动删课（界面上没有那个入口，
+      说了就是把学生指到死路，学生只会回一句"我怎么找不到"）。
 4. 自我定位：你是辅助工具，不是决策者。所有对用户数据的改动，决定权永远在学生本人；
    学生上传的文件（docx/xlsx 等）只读取内容，**禁止修改或覆盖源文件**。
 """
@@ -141,12 +147,38 @@ async def chat(req: Request):
     tools = build_tools()
     tools.update(files_tools())
 
-    # 3) 组装引擎并跑 ReAct 循环（会按需调用工具）
-    engine = AgentEngine(system_prompt=prompt, tools=tools)
-
     # 会话 id：前端带上，服务端就能把几轮对话串起来。
     # 没带就服务端生成一个并在响应里返回，前端存起来下次继续用。
     session_id = (body.get("session_id") or "").strip() or uuid.uuid4().hex[:12]
+
+    # 3) **确定性确认分支**（人话：学生回一句"确认"就当场执行，不劳模型判断）
+    #    踩过的坑：学生明明打了"确认"，AI 却回"我没有权限删除"，还让学生自己去
+    #    页面上找删除按钮——那里根本没有入口。这里把执行权收归系统，学生点头即写入。
+    # 不按模块卡死：确认卡就渲染在同一条聊天里，学生不管当前切到哪个面板、
+    # 路由把这句分去哪个模块（实测"确认"常被分到 FAQ），点头就是点头，该执行就执行。
+    if is_confirmation(message) and peek_pending(session_id):
+        from app.modules.planner import apply_pending_timetable_change
+        applied = apply_pending_timetable_change(session_id)
+        if applied:
+            append_conversation(session_id, "user", message)
+            append_conversation(session_id, "assistant", f"已执行：{applied['summary']}")
+            return {
+                "module": module_key,
+                "session_id": session_id,
+                "answer": (
+                    f"✅ 已按你的确认执行（{applied['summary']}）。"
+                    f"周表现在共 {applied['after']} 门课"
+                    f"（原来是 {applied['before']} 门）。"
+                ),
+                "trace": [{"step": 1, "phase": "✅ 学生确认", "answer": applied["summary"]}],
+                "options": [],
+                "awaiting_choice": False,
+            }
+        # 暂存里只有别的类型提案（比如时间候选）→ 清掉，交回模型按老规矩处理
+        clear_pending(session_id)
+
+    # 4) 组装引擎并跑 ReAct 循环（会按需调用工具）
+    engine = AgentEngine(system_prompt=prompt, tools=tools, session_id=session_id)
 
     # 之前聊过的内容（让 Agent 记得住上一轮商量到哪了）
     history = get_conversation(session_id)
@@ -505,7 +537,7 @@ async def timetable_apply(req: Request):
 
     为什么写入不经过 AI？之前 AI 在学生确认后要自己重新构造整表 JSON 再调写入工具，
     模型一旦没调工具、重构出错或嘴上说"已删除"，就会出现"确认了但数据没变"。
-    现在提案（AI 出）和执行（这里收）分开，确认即写入，结果可预期。
+        现在提案（AI 出）和执行（这里收）分开，确认即写入，结果可预期。
     """
     from app.modules.planner import validate_courses
     body = await req.json()
@@ -518,6 +550,11 @@ async def timetable_apply(req: Request):
             {"error": "有课程没通过校验，请重新生成提案", "detail": errors[:8]},
             status_code=400)
     save_timetable(cleaned)
+    # 学生已经在界面上点了卡片 → 标记已执行，避免后面在聊天框再回一句"确认"时重复写一遍
+    sid = (body.get("session_id") or "").strip()
+    if sid:
+        from app.agent.pending import mark_applied
+        mark_applied(sid)
     return {"ok": True, "count": len(cleaned), "courses": cleaned}
 
 
@@ -577,6 +614,7 @@ async def chat_reset(req: Request):
     sid = (body.get("session_id") or "").strip()
     if sid:
         clear_conversation(sid)
+        clear_pending(sid)  # 会话清了，待确认的提案也作废，免得下次"确认"误伤
     return {"ok": True}
 
 

@@ -30,10 +30,14 @@ class AgentEngine:
         llm: DeepSeekClient | None = None,
         tools: dict[str, Tool] | None = None,
         system_prompt: str = "",
+        session_id: str = "",
     ) -> None:
         self.llm = llm or DeepSeekClient()
         self.tools: dict[str, Tool] = tools or {}
         self.system_prompt = system_prompt
+        # 会话 id：本轮生成的确认卡从这里传给"待确认暂存"，
+        # 学生下一句回"确认"时系统据此找到那张卡（跟模型判断无关，纯确定性）
+        self.session_id = session_id
         # trace 记录每一步在干嘛，前端可以展示成"思考轨迹"，是演示 Agent 推理的关键
         self.trace: list[dict] = []
         # 规划模块调 propose_slots 时，把候选结构化选项暂存这里，最后带给前端
@@ -102,11 +106,10 @@ class AgentEngine:
                     if not tool:
                         result = f"错误：没有名为 {fn_name} 的工具"
                     else:
-                        # 真正执行工具函数；async 就 await，普通就直接调
-                        if _is_async(tool.func):
-                            result = await tool.func(**args)
-                        else:
-                            result = tool.func(**args)
+                        # 真正执行工具函数（跑的是 Tool.run，里面带错误围栏：
+                        # 模型传错参数也不会把整轮对话搞崩，只会拿到一句看得懂的提示）
+                        result = (await tool.run_async(**args)) if _is_async(tool.func) \
+                            else tool.run(**args)
 
                         # 规划模块用 propose_slots 把候选"交给前端渲染成卡片"：
                         # 抓它的结构化参数，作为响应里的 options 带回去
@@ -175,16 +178,21 @@ class AgentEngine:
             # 5) 模型没调工具，说明它觉得可以直接回答了
             answer = msg.get("content") or "（模型没有返回内容，请稍后再试）"
             self.trace.append({"step": step, "phase": "💡 最终回答", "answer": answer})
-            return {
-                "answer": answer,
-                "trace": self.trace,
-                "options": self.options,
-                "awaiting_choice": bool(self.options),
-            }
+            return self._finish(answer)
 
         # 6) 超过步数限制仍没结论
+        return self._finish("我思考了几轮还是没完全理清楚，能换个说法、或给多一点信息吗？")
+
+    def _finish(self, answer: str) -> dict:
+        """收尾：把本轮生成的提案交给上层暂存。
+
+        为什么要存？学生下一句很可能就是一句"确认"。这一步如果指望模型自己判断，
+        它就会回"我没有权限删除"，链路当场断掉。存下来之后由系统执行，跟模型无关。
+        """
+        from app.agent.pending import save_pending
+        save_pending(self.session_id, self.options)
         return {
-            "answer": "我思考了几轮还是没完全理清楚，能换个说法、或给多一点信息吗？",
+            "answer": answer,
             "trace": self.trace,
             "options": self.options,
             "awaiting_choice": bool(self.options),

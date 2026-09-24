@@ -315,10 +315,10 @@ def validate_courses(courses: list) -> tuple[list, list]:
         if not isinstance(c, dict):
             errors.append(f"第 {i + 1} 条不是对象")
             continue
-        try:
-            day = int(c.get("day"))
-        except (TypeError, ValueError):
-            errors.append(f"第 {i + 1} 条 day 不是数字")
+        # day 既接受 1-7，也接受"周一"这种写法（模型爱这么写，旧数据里也可能有）
+        day = _coerce_day(c.get("day"))
+        if day is None:
+            errors.append(f"第 {i + 1} 条 day 没看懂（1=周一 … 7=周日或 周一/周三）")
             continue
         if day not in range(1, 8):
             errors.append(f"第 {i + 1} 条 day={day} 越界（应 1-7，1 是周一）")
@@ -422,15 +422,23 @@ def propose_course_change(op: str, day: int, course: str = "", start: str = "",
     :param start: 目标课程的开始时间（可选，同一天同名多节时用来区分）
     :param new_start/new_end/new_course/new_location: update 的新值（add 用 new_start 当 start）
     :param change_summary: 一句话说明改了什么，会显示在确认卡上
+
+    为什么提案里除了 courses 还要带一个 action？
+        同一轮可能出多张卡（比如"周二早上的课都去掉"出了两张），
+        每张卡存的又是"原始周表减掉自己那处改动"。要是直接按卡片顺序覆盖着写，
+        后一张会把前一张的改动盖回去。带上 action 就能按**当前**周表重算，
+        一张一张往前叠，谁也抹不掉谁。
     """
     if op not in ("remove", "add", "update"):
         return f"op 只能是 remove/add/update，收到的是 {op}"
-    try:
-        day = int(day)
-    except (TypeError, ValueError):
-        return "day 不是数字"
+    # 容错：模型常把 day 写成"周一"/"星期三"，这里顺手认下来，别为格式卡住整件事
+    day = _coerce_day(day)
+    if day is None:
+        return "day 没看懂（1=周一 … 7=周日，写中文星期也行），请核对后重试"
     if day not in range(1, 8):
         return f"day={day} 越界（应 1-7，1 是周一）"
+    if not course and op != "add":
+        return "删课/改课要说明是哪门课（course）"
 
     cur = list(get_timetable())
 
@@ -505,12 +513,105 @@ def propose_course_change(op: str, day: int, course: str = "", start: str = "",
             "kind": "timetable_change",
             "summary": summary,
             "courses": cleaned,
+            # action：把"对哪节课做什么"原样留下来，落库时按当前周表重算（多张卡叠加用得上）
+            "action": {"op": op, "day": day, "course": course, "start": start,
+                       "new_start": new_start, "new_end": new_end,
+                       "new_course": new_course, "new_location": new_location},
         }
     }, ensure_ascii=False)
 
 
+def apply_pending_timetable_change(session_id: str) -> dict | None:
+    """学生回一句"确认"时，**由系统把暂存的课表提案真正写入**（人话：不经过模型）。
+
+    为什么要这么写？
+        之前"学生确认之后"这一步是交给模型判断的，模型偶尔会犯迷糊——
+        嘴上说自己办不到，还让学生自己去页面上找删除按钮
+        （而页面上根本没有这个入口，学生只能一脸问号地回一句"我怎么找不到呢"）。
+        现在执行权明确归系统：
+          · 提案由 AI 出（propose_course_change / propose_timetable_change）→ 存进待确认暂存；
+          · 学生点头（点卡片 或 在聊天框回"确认"）→ 这里确定性写入。
+
+    :return: 写入结果 dict；暂存里没有课表提案时返回 None（调用方据此走正常对话）
+    """
+    from app.agent.pending import take_pending
+    entry = take_pending(session_id) or {}
+    proposals = [o for o in (entry.get("options") or [])
+                 if isinstance(o, dict)
+                 and o.get("kind") == "timetable_change"
+                 and not o.get("applied")]
+    if not proposals:
+        return None
+
+    before = get_timetable()
+    done = 0
+    for opt in proposals:
+        # 卡片带 action（删/加/改单节课）→ 按**当前**周表重新算一遍新课表再落，
+        # 这样一轮里的多张卡能一张张叠加，后一张不会把前一张的改动盖掉。
+        courses = opt.get("action")
+        if isinstance(courses, dict):
+            try:
+                recomputed = propose_course_change(**courses)
+            except Exception:
+                recomputed = ""
+            if "__proposal__" not in (recomputed or ""):
+                continue  # 目标已经没了（比如被上一张卡删过）→ 跳过，不写脏数据
+            courses = json.loads(recomputed)["__proposal__"].get("courses")
+        cleaned, errors = validate_courses(courses or [])
+        if not errors and cleaned:
+            save_timetable(cleaned)
+            done += 1
+    after = get_timetable()
+
+    return {
+        "summary": str(proposals[-1].get("summary") or "修改课表"),
+        "applied": done,
+        "before": len(before),
+        "after": len(after),
+        "courses": list(after),
+    }
+
+
 def _weekday_name_by_num(day: int) -> str:
     return DAY_NAMES.get(int(day), "未知")
+
+
+# 模型偶尔把 day 写成"周一""星期三"这种中文，而不是 1/2/3。
+# 与其让它报错，不如认出来——学生说的是同一个意思。
+_CN_DAY = {
+    "周一": 1, "一": 1, "星期一": 1,
+    "周二": 2, "二": 2, "星期二": 2,
+    "周三": 3, "三": 3, "星期三": 3,
+    "周四": 4, "四": 4, "星期四": 4,
+    "周五": 5, "五": 5, "星期五": 5,
+    "周六": 6, "六": 6, "星期六": 6,
+    "周日": 7, "日": 7, "天": 7, "星期日": 7, "星期天": 7, "周末": 7,
+}
+
+
+def _coerce_day(value) -> int | None:
+    """把"周一"/3/"3 "这类写法统一成整数；实在认不出来返回 None。
+
+    为什么需要它：工具外面虽已加了错误围栏（参数写错不再崩整轮），
+    但这里直接"认得出"更省事——模型少走一轮弯路，学生也不用重复描述。
+
+    注意：**只管转换，不管范围**。9 这种越界值照样返回 9，
+    由调用方按 1-7 判定并给出"越界"提示，报错信息才够具体。
+    """
+    if isinstance(value, bool):           # True 会被当成 1，是坑，先挡掉
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    if isinstance(value, str):
+        key = value.strip()
+        if key in _CN_DAY:
+            return _CN_DAY[key]
+        digits = "".join(ch for ch in key if ch.isdigit())
+        if digits:
+            return int(digits)
+    return None
 
 
 # ---------- 系统提示 ----------
@@ -546,13 +647,23 @@ def build_system_prompt() -> str:
   否则无从判断什么时间空着。
 
 【个人数据隔离 —— 预览确认制，绝对不许跳过】
-你只能生成**预览/提案**，学生确认之前数据库绝不会变；真正的写入由**系统**在学生点击确认卡后执行：
+你只能生成**预览/提案**，学生确认之前数据库绝不会变；真正的写入由**系统**执行（你碰不到周表，
+这不是权限问题，是刻意的职责划分——学生的数据只能由系统写）。
 1. **修改课表**（删课/加课/改单节课，如"周一去掉第一节"）：
    **必须调用 propose_course_change 出确认卡**——新课表由服务端算好，你只说清对哪节课做什么。
    **绝不允许只在文字里给预览、问学生"确认吗"——没有卡片的确认等于没确认。**
-   学生点确认后系统自动写入，你不需要也**无法**直接写周表——这是设计如此，**不是你没有权限**，
-   绝不要说"我没有权限删除/修改"；也绝不要在卡片确认前声称"已删除/已修改"。
-   如果学生口头说"确认/可以"但上一轮你还没出过卡，**立刻调用工具把卡补上**。
+   一句话说明白：propose_course_change 就长在你的工具箱里，**你完全有权调用它**。
+   学生无论是点卡片、还是在聊天框回一句"确认"，**都是系统负责执行**，你只需在旁边说明改了什么。
+   ⛔ 口癖红线（三条，实测踩过，说出任一条都算 bug，务必打住）：
+      · 不许说"自己办不了/没能耐改课表"这类话——出提案的工具就在你的工具箱里，
+        你完全有权调用；写不写由系统兜着，跟你没关系。
+      · 不许让学生自己去界面上找删除入口——系统界面**压根没有手动删课的按钮**，
+        学生照着找一圈也找不到，白白多一轮往返。课表增删改只有你出的确认卡一个入口。
+      · 不许在卡片还等着确认时就说"已经删好了/已经改完了"——数据还没动，说了就是骗人。
+      一句话记住：你负责**说清改什么**，系统负责**动手改**，学生负责**点头**。
+   ⛔ 上一轮踩的坑：提示里如果把上面那些错话原样写出来当反例，模型反而更容易学会。
+      所以这里只描述"不能做什么"，一个错例句都不列。
+   如果学生说"确认/可以"但上一轮你还没出过卡，**立刻调用 propose_course_change 把卡补上**。
 2. **导入课表文件 / 整表重排**：读完文件 → 构造完整课程列表（"第几节"换算成 HH:MM）→
    调用 propose_timetable_change 出确认卡。没出卡前绝不说"导入成功"。
 3. **删除/修改待办**（remove_todo、update_todo_status）：先列出要动的待办，
