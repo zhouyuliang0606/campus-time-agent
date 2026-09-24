@@ -287,6 +287,48 @@ async def chat(req: Request):
                 "options": [],
                 "awaiting_choice": False,
             }
+        # **清空课表回「确认」不算执行**（删空不可恢复，必须学生在弹窗上亲手点按钮）。
+        # 但绝不能因此把提案一丢了事、掉回模型——实测模型会顺嘴撒谎：
+        # "我重新帮你出一次提案"（根本没出）、"请在弹出的确认卡上点确认"（弹窗早关了）、
+        # "回我一句「确认清空」就会执行"（回什么都不会执行）。
+        # 学生照着做三连失败：卡片没显示、确认没删、删除失败——就是这个来的。
+        # 这里做成确定性：把**同一张提案**重新请出来（弹窗再次出现），并把规矩讲明白。
+        entry_now = peek_pending(session_id) or {}
+        clear_held = [o for o in entry_now.get("options") or []
+                      if isinstance(o, dict) and o.get("kind") == "timetable_clear"]
+        if clear_held:
+            proposal = _parse_clear_proposal()
+            if proposal is not None:
+                save_pending(session_id, [proposal])   # 原提案没动过周表，换张新的继续挂着
+                append_conversation(session_id, "user", message)
+                append_conversation(session_id, "assistant",
+                                    f"已生成清空提案：{proposal.get('summary', '')}")
+                return {
+                    "module": "planner",
+                    "session_id": session_id,
+                    "answer": (
+                        "🗑️ 清空课表这一步，聊天里回「确认」不作数——"
+                        "删空不可恢复，必须在弹窗上亲手点【确认清空】才执行。<br>"
+                        "弹窗已经再次为你打开了，点它上面的按钮就行。"
+                    ),
+                    "trace": [{"step": 1, "phase": "🗑️ 重新弹出清空确认弹窗",
+                               "answer": "聊天确认不算数，必须点弹窗按钮"}],
+                    "options": [proposal],
+                    "awaiting_choice": True,
+                }
+            # 周表已经是空的：没什么可清，提案作废，直说。
+            clear_pending(session_id)
+            append_conversation(session_id, "user", message)
+            append_conversation(session_id, "assistant", "周表本来就是空的")
+            return {
+                "module": "planner",
+                "session_id": session_id,
+                "answer": "周表本来就是空的，一门课都没有，没有课可清空 🗑️",
+                "trace": [{"step": 1, "phase": "🗑️ 周表已为空",
+                           "answer": "没有课可清，直接告知学生"}],
+                "options": [],
+                "awaiting_choice": False,
+            }
         applied = apply_pending_timetable_change(session_id)
         # 清空课表是例外：必须学生亲手点弹窗上的【确认】，
         # 在聊天框回一句"确认"不算——删空是不可恢复的操作，多一道人工闸门。
@@ -329,6 +371,59 @@ async def chat(req: Request):
             "awaiting_choice": False,
         }
 
+    # 3a-c) **确认落空的兜底**：学生回"确认"，可暂存里已经没有待确认的提案。
+    #     什么时候会走到这：① 清空课表的弹窗被学生点了【取消】（取消=作废，本来就该这样）；
+    #     ② 提案过了有效期；③ 服务重启过（暂存是内存态）；④ 学生刷新了页面。
+    #     实测这种情况交给模型，模型会顺嘴撒谎——"我重新帮你出一次提案"（根本没出）、
+    #     "请你在弹出的确认卡上点确认"（根本没有卡）、"回我一句「确认清空」就会执行"
+    #     （回什么都不会执行）。学生照做三连失败，正是"卡片没显示、确认不删、删除失败"的来历。
+    #     如果会话最近聊的就是清空课表，最贴心的做法是把弹窗**重新请出来**（只出提案不写库，
+    #     硬约束不变：真删仍要学生点弹窗按钮）；其余情况不动，继续交给模型正常聊天，
+    #     免得把"好的/嗯"这种日常应答也误伤成"没有待确认事项"。
+    if is_confirmation(message) and not peek_pending(session_id):
+        recent = [m for m in get_conversation(session_id)[-6:]
+                  if m.get("role") == "assistant"]
+        # 匹配要收着点：只认系统自己写进会话的标记（"已生成清空提案"），
+        # 或明确说到"清空课表/清空全部课程"的句子。"清空缓存"这类闲聊词不认，
+        # 免得学生随口应一声"好的"，弹出一个莫名其妙的清空弹窗。
+        talked_clear = any(
+            "已生成清空提案" in (m.get("content") or "")
+            or ("清空" in (m.get("content") or "")
+                and ("课表" in (m.get("content") or "") or "课程" in (m.get("content") or "")))
+            for m in recent)
+        if talked_clear:
+            proposal = _parse_clear_proposal()
+            if proposal is not None:
+                save_pending(session_id, [proposal])
+                append_conversation(session_id, "user", message)
+                append_conversation(session_id, "assistant",
+                                    f"已生成清空提案：{proposal.get('summary', '')}")
+                return {
+                    "module": "planner",
+                    "session_id": session_id,
+                    "answer": (
+                        "🗑️ 上一次的清空弹窗可能已经关掉了，我又把它请了出来——"
+                        "请在弹窗上点【确认清空】执行，点【取消】就什么都不变。<br>"
+                        "（清空课表这一步只能在弹窗上按按钮，聊天里回「确认」不作数。）"
+                    ),
+                    "trace": [{"step": 1, "phase": "🗑️ 确认落空 → 重新弹出清空弹窗",
+                               "answer": "提案已过期/被取消，重新出提案"}],
+                    "options": [proposal],
+                    "awaiting_choice": True,
+                }
+            # 周表已经是空的：没什么可清。
+            append_conversation(session_id, "user", message)
+            append_conversation(session_id, "assistant", "周表本来就是空的")
+            return {
+                "module": "planner",
+                "session_id": session_id,
+                "answer": "周表本来就是空的，一门课都没有，没有课可清空 🗑️",
+                "trace": [{"step": 1, "phase": "🗑️ 周表已为空",
+                           "answer": "没有课可清，直接告知学生"}],
+                "options": [],
+                "awaiting_choice": False,
+            }
+
     # 3b) **确定性清空分支**（人话：学生明说"课表全删了"，直接出弹窗，不劳模型判断）
     #    跟上面"一句确认即落库"是同一个思路：能由代码定死的，就别交给模型。
     #    实测同一句话，模型时而是调 propose_clear_timetable，时而是反问"你确定要全删吗"，
@@ -344,7 +439,7 @@ async def chat(req: Request):
             append_conversation(session_id, "user", message)
             append_conversation(session_id, "assistant", "周表本来就是空的")
             return {
-                "module": module_key,
+                "module": "planner",
                 "session_id": session_id,
                 "answer": (
                     "周表本来就是空的，一门课都没有，没有课可清空 🗑️<br>"
@@ -361,7 +456,7 @@ async def chat(req: Request):
             append_conversation(session_id, "user", message)
             append_conversation(session_id, "assistant", f"已生成清空提案：{proposal.get('summary', '')}")
             return {
-                "module": module_key,
+                "module": "planner",
                 "session_id": session_id,
                 "answer": (
                     f"🗑️ 已为你生成**清空 {proposal.get('clear_count', 0)} 门课**的确认弹窗，"

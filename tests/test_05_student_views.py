@@ -527,7 +527,8 @@ def test_clear_timetable_flow():
     import os
     import pathlib
 
-    from app.agent.pending import peek_pending, save_pending, take_pending
+    from app.agent.pending import (clear_pending, peek_pending, save_pending,
+                                   take_pending)
     from app.modules.planner import get_timetable, propose_clear_timetable
     from app.store import save_timetable as _st
 
@@ -568,15 +569,33 @@ def test_clear_timetable_flow():
                 wrote == [], str(wrote))
 
         # —— ③ 聊天里回一句「确认」不会清空（必须点弹窗按钮）——
+        #     修复后的契约：系统把弹窗**重新请出来**（options 里再带一张 timetable_clear），
+        #     回复明确讲清"聊天确认不作数"。此前这里交回模型，模型会顺嘴撒谎——
+        #     "我重新帮你出一次提案"（根本没出）、"在弹出的确认卡上点确认"（根本没有卡）、
+        #     "回我一句「确认清空」就会执行"（回什么都不会执行），
+        #     学生照做三连失败：卡片没显示、确认没删、删除失败。
         save_pending("sess-clear", [p])
         r = client.post("/api/chat", json={
             "message": "确认", "module": "planner", "session_id": "sess-clear",
         })
+        d = r.json()
         c.check("聊天确认不会清空课表", len(get_timetable()) == n0,
                 f"仍 {len(get_timetable())} 门")
-        c.check("聊天确认的回复里也不许出现'已清空'", "清空" not in (r.json().get("answer") or ""))
+        # 不许谎称"已经删了"——"清空课表"这个词本身不算撒谎（讲规矩要用它），
+        # 早先把断言写成 `"清空" not in answer`，修复后讲规矩的回复也被误伤。
+        c.check("聊天确认的回复不许谎称已清空",
+                not any(w in (d.get("answer") or "")
+                        for w in ("已清空", "已经清空", "帮你清空", "清掉了")),
+                (d.get("answer") or "")[:60])
+        c.check("聊天确认后弹窗重新出现（学生有路可走，不再被晾着）",
+                any(o.get("kind") == "timetable_clear" for o in d.get("options") or []))
+        c.check("回复把规矩说明白了（聊天确认不作数 / 要点弹窗）",
+                "不作数" in (d.get("answer") or "") and "弹窗" in (d.get("answer") or ""))
 
         # —— ④ 没有前端这一下，后端接口必须拒绝 ——
+        #     先把提案作废（模拟学生点了【取消】/ 提案过期 / 服务重启），
+        #     修复后聊天确认会重新挂一张提案，不先作废的话接口是合法的。
+        clear_pending("sess-clear")
         r2 = client.post("/api/timetable/clear", json={"session_id": "sess-clear"})
         c.check("没带 confirm=true 时后端拒绝清空", r2.status_code == 400,
                 str(r2.status_code))
