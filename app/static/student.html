@@ -481,7 +481,7 @@
       const el = document.createElement("div");
       el.className = "msg " + (kind === "sys" ? "sys" : (who === "我" ? "user" : "bot"));
       let html = `<div class="who">${who}${module ? `<span class="tag">${module}</span>` : ""}</div>`;
-      html += `<div class="bubble">${escapeHtml(content)}</div>`;
+      html += `<div class="bubble">${richText(content)}</div>`;
       // 注意：学生端**不展示** Agent 思考轨迹（避免吓到非技术评委）；
       // 取而代之的是底部「正在思考…」提示，藏在 sendMsg 里。
       el.innerHTML = html;
@@ -792,6 +792,14 @@
 
     function escapeHtml(s) {
       return String(s).replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+    }
+
+    // 管家偶尔会用 **加粗** 强调一句重点（后端的确定性回复里也有）。
+    // 聊天泡是"先转义再塞进 innerHTML"的，星号就被原样显示出来了——
+    // 学生看到的是「要不要把 **游泳** 排进日程」，像 bug。
+    // 所以转义之后再把 **x** 还原成 <b>x</b>（顺序不能反：先渲染再转义就等于开了 XSS 口子）。
+    function richText(s) {
+      return escapeHtml(s).replace(/\*\*([^*\n]{1,60})\*\*/g, "<b>$1</b>");
     }
 
     // 会话 id：和日程页共用同一个，后端靠它把几轮对话串起来，

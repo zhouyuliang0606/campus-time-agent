@@ -11,7 +11,19 @@
 """
 import sys
 
-from _harness import Checker, sandbox, make_client, title, REAL_DATA_DIR
+from _harness import Checker, sandbox, make_client, title
+
+
+def _fresh_courses():
+    """一份干净的演示周表（人话：从源头 courses.json 还原）。
+
+    为什么不读 app/data/student/timetable.json：那是**运行时数据**，
+    跑一遍端到端、手点一次演示，它就会少一门课／多一门课。
+    读它等于把偶发脏数据写进测试里——上一批明明全过、换个顺序就挂，根因就在这儿。
+    源头 courses.json 才是演示课表的唯一真源，谁动过运行时时表都不影响这一批。
+    """
+    from _e2e_env import demo_courses_from_json
+    return demo_courses_from_json()
 
 
 def test_express_view_api():
@@ -191,7 +203,11 @@ def test_persona_rules_and_workorders():
         c.check("规矩③隔离：确认前不写库、只影响当前学生",
                 "学生确认之前数据库绝不会变" in main_src and "只影响当前学生" in main_src)
         c.check("规矩③补充：点弹窗是优先方式、回确认文字是备选方式，都由系统执行",
-                "优先方式" in main_src and "备选方式" in main_src)
+                "确认条上的【确认】是优先方式" in main_src
+                and "备选方式" in main_src)
+        c.check('规矩③补充：点名"你没有写入工具"，禁止用「搞定」暗示已完成',
+                "一个写入工具都没有" in main_src and "搞定" in main_src
+                and "已经正式写进你的待办" in main_src)
         c.check("规矩③补充：确认前禁止谎报已完成",
                 "禁止说" in main_src and "已经加上了" in main_src)
         c.check("规矩④定位：决定权在学生、上传文件只读不改",
@@ -295,9 +311,8 @@ def test_course_change_proposals():
     with sandbox():
         client = make_client()
         # 沙箱的 DATA_DIR 在进程内首次 import 时就固定、首个沙箱退出后即被删，
-        # 所以这里主动把真实演示周表播种进当前生效的数据目录，保证有课可删
-        seed = _json.load(open(os.path.join(REAL_DATA_DIR, "student", "timetable.json"),
-                               encoding="utf-8"))
+        # 所以这里主动把演示周表播种进当前生效的数据目录，保证有课可删
+        seed = {"courses": _fresh_courses()}
         save_timetable(seed["courses"])
         base_n = len(get_timetable())
         c.check("沙箱演示周表就绪", base_n >= 10, f"{base_n} 门课")
@@ -418,8 +433,7 @@ def test_chat_confirm_applies_timetable():
     c = Checker()
     with sandbox():
         client = make_client()
-        seed = _json.load(open(os.path.join(REAL_DATA_DIR, "student", "timetable.json"),
-                               encoding="utf-8"))
+        seed = {"courses": _fresh_courses()}
         save_timetable(seed["courses"])
         base_courses = list(get_timetable())
         base_n = len(base_courses)
@@ -542,8 +556,7 @@ def test_clear_timetable_flow():
     c = Checker()
     with sandbox():
         client = make_client()
-        seed = _json.load(open(os.path.join(REAL_DATA_DIR, "student", "timetable.json"),
-                               encoding="utf-8"))
+        seed = {"courses": _fresh_courses()}
         _st(seed["courses"])
         n0 = len(get_timetable())
         c.check("起始周表有课可清", n0 >= 10, f"{n0} 门课")
@@ -713,8 +726,7 @@ def test_clear_intent_and_gate():
 
     with sandbox():
         client = make_client()
-        seed = _json.load(open(os.path.join(REAL_DATA_DIR, "student", "timetable.json"),
-                               encoding="utf-8"))
+        seed = {"courses": _fresh_courses()}
         _st(seed["courses"])
         n0 = len(get_timetable())
 
@@ -791,8 +803,7 @@ def test_confirm_ui_page_and_alt_confirm():
 
     with sandbox():
         client = make_client()
-        seed = _json.load(open(os.path.join(REAL_DATA_DIR, "student", "timetable.json"),
-                               encoding="utf-8"))
+        seed = {"courses": _fresh_courses()}
         _st(seed["courses"])
         n0 = len(get_timetable())
 

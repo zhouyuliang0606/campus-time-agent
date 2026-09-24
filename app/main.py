@@ -53,6 +53,7 @@ from app.modules.planner import (
     parse_add_course,
     parse_add_todo,
     parse_remove_course,
+    is_add_todo_followup,
     pick_todo_missing,
     wants_add_course,
     wants_add_todo,
@@ -122,6 +123,10 @@ ASSISTANT_RULES = """
       说了就是把学生指到死路，学生只会回一句"我怎么找不到"）。
    ⛔ 学生确认之前，禁止说"已经加上了/已经删掉了/已经改好了"——
       没入库就是没入库，谎报比不做更伤信任。
+   ⛔ 想加课、加待办、改课表时：你手上**一个写入工具都没有**（真写库的是后端的确认条）。
+      所以只能说"说一下时间/哪天，我算好给你出确认条"，禁止用"搞定／没问题／
+      已经正式写进你的待办啦／刷新一下就能看到"这类话暗示已完成——
+      说这话的时候数据库里空空如也，学生一刷新就发现被骗（这条被投诉过）。
 4. 自我定位：你是辅助工具，不是决策者。所有对用户数据的改动，决定权永远在学生本人；
    学生上传的文件（docx/xlsx 等）只读取内容，**禁止修改或覆盖源文件**。
 """
@@ -552,15 +557,19 @@ async def chat(req: Request):
     #     于是客服这边时说"已经加上"、时说"你回确认了，但我这边还没生成待办提案"，
     #     学生刷新日程也看不到东西。这条链路不能碰运气。
     #     跟清空课表一个规矩：这里**只出提案，一个字节都不写库**。
-    if wants_add_todo(message):
-        # 追问后的补充回答（学生先说"帮我安排游泳"，再补"周二下午两点到三点"）：
-        # 补充那句里没有标题，单独解析会把标题弄丢——把上一句原话拼回来一起算。
-        # 识别标记就是下面追问分支写进会话历史的那句"加待办缺细节"。
-        conv = get_conversation(session_id)
-        prev_user = next((m.get("content") or "" for m in reversed(conv)
-                          if m.get("role") == "user"), "")
-        asking_add = any("加待办缺细节" in (m.get("content") or "")
-                         for m in conv[-4:] if m.get("role") == "assistant")
+    #
+    #     先把"学生是不是在补上一轮追问的信息"算出来：
+    #     补充句往往只有时间（"下午两点到三点"），不满足 wants_add_todo 的"得带日期"，
+    #     光看这一句会被当成闲聊掉回模型——那里就是"搞定！已经写进"的老家。
+    conv = get_conversation(session_id)
+    prev_user = next((m.get("content") or "" for m in reversed(conv)
+                      if m.get("role") == "user"), "")
+    asking_add = any("加待办缺细节" in (m.get("content") or "")
+                     for m in conv[-4:] if m.get("role") == "assistant")
+    if wants_add_todo(message) or (asking_add and is_add_todo_followup(message)):
+        # 追问后的补充回答（学生先说"帮我安排周二的游泳"，再补"下午两点到三点"）：
+        # 补充那句里没有标题、也没有日期，单独解析会把标题弄丢——
+        # 把上一句原话拼回来一起算。识别标记就是下面追问分支写进会话历史的那句"加待办缺细节"。
         proposal = None
         if asking_add and prev_user:
             proposal = parse_add_todo(prev_user + "，" + message)

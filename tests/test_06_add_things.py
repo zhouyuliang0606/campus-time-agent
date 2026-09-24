@@ -336,6 +336,142 @@ def test_clear_conversation():
     return c.summary("第四批（清理聊天记录）")
 
 
+def test_add_todo_chinese_clock():
+    """第五批：学生嘴里那个「下午两点到三点」——口语时间必须由系统接住。
+
+    学生报障原话（截图）：「确认」之后管家回「搞定！游泳这条已经正式写进你的待办啦 ✅」，
+    可日程里什么都没有——schedule 模块**连一个写入工具都没有**，那是纯嘴甜。
+
+    查下来根因两层：
+      1. 学生说的是「周二下午两点到三点游泳」，老解析器只认阿拉伯数字，
+         「两点」在它眼里等于没给时间 → parse 失败 → 整句话掉回大模型；
+      2. 掉回模型之后，学生回「确认」时暂存里空空如也，模型就继续撒谎。
+
+    这一批照"删除课表"的规矩钉死三件事：中文报时／下午时段要能算出来；
+    算不全就**系统追问**（绝不掉回模型）；确认落空时把学生的原话捞回来重新出提案。
+    """
+    import datetime as _dt
+
+    title("5. 加待办（口语时间）：两点到三点、下午、追问、确认落空都要接住")
+    c = Checker()
+    from app.modules.planner import parse_add_todo, wants_add_todo, pick_todo_missing
+    from app.store import list_todos, append_conversation
+
+    with sandbox():
+        client = make_client()
+        tomorrow = (_dt.date.today() + _dt.timedelta(days=1)).isoformat()
+
+        # —— ① 解析层：中文报时 + 下午要换算成 24 小时制 ——
+        p = parse_add_todo("帮我安排明天下午两点到三点游泳")
+        c.check("「下午两点到三点」算得出 14:00-15:00",
+                bool(p) and p.get("start") == "14:00" and p.get("end") == "15:00",
+                _json.dumps(p, ensure_ascii=False) if p else "None")
+        c.check("日期算成明天", bool(p) and p.get("date") == tomorrow,
+                (p or {}).get("date", ""))
+        c.check("标题抠成「游泳」（时间词要擦干净）", bool(p) and p.get("title") == "游泳",
+                (p or {}).get("title", ""))
+        p2 = parse_add_todo("安排明天晚上七点半跑步")
+        c.check("「晚上七点半」算得出 19:30",
+                bool(p2) and p2.get("start") == "19:30", (p2 or {}).get("start", ""))
+        p3 = parse_add_todo("周五下午3点20写作业")
+        c.check("「3点20」这种点+分也认", bool(p3) and p3.get("start") == "15:20",
+                (p3 or {}).get("start", ""))
+        c.check("「周一加一节体育」仍然归加课，不被待办抢走",
+                not wants_add_todo("周一加一节体育，19:00-20:40，体育馆"))
+        c.check("只给星期不给时间时，缺的是「时间」",
+                pick_todo_missing("帮我安排周二的游泳") == "时间")
+
+        # —— ② 出提案 → 确认 → 真落库（走的是学生截图里那整条链路）——
+        sid = "oral-todo-1"
+        r = client.post("/api/chat", json={
+            "message": "帮我安排明天下午两点到三点游泳",
+            "module": "schedule",            # 学生当时正停在日程面板，显式锁了 schedule
+            "session_id": sid,
+        })
+        d = r.json()
+        opts = d.get("options") or []
+        c.check("停在 schedule 模块也照样由系统出提案（不再掉给模型）",
+                d.get("module") == "planner"
+                and any(o.get("kind") == "todo_add" for o in opts),
+                f"module={d.get('module')} opts={len(opts)}")
+        c.check("提案上就是 14:00-15:00",
+                bool(opts) and opts[0].get("start") == "14:00"
+                and opts[0].get("end") == "15:00",
+                _json.dumps(opts[:1], ensure_ascii=False)[:120])
+        c.check("这一轮说的是「要不要」，不是「已经写进」",
+                "要不要" in (d.get("answer") or "")
+                and "已经写进" not in (d.get("answer") or ""),
+                (d.get("answer") or "")[:60])
+        c.check("出提案没写库", not any(t["title"] == "游泳" for t in list_todos(tomorrow)),
+                [t["title"] for t in list_todos(tomorrow)])
+
+        r2 = client.post("/api/chat", json={"message": "确认", "session_id": sid})
+        c.check("回一句「确认」就真落库了",
+                any(t["title"] == "游泳" for t in list_todos(tomorrow)),
+                [t["title"] for t in list_todos(tomorrow)])
+        c.check("落库时间是 14:00-15:00",
+                bool([t for t in list_todos(tomorrow)
+                      if t["start"] == "14:00" and t["end"] == "15:00"]))
+        c.check("回答说的是「已加入日程」而不是「搞定」",
+                "已加入日程" in (r2.json().get("answer") or ""),
+                (r2.json().get("answer") or "")[:50])
+
+        # —— ③ 信息不全：系统追问，绝不掉回模型 ——
+        sid2 = "oral-todo-2"
+        r3 = client.post("/api/chat", json={
+            "message": "帮我安排周二的游泳", "module": "schedule", "session_id": sid2,
+        })
+        d3 = r3.json()
+        c.check("缺时间时先追问，不出提案（也不交给模型瞎说）",
+                not (d3.get("options") or []) and d3.get("module") == "planner",
+                (d3.get("answer") or "")[:60])
+        c.check("追问里点明缺的是时间", "时间" in (d3.get("answer") or ""),
+                (d3.get("answer") or "")[:60])
+
+        # 补充一句「下午两点到三点」→ 标题要跟着上一句走（游泳），不能变成「待办」
+        r4 = client.post("/api/chat", json={
+            "message": "下午两点到三点", "module": "schedule", "session_id": sid2,
+        })
+        o4 = r4.json().get("options") or []
+        c.check("补充的时间接上了，出提案", any(o.get("kind") == "todo_add" for o in o4),
+                _json.dumps(o4[:1], ensure_ascii=False)[:120])
+        c.check("标题仍是上一句的「游泳」（追问后的补充要合并原话）",
+                bool(o4) and o4[0].get("title") == "游泳",
+                (o4[0].get("title") if o4 else ""))
+        c.check("时间换算成 14:00-15:00",
+                bool(o4) and o4[0].get("start") == "14:00", (o4[0].get("start") if o4 else ""))
+
+        # —— ④ 确认落空兜底：上一轮已经掉给模型撒过谎，学生照样回「确认」——
+        #     把学生截图里的那段真实历史摆出来：学生原话 + 模型那句「搞定！已经正式写进」，
+        #     暂存里什么都没有。此时回「确认」应该把原话捞回来重新出提案，而不是继续装。
+        sid3 = "oral-todo-3"
+        append_conversation(sid3, "user", "帮我安排下周二的游泳，下午两点到三点")
+        append_conversation(sid3, "assistant",
+                            "搞定！游泳这条已经正式写进你的待办啦 ✅ 刷新一下就能看到。")
+        r5 = client.post("/api/chat", json={"message": "确认", "session_id": sid3})
+        d5 = r5.json()
+        o5 = d5.get("options") or []
+        c.check("确认落空时把学生原话捞回来重新出提案",
+                any(o.get("kind") == "todo_add" for o in o5),
+                _json.dumps(o5[:1], ensure_ascii=False)[:120])
+        c.check("捞回来的提案标题是「游泳」、时间是 14:00-15:00",
+                bool(o5) and o5[0].get("title") == "游泳"
+                and o5[0].get("start") == "14:00",
+                _json.dumps(o5[:1], ensure_ascii=False)[:120])
+        day5 = (o5[0].get("date") if o5 else "")
+        c.check("这一轮还是没写库（要等学生真的点头）",
+                not any(t["title"] == "游泳" and t["date"] == day5
+                        for t in list_todos(day5)),
+                [t["title"] + "@" + t["date"] for t in list_todos(day5)])
+
+        r6 = client.post("/api/chat", json={"message": "确认", "session_id": sid3})
+        c.check("再确认一次就真写进去了",
+                any(t["title"] == "游泳" and t["date"] == day5
+                    for t in list_todos(day5)),
+                [t["title"] + "@" + t["date"] for t in list_todos(day5)])
+    return c.summary("第五批（加待办·口语时间 / 追问 / 确认落空）")
+
+
 def main():
     global code
     print("\n" + "=" * 60)
@@ -345,6 +481,7 @@ def main():
     code |= test_add_course_pipeline()
     code |= test_conversation_history()
     code |= test_clear_conversation()
+    code |= test_add_todo_chinese_clock()
     return code
 
 
