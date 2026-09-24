@@ -184,10 +184,16 @@ def test_persona_rules_and_workorders():
                 "ASSISTANT_RULES" in main_src and "prompt = base_prompt + FILE_HINT + ASSISTANT_RULES" in main_src)
         c.check("规矩①输出要求：简洁/不暴露内部报错/不输出低俗内容",
                 all(k in main_src for k in ("不冗长废话", "禁止把系统内部报错", "低俗")))
-        c.check("规矩②工单：先问「是否上报给管理端」，确认才生成",
-                "是否上报给管理端" in main_src and "普通日常对话、排课、规划待办一律不上报" in main_src)
-        c.check("规矩③隔离：预览方案、确认前不写库、只影响当前学生",
-                "预览方案" in main_src and "只影响当前学生" in main_src)
+        c.check("规矩②工单：只有快递/外卖这类才两步走（先问是否上报、确认才推送）",
+                "上报给管理端" in main_src and "绝不推送管理端" in main_src)
+        c.check("规矩②补充：增减课程/增删待办属学生自主管理，一律不上报管理端",
+                "一律不上报管理端" in main_src)
+        c.check("规矩③隔离：确认前不写库、只影响当前学生",
+                "学生确认之前数据库绝不会变" in main_src and "只影响当前学生" in main_src)
+        c.check("规矩③补充：点弹窗是优先方式、回确认文字是备选方式，都由系统执行",
+                "优先方式" in main_src and "备选方式" in main_src)
+        c.check("规矩③补充：确认前禁止谎报已完成",
+                "禁止说" in main_src and "已经加上了" in main_src)
         c.check("规矩④定位：决定权在学生、上传文件只读不改",
                 "决定权永远在学生本人" in main_src and "禁止修改或覆盖源文件" in main_src)
 
@@ -568,29 +574,24 @@ def test_clear_timetable_flow():
         c.check("工具箱里没有任何课表写入/删除类工具（模型够不着删除接口）",
                 wrote == [], str(wrote))
 
-        # —— ③ 聊天里回一句「确认」不会清空（必须点弹窗按钮）——
-        #     修复后的契约：系统把弹窗**重新请出来**（options 里再带一张 timetable_clear），
-        #     回复明确讲清"聊天确认不作数"。此前这里交回模型，模型会顺嘴撒谎——
-        #     "我重新帮你出一次提案"（根本没出）、"在弹出的确认卡上点确认"（根本没有卡）、
-        #     "回我一句「确认清空」就会执行"（回什么都不会执行），
-        #     学生照做三连失败：卡片没显示、确认没删、删除失败。
+        # —— ③ 聊天里回确认类文字 = 备选方式，同样要执行（需求③）——
+        #     新规格：点弹窗【确认】是优先方式，在聊天框回"确认添加/确认删除"这类文字
+        #     是**备选方式，同样触发本次变更提案的后端执行**。
+        #     （早先这里为了保护"删空不可恢复"加了"必须点按钮"的闸门，
+        #      结果学生回「确认」毫无反应，被当成"删除失败"投诉了一轮。闸门让位给规格。）
         save_pending("sess-clear", [p])
         r = client.post("/api/chat", json={
-            "message": "确认", "module": "planner", "session_id": "sess-clear",
+            "message": "确认删除", "module": "planner", "session_id": "sess-clear",
         })
         d = r.json()
-        c.check("聊天确认不会清空课表", len(get_timetable()) == n0,
-                f"仍 {len(get_timetable())} 门")
-        # 不许谎称"已经删了"——"清空课表"这个词本身不算撒谎（讲规矩要用它），
-        # 早先把断言写成 `"清空" not in answer`，修复后讲规矩的回复也被误伤。
-        c.check("聊天确认的回复不许谎称已清空",
-                not any(w in (d.get("answer") or "")
-                        for w in ("已清空", "已经清空", "帮你清空", "清掉了")),
-                (d.get("answer") or "")[:60])
-        c.check("聊天确认后弹窗重新出现（学生有路可走，不再被晾着）",
-                any(o.get("kind") == "timetable_clear" for o in d.get("options") or []))
-        c.check("回复把规矩说明白了（聊天确认不作数 / 要点弹窗）",
-                "不作数" in (d.get("answer") or "") and "弹窗" in (d.get("answer") or ""))
+        c.check("聊天回「确认删除」同样触发执行（备选方式）",
+                len(get_timetable()) == 0, f"还剩 {len(get_timetable())} 门")
+        c.check("执行完回复里说清了清掉几门",
+                str(n0) in (d.get("answer") or ""), (d.get("answer") or "")[:60])
+        c.check("执行完不再挂着提案（不会重复删）",
+                peek_pending("sess-clear") is None)
+        # 重新播种，后面几步还要用
+        _st(seed["courses"])
 
         # —— ④ 没有前端这一下，后端接口必须拒绝 ——
         #     先把提案作废（模拟学生点了【取消】/ 提案过期 / 服务重启），
@@ -623,19 +624,37 @@ def test_clear_timetable_flow():
         again = propose_clear_timetable()
         c.check("空表时提示没课可清，而不是硬出一张卡", "本来就是空的" in again, again[:40])
 
-        # —— ⑦ 前端页面：弹窗结构 + 确认按钮 + 走的是 clear 接口 ——
-        page = (pathlib.Path(__file__).resolve().parent.parent / "app" /
-                "static" / "student.html").read_text(encoding="utf-8")
+        # —— ⑦ 前端页面：弹窗是**单独一个 UI 页面**，载进遮罩里 ——
+        #     需求点名"弹窗为单独 ui 页面"，所以确认 UI 搬到 app/static/confirm.html，
+        #     学生端只留一个遮罩容器 + 一个 iframe 把它载进来，并接住确认/取消结果。
+        proj = pathlib.Path(__file__).resolve().parent.parent
+        page = (proj / "app" / "static" / "student.html").read_text(encoding="utf-8")
+        cf = (proj / "app" / "static" / "confirm.html").read_text(encoding="utf-8")
         for needle, why in (
-            ('id="ttClearMask"', "弹窗容器存在"),
-            ('id="ttClearOk"', "确认按钮存在"),
-            ('id="ttClearCancel"', "取消按钮存在"),
-            ('/api/timetable/clear', "确认按钮打的是清空专用接口"),
-            ('confirm: true', "删除必须由前端显式确认才发得出去"),
-            ('await loadScheduleView()', "删完自动刷新课表视图"),
+            ('id="ttClearMask"', "遮罩容器还在（出提案时把它显示出来）"),
+            ('id="cfFrame"', "弹窗内容是独立页面（iframe 承载）"),
+            ('/confirm?session=', "学生端唤起的是 /confirm 这个单独的确认页面"),
+            ('campustime-confirm', "接住独立页面回传的确认/取消结果"),
+            ('loadScheduleView()', "入库成功后自动刷新课表/待办面板"),
             ('Escape', "支持 Esc 取消"),
         ):
             c.check(why, needle in page)
+        for needle, why in (
+            ('id="cfOk"', "独立页面上有【确认】按钮"),
+            ('id="cfCancel"', "独立页面上有【取消】按钮"),
+            ('/api/timetable/clear', "清空走的是清空专用接口"),
+            ('confirm: true', "删除必须由前端显式确认才发得出去"),
+            ('/api/timetable/apply', "课表变更走确定性写入口"),
+            ('/api/todos', "加待办走待办写入口"),
+            ('tellParent("cancelled"', "点取消只是关掉，不会去调写入接口"),
+        ):
+            c.check(why, needle in cf)
+        src = (proj / "app" / "main.py").read_text(encoding="utf-8")
+        c.check("/confirm 路由存在（弹窗可单独打开验收）",
+                '@app.get("/confirm"' in src)
+        # 只读提案接口：独立页面靠它取"这次要改什么"
+        c.check("只读提案接口 /api/pending/{sid} 存在",
+                '@app.get("/api/pending/{sid}")' in src)
 
         # —— ⑧ 系统提示：只出提案、不许谎称已删、不许替学生决定 ——
         from app.main import ASSISTANT_RULES
@@ -737,6 +756,92 @@ def test_clear_intent_and_gate():
     return c.summary("第十一批（清空意图判定 + 删除接口闸门）")
 
 
+def test_confirm_ui_page_and_alt_confirm():
+    """第十二批：弹窗是单独 UI 页面 + 聊天回确认文字（备选方式）也能执行。
+
+    需求③说确认有两条路：点弹窗【确认】（优先）、在聊天框回"确认添加/确认删除"
+    这类文字（备选）。需求还点名"弹窗为单独 ui 页面"。这一批把两件事都钉住。
+    """
+    import datetime
+    import json as _json
+    import os
+    import pathlib
+
+    from app.agent.pending import clear_pending, is_confirmation, save_pending
+    from app.modules.planner import get_timetable
+    from app.store import save_timetable as _st
+
+    title("12. 独立确认页面 + 聊天确认文字（备选方式）")
+    c = Checker()
+    proj = pathlib.Path(__file__).resolve().parent.parent
+
+    # —— ① 确认词判定：认得"确认+动作"，认不得提问和新指令 ——
+    for yes in ("确认", "好的", "确认删除", "确认添加", "确认清空", "确认加入",
+                "好的，加入吧", "确认删除周一第一节", "行，删除", "可以改"):
+        c.check(f"「{yes}」算点头", is_confirmation(yes))
+    for no in ("确认一下周一的课表是什么", "帮我看看周一第一节是什么",
+               "明天加一节高数", "周末有什么安排吗", "删除周一的课", ""):
+        c.check(f"「{no}」不算点头（不该被听成确认）", not is_confirmation(no))
+
+    with sandbox():
+        client = make_client()
+        seed = _json.load(open(os.path.join(REAL_DATA_DIR, "student", "timetable.json"),
+                               encoding="utf-8"))
+        _st(seed["courses"])
+        n0 = len(get_timetable())
+
+        # —— ② 只读提案接口：独立确认页靠它取"这次要改什么"，且绝不写库 ——
+        c.check("没有提案时返回空",
+                client.get("/api/pending/nobody").json().get("pending") is None)
+        prop = {"kind": "timetable_clear", "summary": "清空全部课程", "clear_count": n0}
+        save_pending("sess-pending", [prop])
+        d = client.get("/api/pending/sess-pending").json()
+        c.check("有提案时读得回来", (d.get("pending") or {}).get("kind") == "timetable_clear")
+        c.check("读提案不写库（周表门数不变）", len(get_timetable()) == n0,
+                f"{n0} → {len(get_timetable())}")
+        c.check("超长 session_id 不炸",
+                client.get("/api/pending/" + "x" * 200).json().get("pending") is None)
+        c.check("空 session_id 不炸",
+                client.get("/api/pending/").status_code in (200, 404))
+
+        # 写入过的提案不再展示（避免重复写）
+        from app.agent.pending import mark_applied
+        mark_applied("sess-pending")
+        c.check("已执行的提案不再展示（不会重复写）",
+                client.get("/api/pending/sess-pending").json().get("pending") is None)
+        clear_pending("sess-pending")
+
+        # —— ③ 备选方式：聊天回「确认添加」把待办真正写进日程 ——
+        from app.store import list_todos
+        today = datetime.date.today().isoformat()
+        n_todo = len(list_todos(today))
+        save_pending("sess-alt", [{
+            "kind": "todo_add", "title": "背单词", "date": today,
+            "start": "21:00", "end": "21:30", "weekday": "周四", "minutes": 30,
+        }])
+        r = client.post("/api/chat", json={
+            "message": "确认添加", "module": "planner", "session_id": "sess-alt",
+        })
+        c.check("回「确认添加」把待办写进日程（备选方式）",
+                any(t["title"] == "背单词" for t in list_todos(today)),
+                (r.json().get("answer") or "")[:60])
+
+        # —— ④ 备选方式：聊天回「确认删除」把课表变更提案写进周表 ——
+        from app.modules.planner import propose_course_change
+        raw = propose_course_change("remove", day=1, course="高等数学")
+        p = _json.loads(raw)["__proposal__"]
+        save_pending("sess-alt2", [p])
+        r2 = client.post("/api/chat", json={
+            "message": "确认删除", "module": "planner", "session_id": "sess-alt2",
+        })
+        c.check("回「确认删除」把课表变更写进周表（备选方式）",
+                len(get_timetable()) == n0 - 1,
+                f"{n0} → {len(get_timetable())} 门")
+        c.check("回复里说清了执行结果", "已" in (r2.json().get("answer") or ""),
+                (r2.json().get("answer") or "")[:60])
+    return c.summary("第十二批（独立确认页面 + 聊天确认备选方式）")
+
+
 if __name__ == "__main__":
     code = 0
     code |= test_express_view_api()
@@ -750,4 +855,5 @@ if __name__ == "__main__":
     code |= test_chat_confirm_applies_timetable()
     code |= test_clear_timetable_flow()
     code |= test_clear_intent_and_gate()
+    code |= test_confirm_ui_page_and_alt_confirm()
     sys.exit(code)

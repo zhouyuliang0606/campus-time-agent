@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>确认变更 · 校园时间管家</title>
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+    background: #f2f4fa; color: #2a3350;
+    display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 20px;
+  }
+  /* 作为独立页面打开时：把弹窗卡片摆在页面正中（跟嵌在聊天页里长得一样） */
+  .dlg {
+    width: min(460px, 100%); background: #fff; border-radius: 14px; overflow: hidden;
+    box-shadow: 0 18px 48px rgba(20, 26, 45, .18);
+  }
+  .dlg-head {
+    padding: 14px 18px; font-size: 15px; font-weight: 700; color: #2b4a8b;
+    border-bottom: 1px solid #e6ecfb; background: #f4f8ff;
+  }
+  .dlg-head.danger { color: #c0392b; border-bottom-color: #f0e2e2; background: #fff6f6; }
+  .dlg-body { padding: 16px 18px; font-size: 13px; line-height: 1.7; }
+  .dlg-warn {
+    background: #fff8ec; border: 1px solid #f5e3c8; border-radius: 10px;
+    padding: 10px 12px; font-size: 12px; color: #8a6522; margin-top: 10px;
+  }
+  .summary { margin: 0 0 6px; font-size: 14px; font-weight: 600; color: #223; }
+  .meta { color: #6b7593; font-size: 12.5px; }
+  ul.courses { margin: 8px 0 0; padding-left: 18px; }
+  ul.courses li { margin: 2px 0; }
+  .dlg-foot {
+    display: flex; justify-content: flex-end; gap: 10px;
+    padding: 12px 18px; border-top: 1px solid #eef1f8; background: #fafbff;
+  }
+  .dlg-btn {
+    padding: 8px 18px; border-radius: 10px; font-size: 13px; cursor: pointer; border: 1px solid transparent;
+  }
+  .dlg-btn.ghost { background: #fff; border-color: #d8def0; color: #4a5675; }
+  .dlg-btn.ghost:hover { background: #f3f5fb; }
+  .dlg-btn.primary { background: #3a6ff0; color: #fff; }
+  .dlg-btn.primary:hover { background: #2f5ed6; }
+  .dlg-btn.danger { background: #e23a3a; color: #fff; }
+  .dlg-btn.danger:hover { background: #c93030; }
+  .dlg-btn:disabled { opacity: .55; cursor: not-allowed; }
+  .empty { text-align: center; color: #7b86a3; padding: 10px 0 4px; }
+  .done { text-align: center; padding: 8px 0 2px; }
+  .done .big { font-size: 28px; }
+  .back { margin-top: 12px; text-align: center; font-size: 12px; color: #7b86a3; }
+  .back a { color: #3a6ff0; text-decoration: none; }
+</style>
+</head>
+<body>
+<div class="dlg" role="dialog" aria-modal="true" aria-labelledby="cfTitle">
+  <div class="dlg-head" id="cfTitle">确认这次变更</div>
+  <div class="dlg-body" id="cfBody">
+    <div class="empty">正在读取待确认的变更…</div>
+  </div>
+  <div class="dlg-foot">
+    <button class="dlg-btn ghost" id="cfCancel">取消</button>
+    <button class="dlg-btn primary" id="cfOk" disabled>确认</button>
+  </div>
+</div>
+
+<script>
+// ——————————————————————————————————————————————————————————
+// 这是**单独的一个 UI 页面**（/confirm），专门用来做变更确认。
+// 它有两个用法：
+//   ① 直接打开 /confirm?session=xxx —— 学生能单独看到"这次要改什么"；
+//   ② 被学生端聊天页用 iframe 载进来当弹窗 —— 视觉与交互完全一致。
+//
+// 铁律（跟后端一致，别在这里破例）：
+//   · 本页只负责"把提案念清楚 + 把学生的按钮点下去"，自己不做任何数据加工；
+//   · 真正写库的是那几个后端写入口（/api/timetable/apply、/api/todos、
+//     /api/timetable/clear），本页只是去调它们；
+//   · 点【取消】什么都不做：不调任何写入接口，数据原样保留。
+// ——————————————————————————————————————————————————————————
+
+const inFrame = (() => { try { return window.self !== window.top; } catch (e) { return true; } })();
+
+function tellParent(type, payload) {
+  // 嵌在聊天页里时，用 postMessage 把结果告诉父页面，好让它刷新课表/待办面板
+  if (!inFrame) return;
+  try { window.parent.postMessage({ source: "campustime-confirm", type, ...payload }, "*"); } catch (e) {}
+}
+
+function params() { return new URLSearchParams(location.search); }
+function sid() { return (params().get("session") || params().get("session_id") || "").trim(); }
+
+function esc(s) {
+  return String(s == null ? "" : s).replace(/[&<>"]/g, c =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+}
+
+const headEl = document.getElementById("cfTitle");
+const bodyEl = document.getElementById("cfBody");
+const okBtn = document.getElementById("cfOk");
+const cancelBtn = document.getElementById("cfCancel");
+
+let current = null;   // 当前这份提案
+let busy = false;
+
+const KIND = {
+  timetable_clear: {
+    icon: "🗑️", title: "清空整张课表", confirm: "确认清空", danger: true,
+    render(p) {
+      return `<p class="summary">${esc(p.summary || "清空课表")}</p>
+        <div class="meta">将删除当前周表里的 <b>${Number(p.clear_count || 0)}</b> 门课。</div>
+        <div class="dlg-warn">清空后周表一门课都不剩，需要重新上传课表才能继续排课。<br>
+          <b>课表和日程之外的东西（比如你的待办）不受影响。</b></div>`;
+    },
+    async apply(p) {
+      return api("POST", "/api/timetable/clear",
+        { session_id: sid(), confirm: true });
+    },
+    doneText(p, r) {
+      const n = (r && r.removed != null) ? r.removed : Number(p.clear_count || 0);
+      return `已清空 <b>${n}</b> 门课，周表现在是空的。`;
+    },
+  },
+  timetable_change: {
+    icon: "📚", title: "课表变更", confirm: "确认变更", danger: false,
+    render(p) {
+      const cs = Array.isArray(p.courses) ? p.courses : [];
+      const day = ["", "周一", "周二", "周三", "周四", "周五", "周六", "周日"];
+      const rows = cs.slice(0, 12).map(c =>
+        `<li>${day[Number(c.day) || 0] || ("第" + c.day + "天")} ${esc(c.start)}-${esc(c.end)}
+          《${esc(c.course)}》${c.location ? " @ " + esc(c.location) : ""}</li>`).join("");
+      return `<p class="summary">${esc(p.summary || "课表变更")}</p>
+        <div class="meta">变更后共 <b>${cs.length}</b> 门课${rows ? "：" : ""}</div>
+        ${rows ? `<ul class="courses">${rows}</ul>` : ""}`;
+    },
+    async apply(p) {
+      return api("POST", "/api/timetable/apply",
+        { session_id: sid(), courses: p.courses });
+    },
+    doneText(p, r) {
+      return `课表已更新，现在共 <b>${(r && r.count) || (p.courses || []).length}</b> 门课。`;
+    },
+  },
+  todo_add: {
+    icon: "📝", title: "加入日程（待办）", confirm: "确认加入", danger: false,
+    render(p) {
+      return `<p class="summary">${esc(p.title || "待办")}</p>
+        <div class="meta">${esc(p.date)}（${esc(p.weekday || "")}）
+          ${esc(p.start)}-${esc(p.end)}${p.minutes ? " · 约 " + Number(p.minutes) + " 分钟" : ""}</div>`;
+    },
+    async apply(p) {
+      return api("POST", "/api/todos", {
+        session_id: sid(), title: p.title, date: p.date,
+        start: p.start, end: p.end,
+      });
+    },
+    doneText(p) {
+      return `已加入日程：<b>${esc(p.title)}</b>（${esc(p.date)} ${esc(p.start)}-${esc(p.end)}）。`;
+    },
+  },
+  todo_pick: {
+    icon: "📝", title: "加入日程（选定时段）", confirm: "确认加入", danger: false,
+    render(p) {
+      return `<p class="summary">${esc(p.title || "待办")}</p>
+        <div class="meta">${esc(p.date)}（${esc(p.weekday || "")}）
+          ${esc(p.start)}-${esc(p.end)}</div>`;
+    },
+    async apply(p) {
+      return api("POST", "/api/todos", {
+        session_id: sid(), title: p.title, date: p.date,
+        start: p.start, end: p.end,
+      });
+    },
+    doneText(p) {
+      return `已加入日程：<b>${esc(p.title)}</b>（${esc(p.date)} ${esc(p.start)}-${esc(p.end)}）。`;
+    },
+  },
+};
+
+async function api(method, url, payload) {
+  const r = await fetch(url, {
+    method,
+    headers: { "Content-Type": "application/json" },
+    body: payload ? JSON.stringify(payload) : undefined,
+  });
+  const text = await r.text();
+  let data = {};
+  try { data = JSON.parse(text); } catch (e) { data = { raw: text }; }
+  if (!r.ok) throw new Error(data.error || data.detail || ("请求失败 " + r.status));
+  return data;
+}
+
+function showDone(html) {
+  headEl.classList.remove("danger");
+  headEl.textContent = "✅ 已完成";
+  bodyEl.innerHTML = `<div class="done"><div class="big">✅</div>
+    <div style="margin-top:6px;font-size:13px;">${html}</div></div>`;
+  okBtn.style.display = "none";
+  cancelBtn.textContent = "关闭";
+}
+
+function showError(msg) {
+  bodyEl.innerHTML = `<div class="empty">⚠️ ${esc(msg)}<br>
+    <span style="font-size:12px;">数据没有改动，可以再试一次。</span></div>`;
+  okBtn.disabled = false;
+  busy = false;
+}
+
+let fromParent = false;   // 提案是不是父页面直接递过来的（是的话就别再让接口结果覆盖它）
+
+function render(p) {
+  if (!p || !KIND[p.kind]) {
+    bodyEl.innerHTML = `<div class="empty">当前没有待确认的变更。<br>
+      <span style="font-size:12px;">回到聊天里跟管家说你要改什么，它会出一张确认卡。</span></div>
+      <div class="back"><a href="/student">← 回到学生端</a></div>`;
+    okBtn.disabled = true;
+    tellParent("empty", {});
+    return;
+  }
+  current = p;
+  const k = KIND[p.kind];
+  headEl.textContent = k.icon + " " + k.title;
+  headEl.classList.toggle("danger", !!k.danger);
+  bodyEl.innerHTML = k.render(p);
+  okBtn.textContent = k.confirm;
+  okBtn.className = "dlg-btn " + (k.danger ? "danger" : "primary");
+  okBtn.disabled = false;
+  tellParent("loaded", { kind: p.kind });
+}
+
+async function load() {
+  const s = sid();
+  if (!s) {
+    bodyEl.innerHTML = `<div class="empty">缺少会话标识，无法读取待确认的变更。<br>
+      <span style="font-size:12px;">请从学生端聊天里发起操作。</span></div>`;
+    return;
+  }
+  let d;
+  try {
+    const r = await fetch("/api/pending/" + encodeURIComponent(s));
+    d = await r.json();
+  } catch (e) { showError("读取失败，请检查网络"); return; }
+  if (fromParent) return;      // 父页面已经指定了要显示哪一张，以它为准
+  render(d && d.pending);
+}
+
+okBtn.addEventListener("click", async () => {
+  if (!current || busy) return;
+  busy = true;
+  okBtn.disabled = true;
+  okBtn.textContent = "⏳ 执行中…";
+  const k = KIND[current.kind];
+  try {
+    const r = await k.apply(current);
+    showDone(k.doneText(current, r));
+    // 通知父页面：写入成功，请刷新课表/待办面板
+    tellParent("applied", { kind: current.kind });
+  } catch (e) {
+    showError(e.message || "执行失败");
+  }
+});
+
+cancelBtn.addEventListener("click", () => {
+  // 取消 = 什么都不做：不调任何写入接口，数据一根汗毛都不动
+  tellParent("cancelled", { kind: current && current.kind });
+  if (inFrame) return;                       // 嵌在聊天页里：交给父页面关掉弹窗
+  bodyEl.innerHTML = `<div class="empty">已取消，没有做任何改动。</div>
+    <div class="back"><a href="/student">← 回到学生端</a></div>`;
+  okBtn.style.display = "none";
+  cancelBtn.style.display = "none";
+});
+
+// 父页面（学生端）会把**这次要确认哪一张**直接递过来：
+// 一轮里出了好几张提案时，只有它知道该显示哪一张；单独打开时没有这个消息，就走接口读。
+window.addEventListener("message", (e) => {
+  const d = e.data;
+  if (!d || d.source !== "campustime-student") return;
+  if (d.type === "pending" && d.pending) {
+    fromParent = true;
+    if (d.session) {
+      const u = new URL(location.href);
+      u.searchParams.set("session", d.session);
+      history.replaceState(null, "", u.toString());
+    }
+    render(d.pending);
+    return;
+  }
+  if (d.type === "session" && d.session) {
+    const u = new URL(location.href);
+    u.searchParams.set("session", d.session);
+    history.replaceState(null, "", u.toString());
+    load();
+  }
+});
+
+// Esc 取消（独立页面打开时也能按 Esc）
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") cancelBtn.click();
+});
+
+load();
+</script>
+</body>
+</html>

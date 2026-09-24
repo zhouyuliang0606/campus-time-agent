@@ -83,13 +83,31 @@ def main():
                         return pg.locator(sel).first.inner_text()
                 return ""
 
+            # 出提案后优先唤起**独立确认页面**（/confirm，被 iframe 载进遮罩），
+            # 一轮出好几张时才退回内嵌卡片。点确认要两种形态都认得。
+            def confirm_now():
+                mask = pg.locator("#ttClearMask")
+                if "show" in (mask.get_attribute("class") or ""):
+                    pg.wait_for_timeout(1200)      # 等独立页面把提案渲染好
+                    pg.frame_locator("#cfFrame").locator("#cfOk").click()
+                    pg.wait_for_timeout(2500)
+                    return True
+                if pg.locator(".confirm-btn").count():
+                    pg.locator(".confirm-btn").first.click()
+                    pg.wait_for_timeout(3000)
+                    return True
+                return False
+
+            def has_entry():
+                mask = pg.locator("#ttClearMask")
+                return ("show" in (mask.get_attribute("class") or "")
+                        or pg.locator(".confirm-btn").count() > 0)
+
             print("\n======== ① 加待办：说一句 → 出卡 → 点确认 → 日程当场看得到 ========")
             ans = ask("帮我把今天的『复习线性代数』安排到 19:00 到 20:30")
-            check("回复里给出了确认入口（不再只是嘴上说已加）", "确认加入" in ans or pg.locator(".confirm-btn").count() > 0, ans[:90].replace("\n", " "))
+            check("回复里给出了确认入口（不再只是嘴上说已加）", "确认加入" in ans or has_entry(), ans[:90].replace("\n", " "))
             check("确认前没写库（提案归提案）", len(snap(pg)["todos"]) == 0, snap(pg)["todos"])
-            if pg.locator(".confirm-btn").count():
-                pg.locator(".confirm-btn").first.click()
-                pg.wait_for_timeout(3000)
+            confirm_now()
             s = snap(pg)
             check("点确认后写进待办", any("复习线性代数" in t for t in s["todos"]), s["todos"])
             check("日程面板当场合能看到", "复习线性代数" in show_schedule(), show_schedule()[:80].replace("\n", " "))
@@ -97,11 +115,8 @@ def main():
             print("\n======== ② 加课：出卡 → 点确认 → 周表当场刷新 ========")
             n0 = snap(pg)["n"]
             ask("周五再加一节『心理学选修』，教二-110，14:00 到 15:40")
-            check("加课给出了确认卡", pg.locator(".confirm-btn").count() > 0,
-                  [pg.locator(".confirm-btn").nth(i).inner_text() for i in range(pg.locator(".confirm-btn").count())])
-            if pg.locator(".confirm-btn").count():
-                pg.locator(".confirm-btn").first.click()
-                pg.wait_for_timeout(3000)
+            check("加课给出了确认入口（弹窗或卡片）", has_entry())
+            confirm_now()
             s2 = snap(pg)
             check("点确认后周表多了一门课", s2["n"] == n0 + 1, f"{n0} → {s2['n']} 门 {s2['names']}")
             check("周视图里能看到新课", "心理学选修" in show_schedule(), show_schedule()[:100].replace("\n", " "))

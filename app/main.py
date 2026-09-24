@@ -98,18 +98,27 @@ ASSISTANT_RULES = """
 1. 输出要求：回答简洁、贴合学生使用场景，不冗长废话；遇到乱码、损坏文件、异常输入，
    友好提示学生重试或换一份文件，**禁止把系统内部报错、堆栈、字段名直接暴露给学生**；
    绝不输出暴力、低俗、煽动类内容。
-2. 上报工单：不是学生的每句话都上报管理端。只有学生提出外卖丢失、快递问题这类
-   **需要管理员处理**的情况时，先问一句「是否上报给管理端？」，学生明确确认后才生成工单；
-   普通日常对话、排课、规划待办一律不上报。
+2. 上报工单：不是学生的每句话都上报管理端。**只有**学生提出快递丢失、外卖遗失这类
+   需要管理员协助处理的问题时，才走这个流程，且必须两步：
+     ① 先问一句「要不要上报给管理端？」；
+     ② 学生明确确认上报，工单才推送到管理端收件箱。
+   学生说不上报（或没表态）→ 只在学生这段对话里记着，**绝不推送管理端**。
+   反过来：**增减课程、增删日常待办属于学生本人自主管理自己的日程，
+   这类请求一律不上报管理端**，也别提"要先上报"这种话。
 3. 个人数据隔离：每个学生的数据相互独立，你的操作只影响当前学生。你可以生成
-   **修改课表、增删待办的预览方案**，但学生确认之前数据库绝不会变；
-   修改课表走 propose_course_change / propose_timetable_change 提案（学生点确认卡、
-   或在聊天框回一句"确认"，都由**系统**写入，不经过你）；
+   **增减课程、增删待办的变更提案**，但学生确认之前数据库绝不会变；
+   修改课表走 propose_course_change / propose_timetable_change 提案
+   （学生点弹窗上的【确认】，或在聊天框回"确认添加/确认删除"这类确认文字，
+   都由**系统**执行入库，不经过你）；
    add_todo_tool 等写入工具必须等学生点头后才能调用。
-   ⛔ 修改课表只走提案这一条路：学生点确认卡、或在聊天框回一句"确认"，
-      都由**系统**写入。禁止说"自己办不到、权限不够"这类话（出提案的工具本来就在工具箱里），
+   ⛔ 日程修改只走提案这一条路。学生点弹窗【确认】是优先方式，
+      在聊天框回确认类文字是备选方式，两者都由**系统**写入。
+   ⛔ 禁止说"自己办不到、权限不够、需要先上报管理端"这类话——
+      增删课程和待办是学生自主管理个人日程，出提案的工具本来就在工具箱里；
       也禁止让学生去界面上手动删课（界面上没有那个入口，
       说了就是把学生指到死路，学生只会回一句"我怎么找不到"）。
+   ⛔ 学生确认之前，禁止说"已经加上了/已经删掉了/已经改好了"——
+      没入库就是没入库，谎报比不做更伤信任。
 4. 自我定位：你是辅助工具，不是决策者。所有对用户数据的改动，决定权永远在学生本人；
    学生上传的文件（docx/xlsx 等）只读取内容，**禁止修改或覆盖源文件**。
 """
@@ -130,6 +139,31 @@ def _parse_clear_proposal() -> dict | None:
     except Exception:
         prop = None
     return prop if isinstance(prop, dict) else None
+
+
+def _execute_clear(session_id: str) -> dict | None:
+    """**执行**一次清空周表（人话：把课表清空的那一刻落库）。
+
+    为什么抽成一个函数：清空有两个入口——
+      · 优先方式：学生在弹窗上点【确认】（/api/timetable/clear）
+      · 备选方式：学生在聊天框回"确认删除"这类确认文字（确认分支）
+    两处必须走**同一段**代码，否则一个改了另一个忘改，就会出现
+    "点按钮能删、回确认删不掉"这种一半灵的怪事。
+
+    :return: {"removed": 清掉几门, "summary": 提案摘要}；暂存里没有清空提案时返回 None
+    """
+    from app.modules.planner import get_timetable
+    entry = take_pending(session_id) or {}
+    proposals = [o for o in (entry.get("options") or [])
+                 if isinstance(o, dict) and o.get("kind") == "timetable_clear"]
+    if not proposals:
+        return None
+    before = get_timetable()
+    save_timetable([])   # 只动当前这名学生本人的周表
+    return {
+        "removed": len(before),
+        "summary": str(proposals[-1].get("summary") or "清空课表"),
+    }
 
 
 def _pending_todo(session_id: str) -> dict | None:
@@ -206,8 +240,8 @@ def _todo_card(pick: dict, parsed: dict) -> dict:
 def _write_todo(card: dict) -> dict:
     """把一张待办确认卡真正写进日程（人话：系统落库，模型碰不到）。"""
     return add_todo(
-        card["title"], card["date"], card["start"], card["end"],
-        note=card.get("note", ""),
+        card.get("title") or "待办", card.get("date") or "", card.get("start") or "",
+        card.get("end") or "", note=card.get("note", ""),
     )
 
 
@@ -273,48 +307,52 @@ async def chat(req: Request):
         if picked:
             take_pending(session_id)
             _write_todo(picked)
+            # 用 .get() 而不是 picked['summary']：提案里的字段少一个就 500 了，
+            # 学生只会看到一句"网络开小差了"。摘要本来就是可选的，自己拼一句就行。
+            summary = (picked.get("summary")
+                       or f"{picked.get('title', '待办')}｜{picked.get('date', '')}"
+                          f"{picked.get('start', '')}-{picked.get('end', '')}")
             append_conversation(session_id, "user", message)
-            append_conversation(session_id, "assistant", f"已加入日程：{picked['summary']}")
+            append_conversation(session_id, "assistant", f"已加入日程：{summary}")
             return {
                 "module": "planner",
                 "session_id": session_id,
                 "answer": (
-                    f"✅ 已加入日程：**{picked['title']}**｜{picked['date']}"
-                    f"（{picked['weekday']}）{picked['start']}-{picked['end']}。"
+                    f"✅ 已加入日程：**{picked.get('title', '待办')}**｜{picked.get('date', '')}"
+                    f"（{picked.get('weekday', '')}）"
+                    f"{picked.get('start', '')}-{picked.get('end', '')}。"
                 ),
                 "trace": [{"step": 1, "phase": "✅ 学生确认（系统写入）",
-                           "answer": picked["summary"]}],
+                           "answer": summary}],
                 "options": [],
                 "awaiting_choice": False,
             }
-        # **清空课表回「确认」不算执行**（删空不可恢复，必须学生在弹窗上亲手点按钮）。
-        # 但绝不能因此把提案一丢了事、掉回模型——实测模型会顺嘴撒谎：
-        # "我重新帮你出一次提案"（根本没出）、"请在弹出的确认卡上点确认"（弹窗早关了）、
-        # "回我一句「确认清空」就会执行"（回什么都不会执行）。
-        # 学生照着做三连失败：卡片没显示、确认没删、删除失败——就是这个来的。
-        # 这里做成确定性：把**同一张提案**重新请出来（弹窗再次出现），并把规矩讲明白。
+        # **清空课表的确认**：按新规格，弹窗点【确认】是优先方式，
+        # 在聊天框回"确认删除"这类确认文字是**备选方式，同样要执行**（需求③）。
+        # 早先这里为了保护"删空不可恢复"硬加了一道"必须点按钮"的闸门，
+        # 结果学生回「确认」毫无反应，被当成"删除失败"投诉了一轮。闸门让位给规格。
+        # 执行逻辑收在 _execute_clear() 里，跟弹窗按钮走同一段代码——
+        # 模型依然碰不到删除接口，只是"谁来按这个按钮"多了一个入口。
         entry_now = peek_pending(session_id) or {}
         clear_held = [o for o in entry_now.get("options") or []
                       if isinstance(o, dict) and o.get("kind") == "timetable_clear"]
         if clear_held:
-            proposal = _parse_clear_proposal()
-            if proposal is not None:
-                save_pending(session_id, [proposal])   # 原提案没动过周表，换张新的继续挂着
+            done = _execute_clear(session_id)
+            if done is not None:
                 append_conversation(session_id, "user", message)
                 append_conversation(session_id, "assistant",
-                                    f"已生成清空提案：{proposal.get('summary', '')}")
+                                    f"已按你的确认清空课表：{done['removed']} 门")
                 return {
                     "module": "planner",
                     "session_id": session_id,
                     "answer": (
-                        "🗑️ 清空课表这一步，聊天里回「确认」不作数——"
-                        "删空不可恢复，必须在弹窗上亲手点【确认清空】才执行。<br>"
-                        "弹窗已经再次为你打开了，点它上面的按钮就行。"
+                        f"✅ 已按你的确认执行（{done['summary']}），"
+                        f"清空了 **{done['removed']} 门课**，周表现在一门课都不剩。"
                     ),
-                    "trace": [{"step": 1, "phase": "🗑️ 重新弹出清空确认弹窗",
-                               "answer": "聊天确认不算数，必须点弹窗按钮"}],
-                    "options": [proposal],
-                    "awaiting_choice": True,
+                    "trace": [{"step": 1, "phase": "✅ 学生确认（系统执行清空）",
+                               "answer": f"清掉 {done['removed']} 门"}],
+                    "options": [],
+                    "awaiting_choice": False,
                 }
             # 周表已经是空的：没什么可清，提案作废，直说。
             clear_pending(session_id)
@@ -329,10 +367,10 @@ async def chat(req: Request):
                 "options": [],
                 "awaiting_choice": False,
             }
+        # 走到这儿说明暂存里是**改课类提案**（增删单节课），清空类已在上面处理掉。
+        # 需求③的备选方式：聊天里回"确认添加/确认删除"这类文字，同样触发后端执行。
         applied = apply_pending_timetable_change(session_id)
-        # 清空课表是例外：必须学生亲手点弹窗上的【确认】，
-        # 在聊天框回一句"确认"不算——删空是不可恢复的操作，多一道人工闸门。
-        if applied and applied.get("kind") != "timetable_clear":
+        if applied:
             append_conversation(session_id, "user", message)
             append_conversation(session_id, "assistant", f"已执行：{applied['summary']}")
             return {
@@ -907,7 +945,6 @@ async def timetable_clear(req: Request):
     :param confirm: 必须显式为 True——前端按钮点了才会传
     """
     from app.agent.pending import take_pending
-    from app.modules.planner import get_timetable
     body = await req.json()
     sid = (body.get("session_id") or "").strip()
     if body.get("confirm") is not True:
@@ -919,21 +956,18 @@ async def timetable_clear(req: Request):
             return {"ok": True, "abandoned": True, "removed": 0}
         return JSONResponse({"error": "清空必须由前端确认弹窗触发"}, status_code=400)
 
-    entry = take_pending(sid) or {}
-    proposals = [o for o in (entry.get("options") or [])
-                 if isinstance(o, dict) and o.get("kind") == "timetable_clear"]
-    if not proposals:
+    # 执行逻辑跟"聊天里回确认文字"共用同一段（_execute_clear），
+    # 免得两个入口各写一份、改了一处忘了另一处。
+    done = _execute_clear(sid)
+    if done is None:
         return JSONResponse(
             {"error": "没有待确认的清空提案，请先在对话里让助手出一张清空确认弹窗"},
             status_code=400)
-
-    before = get_timetable()
-    save_timetable([])   # 当前登录学生本人的周表，整体清空
     return {
         "ok": True,
         "count": 0,
-        "removed": len(before),
-        "summary": str(proposals[-1].get("summary") or "清空课表"),
+        "removed": done["removed"],
+        "summary": done["summary"],
     }
 
 
@@ -1045,6 +1079,31 @@ async def conversation_get(sid: str):
     return {"messages": list(get_conversation(sid))}
 
 
+@app.get("/api/pending/{sid}")
+async def pending_get(sid: str):
+    """读当前待确认的那张提案（人话：给**独立的确认页面**取数用）。
+
+    为什么要单独给一个接口：确认弹窗做成了独立的 UI 页面（/confirm），
+    它跟聊天页不是同一段前端代码，得有个地方把"这次要改什么"取出来渲染。
+
+    只读接口——这里只会把提案**念一遍**，一个字节都不写库。
+    真正落库仍然只有那几个写入口（/api/timetable/apply、/api/todos、
+    /api/timetable/clear），而且都得由页面上的按钮或确认文字触发。
+    """
+    sid = (sid or "").strip()
+    if not sid or len(sid) > 64:
+        return {"pending": None}
+    entry = peek_pending(sid)
+    if not entry or entry.get("applied"):
+        return {"pending": None}
+    # 已经执行过的单张卡不再显示（避免重复写入）
+    opts = [o for o in (entry.get("options") or [])
+            if isinstance(o, dict) and not o.get("applied")]
+    if not opts:
+        return {"pending": None}
+    return {"pending": opts[-1], "session_id": sid}
+
+
 @app.post("/api/chat/reset")
 async def chat_reset(req: Request):
     """清空一段会话（人话：聊跑偏了或想重开一局时用）。
@@ -1107,6 +1166,20 @@ async def student_page():
 async def settings_page():
     """学生助手设置页：改助手名字、挑聊天性格、返回登录等都在这里。"""
     return _render("settings.html")
+
+
+@app.get("/confirm", response_class=HTMLResponse)
+async def confirm_page():
+    """**独立的变更确认页面**（人话：确认弹窗本身就是一个单独的 UI 页面）。
+
+    需求里点名"弹窗为单独 ui 页面"，所以确认这件事不再塞在聊天页的 DOM 里，
+    而是单独一个页面：
+      · 可以直接打开 /confirm?session=xxx 单独看"这次要改什么"；
+      · 学生端聊天里出提案时，也是把这个页面载进弹窗里（同一份 UI、同一套按钮）。
+
+    它自己不写库，只调后端那几个写入口；点【取消】则什么都不调。
+    """
+    return _render("confirm.html")
 
 
 @app.get("/admin", response_class=HTMLResponse)

@@ -143,6 +143,12 @@
       z-index: 90; align-items: center; justify-content: center; padding: 20px;
     }
     .mask.show { display: flex; }
+    /* 弹窗内容由 /confirm 这个独立页面承载（需求：弹窗为单独 ui 页面） */
+    .cf-frame {
+      width: min(460px, 100%); height: 340px;
+      border: 0; border-radius: 14px; background: #fff;
+      box-shadow: 0 18px 48px rgba(20, 26, 45, .28);
+    }
     .dlg {
       width: min(460px, 100%); background: #fff; border-radius: 14px; overflow: hidden;
       box-shadow: 0 18px 48px rgba(20, 26, 45, .28);
@@ -338,21 +344,11 @@
       </div>
 
       <!-- 清空课表确认弹窗：学生点【确认】才会让后端删，点【取消】什么都不发生 -->
+      <!-- 变更确认弹窗：弹窗 UI 本身是**单独一个页面**（/confirm），
+           这里只负责把它载进来当遮罩弹窗，并接住它回传的确认/取消结果。
+           好处是确认这件事有了自己的 URL 和自己的代码，能单独打开、单独验收。 -->
       <div id="ttClearMask" class="mask">
-        <div class="dlg" role="dialog" aria-modal="true" aria-labelledby="ttClearTitle">
-          <div class="dlg-head">⚠️ 清空整张课表</div>
-          <div class="dlg-body">
-            <p id="ttClearSummary" style="margin:0 0 8px;line-height:1.6;"></p>
-            <div class="dlg-warn">
-              此操作<b>不可撤销</b>，清掉之后周表上就不会再有任何课程。<br />
-              如果只是想删个别几节，建议改在对话里告诉管家「去掉周几的某节课」。
-            </div>
-          </div>
-          <div class="dlg-foot">
-            <button class="dlg-btn ghost" id="ttClearCancel">取消</button>
-            <button class="dlg-btn danger" id="ttClearOk">确认清空</button>
-          </div>
-        </div>
+        <iframe id="cfFrame" class="cf-frame" src="" title="变更确认"></iframe>
       </div>
 
       <!-- ② 快递：包裹列表 + 工单提交与记录 -->
@@ -497,26 +493,62 @@
     // ---- 清空课表确认弹窗：删库动作唯一的发生地 ----
     // 铁律：只有这个弹窗上的【确认清空】按钮会去调后端；AI 出完提案就撒手了，
     // 它既调不到删除接口，也无权替学生决定。点【取消】／按 Esc／点遮罩 → 原封不动。
+    // ---- 变更确认弹窗：内容是 /confirm 这个**单独的 UI 页面** ----
+    // 为什么改成 iframe 载一个独立页面（需求点名"弹窗为单独 ui 页面"）：
+    // 确认这件事（把要改什么念清楚 + 确认/取消两个按钮）从此有了自己的 URL、
+    // 自己的代码，能单独打开 /confirm?session=xxx 验收，也能被这里载进来当弹窗。
+    // 分工不变：本页只管"弹出来 + 接住结果"，写库依旧由后端那几个接口执行。
     const clearMask = document.getElementById("ttClearMask");
-    let clearCtx = null;   // 当前弹窗对应的那份提案
+    const cfFrame = document.getElementById("cfFrame");
+    let cfKind = null;          // 弹窗里当前这份提案的类型
+    let cfPending = null;       // 弹窗里当前这份提案（原样交给独立页面渲染）
 
-    function showClearModal(prop) {
-      clearCtx = prop;
-      const n = Number(prop.clear_count || 0);
-      document.getElementById("ttClearSummary").innerHTML =
-        `管家建议<b>清空全部 ${n} 门课</b>（${escapeHtml(prop.summary || "")}）。` +
-        `清空后周表上将一门课都不剩，需要重新上传课表才能继续排课。`;
+    function openConfirm(prop) {
+      cfPending = prop;
+      cfKind = prop && prop.kind;
+      // 加时间戳：换一次提案就重新加载一次，免得 iframe 还停在上一次的画面
+      cfFrame.src = "/confirm?session=" + encodeURIComponent(sessionId()) + "&t=" + Date.now();
       clearMask.classList.add("show");
-      document.getElementById("ttClearOk").focus();
+      // 页面加载完再把提案塞过去（它自己也能从 /api/pending 读，这里是双保险：
+      // 一轮出多张提案时，父页面知道该显示哪一张）
+      cfFrame.onload = () => {
+        try {
+          cfFrame.contentWindow.postMessage(
+            { source: "campustime-student", type: "pending", pending: prop, session: sessionId() },
+            "*");
+        } catch (e) {}
+      };
     }
 
-    function hideClearModal() {
+    function hideConfirm() {
       clearMask.classList.remove("show");
-      clearCtx = null;
+      cfFrame.onload = null;
+      cfFrame.src = "";        // 卸掉，下次重新加载
+      cfKind = null; cfPending = null;
     }
 
-    // 点【取消】/按 Esc/点遮罩，都算「放弃」：关掉弹窗的同时把后端那份提案也作废。
-    // 只关弹窗不算放弃——那样后端还存着一张提案，谁再调一次删除接口课还是会被清掉。
+    // 接住独立确认页回传的结果
+    window.addEventListener("message", (e) => {
+      const d = e.data;
+      if (!d || d.source !== "campustime-confirm") return;
+      if (d.type === "applied") {
+        // ④ 入库成功后自动刷新课表/待办面板——学生不用手动刷新
+        hideConfirm();
+        addMsg(botName(), "✅ 已经按你的确认改好了，日程已刷新。", "bot", "planner");
+        loadScheduleView();
+      } else if (d.type === "cancelled") {
+        // 取消：清空课表这种高危提案必须通知后端作废（留着会变成后门），
+        // 其余提案原样保留——学生随后在聊天里回一句"确认"还能接着执行。
+        if (d.kind === "timetable_clear") abandonClear();
+        else { hideConfirm(); addMsg(botName(), "好的，已取消，没有做任何改动。", "bot", "planner"); }
+      } else if (d.type === "empty") {
+        hideConfirm();      // 后端已经没有待确认的提案了（多半刚被执行过）
+      }
+    });
+
+    // 点【取消】/按 Esc/点遮罩，都算「放弃」。
+    // 对清空课表来说，只关弹窗不算放弃——那样后端还存着一张提案，
+    // 谁再调一次删除接口课还是会被清掉，所以必须把提案作废。
     async function abandonClear() {
       try {
         await fetch("/api/timetable/clear", {
@@ -525,43 +557,26 @@
           body: JSON.stringify({ session_id: sessionId(), confirm: false, abandon: true }),
         });
       } catch (e) { /* 作废失败也不该卡住学生，下面照样按放弃处理 */ }
-      hideClearModal();
+      hideConfirm();
       addMsg(botName(), "好的，已放弃清空课表，周表现在还是老样子。", "bot", "planner");
     }
 
-    document.getElementById("ttClearCancel").addEventListener("click", abandonClear);
-    clearMask.addEventListener("click", e => { if (e.target === clearMask) abandonClear(); });
+    function confirmCancel() {
+      if (cfKind === "timetable_clear") abandonClear();
+      else { hideConfirm(); addMsg(botName(), "好的，已取消，没有做任何改动。", "bot", "planner"); }
+    }
+
+    clearMask.addEventListener("click", e => { if (e.target === clearMask) confirmCancel(); });
     document.addEventListener("keydown", e => {
-      if (e.key === "Escape" && clearMask.classList.contains("show")) abandonClear();
+      if (e.key === "Escape" && clearMask.classList.contains("show")) confirmCancel();
     });
 
-    document.getElementById("ttClearOk").addEventListener("click", async () => {
-      const prop = clearCtx;
-      if (!prop) return;                       // 兜底：没有对应提案就绝不许删
-      const btn = document.getElementById("ttClearOk");
-      btn.disabled = true; btn.textContent = "⏳ 正在清空…";
-      try {
-        const r = await fetch("/api/timetable/clear", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          // confirm 必须由这次点击显式带上——这是删库唯一的开关
-          body: JSON.stringify({ session_id: sessionId(), confirm: true }),
-        });
-        const d = await r.json();
-        if (d.ok) {
-          hideClearModal();
-          addMsg(botName(),
-            `🗑️ 已清空 ${d.removed} 门课，周表现在是空的了（可重新上传课表）。`,
-            "bot", "planner");
-          await loadScheduleView();             // 删完立刻刷新，周表直观看到清空
-        } else {
-          btn.disabled = false; btn.textContent = "确认清空";
-          addMsg(botName(), "清空没成功：" + (d.error || "未知原因") + "。请再试一次。");
-        }
-      } catch (e) {
-        btn.disabled = false; btn.textContent = "确认清空";
-        addMsg(botName(), "哎呀，网络好像开小差了，请稍后再试～");
-      }
+    // 兜底：万一 /confirm 这个独立页面没载进来（网络异常、或环境不让用 iframe），
+    // 退回原来的内嵌确认卡——学生永远有路可走，不会因为弹窗挂了就改不了日程。
+    let confirmPageOk = true;
+    cfFrame.addEventListener("error", () => {
+      confirmPageOk = false;
+      hideConfirm();
     });
 
     // 把后端返回的候选渲染成卡片。
@@ -578,10 +593,10 @@
       if (clears.length) {
         const hint = document.createElement("div");
         hint.className = "opt-hint";
-        hint.textContent = "🗑️ 管家出了一张清空课表的确认弹窗，你点【确认清空】我才会执行：";
+        hint.textContent = "🗑️ 管家出了一张清空课表的确认弹窗，在弹窗上点【确认清空】我才会执行：";
         wrap.appendChild(hint);
         container.appendChild(wrap);
-        showClearModal(clears[clears.length - 1]);
+        openConfirm(clears[clears.length - 1]);   // 弹窗 = /confirm 独立页面
         return;
       }
 
@@ -589,6 +604,17 @@
       //     没有它学生就只能干等一句客服嘴上说的"已经加上"——实测复盘，日程里什么都没有。
       //     写入同样不经过 AI：点【确认加入】直接打 /api/todos，写完当场刷新日程面板。
       const adds = options.filter(o => o.kind === "todo_add");
+      // 需求②：出提案后**优先唤起弹窗**确认，弹窗展示变更内容 + 【确认】【取消】。
+      // 单张提案才走弹窗；一次好几张时仍用卡片，学生要挑是哪一张。
+      if (confirmPageOk && adds.length === 1) {
+        const hint = document.createElement("div");
+        hint.className = "opt-hint";
+        hint.textContent = "📝 要不要把这件事排进日程？在弹窗上点【确认加入】我才会写：";
+        wrap.appendChild(hint);
+        container.appendChild(wrap);
+        openConfirm(adds[adds.length - 1]);
+        return;
+      }
       if (adds.length) {
         const hint = document.createElement("div");
         hint.className = "opt-hint";
@@ -657,6 +683,16 @@
 
       // ---- ② 课表修改提案：高危操作，每张提案一个确认按钮（可能多张，点任意一张即应用） ----
       const tts = options.filter(o => o.kind === "timetable_change");
+      // 同上：单张提案走弹窗（/confirm 独立页面），多张时保留卡片让学生挑
+      if (confirmPageOk && tts.length === 1) {
+        const hint = document.createElement("div");
+        hint.className = "opt-hint";
+        hint.textContent = "🗓️ 课表修改提案（整表替换），在弹窗上点【确认变更】才会生效：";
+        wrap.appendChild(hint);
+        container.appendChild(wrap);
+        openConfirm(tts[tts.length - 1]);
+        return;
+      }
       if (tts.length) {
         const hint = document.createElement("div");
         hint.className = "opt-hint";
