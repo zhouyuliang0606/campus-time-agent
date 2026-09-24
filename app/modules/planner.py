@@ -18,7 +18,7 @@ import re
 
 from app.agent.tools import Tool
 from app.store import (
-    add_todo, delete_todo, get_timetable, list_todos,
+    add_todo, get_timetable, list_todos,
     save_timetable, update_todo,
 )
 from app.modules.student_persona import mock_phrase
@@ -182,13 +182,6 @@ def update_todo_status(todo_id: str, status: str) -> str:
     return f"已更新《{item['title']}》的状态为 {status}"
 
 
-def remove_todo(todo_id: str) -> str:
-    """删一条待办。"""
-    if not delete_todo(todo_id):
-        return f"找不到编号 {todo_id} 的待办"
-    return f"已删除编号 {todo_id} 的待办"
-
-
 def propose_slots(options_json: str) -> str:
     """把候选时间段以结构化方式交给前端，渲染成可勾选的卡片（而不是挤在一段话里）。
 
@@ -213,6 +206,10 @@ def propose_slots(options_json: str) -> str:
 # 有密钥时走真模型，这个不会被用到。
 
 _DATE_RE = re.compile(r"(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2})-(\d{2}:\d{2})")
+# 上面那条要求"日期 + 时间段"连在一起写，可学生常常**单说一个日期**——
+# 「删掉 2026-09-29 那条」「9月29号那个预约怎么没了」。补两条只认日期的：
+_DATE_ONLY_RE = re.compile(r"(\d{4})-(\d{1,2})-(\d{1,2})")
+_CN_MD_RE = re.compile(r"(\d{1,2})\s*月\s*(\d{1,2})\s*[号日]")
 # 从学生话里抠出"要做的事"当待办标题：去掉确认词、去掉日期时间。
 # 注意：这里**不能**放 ":" / "："——它们会把时间里的冒号（07:00）也吃掉，
 # 导致下面的日期正则匹配不上、整串日期时间漏进标题。冒号分隔符在 _guess_title 末尾单独清理。
@@ -639,6 +636,16 @@ def _pick_date(text: str):
     m = _DATE_RE.search(t)
     if m:
         return m.group(1)
+    # 只写了日期、没跟时间段的也要认（"删掉 2026-09-29 那条""9月29号那个预约"）。
+    # 缺了这一档，学生说得再清楚也解析不出来，只会收到一句"没找到"。
+    m = _DATE_ONLY_RE.search(t)
+    if m:
+        return f"{int(m.group(1)):04d}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
+    m = _CN_MD_RE.search(t)
+    if m:
+        # 只写"9月29号"没写年份 → 按今年算（学生日常都这么说）
+        return (f"{datetime.date.today().year}-"
+                f"{int(m.group(1)):02d}-{int(m.group(2)):02d}")
     today = datetime.date.today()
     for word, off in (("大后天", 3), ("后天", 2), ("明天", 1), ("今晚", 0), ("今夜", 0), ("今天", 0)):
         if word in t:
@@ -661,6 +668,9 @@ def _pick_title(text: str) -> str:
         return m.group(1).strip()
     t = _normalize_clock(t)          # 先把「两点到三点」换成 2:00-3:00，下面的正则才擦得掉
     t = _DATE_RE.sub(" ", t)
+    # 单写日期的那两种形式也要擦掉，否则「删掉 2026-09-29 那条」的标题会变成一串日期
+    t = _DATE_ONLY_RE.sub(" ", t)
+    t = _CN_MD_RE.sub(" ", t)
     t = re.sub(r"\d{1,2}\s*[:：]\s*\d{2}(?:\s*(?:到|至|-|~|～)\s*\d{1,2}\s*[:：]?\s*\d{2})?", " ", t)
     t = re.sub(r"\d{1,2}\s*点到\s*\d{1,2}\s*点?", " ", t)
     for w in ("大后天", "后天", "今天", "今晚", "今夜", "明天", "上午", "下午",
@@ -868,6 +878,291 @@ def is_add_todo_followup(text: str) -> bool:
     return _pick_span(t)[0] is not None and _pick_date(t) is None
 
 
+# ============================================================
+# 删待办：跟删课同一套规矩——先列清楚，再动手，学生点头才算数
+# ============================================================
+#
+# 为什么单独写一段：删待办和"加待办"共用一堆词，但风险完全相反——
+# 加错了顶多多一条安排，删错了**找不回来**。所以这一段的判定宁可收着点：
+#   · 唯一命中才出确认条；
+#   · 命中好几条（或学生只说"明天那条"）就**列清单**问是哪一条，绝不挑一条删了；
+#   · 说的是课（"去掉周二的高数"）立刻让路给课表那条分支。
+# 而且执行权不在模型手里：写工具 remove_todo 已经从工具箱里撤掉了，
+# 模型最多只能拿到一张提案，真正落库由系统在"学生点头"之后执行。
+
+# 删待办的意图词。比删课多几个口语说法（"取消那条安排""不想做了"）。
+_REMOVE_TODO_INTENT = (
+    "删掉", "删除", "删了", "去掉", "移除", "取消", "撤销", "退掉", "不想做", "别安排了",
+)
+
+# 学生明说这几个词，就是在说待办（而不是课）——哪怕话里带了星期几。
+_TODO_WORDS = ("待办", "日程", "事项")
+
+# 候选清单里最多列几条（列一屏出来反而看不清）
+_REMOVE_LIST_CAP = 6
+
+
+def _pick_todo_name(text: str) -> str:
+    """从"把周二那条游泳的待办删掉"里抠出「游泳」（人话：待办名的抠法）。
+
+    跟 _pick_title 是亲戚，但擦的词不一样：删待办的句子里有"那条""待办""取消"
+    这类词，_pick_title 不认识，会原样留在名字里，导致后面匹配不上真正的待办。
+    """
+    t = text or ""
+    m = _QUOTE_RE.search(t)             # 『』「」框起来的优先，最准
+    if m and 1 <= len(m.group(1)) <= 30:
+        return m.group(1).strip()
+    t = _normalize_clock(t)             # 「两点」这类中文报时先换成数字，免得粘在名字里
+    t = _DATE_RE.sub(" ", t)
+    t = _DATE_ONLY_RE.sub(" ", t)       # 同上：单写的日期别粘进名字里
+    t = _CN_MD_RE.sub(" ", t)
+    t = re.sub(r"(下|本|这|上)?周[一二三四五六日天]", " ", t)
+    for w in ("大后天", "后天", "今天", "今晚", "今夜", "明天", "上午", "下午",
+              "晚上", "中午", "早上", "夜里", "周末", "下周", "本周", "这周",
+              "上周", "下个", "这个", "那个", "那天", "这天", "当天", "那一天",
+              "这一天", "当天的"):
+        t = t.replace(w, " ")
+    for w in _REMOVE_TODO_INTENT + _REMOVE_INTENT + ("待办", "日程", "事项", "安排",
+                                                    "那条", "这条", "那一条", "这一条",
+                                                    "一条", "一下", "一下下", "的"):
+        t = t.replace(w, " ")
+    t = re.sub(r"^(我要|我想|帮我|请帮我|请|给我|把|别|我)\s*", "", t)
+    t = re.sub(r"[，,。！!？?、；;：:~～\-—『』「」\"'“”‘’\s]", "", t)
+    return t.strip()[:30]
+
+
+def _todo_name_match(want: str, title: str) -> bool:
+    """待办名对不对得上（人话：含糊匹配，「游泳」能对上「游泳锻炼」）。"""
+    a, b = (want or "").strip(), (title or "").strip()
+    if not a or not b:
+        return False
+    return a == b or a in b or b in a
+
+
+def _pick_todo_index(text: str) -> int | None:
+    """认出"第2条/第二个/最后一条"（人话：列完清单后学生用序号点名）。"""
+    t = (text or "").strip()
+    if not t:
+        return None
+    if "最后一条" in t or "最后一个" in t or "最后那条" in t:
+        return -1
+    m = re.search(r"第\s*([0-9]{1,2}|[一二三四五六七八九十两]{1,3})\s*(?:条|个|项)", t)
+    if not m:
+        return None
+    raw = m.group(1)
+    n = int(raw) if raw.isdigit() else _cn_num(raw)
+    return n if n and 1 <= n <= 20 else None
+
+
+def wants_remove_todo(text: str) -> bool:
+    """判断一句话算不算「删掉一条待办」（确定性分支用的开关）。
+
+    让路规则（顺序要紧，先让出去再谈接住）：
+      · 清空整张课表 → 那是另一条分支的事；
+      · 删课（"去掉周二的高数"）→ 归课表那条路，**别拿待办去套**（规格第 3 条）；
+      · 加课/加待办 → 那是新增，不是删除。
+    """
+    t = (text or "").strip()
+    if not t or len(t) > 80:
+        return False
+    if not any(w in t for w in _REMOVE_TODO_INTENT):
+        return False
+    if wants_clear_timetable(t):
+        return False
+    # 删课让路给课表那条分支（"去掉周二的高数"）——但学生**明说了待办/日程**的话，
+    # 这句就是待办，别让出去（"把周二那条游泳的待办删掉"里也有"周二"）。
+    if wants_remove_course(t) and not any(w in t for w in _TODO_WORDS):
+        return False
+    if wants_add_course(t) or wants_add_todo(t):
+        return False
+    return True
+
+
+def is_remove_todo_followup(text: str) -> bool:
+    """判断这是不是对"你要删哪一条"的回答（人话：清单列完了，学生点名）。
+
+    比如学生回「游泳那条」「第二条」「就是交电费那个」——这些句子本身
+    没有"删除"两个字，按 wants_remove_todo 的规矩不算下单，可它就是在回答我们。
+    不认它，学生点完名又掉回大模型，模型只能瞎聊。
+    """
+    t = (text or "").strip()
+    if not t or len(t) > 30:
+        return False
+    if any(w in t for w in _REMOVE_TODO_INTENT):   # 又带了删除词，那是新的一句下单
+        return False
+    if _pick_todo_index(t) is not None:
+        return True
+    name = _pick_todo_name(t)
+    if not name:
+        return False
+    return any(_todo_name_match(name, x.get("title", "")) for x in list_todos())
+
+
+def resolve_todo_remove(text: str) -> dict:
+    """把"删掉周二那条游泳的待办"解析成**具体哪一条待办**（只读，一个字节都不删）。
+
+    返回：
+      {"status": "ok",        "proposal": {...}, "todos": [...]}  恰好一条，可以出确认条
+      {"status": "many",      "todos": [...]}                     好几条，得让学生挑
+      {"status": "empty",     "todos": []}                        这一天/这个名字没有待办
+      {"status": "unclear",   "todos": [...]}                     没说清是哪条
+    """
+    t = (text or "").strip()
+    day = _pick_date(t)
+    name = _pick_todo_name(t)
+
+    # 先把池子缩小：说了日期就只看那天，说了名字就再按名字筛
+    pool = list_todos(day) if day else list_todos()
+    by_name = bool(name) and name not in ("", "待办", "日程", "事项")
+    if by_name:
+        hits = [x for x in pool if _todo_name_match(name, x.get("title", ""))]
+        # 名字没命中，但整句话里出现了某条待办的名字（"帮我把交电费取消了吧"），
+        # 兜一层：从**全部**待办里找（学生可能没提日期，或日期说得不准）
+        if not hits:
+            hits = [x for x in list_todos() if _todo_name_match(name, x.get("title", ""))]
+        if not hits:
+            return {"status": "empty", "todos": [], "day": day, "name": name}
+        pool = hits
+
+    if not pool:
+        return {"status": "empty", "todos": [], "day": day, "name": name}
+    if len(pool) == 1:
+        return {"status": "ok", "proposal": _todo_remove_proposal(pool[0]), "todos": pool}
+    # 剩下好几条：只有"点名了名字"才算唯一命中（名字已经筛过了），
+    # 否则就是学生没说清（"删掉明天那条"而明天有两条）——绝不猜
+    return {"status": "many", "todos": pool, "day": day, "name": name}
+
+
+def _todo_remove_proposal(item: dict) -> dict:
+    """把一条待办包成一张"待删除"提案（人话：原样念一遍，等学生点头）。"""
+    date = item.get("date", "")
+    return {
+        "kind": "todo_remove",
+        "todo_id": item.get("id", ""),
+        "title": item.get("title", "待办"),
+        "date": date,
+        "start": item.get("start", ""),
+        "end": item.get("end", ""),
+        "weekday": _weekday_name(date),
+        "minutes": to_minutes(item.get("end", "")) - to_minutes(item.get("start", "")),
+        "summary": (f"{item.get('title', '待办')}｜{date}（{_weekday_name(date)}）"
+                    f"{item.get('start', '')}-{item.get('end', '')}"),
+    }
+
+
+def parse_remove_todo(text: str) -> dict | None:
+    """解析成一张删待办确认卡；不是"恰好一条"就返回 None（交给上层列清单/如实说）。
+
+    返回的只是**提案**——本函数不删任何东西。学生点确认条上的【确认删除】、
+    或在聊天框回一句"确认"，才由系统落库。
+    """
+    res = resolve_todo_remove(text)
+    return res.get("proposal") if res.get("status") == "ok" else None
+
+
+def _todo_line(item: dict, idx: int | None = None) -> str:
+    """清单里的一行（人话：原样念给学生听——标题 + 日期 + 时段）。"""
+    date = item.get("date", "")
+    head = f"{idx}. " if idx else "· "
+    return (f"{head}**{item.get('title', '待办')}**"
+            f"｜{date}（{_weekday_name(date)}）{item.get('start', '')}-{item.get('end', '')}")
+
+
+def render_todo_remove_list(todos: list, limit: int = _REMOVE_LIST_CAP) -> str:
+    """把候选待办列成一段人话清单（人话：规格第 2 条要的"把清单列出来"）。"""
+    shown = todos[:limit]
+    lines = [_todo_line(x, i + 1) for i, x in enumerate(shown)]
+    if len(todos) > limit:
+        lines.append(f"（还有 {len(todos) - limit} 条没列出来，你可以直接说名字。）")
+    return "\n".join(lines)
+
+
+def wants_remove_todo_loose(text: str) -> bool:
+    """宽松一档的判定：话里没写"待办"二字，但**精准对上**了一条待办的名字。
+
+    用在「删掉下周三的游泳」这种句子上——它没写"待办"，按 wants_remove_todo
+    会因为带了"周三"被判成**删课**，可它对上的明明是一条待办。
+    判据收得很紧，免得把课表那条路的东西抢过来：
+      · 名字必须**完全相等**（"游泳" == "游泳" 才算；"高数" vs "复习高数" 只是沾边，不算）；
+      · 带了"课"字或"第N节"的一律让路（那是在说课）。
+    """
+    t = (text or "").strip()
+    if not t or len(t) > 80:
+        return False
+    if not any(w in t for w in _REMOVE_TODO_INTENT):
+        return False
+    if wants_clear_timetable(t) or "课" in t or _PERIOD_RE.search(t):
+        return False
+    name = _pick_todo_name(t)
+    if not name:
+        return False
+    return any(x.get("title", "") == name for x in list_todos())
+
+
+def resolve_todo_remove_reply(text: str, candidates: list | None = None) -> dict:
+    """学生回答"是下面哪一条"时用它（人话：先按序号点名，不然就按名字解析）。
+
+    为什么要认序号：系统上一句刚列了编号清单（"1. 游泳　2. 交电费"），
+    学生顺手回一句「第二条」是最自然的答法。不认它，这句又会掉回大模型，
+    模型只能瞎猜或者改口说"请你说清楚"。
+
+    :param candidates: 上一轮列给学生看的那几条（按显示顺序），没有就只按名字解析
+    """
+    t = (text or "").strip()
+    idx = _pick_todo_index(t)
+    if idx is not None and candidates:
+        i = len(candidates) - 1 if idx == -1 else idx - 1
+        if 0 <= i < len(candidates):
+            item = candidates[i]
+            return {"status": "ok", "proposal": _todo_remove_proposal(item),
+                    "todos": [item]}
+        return {"status": "unclear", "todos": list(candidates), "reason": "序号超出范围"}
+    return resolve_todo_remove(t)
+
+
+def propose_todo_remove_tool(title: str = "", date: str = "", when: str = "") -> str:
+    """给模型用的删待办工具——**只读**，最多产出一张确认条，删不了任何东西。
+
+    为什么要把写工具拿走：老版本工具箱里有个真能删的 remove_todo，
+    规矩靠提示层"必须先确认"约束着——可规矩写在提示里，模型口语一变就可能绕过它，
+    学生没点头就删掉是**找不回来**的。所以照清空课表/删课的做法，把写入口收归系统：
+    模型只能出提案，学生点确认条（或回一句"确认"）之后才由系统执行。
+
+    命中不止一条时**不猜**，把候选原样返回，让模型照着列清单问学生（规格第 2 条）。
+    """
+    blob = " ".join(x for x in (title, date, when) if x)
+    res = resolve_todo_remove(blob)
+    status = res.get("status")
+
+    if status == "ok":
+        prop = res["proposal"]
+        return json.dumps({
+            "__proposal__": prop,
+            "human": (f"确认条已经挂在下面了：《{prop['title']}》{prop['date']}"
+                      f"（{prop['weekday']}）{prop['start']}-{prop['end']}。"
+                      f"你只要说一句『点下面的【确认删除】就删掉，直接回「确认」也一样』，"
+                      f"**禁止说已经删掉了**。"),
+        }, ensure_ascii=False)
+
+    if status == "many":
+        cand = [{"id": x.get("id"), "title": x.get("title"), "date": x.get("date"),
+                 "start": x.get("start"), "end": x.get("end")} for x in res["todos"]]
+        return json.dumps({
+            "status": "ambiguous",
+            "candidates": cand,
+            "hint": ("命中不止一条，**不许猜**：把上面这些待办**原样列出来**"
+                     "（标题 + 日期 + 时段），问学生'是下面哪一条'，然后停下来等。"
+                     "一条都不许删，也不许说已经删了。"),
+        }, ensure_ascii=False)
+
+    return json.dumps({
+        "status": "empty",
+        "hint": ("没找到符合条件的待办。如实告诉学生'没找到'，"
+                 "可以用 list_day_todos 看一下那天到底排了什么，"
+                 "或者问学生是哪一天哪一条。**不许编一条出来删**。"),
+    }, ensure_ascii=False)
+
+
 def wants_add_course(text: str) -> bool:
     """判断一句话算不算「往周表里加一门课」（人话：确定性分支用的开关）。
 
@@ -955,6 +1250,10 @@ def wants_remove_course(text: str) -> bool:
         return False
     # "把课表全部删除/删除课表"是清空（另一条确定性分支管），不是删一节
     if wants_clear_timetable(t):
+        return False
+    # 明说了"待办/日程/事项"就不是课——否则「把周二那条游泳的待办删掉」会因为
+    # 带了"周二"被判成删课，跑到课表那条路上去追问"想删哪一节"（问错人了）。
+    if any(w in t for w in _TODO_WORDS):
         return False
     # 也不是加课（"删掉再加一节"这种混着说的让加课分支先接）
     if wants_add_course(t):
@@ -1334,9 +1633,20 @@ def build_system_prompt() -> str:
       学生点【确认】→ 系统执行 → 页面自动刷新成空课表；点【取消】→ 什么都没发生。
 2. **导入课表文件 / 整表重排**：读完文件 → 构造完整课程列表（"第几节"换算成 HH:MM）→
    调用 propose_timetable_change 出确认卡。没出卡前绝不说"导入成功"。
-3. **删除/修改待办**（remove_todo、update_todo_status）：先列出要动的待办，
-   学生确认后再执行；删除是不可恢复的，更要问清楚。
-4. 学生说"改一下课表"却没说怎么改时，先问清楚改哪里，别自作主张。
+3. **删待办（学生说"删掉待办""取消那条安排"）**：跟删课是同一套规矩——先列清楚，再动手。
+   ⛔ 三条红线，一条都不能破：
+      · **你没有任何删除接口**：工具箱里能删待办的写入口一个都没有（这是刻意的）。
+        学生没点头就说"已经删了"是骗人——数据还在库里，删错了也找不回来。
+      · **不许只说"我需要你确认一下"却不列清单**：学生不知道你在指哪一条，
+        这种"确认"等于瞎确认。要删就必须把那条**原样念出来**（标题 + 日期 + 时段）。
+      · **不许猜**：学生只说"删掉明天那条"而明天有好几条时，
+        必须把候选**原样列出来**问"是下面哪一条"，列完就停。
+   三步走：① 学生点名了唯一一条 → 调 propose_todo_remove 出确认条，然后停在"等你点确认"；
+   ② 命中好几条 → 用 propose_todo_remove 拿到的候选清单原样列出来问是哪一条，**列完就停**；
+   ③ 学生说的是课（"去掉周二的高数"）→ 那归课表，调 propose_course_change，别拿待办去套。
+   一句话记住：**删除不可逆，宁可多问一句，也别替学生做主。**
+4. **改待办状态**（update_todo_status）：先跟学生确认是哪条、改成什么，再调用。
+5. 学生说"改一下课表"却没说怎么改时，先问清楚改哪里，别自作主张。
 
 【工具用法】
 - get_weekly_timetable：看整周课程
@@ -1350,7 +1660,9 @@ def build_system_prompt() -> str:
 - **propose_timetable_change(courses_json, change_summary)：整表重排/文件导入用**——
   把调整后的完整课表（JSON 数组）交给前端渲染成「确认修改」卡片，学生点确认后系统写入。
   **注意：写入不经过你**，所以卡片确认后不用（也不能）再调任何写入工具。
-- update_todo_status / remove_todo：标记完成或删除
+- **propose_todo_remove(title, date)：删待办**——只出确认条，删不了任何东西；
+  命中多条时返回候选清单，照着列出来问学生是哪一条。
+- update_todo_status：标记某条待办已完成/未完成
 """
 
 
@@ -1514,16 +1826,30 @@ def build_tools() -> dict[str, Tool]:
             },
             func=update_todo_status,
         ),
-        "remove_todo": Tool(
-            name="remove_todo",
+        "propose_todo_remove": Tool(
+            name="propose_todo_remove",
             description=(
-                "删除一条待办（不可恢复）。**必须先向学生列出要删的待办并得到明确确认后才能调用**。"
+                "**删待办唯一能用的工具**（学生说'把周二那条游泳的待办删掉''取消交电费'时用）。"
+                "它只生成一张【确认删除】确认条，**一个字节都不删**——"
+                "你也没有任何删除接口可用。title 传学生说的名字，date 传'2026-09-28'或'明天'，"
+                "两个都不确定就都留空（工具会告诉你命中了哪些）。"
+                "⚠️ 命中不止一条时它不会替你挑，会返回候选清单——"
+                "**照清单原样列给学生、问'是下面哪一条'，然后停下来等**，"
+                "⛔ 不许猜哪一条、更不许说'已经删了'。"
+                "命中唯一时确认条自动挂出，你只需说'点【确认删除】才真的删'。"
             ),
             parameters={
                 "type": "object",
-                "properties": {"todo_id": {"type": "string", "description": "待办编号"}},
-                "required": ["todo_id"],
+                "properties": {
+                    "title": {"type": "string", "description": "待办名字，如 游泳；不确定就留空",
+                              "default": ""},
+                    "date": {"type": "string", "description": "日期，如 '2026-09-28'、'明天'；可空",
+                             "default": ""},
+                    "when": {"type": "string", "description": "学生原话里的时间描述；可空",
+                             "default": ""},
+                },
+                "required": [],
             },
-            func=remove_todo,
+            func=propose_todo_remove_tool,
         ),
     }

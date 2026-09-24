@@ -683,6 +683,84 @@
         return;
       }
 
+      // ---- ①-ter 删待办：学生点名要删的那一条（或那一批里他挑中的一条） ----
+      //     删除不可逆，所以这里跟清空课表同一个待遇：单张走确认条（标红 + 把那条
+      //     **原样念一遍**标题/日期/时段），多个候选就列成卡片让他挑一条。
+      //     按钮是唯一入口——模型手里只有只读的提案工具，真删的是后端。
+      const dels = options.filter(o => o.kind === "todo_remove");
+      if (confirmPageOk && dels.length === 1) {
+        const hint = document.createElement("div");
+        hint.className = "opt-hint";
+        hint.textContent = "🗑️ 要删的就是这一条（删除找不回来），在下面这条确认条上点【确认删除】才真的删：";
+        wrap.appendChild(hint);
+        container.appendChild(wrap);
+        openConfirm(dels[dels.length - 1], container);
+        return;
+      }
+      if (dels.length) {
+        const hint = document.createElement("div");
+        hint.className = "opt-hint";
+        hint.textContent = dels.length > 1
+          ? `🗑️ 有 ${dels.length} 条对上了你说的话，点选你要删的那一条（删除找不回来）：`
+          : "🗑️ 要删的就是这一条（删除找不回来）：";
+        wrap.appendChild(hint);
+
+        dels.forEach(card => {
+          const box = document.createElement("div");
+          box.className = "opt-card";
+          box.innerHTML = `<div class="info"><b>${escapeHtml(card.title || "待办")}</b>` +
+            `<div class="meta">${escapeHtml(card.date || "")}（${escapeHtml(card.weekday || "")}）` +
+            ` ${escapeHtml(card.start || "")}-${escapeHtml(card.end || "")}</div></div>`;
+          wrap.appendChild(box);
+
+          const del = document.createElement("button");
+          del.className = "confirm-btn";
+          del.style.cssText = "background:#e5484d;border-color:#e5484d;margin-top:6px";
+          del.textContent = "🗑️ 删除这条";
+          del.addEventListener("click", async () => {
+            del.disabled = true;
+            del.textContent = "⏳ 正在删除…";
+            try {
+              const r = await fetch("/api/todos/" + encodeURIComponent(card.todo_id), {
+                method: "DELETE",
+                headers: { "Content-Type": "application/json" },
+                // 带上 session_id：好让"已删除待办"这句回执进聊天记录，刷新后还在
+                body: JSON.stringify({ session_id: sessionId() }),
+              });
+              const d = await r.json().catch(() => ({}));
+              if (r.ok && d.ok !== false) {
+                wrap.remove();
+                addMsg(botName(),
+                  `✅ 已删除：${card.title}｜${card.date}（${card.weekday}）${card.start}-${card.end}，日程里已经没有它了。`,
+                  "bot", "planner");
+                loadScheduleView();   // 当场刷新，学生不用自己刷新页面
+              } else {
+                del.disabled = false;
+                del.textContent = "🗑️ 重试";
+                addMsg(botName(), "删除失败：" + (d.error || d.detail || "未知原因") + "，再试一次？");
+              }
+            } catch (e) {
+              del.disabled = false;
+              del.textContent = "🗑️ 重试";
+              addMsg(botName(), "哎呀，网络好像开小差了，请再试一次～");
+            }
+          });
+          wrap.appendChild(del);
+        });
+
+        const no = document.createElement("button");
+        no.className = "confirm-btn";
+        no.style.cssText = "background:#fff;color:#8a90a8;border:1px solid #d8def0;margin-top:6px";
+        no.textContent = "✖ 一个都不删";
+        no.addEventListener("click", () => {
+          wrap.remove();
+          addMsg(botName(), "好的，一条都没删，日程保持原样。", "bot", "planner");
+        });
+        wrap.appendChild(no);
+        container.appendChild(wrap);
+        return;
+      }
+
       // ---- ② 课表修改提案：高危操作，每张提案一个确认按钮（可能多张，点任意一张即应用） ----
       const tts = options.filter(o => o.kind === "timetable_change");
       // 同上：单张提案走确认条（/confirm 独立页面），多张时保留卡片让学生挑

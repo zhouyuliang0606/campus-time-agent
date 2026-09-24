@@ -202,6 +202,26 @@ const KIND = {
       return `已加入日程：<b>${esc(p.title)}</b>（${esc(p.date)} ${esc(p.start)}-${esc(p.end)}）。`;
     },
   },
+  // 删待办：跟清空课表同一个待遇——标红、说清"不可恢复"、把那条**原样念一遍**。
+  // 学生必须能在这张条上看见"要删的到底是哪一条"（标题+日期+时段），
+  // 而不是一句模糊的"确认删除吗"。这是规格里的"先列清楚，再动手"。
+  todo_remove: {
+    icon: "🗑️", title: "删除待办", confirm: "确认删除", danger: true,
+    render(p) {
+      return `<p class="summary">${esc(p.title || "待办")}</p>
+        <div class="meta">${esc(p.date)}（${esc(p.weekday || "")}）
+          ${esc(p.start)}-${esc(p.end)}${p.minutes ? " · 约 " + Number(p.minutes) + " 分钟" : ""}</div>
+        <div class="dlg-warn"><b>删除之后找不回来。</b><br>
+          点【确认删除】才真的删；点【取消】日程原封不动。</div>`;
+    },
+    async apply(p) {
+      return api("DELETE", "/api/todos/" + encodeURIComponent(p.todo_id),
+        { session_id: sid() });
+    },
+    doneText(p) {
+      return `已删除：<b>${esc(p.title)}</b>（${esc(p.date)} ${esc(p.start)}-${esc(p.end)}），日程里已经没有它了。`;
+    },
+  },
 };
 
 async function api(method, url, payload) {

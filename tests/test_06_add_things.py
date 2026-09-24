@@ -669,6 +669,201 @@ def test_schedule_proposal_tool():
     return c.summary("第六批（日程面板提案：工具出条 / 捞回文字方案）")
 
 
+def test_remove_todo_pipeline():
+    """第七批：删待办——先列清楚，再动手，学生点头才算数。
+
+    这一批把规格里的三条走法和三条红线都钉住：
+      1) 点名了唯一一条 → 出确认条（把那条**原样念一遍**），学生没点头前一个字节都不删；
+      2) 没说清是哪条（"删掉明天那条"而那天有好几条）→ **列清单问是哪一条，列完就停**，
+         绝不挑一条删掉；
+      3) 说的是课（"去掉周二的高数"）→ 归课表那条路，别拿待办去套。
+    红线：没点头不许调删除、不许只说"要确认"却不列清单、删除不可逆所以宁可多问一句。
+    """
+    import datetime as _dt
+
+    title("7. 删待办：原样念一遍 / 列清单不猜 / 说的是课就归课表")
+    c = Checker()
+    from app.agent.pending import peek_pending
+    from app.modules.planner import (
+        resolve_todo_remove, wants_remove_todo, wants_remove_todo_loose,
+    )
+    from app.modules import planner as pl
+    from app.store import append_conversation, add_todo, list_todos
+
+    with sandbox():
+        client = make_client()
+        seed_timetable()
+        d_near = (_dt.date.today() + _dt.timedelta(days=4)).isoformat()   # 同一天两条
+        d_far = (_dt.date.today() + _dt.timedelta(days=5)).isoformat()    # 同一天一条
+        add_todo("游泳", d_near, "14:00", "15:00")
+        add_todo("交电费", d_near, "19:00", "19:30")
+        add_todo("晨读", d_far, "07:00", "07:30")
+
+        # —— ① 工具箱：删待办只剩一个**只读**提案工具 ——
+        tools = pl.build_tools()
+        c.check("工具箱里有 propose_todo_remove（只出确认条）",
+                "propose_todo_remove" in tools, list(tools))
+        c.check("真能删的 remove_todo 已经撤掉（模型没有删除接口）",
+                "remove_todo" not in tools)
+        desc = tools["propose_todo_remove"].description
+        c.check("说明书里写清『一个字节都不删』", "一个字节都不删" in desc)
+        c.check("说明书里写清命中多条要列清单、不许猜",
+                "列" in desc and "不许猜" in desc)
+
+        # —— ② 判定开关：待办归待办，课归课 ——
+        c.check("「把周二那条游泳的待办删掉」算删待办",
+                wants_remove_todo("把周二那条游泳的待办删掉"))
+        c.check("「取消交电费」算删待办", wants_remove_todo("取消交电费"))
+        c.check("「删掉明天那条」算删待办", wants_remove_todo("删掉明天那条"))
+        c.check("「去掉周二的高数」**不算**删待办（那是课）",
+                not wants_remove_todo("去掉周二的高数"))
+        c.check("「删掉课表全部课程」不算删待办（那是清空）",
+                not wants_remove_todo("删掉课表全部课程"))
+        # 没写"待办"二字但精准对上一条待办时，走宽松那一档
+        c.check("「把交电费删了」精准对上 → 宽松档认它",
+                wants_remove_todo_loose("把交电费删了"))
+        c.check("只沾边的（「高数」对上「复习高数」）宽松档不认",
+                not wants_remove_todo_loose("删掉周三的高数"))
+
+        # —— ③ 解析层：唯一 = ok；多条 = many（绝不替学生挑）；没有 = empty ——
+        r = resolve_todo_remove("把交电费删掉")
+        c.check("点名唯一一条 → 解析成一张待删提案",
+                r["status"] == "ok" and r["proposal"]["title"] == "交电费",
+                _json.dumps(r.get("proposal"), ensure_ascii=False)[:100])
+        c.check("提案里带上了那条的编号（系统靠它落库）",
+                bool(r["proposal"].get("todo_id")))
+        c.check("提案里的 summary 是『标题｜日期（周几）时段』的模样",
+                "交电费" in r["proposal"]["summary"] and "19:00-19:30" in r["proposal"]["summary"],
+                r["proposal"]["summary"])
+        c.check("那天有两条、又没点名 → many（要去列清单）",
+                resolve_todo_remove(f"删掉{d_near}的待办")["status"] == "many",
+                [x["title"] for x in resolve_todo_remove(f"删掉{d_near}的待办")["todos"]])
+        c.check("没找到就是 empty，绝不硬凑一条",
+                resolve_todo_remove("删掉读研申请")["status"] == "empty")
+
+        # —— ④ 出确认条：原样念一遍、不写库 ——
+        sid = "rm-1"
+        r1 = client.post("/api/chat", json={
+            "message": "把游泳的待办删掉", "module": "planner", "session_id": sid,
+        })
+        d1 = r1.json()
+        opts = d1.get("options") or []
+        c.check("回了一张删待办确认条",
+                any(o.get("kind") == "todo_remove" for o in opts),
+                _json.dumps(opts[:1], ensure_ascii=False)[:110])
+        c.check("确认条上把那条**原样念了一遍**（标题 + 日期 + 时段）",
+                bool(opts) and opts[0].get("title") == "游泳"
+                and opts[0].get("date") == d_near
+                and opts[0].get("start") == "14:00" and opts[0].get("end") == "15:00",
+                (opts[0].get("summary") if opts else "无"))
+        c.check("话里说的是「点确认删除我才删」，不是「已经删了」",
+                "确认删除" in (d1.get("answer") or "")
+                and "已经删" not in (d1.get("answer") or ""),
+                (d1.get("answer") or "")[:60])
+        c.check("**学生还没点头**：待办一条都没少",
+                any(t["title"] == "游泳" for t in list_todos(d_near)),
+                [t["title"] for t in list_todos(d_near)])
+        c.check("确认条进了暂存（学生回「确认」时系统找得到它）",
+                any(o.get("kind") == "todo_remove"
+                    for o in (peek_pending(sid) or {}).get("options") or []))
+        c.check("删待办提案没有被记成『候选时段』（记错会把删除变成新增）",
+                not any(o.get("kind") == "todo_pick"
+                        for o in (peek_pending(sid) or {}).get("options") or []))
+
+        # —— ⑤ 学生回一句「确认」→ 系统真删（只有这一条路能删到库） ——
+        r2 = client.post("/api/chat", json={"message": "确认", "session_id": sid})
+        c.check("回「确认」之后那条真没了",
+                not any(t["title"] == "游泳" for t in list_todos(d_near)),
+                [t["title"] for t in list_todos(d_near)])
+        c.check("同一天的另一条没被误删",
+                any(t["title"] == "交电费" for t in list_todos(d_near)))
+        c.check("回答说的是「已删除」而不是「搞定」",
+                "已删除" in (r2.json().get("answer") or ""),
+                (r2.json().get("answer") or "")[:50])
+        c.check("删除回执进了会话历史（刷新后还看得见）",
+                any("已删除待办" in (m.get("content") or "")
+                    for m in __import__("app.store", fromlist=["get_conversation"])
+                    .get_conversation(sid)))
+
+        # 删完之后再回一句「好的」，不该把确认条又挂一遍（挂一次就可能再删一条）
+        r3 = client.post("/api/chat", json={"message": "好的", "session_id": sid})
+        c.check("删成功之后不再重复挂确认条",
+                not (r3.json().get("options") or []),
+                (r3.json().get("answer") or "")[:50])
+
+        # —— ⑥ 没说清是哪条：列清单，问是哪一条，列完就停，一条都不删 ——
+        sid2 = "rm-2"
+        r4 = client.post("/api/chat", json={
+            "message": f"删掉 {d_near} 的待办", "module": "planner", "session_id": sid2,
+        })
+        d4 = r4.json()
+        ans4 = d4.get("answer") or ""
+        c.check("命中好几条时**不出确认条**（出条就等于替学生挑了）",
+                not (d4.get("options") or []),
+                _json.dumps(d4.get("options"), ensure_ascii=False)[:80])
+        c.check("把那天剩下的待办**列了出来**（这就是红线②要的清单）",
+                "交电费" in ans4 and "19:00-19:30" in ans4, ans4.replace("\n", " / ")[:120])
+        c.check("列完就问「是哪一条」", "哪一条" in ans4, ans4.replace("\n", " / ")[:60])
+        c.check("列了清单也没删任何东西", len(list_todos(d_near)) == 2,
+                [t["title"] for t in list_todos(d_near)])
+
+        # 学生用序号点名（"第二条"）→ 系统接得住，出确认条
+        r5 = client.post("/api/chat", json={"message": "第二条", "session_id": sid2})
+        o5 = r5.json().get("options") or []
+        c.check("学生回序号点名，系统接得住并出确认条",
+                any(o.get("kind") == "todo_remove" for o in o5),
+                _json.dumps(o5[:1], ensure_ascii=False)[:110])
+        c.check("点中的就是清单里第二条（交电费）",
+                bool(o5) and o5[0].get("title") == "交电费",
+                (o5[0].get("title") if o5 else "无"))
+
+        # 另一种情况：清单还在，学生却直接回「确认」→ 不猜、不删，把清单再念一遍
+        sid5 = "rm-5"
+        client.post("/api/chat", json={"message": f"删掉 {d_far} 的待办", "session_id": sid5})
+        add_todo("跑步", d_far, "18:00", "18:30")
+        client.post("/api/chat", json={"message": f"删掉 {d_far} 的待办", "session_id": sid5})
+        r6 = client.post("/api/chat", json={"message": "确认", "session_id": sid5})
+        c.check("还没点名就回「确认」→ 一条都不删（宁可多问一句）",
+                len(list_todos(d_far)) == 2,
+                [t["title"] for t in list_todos(d_far)])
+        c.check("并且明确告诉学生『一条都没删』",
+                "一条都没删" in (r6.json().get("answer") or ""),
+                (r6.json().get("answer") or "")[:60])
+
+        # —— ⑦ 说的是课：归课表那条路，别拿待办去套 ——
+        #     演示课表里周二 08:00 有「线性代数」，拿它当靶子。
+        sid7 = "rm-7"
+        before7 = len(pl.get_timetable())
+        r7 = client.post("/api/chat", json={
+            "message": "去掉周二的线性代数", "module": "planner", "session_id": sid7,
+        })
+        d7 = r7.json()
+        kinds7 = [o.get("kind") for o in (d7.get("options") or [])]
+        c.check("「去掉周二的线性代数」走的是**删课**提案，不是删待办",
+                "timetable_change" in kinds7 and "todo_remove" not in kinds7,
+                _json.dumps(kinds7, ensure_ascii=False))
+        c.check("周表当时没被动（要学生点确认才写）",
+                len(pl.get_timetable()) == before7)
+        c.check("学生的待办一条都没被牵连",
+                len(list_todos(d_near)) == 2,
+                [t["title"] for t in list_todos(d_near)])
+
+        # —— ⑧ 确认落空：上一轮出过条、暂存没了（比如刷新过），学生再回「确认」 ——
+        sid8 = "rm-8"
+        append_conversation(sid8, "user", "把游泳的待办删掉")
+        append_conversation(sid8, "assistant", "已生成删待办提案：游泳｜口径")
+        add_todo("游泳", d_far, "16:00", "17:00")
+        r8 = client.post("/api/chat", json={"message": "确认", "session_id": sid8})
+        o8 = r8.json().get("options") or []
+        c.check("确认落空时把学生原话捞回来、重新挂出确认条",
+                any(o.get("kind") == "todo_remove" for o in o8),
+                _json.dumps(o8[:1], ensure_ascii=False)[:110])
+        c.check("这一轮仍然没删（还是要等学生真的点头）",
+                any(t["title"] == "游泳" for t in list_todos(d_far)),
+                [t["title"] for t in list_todos(d_far)])
+    return c.summary("第七批（删待办：原样念一遍 / 列清单不猜 / 课归课）")
+
+
 def main():
     global code
     print("\n" + "=" * 60)
@@ -680,6 +875,7 @@ def main():
     code |= test_clear_conversation()
     code |= test_add_todo_chinese_clock()
     code |= test_schedule_proposal_tool()
+    code |= test_remove_todo_pipeline()
     return code
 
 

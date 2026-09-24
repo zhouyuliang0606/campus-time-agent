@@ -50,14 +50,18 @@ def main():
         out = (proc.stdout or "") + (proc.stderr or "")
         print(out.rstrip())
 
-        # 从"通过 X 项，失败 Y 项"这行汇总里抠出数字
+        # 从"通过 X 项，失败 Y 项"这行汇总里抠出数字。
+        # ⚠️ 要把**每一批**都加起来，不能只留最后一行：
+        # 一个测试文件里往往有好几批（test_05 有十二批），
+        # 早先这里是覆盖式的（passed = ...），于是"总账"只算了每个文件最后一批，
+        # 数字比实际小一大截——看着像"就这么多测试"，其实是漏统计。
         passed = failed = 0
         for line in out.splitlines():
             if "通过" in line and "失败" in line:
                 try:
                     seg = line.split("通过")[1]
-                    passed = int(seg.split("项")[0].strip())
-                    failed = int(seg.split("失败")[1].split("项")[0].strip())
+                    passed += int(seg.split("项")[0].strip())
+                    failed += int(seg.split("失败")[1].split("项")[0].strip())
                 except (IndexError, ValueError):
                     pass
 
