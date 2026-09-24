@@ -428,30 +428,69 @@ def test_add_todo_chinese_clock():
                 "已加入日程" in (r2.json().get("answer") or ""),
                 (r2.json().get("answer") or "")[:50])
 
-        # —— ③ 信息不全：系统追问，绝不掉回模型 ——
+        # —— ③ 只说了"哪天"、没说"几点"：**时间由系统挑**，不许推回给学生 ——
+        #     被截屏投诉的原话就是这一条：「没有帮我想时间，是我问了才说的」。
+        #     学生说「帮我安排周二的游泳」，他要的是"哪天哪会儿空着"这件事本身，
+        #     系统该自己去查空档、挑一段排上、把确认条挂出来，
+        #     而不是回一句"几点到几点？"把活儿退回去。
         sid2 = "oral-todo-2"
         r3 = client.post("/api/chat", json={
             "message": "帮我安排周二的游泳", "module": "schedule", "session_id": sid2,
         })
         d3 = r3.json()
-        c.check("缺时间时先追问，不出提案（也不交给模型瞎说）",
-                not (d3.get("options") or []) and d3.get("module") == "planner",
+        o3 = d3.get("options") or []
+        c.check("只说了那天也要出提案（时间由系统算，不推回给学生）",
+                any(o.get("kind") == "todo_add" for o in o3),
+                _json.dumps(o3[:1], ensure_ascii=False)[:120])
+        c.check("挑出来的那段在周二、且落在真实空档里",
+                bool(o3) and o3[0].get("date") == "2026-09-29"
+                and o3[0].get("start") in ("07:00", "11:40"),
+                (o3[0].get("start") if o3 else ""))
+        c.check("提案上标了 auto（说清这个点是系统挑的）",
+                bool(o3) and o3[0].get("auto") is True)
+        c.check("话里说明白『我看 XX 空着，就排这儿了』",
+                "空着" in (d3.get("answer") or "")
+                and "排" in (d3.get("answer") or ""),
                 (d3.get("answer") or "")[:60])
-        c.check("追问里点明缺的是时间", "时间" in (d3.get("answer") or ""),
-                (d3.get("answer") or "")[:60])
+        c.check("并且告诉他『不合适可以改到几点』（不是把问题退回去）",
+                "改成" in (d3.get("answer") or "")
+                and "几点到几点" not in (d3.get("answer") or ""),
+                (d3.get("answer") or "")[:80])
+        c.check("这一轮仍然没写库（要学生点头）",
+                not any(t["title"] == "游泳" for t in list_todos("2026-09-29")),
+                [t["title"] for t in list_todos("2026-09-29")])
 
-        # 补充一句「下午两点到三点」→ 标题要跟着上一句走（游泳），不能变成「待办」
+        # 学生看了不满意，自己报了个点 → 换成他说的那个时间（以学生为准）
         r4 = client.post("/api/chat", json={
             "message": "下午两点到三点", "module": "schedule", "session_id": sid2,
         })
         o4 = r4.json().get("options") or []
-        c.check("补充的时间接上了，出提案", any(o.get("kind") == "todo_add" for o in o4),
+        c.check("学生报了点就换成他说的（系统的推荐只是起步）",
+                any(o.get("kind") == "todo_add" for o in o4),
                 _json.dumps(o4[:1], ensure_ascii=False)[:120])
-        c.check("标题仍是上一句的「游泳」（追问后的补充要合并原话）",
+        c.check("标题仍是上一句的「游泳」（补充句没有标题，要合并原话）",
                 bool(o4) and o4[0].get("title") == "游泳",
                 (o4[0].get("title") if o4 else ""))
         c.check("时间换算成 14:00-15:00",
                 bool(o4) and o4[0].get("start") == "14:00", (o4[0].get("start") if o4 else ""))
+        c.check("学生自己点的时间不带 auto 标记",
+                bool(o4) and not o4[0].get("auto"))
+
+        # 连"哪天"都没说 → 这时才该问，而且**只问日期、不问时间**
+        sid2b = "oral-todo-2b"
+        r3b = client.post("/api/chat", json={
+            "message": "帮我安排游泳", "module": "schedule", "session_id": sid2b,
+        })
+        d3b = r3b.json()
+        c.check("连哪天都没说 → 只问日期、不问时间",
+                "哪一天" in (d3b.get("answer") or ""),
+                (d3b.get("answer") or "")[:70])
+        c.check("没日期时不出提案（不硬凑一个时间）",
+                not (d3b.get("options") or []),
+                _json.dumps((d3b.get("options") or [])[:1], ensure_ascii=False)[:80])
+        c.check("追问里已经把标题记住了（游泳），不是笼统地问",
+                "游泳" in (d3b.get("answer") or ""),
+                (d3b.get("answer") or "")[:70])
 
         # —— ④ 确认落空兜底：上一轮已经掉给模型撒过谎，学生照样回「确认」——
         #     把学生截图里的那段真实历史摆出来：学生原话 + 模型那句「搞定！已经正式写进」，
@@ -864,6 +903,181 @@ def test_remove_todo_pipeline():
     return c.summary("第七批（删待办：原样念一遍 / 列清单不猜 / 课归课）")
 
 
+def test_proactive_time_and_confirm():
+    """第八批：学生只给"哪天"时，**时间由系统算**；回「确认」必须真挂出条、真写进去。
+
+    这一批盯的是学生截屏投诉的两句话：
+      · 「**没有帮我想时间，是我问了才说的**」——
+        学生说「那我加一个健身在周四」，系统不该反问他"几点到几点"，
+        而要自己查空档、挑一段排上、把确认条挂出来，并说清"这是我挑的，不合适你改"。
+      · 「**没有确认**」——
+        管家只在文字里写「- 任务：健身 - 时间：周四 15:40~17:10 点【确认】就入库了」，
+        界面上连按钮都没有；学生回「确认」，系统也不知道他在确认什么。
+    所以这里两件事一起钉：
+      ① 只给"哪天" → 出 auto 提案，时间落在真实空档里，且话里说清怎么改；
+      ② 管家只写了文字方案 → 学生回「确认」时，系统替他**算出时间**把条挂出来；
+      ③ 学生报了个点/换了一天 → 沿用原卡换时间重出条（那句"你说个点"不能是空炮）。
+    """
+    import datetime as _dt
+
+    title("8. 只给「哪天」：时间由系统算；回「确认」必出条、必落库")
+    c = Checker()
+    from app.agent.pending import peek_pending
+    from app.modules import planner as pl
+    from app.modules.planner import (
+        auto_todo_proposal, build_scheduling_tools, pick_free_slot,
+        propose_todo_tool, retime_todo_proposal,
+    )
+    from app.store import append_conversation, list_todos
+
+    with sandbox():
+        client = make_client()
+        seed_timetable()
+        # 挑一个"有课、也有空档"的周四：空档里最长的那段应该被挑中
+        thu = (_dt.date.today() + _dt.timedelta(
+            days=(4 - _dt.date.today().isoweekday()) % 7 or 7)).isoformat()
+
+        # —— ① 工具层：只给 date、不给 start，也必须出条（时间自己挑）——
+        raw = _json.loads(propose_todo_tool(title="健身", date=thu))
+        prop = raw.get("__proposal__") or {}
+        c.check("propose_todo_tool 只给日期也给得出确认条（不再报'缺开始时间'）",
+                prop.get("kind") == "todo_add", _json.dumps(raw, ensure_ascii=False)[:110])
+        c.check("挑出来的时间落在真实空档里",
+                bool(prop) and any(s["start"] == prop.get("start")
+                                   for s in pl.find_free_slots(thu)),
+                f"{prop.get('start')}-{prop.get('end')}")
+        c.check("标了 auto，好让话术说清'这个点是我挑的'", prop.get("auto") is True)
+        c.check("说明书里写明『只给哪天也行』",
+                "空档" in (build_scheduling_tools()["propose_todo_tool"].description or ""))
+
+        # —— ② 任何模块都拿得到这组只读工具（路由把话分给谁都出得了条）——
+        sched = build_scheduling_tools()
+        c.check("这一组里备齐了『查空档 + 出条』四件套",
+                {"find_free_slots", "propose_todo_tool", "propose_slots",
+                 "list_day_todos"} <= set(sched),
+                sorted(sched))
+        c.check("**没有一个能写库的工具**混进来（写权限仍然只在系统手里）",
+                not ({"add_todo_tool", "remove_todo", "update_todo_status"} & set(sched)),
+                sorted(sched))
+
+        # —— ③ 单元：只给"哪天"就能凑出提案；那天排不进就如实返回 None ——
+        auto = auto_todo_proposal("周四帮我加个健身")
+        c.check("auto_todo_proposal 认『哪天 + 什么事』",
+                bool(auto) and auto.get("date") == thu and auto.get("auto") is True,
+                _json.dumps(auto, ensure_ascii=False)[:110])
+        c.check("只给事、不给哪天 → 不硬凑（返回 None，交给追问细问）",
+                auto_todo_proposal("帮我安排游泳") is None)
+        c.check("只给哪天、没说做什么 → 也不硬凑",
+                auto_todo_proposal("周四帮我安排一下") is None)
+        # 把那天空档全塞满 → 应该挑不出来，返回 None（如实说"排不进"）
+        from app.store import add_todo as _add
+        for s in pl.find_free_slots(thu, min_minutes=30):
+            _add("占位", thu, s["start"], s["end"])
+        c.check("那天排满了就不硬凑一个时间（返回 None）",
+                pick_free_slot(thu) is None
+                and auto_todo_proposal("周四帮我加个健身") is None)
+        c.check("排不进时如实说『这天排不下』，并给他换日子的办法",
+                "排不" in pl.todo_missing_advice("周四帮我加个健身"),
+                pl.todo_missing_advice("周四帮我加个健身")[:60])
+        for t in list_todos(thu):          # 清掉占位，后面还要用这天
+            from app.store import delete_todo
+            delete_todo(t["id"])
+        c.check("清完占位，空档又回来了", pick_free_slot(thu) is not None)
+
+        # —— ④ 端到端：学生只说了"哪天"，系统自己算时间并挂条 ——
+        sid = "proactive-1"
+        d = client.post("/api/chat", json={
+            "message": "那你帮我加一个健身在周四", "session_id": sid}).json()
+        o = d.get("options") or []
+        c.check("学生只给『哪天』也出确认条（不再反问他几点）",
+                any(x.get("kind") == "todo_add" and x.get("auto") for x in o),
+                _json.dumps(o[:1], ensure_ascii=False)[:120])
+        c.check("标题干净（不是『那你帮我健身』这种）",
+                bool(o) and o[0].get("title") == "健身",
+                (o[0].get("title") if o else ""))
+        c.check("话里说清『我看 XX 空着，就排这儿了』",
+                "空着" in (d.get("answer") or "") and "排" in (d.get("answer") or ""),
+                (d.get("answer") or "")[:80])
+        c.check("并留了活口『不合适你说个点』",
+                "改成" in (d.get("answer") or ""), (d.get("answer") or "")[:80])
+        c.check("出条没写库（学生还没点头）",
+                not any(t["title"] == "健身" for t in list_todos(thu)))
+
+        # 他真报了个点 → 沿用原卡换时间，重新出条
+        d2 = client.post("/api/chat", json={
+            "message": "下午两点到三点", "session_id": sid}).json()
+        o2 = d2.get("options") or []
+        c.check("学生嫌点不合适、报了个新点 → 按他说的换时间重出条",
+                bool(o2) and o2[0].get("title") == "健身"
+                and o2[0].get("start") == "14:00" and o2[0].get("end") == "15:00",
+                _json.dumps(o2[:1], ensure_ascii=False)[:120])
+        c.check("换时间这一轮仍然没写库",
+                not any(t["title"] == "健身" for t in list_todos(thu)))
+
+        d3 = client.post("/api/chat", json={"message": "确认", "session_id": sid}).json()
+        c.check("回「确认」真的写进日程了",
+                any(t["title"] == "健身" and t["start"] == "14:00" for t in list_todos(thu)),
+                [f"{t['title']}@{t['start']}" for t in list_todos(thu)])
+        c.check("回答说的是「已加入日程」", "已加入日程" in (d3.get("answer") or ""),
+                (d3.get("answer") or "")[:60])
+
+        # —— ⑤ 截图那一幕：管家只在**文字里**写了方案，没挂条；学生回「确认」——
+        #     系统要拿得出方案（包括自己补时间），把条挂出来，而不是让他空等。
+        sid2 = "proactive-2"
+        append_conversation(sid2, "user", "周四下午还有什么活动没")
+        append_conversation(sid2, "assistant",
+                            "周四下午确实还空着一段比较完整的空档：15:40–17:10。"
+                            "如果你考虑把健身放到这个时间段，我可以顺手帮你安排。")
+        append_conversation(sid2, "user", "那你帮我加一个健身在周四")
+        append_conversation(sid2, "assistant",
+                            "好，周四这档提案这就发给你：- 任务：健身 - 时间：周四 15:40~17:10 "
+                            "- 范围：本周 点【确认】就入库了。")
+        before = [t["title"] for t in list_todos(thu)]
+        d4 = client.post("/api/chat", json={"message": "确认", "session_id": sid2}).json()
+        o4 = d4.get("options") or []
+        c.check("管家只写了文字方案时，学生回「确认」也要把条挂出来",
+                any(x.get("kind") == "todo_add" for x in o4),
+                _json.dumps(o4[:1], ensure_ascii=False)[:120])
+        c.check("捞回来的就是他说的那件事、那天",
+                bool(o4) and o4[0].get("title") == "健身" and o4[0].get("date") == thu,
+                _json.dumps(o4[:1], ensure_ascii=False)[:120])
+        c.check("这一轮还没写（还是要他点一下/回一句确认）",
+                [t["title"] for t in list_todos(thu)] == before,
+                [t["title"] for t in list_todos(thu)])
+        n_before = len([t for t in list_todos(thu) if t["title"] == "健身"])
+        d5 = client.post("/api/chat", json={"message": "确认", "session_id": sid2}).json()
+        n_after = len([t for t in list_todos(thu) if t["title"] == "健身"])
+        c.check("再回一句「确认」就真落库了，而且**只多一条**（不重复写）",
+                n_after == n_before + 1,
+                [f"{t['title']}@{t['start']}" for t in list_todos(thu)])
+
+        # —— ⑥ 换一天也接得住：学生说"改成下周六"——
+        uid = "proactive-3"
+        client.post("/api/chat", json={"message": "周三加个健身", "session_id": uid})
+        c.check("周三那条先挂出来了",
+                any(x.get("kind") == "todo_add"
+                    for x in (peek_pending(uid) or {}).get("options") or []),
+                _json.dumps((peek_pending(uid) or {}).get("options") or [], ensure_ascii=False)[:90])
+        d6 = client.post("/api/chat", json={"message": "改成周六", "session_id": uid}).json()
+        o6 = d6.get("options") or []
+        sat = (_dt.date.today() + _dt.timedelta(
+            days=(6 - _dt.date.today().isoweekday()) % 7 or 7)).isoformat()
+        c.check("说『改成周六』就换到周六（并在那天重新挑了空档）",
+                bool(o6) and o6[0].get("date") == sat and o6[0].get("title") == "健身",
+                _json.dumps(o6[:1], ensure_ascii=False)[:120])
+        c.check("换天也是只出条、不写库",
+                not any(t["title"] == "健身" for t in list_todos(sat)))
+
+        # —— ⑦ 单元：retime 不会把"一句新的下单"吃掉 ——
+        card = {"kind": "todo_add", "title": "健身", "date": thu,
+                "start": "15:40", "end": "17:10"}
+        c.check("『改成晚上七点到八点』→ 换时段、日期不动",
+                (retime_todo_proposal(card, "改成晚上七点到八点") or {}).get("start") == "19:00")
+        c.check("『周四加个复习』这种新下单不会被当成'改时间'",
+                retime_todo_proposal(card, "周四加个复习") is None)
+    return c.summary("第八批（只给哪天→系统算时间 / 回确认必出条）")
+
+
 def main():
     global code
     print("\n" + "=" * 60)
@@ -876,6 +1090,7 @@ def main():
     code |= test_add_todo_chinese_clock()
     code |= test_schedule_proposal_tool()
     code |= test_remove_todo_pipeline()
+    code |= test_proactive_time_and_confirm()
     return code
 
 

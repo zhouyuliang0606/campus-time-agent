@@ -47,8 +47,10 @@ from app.modules.station import build_system_prompt as STATION_PROMPT, build_too
 # 否则学生说"明天"，AI 根本算不出是哪一天
 from app.modules.planner import (
     add_todo_tool,
+    auto_todo_proposal,
     build_system_prompt as PLANNER_PROMPT,
     build_tools as planner_tools,
+    build_scheduling_tools as scheduling_tools,
     mock_planner,
     parse_add_course,
     parse_add_todo,
@@ -59,12 +61,16 @@ from app.modules.planner import (
     resolve_todo_remove_reply,
     wants_remove_todo,
     wants_remove_todo_loose,
+    is_add_todo_answer,
     is_add_todo_followup,
     pick_todo_missing,
+    retime_todo_proposal,
+    todo_missing_advice,
     wants_add_course,
     wants_add_todo,
     wants_clear_timetable,
     wants_remove_course,
+    wants_retime_todo,
 )
 from app.modules.student_persona import STUDENT_PERSONAS, persona_block, is_valid
 
@@ -133,6 +139,21 @@ ASSISTANT_RULES = """
       所以只能说"说一下时间/哪天，我算好给你出确认条"，禁止用"搞定／没问题／
       已经正式写进你的待办啦／刷新一下就能看到"这类话暗示已完成——
       说这话的时候数据库里空空如也，学生一刷新就发现被骗（这条被投诉过）。
+   ⛔ **学生说了"哪天"、没说"几点"时，时间由你算，不许反问他。**
+      「周四加个健身」「我想周六自习」这类话，他要的就是"哪天哪会儿空着"这件事本身——
+      你反问"你想几点到几点"，等于把活儿原封不动退回去（学生投诉原话：
+      「**没有帮我想时间，是我问了才说的**」）。正确做法：
+      ① 先 find_free_slots 看那天的空档；② 挑一段合适的（他说了"上午/下午/晚上"
+      就只在那一段里挑）；③ 调 propose_todo_tool 把确认条挂出来
+      （把 date 给它就够，**它自己会从那天的空档里挑时间**）；
+      ④ 文字里说清"我看 XX 空着，就排这儿了"，再补一句"这个点不合适就说得改到几点"。
+      只有两种情况才去问他：① 那天真的排不进（如实说"这天满了、换个日子"）；
+      ② 他连"哪天"都没说（那就只问日期，**别问时间**）。
+   ⛔ 学生报出"哪天/几点"要往日程里加事时，**一定要调工具把确认条挂出来**。
+      光在文字里写「- 任务：健身 - 时间：周四 15:40~17:10 - 点【确认】就入库了」
+      等于没出条——界面上一个按钮都没有，学生回"确认"时系统也不知道他在确认什么
+      （这一幕被截屏投诉过：**「没有确认」**）。
+      换句话说：**确认条只有挂出来，才叫"提案发给你了"。**
    ⛔ **删待办**（"把周二那条游泳的待办删掉""取消交电费""删掉明天那条"）
       跟删课是同一套规矩：**先列清楚，再动手，学生点头才算数**。三条红线：
       · 学生没点头就删、或先宣布"已经删了"——都是骗人：数据还在库里，
@@ -341,6 +362,13 @@ async def chat(req: Request):
     # 以后新增模块会自动带上这个能力，不用重复实现。
     tools = build_tools()
     tools.update(files_tools())
+    # 不管路由把话分到哪个模块，都给它配上"查空档 + 把待办变成能点的确认条"这几件
+    # **只读**工具。原因很具体：学生说「我想周四去健身」时，路由可能把这句分给
+    # 「校园问答」，而那个模块原本文具盒里只有一个 search_kb —— 它就只能**在文字里**
+    # 写一句「- 任务：健身 - 时间：周四 15:40~17:10 点【确认】就入库了」，
+    # 界面上一个按钮都没有；学生回「确认」，系统也不知道他在确认什么。
+    # 这几件工具都不写库（真写入永远是后端的确认条），所以发给谁都安全。
+    tools.update(scheduling_tools())
 
     # 会话 id：前端带上，服务端就能把几轮对话串起来。
     # 没带就服务端生成一个并在响应里返回，前端存起来下次继续用。
@@ -616,6 +644,7 @@ async def chat(req: Request):
             "")
         proposal = parse_add_todo(add_req) if add_req else None
         from_butler = False
+        auto_filled = False      # 时间是不是系统替学生挑的（话术要区分，见下）
         # 学生原话也解析不出来？那就捞**管家自己写的那句"提案"**。
         # 这正是被截屏投诉的那一幕：管家在文字里写
         # 「好，那我按这个出个提案：- 任务：健身 - 时间：周一 16:30~18:00 …
@@ -632,27 +661,47 @@ async def chat(req: Request):
                 if guessed is not None:
                     proposal, from_butler = guessed, True
                     break
+        # 还有第三种：学生原话只说了"哪天"、没说"几点"（「那你帮我加一个健身在周四」），
+        # 管家上一轮又只是在文字里客气了一句（既没调工具、格式也对不上）——
+        # 前两路都解析不出完整提案。这时**别再让他空等**：
+        # 照 3c 分支的正解，替他查那天的空档、挑一段，把确认条挂出来。
+        # 这正是截图那一幕：学生回「确认」→ 界面上什么都没有、日程里也没写进去。
+        if proposal is None and not already_written and add_req:
+            guessed = auto_todo_proposal(add_req)
+            if guessed is not None:
+                proposal, from_butler, auto_filled = guessed, True, True
         if proposal is not None:
             save_pending(session_id, [proposal])
             append_conversation(session_id, "user", message)
             append_conversation(session_id, "assistant",
                                 f"已生成待办确认：{proposal['summary']}")
-            return {
-                "module": "planner",
-                "session_id": session_id,
-                "answer": (
+            if auto_filled:
+                # 时间是系统挑的，得说明白——否则学生以为自己说过这个点。
+                answer = (
+                    "📝 刚才那次可能没接上，我把确认条又挂了出来——"
+                    f"**{proposal['date']}（{proposal['weekday']}）"
+                    f"{proposal['start']}-{proposal['end']} 是空着的**，"
+                    f"就把 **{proposal['title']}** 排在这儿了。\n"
+                    "点【确认加入】执行；直接回一句「确认」也一样。\n"
+                    "这个点不合适，说一句「改成晚上七点到八点」就行。"
+                )
+                phase = "🗓️ 确认落空 → 学生只说了哪天，系统挑空档补出确认条"
+            else:
+                answer = (
                     "📝 刚才那次可能没接上，我把确认条又挂了出来——"
                     f"要不要把 **{proposal['title']}** 排进日程？"
                     f"{proposal['date']}（{proposal['weekday']}）"
                     f"{proposal['start']}-{proposal['end']}。\n"
                     "点【确认加入】执行；直接回一句「确认」也一样。"
-                ),
-                "trace": [{
-                    "step": 1,
-                    "phase": ("📝 确认落空 → 从管家文字里的方案捞回确认条" if from_butler
-                              else "📝 确认落空 → 重新挂出待办确认条"),
-                    "answer": proposal["summary"],
-                }],
+                )
+                phase = ("📝 确认落空 → 从管家文字里的方案捞回确认条" if from_butler
+                         else "📝 确认落空 → 重新挂出待办确认条")
+            return {
+                "module": "planner",
+                "session_id": session_id,
+                "answer": answer,
+                "trace": [{"step": 1, "phase": phase,
+                           "answer": proposal["summary"]}],
                 "options": [proposal],
                 "awaiting_choice": True,
             }
@@ -753,7 +802,37 @@ async def chat(req: Request):
                       if m.get("role") == "user"), "")
     asking_add = any("加待办缺细节" in (m.get("content") or "")
                      for m in conv[-4:] if m.get("role") == "assistant")
-    if wants_add_todo(message) or (asking_add and is_add_todo_followup(message)):
+
+    # 3c-pre) **学生嫌系统挑的点不合适、自己报了个时刻** → 换时间重新出条。
+    #     背景：学生只说了"哪天"时，系统会替他挑一段并说明"这个点不合适你说个点"。
+    #     他真说了（"下午两点到三点"、"改成晚上七点到八点"、"改成周六"），
+    #     就得接住——不然那句"你说个点"等于放空炮，学生会觉得"我说了它当没听见"。
+    #     只认"纯时间短句"或带"改成/换到"这类词的话，免得把一句新的下单吃掉。
+    held_add = _pending_todo(session_id)
+    if held_add and not is_confirmation(message) \
+            and (is_add_todo_followup(message) or wants_retime_todo(message)):
+        retimed = retime_todo_proposal(held_add, message)
+        if retimed is not None:
+            save_pending(session_id, [retimed])
+            append_conversation(session_id, "user", message)
+            append_conversation(session_id, "assistant",
+                                f"已生成待办确认：{retimed['summary']}")
+            return {
+                "module": "planner",
+                "session_id": session_id,
+                "answer": (
+                    f"📝 好，按你说的改成 **{retimed['date']}（{retimed['weekday']}）"
+                    f"{retimed['start']}-{retimed['end']}**——"
+                    f"要不要把 **{retimed['title']}** 排在这儿？\n"
+                    f"下面点一下【确认加入】我就写进去，回一句「确认」也一样。"
+                ),
+                "trace": [{"step": 1, "phase": "🕘 按学生说的点换时间 → 重出确认条",
+                           "answer": retimed["summary"]}],
+                "options": [retimed],
+                "awaiting_choice": True,
+            }
+
+    if wants_add_todo(message) or (asking_add and is_add_todo_answer(message)):
         # 追问后的补充回答（学生先说"帮我安排周二的游泳"，再补"下午两点到三点"）：
         # 补充那句里没有标题、也没有日期，单独解析会把标题弄丢——
         # 把上一句原话拼回来一起算。识别标记就是下面追问分支写进会话历史的那句"加待办缺细节"。
@@ -762,20 +841,46 @@ async def chat(req: Request):
             proposal = parse_add_todo(prev_user + "，" + message)
         if proposal is None:
             proposal = parse_add_todo(message)
+        # 学生只说了"哪天"、没说"几点"（「那我加一个健身在周四」）——
+        # 这时候**不许把问题推回去**问他"几点到几点"。
+        # 被截屏投诉的原话就是这一条：「**没有帮我想时间，是我问了才说的**」：
+        # 学生正是因为不知道哪天哪会儿空着才来问管家，你反问他几点，
+        # 他只能瞎报一个，或者干脆放弃——等于没帮上忙。
+        # 正解：自己去查那天的空档，挑一段排上，把确认条挂出来（写库仍要学生点头）。
+        if proposal is None:
+            blob = (prev_user + "，" + message) if (asking_add and prev_user) else message
+            proposal = auto_todo_proposal(blob)
         if proposal is not None:
             save_pending(session_id, [proposal])
             append_conversation(session_id, "user", message)
             append_conversation(session_id, "assistant", f"已生成待办确认：{proposal['summary']}")
-            return {
-                "module": "planner",
-                "session_id": session_id,
-                "answer": (
+            if proposal.get("auto"):
+                # 时间是系统替他挑的 —— 话里要说清"这是我挑的，不合适你改"，
+                # 免得学生以为这是他自己说过的时间。
+                answer = (
+                    f"📝 我看了一下，{proposal['date']}（{proposal['weekday']}）"
+                    f"**{proposal['start']}-{proposal['end']} 是空着的**，"
+                    f"就先把 **{proposal['title']}** 排在这儿了"
+                    f"（共 {proposal['minutes']} 分钟）。\n"
+                    f"下面点一下【确认加入】我就写进日程，回一句「确认」也一样。\n"
+                    f"这个点不合适的话，直接说「改成晚上七点到八点」就行。"
+                )
+            else:
+                answer = (
                     f"📝 要不要把 **{proposal['title']}** 排进日程？"
                     f"{proposal['date']}（{proposal['weekday']}）{proposal['start']}-{proposal['end']}。"
                     f"下面点一下【确认加入】我就写进去，回一句「确认」也一样。"
-                ),
-                "trace": [{"step": 1, "phase": "📝 生成待办提案（系统判定）",
-                           "answer": proposal["summary"]}],
+                )
+            return {
+                "module": "planner",
+                "session_id": session_id,
+                "answer": answer,
+                "trace": [{
+                    "step": 1,
+                    "phase": ("🗓️ 学生只说了哪天 → 系统挑空档出提案" if proposal.get("auto")
+                              else "📝 生成待办提案（系统判定）"),
+                    "answer": proposal["summary"],
+                }],
                 "options": [proposal],
                 "awaiting_choice": True,
             }
@@ -784,19 +889,20 @@ async def chat(req: Request):
         # 日程里其实什么都没有（schedule 模块连一个写入工具都没有，纯属嘴甜）。
         # 照删课的规矩：缺什么就追问什么，标记"加待办缺细节"写进历史，
         # 学生下一句补充由上面的合并逻辑接着算。
+        #
+        # 注意：走到这儿有两类情况，话术不能混为一谈（todo_missing_advice 分得清）：
+        #   ① 学生根本没说是哪天 → 正常反问；
+        #   ② 学生说了哪天、可**那天真排不进**（上面 auto_todo_proposal 查过空档了）
+        #      → 要如实说"这天满了"，别让他一遍遍补"几点几点"。
         clear_pending(session_id)
-        missing = pick_todo_missing(
-            (prev_user + "，" + message) if (asking_add and prev_user) else message)
+        blob = (prev_user + "，" + message) if (asking_add and prev_user) else message
+        missing = pick_todo_missing(blob)
         append_conversation(session_id, "user", message)
         append_conversation(session_id, "assistant", "加待办缺细节")
         return {
             "module": "planner",
             "session_id": session_id,
-            "answer": (
-                f"把想安排的**{missing}**说一下，我算好给你出确认条，你点头我才写进日程。\n"
-                f"· 缺时间就说「几点到几点」，比如「下午两点到三点」；\n"
-                f"· 缺日期就说「哪一天」，比如「周二」「明天」。"
-            ),
+            "answer": todo_missing_advice(blob),
             "trace": [{"step": 1, "phase": "🤔 加待办缺细节（系统追问）",
                        "answer": f"缺{missing}，先问清楚再出提案"}],
             "options": [],

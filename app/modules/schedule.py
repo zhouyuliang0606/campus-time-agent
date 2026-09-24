@@ -15,7 +15,7 @@ import json
 import os
 
 from app.agent.tools import Tool
-from app.modules.planner import propose_todo_tool
+from app.modules.planner import propose_todo_tool, propose_todo_tool_tool
 
 # 示例课表文件路径：app/data/courses.json（__file__ 是当前文件，往上两级到 app，再进 data）
 _DATA_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "courses.json")
@@ -36,7 +36,14 @@ SYSTEM_PROMPT = """你是校园时间管家学生端的「课表时间规划」�
   调完之后界面上会出现一个【确认加入】按钮，学生点它才会由系统写进日程。
 - ⛔ 严禁只在文字里自己写「任务：…/时间：…」就宣称"提案已发给你"——
   那样学生看不到任何按钮（这条被投诉过）。**没调用工具就别说"提案已经发出"**。
-- ⛔ 严禁说"已经写进你的日程/已经帮你排好了"。只能是"确认条已经挂出来了，你点一下就好"。"""
+- ⛔ 严禁说"已经写进你的日程/已经帮你排好了"。只能是"确认条已经挂出来了，你点一下就好"。
+- **学生只说了"哪天"、没说"几点"时，时间由你来想，不许反问他。**
+  「周四加个健身」「我想周六自习」这类话，他要的就是"哪天哪会儿空着"这件事本身；
+  你反问"你想几点"，等于把活儿原封不动退回去（学生投诉原话：
+  「没有帮我想时间，是我问了才说的」）。正确做法：先 find_free_slots 看那天，
+  或者干脆只把 date 交给 propose_todo_tool —— **时间它会自己从那天的空档里挑好**，
+  你再补一句"我看 XX 空着就排这儿了，不合适你说个点"。
+  只有两种情况才去问他：① 那天真的排不进；② 他连哪天都没说（那就只问日期，别问时间）。"""
 
 
 def _load() -> dict:
@@ -181,34 +188,6 @@ def build_tools() -> dict[str, Tool]:
             },
             func=plan_task,
         ),
-        "propose_todo_tool": Tool(
-            name="propose_todo_tool",
-            description=(
-                "把一个具体任务排进日程（只出提案，不写库）。"
-                "title 任务名；when 直接写学生那句时间，如 '周一 16:30-18:00'、"
-                "'明天下午两点到三点'；也可以分着给 date（'2026-09-28' 或 '周一'）"
-                "和 start/end（'16:30'/'18:00'）。"
-                "调用成功界面上会挂出【确认加入】按钮，学生点了才写库；"
-                "没调用这个工具就不要说'提案已发给你'。"
-            ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "title": {"type": "string", "description": "任务名称，如 健身"},
-                    "when": {
-                        "type": "string",
-                        "description": "时间描述，如 '周一 16:30-18:00'、'明天下午两点到三点'；可空",
-                        "default": "",
-                    },
-                    "date": {"type": "string", "description": "日期，如 '2026-09-28'、'周一'；可空",
-                             "default": ""},
-                    "start": {"type": "string", "description": "开始时间，如 '16:30'；可空",
-                              "default": ""},
-                    "end": {"type": "string", "description": "结束时间，如 '18:00'；可空",
-                            "default": ""},
-                },
-                "required": ["title"],
-            },
-            func=propose_todo_tool,
-        ),
+        # 说明书只维护一份（在 planner 里），免得改了一处、另一处还是老话术。
+        "propose_todo_tool": propose_todo_tool_tool(),
     }

@@ -29,6 +29,13 @@ MODULE_KEY = "planner"
 DAY_START = "07:00"
 DAY_END = "22:00"
 
+# 「替学生挑一个空档」时的两个默认值（人话：别把整晚都占掉，先给一段合理的）
+# 为什么要有这两个数：学生只说了"周四加个健身"、没说几点，
+# 我们要主动排一个点（他问了才给 = 被投诉"没有帮我想时间"），
+# 但也不能把 15:40~22:00 整段都占成"健身"——那是给人添乱，不是帮忙。
+AUTO_SLOT_MINUTES = 60   # 空档至少这么长才值得推荐
+AUTO_SLOT_LENGTH = 90    # 替他挑的那一段给多久（学生点头后写入的就是这段）
+
 # 一天的星期几怎么对应周表的 day 字段
 DAY_NAMES = {1: "周一", 2: "周二", 3: "周三", 4: "周四", 5: "周五", 6: "周六", 7: "周日"}
 
@@ -127,6 +134,69 @@ def find_free_slots(date: str, min_minutes: int = 60) -> list:
         return [{"info": f"{date}（{_weekday_name(date)}）没有 ≥{min_minutes} 分钟的空档了，"
                          f"要么缩短时长，要么换一天。"}]
     return result
+
+
+def _prefer_window(text: str):
+    """学生话里的"上午/下午/晚上"决定往哪一段找（人话：别在早上七点给人排健身）。
+
+    没说时间段 → 默认按"白天 08:00~22:00"找。为什么不直接用 DAY_START(07:00)：
+    学生只说"周六加个健身"时，那天整天都空，最长的那段从 07:00 起手，
+    排出来就是"周六早上七点健身"——帮他排了，但帮得挺糟。
+    早八点起手是学生作息里最自然的默认。
+    """
+    t = text or ""
+    if any(w in t for w in ("上午", "早上", "早晨", "一早")):
+        return (6 * 60, 12 * 60)
+    if "中午" in t:
+        return (11 * 60, 14 * 60)
+    if "下午" in t:
+        return (12 * 60, 18 * 60)
+    if any(w in t for w in ("晚上", "傍晚", "夜里", "今晚", "今夜")):
+        return (18 * 60, 22 * 60)
+    return (8 * 60, 22 * 60)
+
+
+def pick_free_slot(date: str, prefer: str = "",
+                   minutes: int = AUTO_SLOT_MINUTES,
+                   length: int = AUTO_SLOT_LENGTH) -> dict | None:
+    """替学生从那天的空档里挑一段（人话：他说"周四加个健身"，几点由系统算）。
+
+    这是被投诉的那句「**没有帮我想时间，是我问了才说的**」的正解：
+    学生只说了"哪天"、没说"几点"，系统不该把问题推回去问他，
+    而要自己去查空档、挑一段合适的排上，再把确认条挂出来让他点头。
+
+    挑法（尽量好猜、别花哨）：
+      1. 学生说了"上午/下午/晚上"就只在那一段里找；没说就按白天 08:00~22:00 找。
+      2. 优先**最长的一段**空档——最经得起塞一件新事；同样长时挑靠后的
+         （下午/傍晚往往比一早更有空，也更符合安排健身、自习这类事）。
+      3. 在选中的空档里，从那一段的起手点开始取 AUTO_SLOT_LENGTH 那么长
+         （不会把整段空档都占掉），并且尽量落进学生说的时间段里。
+
+    挑不出来（那天满课、或空档都不够长）返回 None —— 由调用方如实告知，
+    绝不硬凑一个时间写进日程。
+    """
+    slots = [s for s in find_free_slots(date, min_minutes=minutes) if s.get("start")]
+    if not slots:
+        return None
+    lo, hi = _prefer_window(prefer)
+    # 只留下"跟目标时间段有交集、且交集够长"的空档
+    fits = [s for s in slots
+            if min(to_minutes(s["end"]), hi) - max(to_minutes(s["start"]), lo) >= minutes]
+    if fits:
+        slots = fits
+    best = max(slots, key=lambda s: (s["minutes"], to_minutes(s["start"])))
+    # 起手点：不早于目标时间段的起点（学生说"下午"就别从早上开始）
+    begin = max(to_minutes(best["start"]), lo)
+    finish = min(begin + length, to_minutes(best["end"]))
+    if finish - begin < minutes:
+        return None
+    return {
+        "date": date,
+        "weekday": _weekday_name(date),
+        "start": to_hhmm(begin),
+        "end": to_hhmm(finish),
+        "minutes": finish - begin,
+    }
 
 
 def list_day_todos(date: str) -> list:
@@ -549,6 +619,19 @@ _ADD_INTENT = (
     "安排", "排一下", "排进", "排到", "加入", "加进", "添加", "加上",
     "加一个", "记一下", "记进", "塞进", "预约",
 )
+# 口语里最常见的写法是「加个健身」「添一条交电费」「记一笔」——动词和量词连写，
+# 词表永远列不全（"加个"漏了，学生说「周三加个健身」就整句掉给模型，
+# 模型回一句"已经帮你排好啦"，日程里空空如也）。所以这里用正则兜住"动词+量词"。
+_ADD_TALK_RE = re.compile(r"[加添记排]\s*(个|条|件|笔|次|项|一下|一节课|一门)")
+# 几样"看起来像加待办、其实归别处管"的说法，要在上面那条之前让路
+_NOT_TODO_PHRASES = ("加课", "加一门课", "加个课", "加一节", "加门课", "加节课",
+                     "添加课程", "导入课表")
+# 削完只剩这些的，说明学生**没说要做的事**（"周四加一个"）——
+# 它们不是待办名字，是"加"这个动作本身，遇到就当没标题、由追问分支问他要加什么。
+_EMPTY_TITLES = (
+    "加", "加个", "加一个", "加一条", "添加", "安排", "安排一下", "记一下",
+    "记一条", "排一下", "预约", "个", "一个", "一条", "一件事", "待办", "事情",
+)
 # 括号里框出来的事，多半就是标题本身（学生习惯用 『』「」把任务名框起来）
 _QUOTE_RE = re.compile(r"[『「\"“]([^」』\"”]{1,40})[」』\"”]")
 _WEEKDAY_RE = re.compile(r"周([一二三四五六日天])")
@@ -681,14 +764,35 @@ def _pick_title(text: str) -> str:
     t = re.sub(r"(下|本|这|上)?周[一二三四五六日天]", " ", t)
     for w in ("下周", "本周", "这周", "上周", "下个", "这个"):
         t = t.replace(w, " ")
-    t = re.sub(r"^(我要|我想|帮我|我想让|请帮我|给我|把|帮)\s*", "", t)
+    # 「那你帮我加个健身在周四」这种口语，开头那串语气词得先削掉，
+    # 否则待办标题会变成「那你帮我健身」——截图里卡片名就是这副别扭样子。
+    # （长词排前面：正则的备选是"先匹配到的算数"，写成 (那|那么) 会先把"那"吃掉。）
+    t = re.sub(r"^(那么|那|您|你|咱们|我们|要不|不然|麻烦|就|先|再|请)+", "", t.lstrip())
+    t = re.sub(r"^(我要|我想|帮我|我想让|请帮我|给我|把|帮)\s*", "", t.lstrip())
     for w in _CONFIRM_WORDS:
         t = t.replace(w, " ")
     for w in _ADD_INTENT + ("的安排", "一下", "一个", "里", "在"):
         t = t.replace(w, " ")
     t = re.sub(r"[，,。！!？?、；;：:~～\-—『』「」\"'“”‘’]", " ", t)
     t = re.sub(r"\s+", "", t).strip()
-    return t.strip("的")[:30] or "待办"
+    # ⚠️ 上面那些 replace() 会在开头留下空格，把原来那句 `^(帮我|我要…)` 顶掉
+    #    （"周日帮我安排游泳" → " 帮我 游泳" → 首字符是空格，"^" 就匹配不上了），
+    #    所以"语气词 + 口语动词"这一轮**必须在去空格之后**再削一遍。
+    t = re.sub(r"^(那么|那|您|你|咱们|我们|要不|不然|麻烦|就|先|再|请)+", "", t)
+    t = re.sub(r"^(我要|我想|帮我|我想让|请帮我|给我|把|帮)\s*", "", t)
+    # 「加个健身」「记一条交电费」这类口语，动词和量词是连在一起的——
+    # _ADD_INTENT 里只有"加一个/添加/预约"这些写法，"加个""添条"漏在外面，
+    # 不收拾掉的话待办标题会变成「加个健身」（截图里那种别扭的卡片名就是它）。
+    # 留个保险：削完只剩一个字就别削了（"记账""加油打卡"这种是正经标题）。
+    _trimmed = re.sub(r"^[加添记]?(?:个|条|件|次|项|一下|一)?", "", t)
+    if len(_trimmed) >= 2:
+        t = _trimmed
+    t = t.strip("的")[:30]
+    # 削到什么都不剩（"周四加一个"）→ 当作没标题，交给追问分支问"要加什么事"，
+    # 别拿"加个"本身当待办名字写进日程。
+    if not t or t in _EMPTY_TITLES:
+        return "待办"
+    return t
 
 
 def wants_add_todo(text: str) -> bool:
@@ -706,7 +810,7 @@ def wants_add_todo(text: str) -> bool:
     # 课表类的话由课表那条路管，别抢（"周一加一节体育"要进的是周表，不是待办）
     if "课表" in t or "课程" in t:
         return False
-    if any(w in t for w in ("加课", "加一门课", "加一节", "加门课", "加节课")):
+    if any(w in t for w in _NOT_TODO_PHRASES):
         return False
     # "帮我安排这周的学习计划"是 schedule 模块的看家本领（找空档排计划），
     # 不是往日程里塞一条待办。判据：说了"计划/规划"又没给具体钟点 → 让给 schedule。
@@ -717,7 +821,7 @@ def wants_add_todo(text: str) -> bool:
     # （原来这里最后还要过一遍"日期/时刻有一个算得出"才放行，
     #   结果"帮我安排游泳"这种只有意图、没有时间的短句全漏给了模型，
     #   模型回一句"我已经帮你排啦"，日程里空空如也。）
-    if any(w in t for w in _ADD_INTENT):
+    if any(w in t for w in _ADD_INTENT) or _ADD_TALK_RE.search(t):
         return True
     # 没有意图词，但话里自带"日期/星期 + 起止时间"的也算下单——
     # （比如"确认 2026-09-24 19:00-20:30 背单词"，前端点候选卡回发的是这副模样；
@@ -770,18 +874,96 @@ def pick_todo_missing(text: str) -> str:
     return "时间和日期"
 
 
+def todo_missing_advice(text: str) -> str:
+    """追问时到底该说哪句话（人话：分清"你没说哪天"和"那天真排不进"）。
+
+    为什么单独写这一小段：学生说「周四加个健身」时，系统**已经替他查过空档**了。
+    如果那天真排不下，就得如实说"这天满了，换个日子"——
+    否则学生会一遍遍补"几点几点"，而问题根本不在时间上，他只会觉得系统在绕他。
+    反过来，学生啥都没说清时也别吓唬他"这天满了"。
+    """
+    t = (text or "").strip()
+    date = _pick_date(t)
+    has_time = _pick_span(t)[0] is not None
+    if date and not has_time:
+        if pick_free_slot(date):
+            # 有空档却没成提案 → 差的是"要加什么事"（标题）
+            return (f"{date}（{_weekday_name(date)}）有空档，就是还不知道要加**什么事**——"
+                    f"说一下事情的名字，比如「加个健身」。")
+        return (f"{date}（{_weekday_name(date)}）那天实在排不下了，课和待办都占满了。"
+                f"换个日子，或者你给个具体钟点，我看看能不能挤一挤。")
+    if has_time and not date:
+        return "时间有了，还差**哪一天**——说「周二」「明天」这样的一天就行。"
+    # 日期和时间都没给：先看看"要做什么事"说了没有，别追问人家已经说过的东西
+    name = _pick_title(t)
+    if name and name != "待办":
+        return (f"**{name}**记下了，就差**哪一天**——"
+                f"说「周二」「明天」这样的一天，我就去把空档挑出来。")
+    return "还差**哪一天**和**要做什么事**——比如「周四加个健身」，我就去把空档挑出来。"
+
+
+def auto_todo_proposal(text: str) -> dict | None:
+    """学生只说了"哪天"、没说"几点"——由系统替他把时间想出来，凑成一张完整提案。
+
+    这就是被截屏投诉的那一幕（原话：「**没有帮我想时间，是我问了才说的**」）：
+    学生说「那我加一个健身在周四」，正确做法是
+      「我看了周四的空档，15:40-17:10 空着，就把健身排这儿了，点【确认加入】」
+    而不是回一句「几点到几点？」把活儿推回给学生——
+    他正是因为不知道哪天哪会儿有空才来问你，你把问题退回去，等于没帮上忙。
+
+    所以这里：拿标题 + 日期 → 查那天的空档 → 挑一段（pick_free_slot）→ 拼成提案。
+    任何一块凑不出来（没日期、没标题、那天真排不进）都返回 None，
+    交给原来的追问逻辑如实说缺什么——**绝不硬凑一个时间写进日程**。
+
+    返回的 dict 只是**提案**，本函数不写库。
+    """
+    t = (text or "").strip()
+    if not t:
+        return None
+    if _pick_span(t)[0]:        # 学生自己说了几点，这不归它管
+        return None
+    date = _pick_date(t)
+    if not date:
+        return None
+    title = _pick_title(t)
+    if not title or title == "待办":
+        return None
+    slot = pick_free_slot(date, prefer=t)
+    if not slot:
+        return None
+    wd = _weekday_name(date)
+    return {
+        "kind": "todo_add",
+        "title": title,
+        "date": date,
+        "start": slot["start"],
+        "end": slot["end"],
+        "weekday": wd,
+        "minutes": slot["minutes"],
+        "auto": True,           # 时间不是学生给的，是系统挑的 —— 话术里要说清楚
+        "summary": f"{title}｜{date}（{wd}）{slot['start']}-{slot['end']}",
+    }
+
+
 def propose_todo_tool(title: str, when: str = "", date: str = "",
                       start: str = "", end: str = "") -> str:
-    """给「课表时间规划」模块用的**只读**提案工具（人话：把建议变成一张能点的确认条）。
+    """把"建议"变成一张**能点的确认条**（只读，不写库）。
 
-    为什么这个模块需要它：学生问"哪天有空复习高数"，Agent 找完空档会给出建议，
+    为什么需要它：学生问"哪天有空复习高数"，Agent 找完空档会给出建议，
     可它手里一个写入工具都没有——于是它就在**文字里**自己写一句
     「好，那我按这个出个提案：- 任务：健身 - 时间：周一 16:30~18:00」，
     学生回「可以」之后，界面上**连个【确认】按钮都没有**（截图里就是这个）。
     给它一张"纸"：提案由系统生成，学生点了按钮，后端才写库。
 
     参数都能吃学生口语：when 传「周一 16:30~18:00」「明晚七点到八点」都行。
-    解析不出来就返回带 hint 的 JSON，让模型补参数重试——绝不瞎凑一个时间。
+
+    ⚠️ 关键一档：**只给了哪天、没给几点 → 时间由系统自己挑，不报错**。
+    学生说「周四加个健身」，他要的就是"哪天哪会儿空着"这件事本身；
+    要是这里回一句"开始时间没解析出来，请补 start"，模型转头就会去问学生
+    「你想几点？」——学生只能瞎报一个，或者干脆放弃（投诉原话就是
+    「**没有帮我想时间，是我问了才说的**」）。
+    所以这一档直接查那天空档、挑一段（pick_free_slot），把确认条挂出来。
+    真挑不出来（那天满课）才返回带 hint 的 JSON —— 绝不瞎凑一个时间。
     """
     blob = " ".join(x for x in (date, when, start, end) if x)
     day = _pick_date(blob) or _pick_date(f"{date} {when}")
@@ -790,15 +972,28 @@ def propose_todo_tool(title: str, when: str = "", date: str = "",
         begin, _ = _pick_span(start)
     if not finish and end:
         _, finish = _pick_span(end)
-    name = (title or "").strip().strip("\"'“”‘’『』「」")  or "待办"
-    if not day or not begin:
+    name = (title or "").strip().strip("\"'“”‘’『』「」") or "待办"
+    if not day:
         return json.dumps({
-            "error": "日期或开始时间没解析出来",
-            "hint": ("date 传 '2026-09-28' 或 '周一'/'明天'；"
-                     "when 传 '16:30-18:00'（学生说的『下午两点到三点』也认）。"
-                     "两个都给全了才会出确认条。"),
+            "error": "日期没解析出来",
+            "hint": ("date 传 '2026-09-28' 或 '周一'/'明天'。"
+                     "**只缺时间不要紧**：日期给全了，时间会由系统从那天的空档里挑。"),
             "got": blob,
         }, ensure_ascii=False)
+    auto_slot = False
+    if not begin:
+        # 学生只说了"哪天"、没说"几点" —— 由系统从那天的空档里挑一段
+        slot = pick_free_slot(day, prefer=blob)
+        if not slot:
+            return json.dumps({
+                "error": f"{day}（{_weekday_name(day)}）实在排不进了",
+                "hint": (f"那一天的空档都不够排一件事。如实告诉学生'这天排满了'，"
+                         f"让他换个日子，或给个具体钟点你再看。**不要反问他想几点**。"),
+                "got": blob,
+            }, ensure_ascii=False)
+        begin, finish, auto_slot = slot["start"], slot["end"], True
+        if not finish:
+            finish = to_hhmm(to_minutes(begin) + 60)
     if not finish:
         finish = to_hhmm(to_minutes(begin) + 60)
     prop = {
@@ -811,13 +1006,16 @@ def propose_todo_tool(title: str, when: str = "", date: str = "",
         "minutes": to_minutes(finish) - to_minutes(begin),
         "summary": f"{name}｜{day}（{_weekday_name(day)}）{begin}-{finish}",
     }
-    return json.dumps({
-        "__proposal__": prop,
-        "human": (f"确认条已经挂在下面了：《{name}》{day}（{_weekday_name(day)}）"
-                  f"{begin}-{finish}。点【确认加入】才会写进日程；"
-                  f"你只要说一句『你可以点确认条上的按钮，或直接回确认』，"
-                  f"**禁止说已经写好了**。"),
-    }, ensure_ascii=False)
+    if auto_slot:
+        prop["auto"] = True
+    human = (f"确认条已经挂在下面了：《{name}》{day}（{_weekday_name(day)}）"
+             f"{begin}-{finish}。点【确认加入】才会写进日程；"
+             f"你只要说一句『你可以点确认条上的按钮，或直接回确认』，"
+             f"**禁止说已经写好了**。")
+    if auto_slot:
+        human += ("（这个时间段是你替他从那天的空档里挑的，说清楚『我看 XX 空着，就排这儿了』，"
+                  "并补一句『这个点不合适就说得改到几点』。）")
+    return json.dumps({"__proposal__": prop, "human": human}, ensure_ascii=False)
 
 
 # 管家自己那句"提案"长这样（截图里学生遇到的那种）：
@@ -826,8 +1024,14 @@ def propose_todo_tool(title: str, when: str = "", date: str = "",
 #   - 时间：周一 16:30~18:00
 #   - 范围：本周
 #   提案这就发给你，点一下【确认】就入库了。
-_REPLY_TASK_RE = re.compile(r"(?:任务|事项|标题|安排)\s*[：:]\s*([^\n，,。；;｜|]{1,30})")
-_REPLY_TIME_RE = re.compile(r"(?:时间|时段|几点)\s*[：:]\s*([^\n。；;｜|]{1,40})")
+#
+# ⚠️ 它也可能**挤成一行**（模型经常把列表压成一整段话）：
+#   「…：- 任务：健身 - 时间：周四 15:40~17:10 - 范围：本周 点【确认】就入库了。」
+#   所以捕获组里必须把「-」「：」也当分隔符排掉，否则标题会变成
+#   「健身 - 时间：周四 15:40~17:10 - 范围：本周」——卡片上就是这一长串。
+#   注意"时间"那条**不能**排掉「~」：15:40~17:10 里的波浪号是时段本身的一部分。
+_REPLY_TASK_RE = re.compile(r"(?:任务|事项|标题|安排)\s*[：:]\s*([^\n，,。；;：:｜|\-—]{1,30})")
+_REPLY_TIME_RE = re.compile(r"(?:时间|时段|几点)\s*[：:]\s*([^\n。；;｜|\-—]{1,40})")
 
 
 def parse_todo_from_reply(text: str) -> dict | None:
@@ -876,6 +1080,86 @@ def is_add_todo_followup(text: str) -> bool:
     if not t or len(t) > 40:
         return False
     return _pick_span(t)[0] is not None and _pick_date(t) is None
+
+
+def is_add_todo_answer(text: str) -> bool:
+    """判断这句是不是在**回答**"某天/某点"的追问（人话：刚问过，他答了一句）。
+
+    跟 is_add_todo_followup 的差别：这个也认"只补了日期"的回答（"周四"）。
+    为什么要区分：追问问的可能是**日期**（"这要说哪一天？"），
+    学生答一句"周四"就没有时间段——旧判据只认"有时间没日期"，
+    这一句会被漏到模型那边去，又是一句"已经帮你排好啦"。
+    带疑问词的不算（那多半是在问课表，不是在回答）。
+    """
+    t = (text or "").strip()
+    if not t or len(t) > 40:
+        return False
+    if any(k in t for k in ("吗", "？", "?")):
+        return False
+    return _pick_span(t)[0] is not None or _pick_date(t) is not None
+
+
+# 学生嫌系统挑的点不合适、要求换时间的说法（人话："改成七点""挪到周六"）
+_RETIME_WORDS = ("改成", "改到", "换成", "换到", "换个时间", "换个点", "挪到",
+                 "调整到", "调到", "重排", "改一下", "重来")
+
+
+def wants_retime_todo(text: str) -> bool:
+    """判断这句是不是"换时间/换天"（人话：上一条确认条的点他不满意）。"""
+    return any(w in (text or "") for w in _RETIME_WORDS)
+
+
+def retime_todo_proposal(card: dict, text: str) -> dict | None:
+    """学生嫌系统挑的时间不合适、自己报了个点 → **沿用原卡**换时间重出条。
+
+    为什么必须有这一条：系统替他挑时间时，话里说的是"这个点不合适你说个点就行"。
+    他真说了（"下午两点到三点"），就得接住——不然那句话等于放空炮，
+    学生会觉得"我说了它当没听见"。
+
+    两种换法都认：
+      · 只说时刻（"下午两点到三点"、"改成晚上七点到八点"）→ 换时段，日期不动；
+      · 说了一个新日子、没说时刻（"改成周六"）→ 在那个新日子上重新挑一段空档。
+    标题永远沿用原卡（他没说要换事，只说时间不对）。
+
+    认不出来的返回 None，交给别的分支处理——绝不硬猜。
+    """
+    if not isinstance(card, dict) or card.get("kind") != "todo_add":
+        return None
+    t = (text or "").strip()
+    if not t:
+        return None
+    begin, finish = _pick_span(t)
+    new_date = _pick_date(t)
+    old_date = card.get("date") or ""
+    date = new_date or old_date
+    if not date:
+        return None
+    title = card.get("title") or "待办"
+    wd = _weekday_name(date)
+    if begin:
+        if not finish:
+            finish = to_hhmm(to_minutes(begin) + 60)
+    elif new_date and new_date != old_date:
+        # 只换日子、没说几点 → 在那个新日子上重新挑一段空档
+        slot = pick_free_slot(date, prefer=t)
+        if not slot:
+            return None
+        begin, finish = slot["start"], slot["end"]
+    else:
+        return None
+    if to_minutes(finish) <= to_minutes(begin):
+        return None
+    return {
+        "kind": "todo_add",
+        "title": title,
+        "date": date,
+        "start": begin,
+        "end": finish,
+        "weekday": wd,
+        "minutes": to_minutes(finish) - to_minutes(begin),
+        "retimed": True,        # 换过时间 —— 话术里要说清"按你说的改成了…"
+        "summary": f"{title}｜{date}（{wd}）{begin}-{finish}",
+    }
 
 
 # ============================================================
@@ -1596,10 +1880,25 @@ def build_system_prompt() -> str:
    才调用 add_todo_tool 真正写进日程。学生没确认前，**绝对不要写入**。
 5. 学生提出调整（"太晚了""换个时间"），就重新查空档、再调用 propose_slots 提议，继续等。
 
+【学生只说了"哪天"、没说"几点" —— 时间由你算，不许反问他】
+学生说「周四加个健身」「我想在周六自习」时，他要的就是"哪天哪会儿空着"这件事本身。
+你反问他"你想几点到几点"，等于把活儿原封不动退回给他——
+他正是因为不知道哪天哪会儿有空才来问你（学生投诉原话：
+「**没有帮我想时间，是我问了才说的**」）。正确做法：
+· 先 find_free_slots(那天) 看真实空档；
+· 挑一段合适的：他说了"上午/下午/晚上"就只在那一段里挑，没说就挑**最长的那段**
+  （下午/傍晚往往比一早更合适），排一段 60~90 分钟的就行，别把整段空档都占掉；
+· 调 propose_todo_tool 把确认条挂出来（date 传那天、start/end 传你挑的起止）；
+· 文字里说清"我看 XX 空着，就排这儿了"，再补一句"这个点不合适你说个时间就行"。
+⛔ 只有两种情况才去问他：① 那天真的排不进（如实说"这天满了，换个日子"）；
+② 他连"哪天"都没说 —— 那就**只问日期，别问时间**。
+
 【硬性约束】
 - 待办不能跟课程撞时间（工具会自动拦截，但你要先自己看清楚）。
 - 一次只推 2-3 个候选，不要甩一长串让人挑花眼。
 - 说话简短、具体，直接给时间点，不要长篇分析。
+- **学生报了一个"哪天"，就说明他要的是"帮他挑个点"**：查完空档直接出确认条，
+  别在文字里只写方案——没有卡片，学生回"确认"时系统不知道你在确认什么。 
 - 如果周表是空的（还没上传课表），先提醒学生去「我的日程」上传课表，
   否则无从判断什么时间空着。
 
@@ -1853,3 +2152,66 @@ def build_tools() -> dict[str, Tool]:
             func=propose_todo_remove_tool,
         ),
     }
+
+
+# ============================================================
+# 给**所有**模块共用的"只读找时间 + 出待办确认条"工具组
+# ============================================================
+#
+# 为什么要单独导出这一组：学生说「我想周四去健身」时，意图路由可能把这句
+# 分给「校园问答」，而那个模块原本文具盒里只有 search_kb —— 它只能在**文字里**
+# 写一句「- 任务：健身 - 时间：周四 15:40~17:10 点【确认】就入库了」，
+# 界面上一个按钮都没有；学生回「确认」，系统也不知道他在确认什么
+#（这一幕被截屏投诉过：「没有确认」）。
+#
+# 把"查空档 + 出确认条"这两件本事发给每个模块，问题就从根上没了：
+# 不管路由把话分给谁，管家都有能耐**替学生把时间算出来、并挂出一张能点的确认条**。
+# 这一组工具**一个字节都不写库**（真写入永远是后端的确认条），所以发给谁都安全。
+def build_scheduling_tools() -> dict[str, Tool]:
+    """「查空档 → 替学生挑时间 → 出确认条」的只读工具组（供各模块共用）。"""
+    all_tools = build_tools()
+    names = ("get_weekly_timetable", "find_free_slots", "list_day_todos", "propose_slots")
+    picked = {n: all_tools[n] for n in names if n in all_tools}
+    picked["propose_todo_tool"] = propose_todo_tool_tool()
+    return picked
+
+
+def propose_todo_tool_tool() -> Tool:
+    """把 propose_todo_tool 包成 Agent 工具（schedule 与本文件共用同一份说明书）。
+
+    单独抽出来是为了**只维护一份描述**：以前这段说明写在 schedule 模块里，
+    现在要给所有模块共用，抄两份迟早会走样（改了一处、另一处还是老话术）。
+    """
+    return Tool(
+        name="propose_todo_tool",
+        description=(
+            "把一个具体任务排进日程（只出提案，不写库）。"
+            "title 任务名；when 直接写学生那句时间，如 '周一 16:30-18:00'、"
+            "'明天下午两点到三点'；也可以分着给 date（'2026-09-28' 或 '周一'）"
+            "和 start/end（'16:30'/'18:00'）。"
+            "**学生只说了哪天、没说到几点时，把 date 给上就行，"
+            "时间由系统从那天的空档里挑好**——⛔ 不要为了凑 start 去反问学生'你想几点'，"
+            "他要的就是'哪天哪会儿空着'这件事本身。"
+            "调用成功界面上会挂出【确认加入】按钮，学生点了才写库；"
+            "没调用这个工具就不要说'提案已发给你'。"
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "description": "任务名称，如 健身"},
+                "when": {
+                    "type": "string",
+                    "description": "时间描述，如 '周一 16:30-18:00'、'明天下午两点到三点'；可空",
+                    "default": "",
+                },
+                "date": {"type": "string", "description": "日期，如 '2026-09-28'、'周一'；可空",
+                         "default": ""},
+                "start": {"type": "string", "description": "开始时间，如 '16:30'；可空（不给就系统挑）",
+                          "default": ""},
+                "end": {"type": "string", "description": "结束时间，如 '18:00'；可空（默认一小时）",
+                        "default": ""},
+            },
+            "required": ["title"],
+        },
+        func=propose_todo_tool,
+    )
