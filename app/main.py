@@ -53,6 +53,7 @@ from app.modules.planner import (
     parse_add_course,
     parse_add_todo,
     parse_remove_course,
+    pick_todo_missing,
     wants_add_course,
     wants_add_todo,
     wants_clear_timetable,
@@ -463,6 +464,40 @@ async def chat(req: Request):
                 "options": [],
                 "awaiting_choice": False,
             }
+        # 加待办的确认落空：学生上一句加待办的原话没被确定性分支接住
+        # （比如「周二下午两点到三点游泳」这种中文报时，老解析器认不出时间），
+        # 掉给模型嘴上说"搞定！已经正式写进待办啦"——schedule 模块连一个写入
+        # 工具都没有，日程里其实什么都没有。照清空课表的样子把话捞回来：
+        # 找到学生最近那句加待办的原话，重新走一遍确定性解析，
+        # 出得了提案就重新挂确认条；出不了就继续交给模型正常聊。
+        add_req = next(
+            (m.get("content") or "" for m in reversed(get_conversation(session_id)[-8:])
+             if m.get("role") == "user"
+             and not is_confirmation(m.get("content") or "")
+             and wants_add_todo(m.get("content") or "")),
+            "")
+        if add_req:
+            proposal = parse_add_todo(add_req)
+            if proposal is not None:
+                save_pending(session_id, [proposal])
+                append_conversation(session_id, "user", message)
+                append_conversation(session_id, "assistant",
+                                    f"已生成待办确认：{proposal['summary']}")
+                return {
+                    "module": "planner",
+                    "session_id": session_id,
+                    "answer": (
+                        "📝 刚才那次可能没接上，我把确认条又挂了出来——"
+                        f"要不要把 **{proposal['title']}** 排进日程？"
+                        f"{proposal['date']}（{proposal['weekday']}）"
+                        f"{proposal['start']}-{proposal['end']}。\n"
+                        "点【确认加入】执行；直接回一句「确认」也一样。"
+                    ),
+                    "trace": [{"step": 1, "phase": "📝 确认落空 → 重新挂出待办确认条",
+                               "answer": proposal["summary"]}],
+                    "options": [proposal],
+                    "awaiting_choice": True,
+                }
 
     # 3b) **确定性清空分支**（人话：学生明说"课表全删了"，直接出弹窗，不劳模型判断）
     #    跟上面"一句确认即落库"是同一个思路：能由代码定死的，就别交给模型。
@@ -518,7 +553,19 @@ async def chat(req: Request):
     #     学生刷新日程也看不到东西。这条链路不能碰运气。
     #     跟清空课表一个规矩：这里**只出提案，一个字节都不写库**。
     if wants_add_todo(message):
-        proposal = parse_add_todo(message)
+        # 追问后的补充回答（学生先说"帮我安排游泳"，再补"周二下午两点到三点"）：
+        # 补充那句里没有标题，单独解析会把标题弄丢——把上一句原话拼回来一起算。
+        # 识别标记就是下面追问分支写进会话历史的那句"加待办缺细节"。
+        conv = get_conversation(session_id)
+        prev_user = next((m.get("content") or "" for m in reversed(conv)
+                          if m.get("role") == "user"), "")
+        asking_add = any("加待办缺细节" in (m.get("content") or "")
+                         for m in conv[-4:] if m.get("role") == "assistant")
+        proposal = None
+        if asking_add and prev_user:
+            proposal = parse_add_todo(prev_user + "，" + message)
+        if proposal is None:
+            proposal = parse_add_todo(message)
         if proposal is not None:
             save_pending(session_id, [proposal])
             append_conversation(session_id, "user", message)
@@ -536,9 +583,29 @@ async def chat(req: Request):
                 "options": [proposal],
                 "awaiting_choice": True,
             }
-        # 系统拼不出日期/时刻（学生没说清）→ 旧的候选时段那套照旧，但候选要进暂存，
-        # 否则学生点完卡片回发的"确认 日期 起-止 标题"依旧会被路由甩到别的模块、照样写不进去
+        # 系统拼不出日期/时刻（比如学生只说"帮我安排游泳"）。
+        # **不能**把话交给模型——实测它会回"搞定！已经正式写进你的待办啦"，
+        # 日程里其实什么都没有（schedule 模块连一个写入工具都没有，纯属嘴甜）。
+        # 照删课的规矩：缺什么就追问什么，标记"加待办缺细节"写进历史，
+        # 学生下一句补充由上面的合并逻辑接着算。
         clear_pending(session_id)
+        missing = pick_todo_missing(
+            (prev_user + "，" + message) if (asking_add and prev_user) else message)
+        append_conversation(session_id, "user", message)
+        append_conversation(session_id, "assistant", "加待办缺细节")
+        return {
+            "module": "planner",
+            "session_id": session_id,
+            "answer": (
+                f"把想安排的**{missing}**说一下，我算好给你出确认条，你点头我才写进日程。\n"
+                f"· 缺时间就说「几点到几点」，比如「下午两点到三点」；\n"
+                f"· 缺日期就说「哪一天」，比如「周二」「明天」。"
+            ),
+            "trace": [{"step": 1, "phase": "🤔 加待办缺细节（系统追问）",
+                       "answer": f"缺{missing}，先问清楚再出提案"}],
+            "options": [],
+            "awaiting_choice": False,
+        }
 
     # 3c-bis) **确定性加课分支**（人话：学生说"周一加一节体育，19:00-20:40，体育馆"）
     #     跟加待办同一个道理——配了密钥之后跑的是真模型，模型最爱说"已经加上了"，

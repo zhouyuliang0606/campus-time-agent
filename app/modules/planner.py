@@ -557,21 +557,79 @@ _QUOTE_RE = re.compile(r"[『「\"“]([^」』\"”]{1,40})[」』\"”]")
 _WEEKDAY_RE = re.compile(r"周([一二三四五六日天])")
 
 
+def _cn_num(s: str) -> int | None:
+    """中文数字转阿拉伯数字（人话：'两'→2、'十二'→12、'十'=10、'二十三'=23）。"""
+    if not s:
+        return None
+    digit = {"零": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4,
+             "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
+    if "十" in s:
+        hi, _, lo = s.partition("十")
+        h = digit.get(hi, 1) if hi else 1      # "十" 开头 → 十几
+        l = digit.get(lo, 0) if lo else 0
+        return h * 10 + l
+    return digit.get(s)
+
+
+def _normalize_clock(t: str) -> str:
+    """把中文报时换成数字钟（人话：'两点'→2:00、'两点半'→2:30）。
+
+    为什么要有它：学生说时间十有八九是「下午两点到三点」这种口语，
+    原来的正则只认阿拉伯数字，「两点」在它眼里就是没有时间——
+    于是整句话掉回大模型，模型顺嘴一句"搞定，已经写进待办啦"，其实什么都没写。
+    """
+    def rep(m):
+        h = _cn_num(m.group(1))
+        if h is None or h > 23:
+            return m.group(0)
+        return f"{h}:30" if m.group(2) else f"{h}:00"
+
+    t = re.sub(r"([零一二两三四五六七八九十]{1,3})点(半)?", rep, t)
+    # '3点20' 这种"数字点+分钟"也顺手归一成 3:20
+    def rep2(m):
+        h, mm = int(m.group(1)), int(m.group(2))
+        if h > 23 or mm > 59:
+            return m.group(0)
+        return f"{h}:{mm:02d}"
+    return re.sub(r"(\d{1,2})\s*点\s*(\d{1,2})\s*分?", rep2, t)
+
+
+def _pm_fix(text: str, hour: int | None) -> int | None:
+    """按上下文把 12 小时制拨成 24 小时制（人话：'下午2点'→14，'早上8点'还是 8）。"""
+    if hour is None or hour > 12:
+        return hour
+    if re.search(r"下午|午后|傍晚|晚上|夜里|晚间", text or ""):
+        return hour + 12 if hour < 12 else hour
+    return hour
+
+
 def _pick_span(text: str):
-    """从一句话里抠出「起-止」时间（人话：认得 19:00-20:30 / 19:00 到 20:30 / 19点到20点）。
+    """从一句话里抠出「起-止」时间（人话：认得 19:00-20:30 / 19点到20点 /
+    两点到三点 / 下午2点到3点）。
 
     返回 (start, end)，只给了一个时刻时 end 为 None。
     """
-    t = text or ""
+    t = _normalize_clock(text or "")
     m = re.search(r"(\d{1,2}):(\d{2})\s*(?:到|至|-|~|～)\s*(\d{1,2}):(\d{2})", t)
     if m:
-        return f"{int(m.group(1)):02d}:{m.group(2)}", f"{int(m.group(3)):02d}:{m.group(4)}"
+        sh = _pm_fix(t, int(m.group(1)))
+        eh = _pm_fix(t, int(m.group(3)))
+        # 止比起还早（学生说"下午2点到3点"被拨成 14→15 没问题；
+        # 但"1点到3点"在下午语境里止的 3 没被拨——止比起早说明漏拨了，补上）
+        if eh is not None and sh is not None and eh <= sh and eh <= 11:
+            eh += 12
+        return (f"{sh:02d}:{m.group(2)}", f"{eh:02d}:{m.group(4)}")
     m = re.search(r"(\d{1,2})\s*点\s*(?:到|至|-|~|～)\s*(\d{1,2})\s*点?", t)
     if m:
-        return f"{int(m.group(1)):02d}:00", f"{int(m.group(2)):02d}:00"
+        sh = _pm_fix(t, int(m.group(1)))
+        eh = _pm_fix(t, int(m.group(2)))
+        if eh <= sh and eh <= 11:
+            eh += 12
+        return f"{sh:02d}:00", f"{eh:02d}:00"
     m = re.search(r"(\d{1,2}):(\d{2})", t)
     if m:
-        return f"{int(m.group(1)):02d}:{m.group(2)}", None
+        sh = _pm_fix(t, int(m.group(1)))
+        return f"{sh:02d}:{m.group(2)}", None
     return None, None
 
 
@@ -601,6 +659,7 @@ def _pick_title(text: str) -> str:
     m = _QUOTE_RE.search(t)          # 优先拿『』「」框着的那段，最准
     if m and 1 <= len(m.group(1)) <= 30:
         return m.group(1).strip()
+    t = _normalize_clock(t)          # 先把「两点到三点」换成 2:00-3:00，下面的正则才擦得掉
     t = _DATE_RE.sub(" ", t)
     t = re.sub(r"\d{1,2}\s*[:：]\s*\d{2}(?:\s*(?:到|至|-|~|～)\s*\d{1,2}\s*[:：]?\s*\d{2})?", " ", t)
     t = re.sub(r"\d{1,2}\s*点到\s*\d{1,2}\s*点?", " ", t)
@@ -611,7 +670,7 @@ def _pick_title(text: str) -> str:
     t = re.sub(r"^(我要|我想|帮我|我想让|请帮我|给我|把|帮)\s*", "", t)
     for w in _CONFIRM_WORDS:
         t = t.replace(w, " ")
-    for w in _ADD_INTENT + ("的安排", "一下", "一个", "里"):
+    for w in _ADD_INTENT + ("的安排", "一下", "一个", "里", "在"):
         t = t.replace(w, " ")
     t = re.sub(r"[，,。！!？?、；;：:~～\-—『』「」\"'“”‘’]", " ", t)
     t = re.sub(r"\s+", "", t).strip()
@@ -627,13 +686,17 @@ def wants_add_todo(text: str) -> bool:
     if not t or len(t) > 80:      # 太长的多半是在聊天，不是在下单
         return False
     if not any(w in t for w in _ADD_INTENT):
-        # 没有意图词，但话里自带"完整日期 + 起止时间"的（比如"确认 2026-09-24 19:00-20:30 背单词"，
-        # 前端点候选卡回发的就是这副模样）也算下单——那是在指定时间，不是在问问题。
-        if not (_DATE_RE.search(t) and _pick_span(t)[0]
+        # 没有意图词，但话里自带"日期/星期 + 起止时间"的也算下单——
+        # （比如"确认 2026-09-24 19:00-20:30 背单词"，前端点候选卡回发的是这副模样；
+        #   "今天19:00-20:30 复习线性代数"、"周五下午3点20写作业"这种不带安排字样的也该接住）。
+        # 带疑问词的不算——那多半是在问课表，不是在下单。
+        if not (_pick_date(t) and _pick_span(t)[0]
                 and not any(k in t for k in ("吗", "？", "?"))):
             return False
     # 课表类的话由课表那条路管，别抢（"周一加一节体育"要进的是周表，不是待办）
     if "课表" in t or "课程" in t:
+        return False
+    if any(w in t for w in ("加课", "加一门课", "加一节", "加门课", "加节课")):
         return False
     return _pick_date(t) is not None or _pick_span(t)[0] is not None
 
@@ -664,6 +727,21 @@ def parse_add_todo(text: str) -> dict | None:
         "minutes": to_minutes(end) - to_minutes(start),
         "summary": f"{title}｜{date}（{_weekday_name(date)}）{start}-{end}",
     }
+
+
+def pick_todo_missing(text: str) -> str:
+    """解析失败时说清到底缺哪块（人话：追问要问到点上，别让学生再猜）。
+
+    返回 "时间" / "日期" / "时间和日期"，给确定性追问分支拼话术用。
+    """
+    t = text or ""
+    has_date = _pick_date(t) is not None
+    has_time = _pick_span(t)[0] is not None
+    if has_date and not has_time:
+        return "时间"
+    if has_time and not has_date:
+        return "日期"
+    return "时间和日期"
 
 
 def wants_add_course(text: str) -> bool:
