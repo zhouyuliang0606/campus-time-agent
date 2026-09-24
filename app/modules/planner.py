@@ -390,6 +390,129 @@ def propose_timetable_change(courses_json: str, change_summary: str = "") -> str
               "在学生点确认之前，绝不要声称已经修改/删除完成。")
 
 
+def _name_match(a: str, b: str) -> bool:
+    """课程名模糊匹配（人话：模型说的课名和学生表里的写法未必一字不差）。
+
+    三层匹配：完全相等 / 连续子串 / 子序列缩写（"高数"→"高等数学"、"英语"→"大学英语"）。
+    """
+    a, b = (a or "").strip(), (b or "").strip()
+    if not a or not b:
+        return False
+    if a == b or a in b or b in a:
+        return True
+    short, long = (a, b) if len(a) <= len(b) else (b, a)
+    it = iter(long)
+    return all(ch in it for ch in short)
+
+
+def propose_course_change(op: str, day: int, course: str = "", start: str = "",
+                          new_start: str = "", new_end: str = "",
+                          new_course: str = "", new_location: str = "",
+                          change_summary: str = "") -> str:
+    """单课程级课表提案（删除/新增/修改），**新课表由服务端基于当前周表算好**。
+
+    为什么不让模型自己拼整表 JSON？实测它偶尔会重构错/漏课程，或者干脆只回文字不出卡。
+    这里模型只需要说清「对哪天的哪节课做什么」，新表由服务端算——模型想错都难。
+    结果是一个带 __proposal__ 的 JSON，引擎捕获后交给前端出确认卡；
+    学生点确认后由前端调 /api/timetable/apply 写入，写入不经过模型。
+
+    :param op: "remove"（删课）/ "add"（加课）/ "update"（改某节课的时间或信息）
+    :param day: 1=周一 … 7=周日
+    :param course: 目标课程名（remove/update 用，模糊匹配）
+    :param start: 目标课程的开始时间（可选，同一天同名多节时用来区分）
+    :param new_start/new_end/new_course/new_location: update 的新值（add 用 new_start 当 start）
+    :param change_summary: 一句话说明改了什么，会显示在确认卡上
+    """
+    if op not in ("remove", "add", "update"):
+        return f"op 只能是 remove/add/update，收到的是 {op}"
+    try:
+        day = int(day)
+    except (TypeError, ValueError):
+        return "day 不是数字"
+    if day not in range(1, 8):
+        return f"day={day} 越界（应 1-7，1 是周一）"
+
+    cur = list(get_timetable())
+
+    if op == "remove":
+        matches = [c for c in cur if int(c.get("day", 0)) == day and _name_match(c.get("course"), course)]
+        if start:
+            matches = [m for m in matches if m.get("start") == start]
+        if not matches:
+            day_courses = [f"{c.get('start')}-{c.get('end')} {c.get('course')}"
+                           for c in cur if int(c.get("day", 0)) == day]
+            hint = "；".join(day_courses) or "这天没有课"
+            return (f"周表里没找到{_weekday_name_by_num(day)}的《{course}》。"
+                    f"这天现存的课：{hint}。请核对后重试，或先问学生想删哪节。")
+        if len(matches) > 1:
+            lst = "；".join(f"{m.get('start')}-{m.get('end')} {m.get('course')}" for m in matches)
+            return f"{_weekday_name_by_num(day)}有 {len(matches)} 节同名课：{lst}。请带上 start 参数区分。"
+        target = matches[0]
+        new_courses = [dict(c) for c in cur if c is not target]
+        summary = change_summary or f"删除{_weekday_name_by_num(day)} {target.get('start')} 的《{target.get('course')}》"
+
+    elif op == "add":
+        s, e = to_minutes(new_start or start), to_minutes(new_end)
+        if not course:
+            return "加课需要提供课程名（course）"
+        if s < 0 or e <= s:
+            return f"时间不合法：start={new_start or start} end={new_end}，要用 HH:MM 且结束晚于开始"
+        for c in cur:
+            if int(c.get("day", 0)) != day:
+                continue
+            cs, ce = to_minutes(c.get("start", "")), to_minutes(c.get("end", ""))
+            if cs >= 0 and ce > cs and s < ce and e > cs:
+                return (f"新课时间和{_weekday_name_by_num(day)} {c.get('start')}-{c.get('end')} "
+                        f"的《{c.get('course')}》撞了。请换时间，或先删掉那节再加。")
+        new_courses = cur + [{"day": day, "start": to_hhmm(s), "end": to_hhmm(e),
+                              "course": course.strip(), "location": (new_location or "").strip()}]
+        summary = change_summary or (f"新增{_weekday_name_by_num(day)} {to_hhmm(s)}-{to_hhmm(e)} 《{course}》"
+                                     + (f" @{new_location}" if new_location else ""))
+
+    else:  # update
+        matches = [c for c in cur if int(c.get("day", 0)) == day and _name_match(c.get("course"), course)]
+        if start:
+            matches = [m for m in matches if m.get("start") == start]
+        if not matches:
+            return f"周表里没找到{_weekday_name_by_num(day)}的《{course}》，请核对后重试"
+        if len(matches) > 1:
+            lst = "；".join(f"{m.get('start')}-{m.get('end')}" for m in matches)
+            return f"{_weekday_name_by_num(day)}有 {len(matches)} 节同名课：{lst}。请带上 start 参数区分。"
+        target = matches[0]
+        merged = dict(target)
+        if new_start:
+            merged["start"] = new_start
+        if new_end:
+            merged["end"] = new_end
+        if new_course:
+            merged["course"] = new_course.strip()
+        if new_location:
+            merged["location"] = new_location.strip()
+        s, e = to_minutes(merged["start"]), to_minutes(merged["end"])
+        if s < 0 or e <= s:
+            return f"改完的时间不合法：{merged.get('start')}-{merged.get('end')}"
+        merged["start"], merged["end"] = to_hhmm(s), to_hhmm(e)
+        new_courses = [merged if c is target else dict(c) for c in cur]
+        summary = change_summary or (f"修改{_weekday_name_by_num(day)}《{target.get('course')}》→ "
+                                     f"{merged['start']}-{merged['end']} {merged['course']}")
+
+    cleaned, errors = validate_courses(new_courses)
+    if errors:
+        return "算出的新课表没通过校验（这不该发生，请原样反馈）：\n" + "\n".join(errors[:5])
+
+    return json.dumps({
+        "__proposal__": {
+            "kind": "timetable_change",
+            "summary": summary,
+            "courses": cleaned,
+        }
+    }, ensure_ascii=False)
+
+
+def _weekday_name_by_num(day: int) -> str:
+    return DAY_NAMES.get(int(day), "未知")
+
+
 # ---------- 系统提示 ----------
 
 def build_system_prompt() -> str:
@@ -424,13 +547,14 @@ def build_system_prompt() -> str:
 
 【个人数据隔离 —— 预览确认制，绝对不许跳过】
 你只能生成**预览/提案**，学生确认之前数据库绝不会变；真正的写入由**系统**在学生点击确认卡后执行：
-1. **修改课表**（删课/换时间/加课，如"周一去掉第一节"）：
-   先用 get_weekly_timetable 拿整周课程 → 构造**调整后的完整课表**（必须含未改动的课程）
-   → 调用 propose_timetable_change 交给前端出「确认修改」卡片。
-   学生点确认后**系统自动写入**，你不需要也**无法**直接写周表——这是设计如此，**不是你没有权限**，
-   绝不要说"我没有权限删除/修改"。也绝不要在卡片确认前声称"已删除/已修改"。
-2. **导入课表文件**：读完文件 → 构造完整课程列表（"第几节"换算成 HH:MM）→
-   同样调用 propose_timetable_change 出确认卡，等学生点击确认。没出卡前绝不说"导入成功"。
+1. **修改课表**（删课/加课/改单节课，如"周一去掉第一节"）：
+   **必须调用 propose_course_change 出确认卡**——新课表由服务端算好，你只说清对哪节课做什么。
+   **绝不允许只在文字里给预览、问学生"确认吗"——没有卡片的确认等于没确认。**
+   学生点确认后系统自动写入，你不需要也**无法**直接写周表——这是设计如此，**不是你没有权限**，
+   绝不要说"我没有权限删除/修改"；也绝不要在卡片确认前声称"已删除/已修改"。
+   如果学生口头说"确认/可以"但上一轮你还没出过卡，**立刻调用工具把卡补上**。
+2. **导入课表文件 / 整表重排**：读完文件 → 构造完整课程列表（"第几节"换算成 HH:MM）→
+   调用 propose_timetable_change 出确认卡。没出卡前绝不说"导入成功"。
 3. **删除/修改待办**（remove_todo、update_todo_status）：先列出要动的待办，
    学生确认后再执行；删除是不可恢复的，更要问清楚。
 4. 学生说"改一下课表"却没说怎么改时，先问清楚改哪里，别自作主张。
@@ -442,7 +566,8 @@ def build_system_prompt() -> str:
 - **propose_slots(options_json)：把候选结构化地交给前端渲染成可勾选卡片。
   提完候选后必须调用它**（options_json 是 JSON 数组，每条含 title/date/start/end）。**
 - add_todo_tool(title, date, start, end, note)：**确认后**才写入
-- **propose_timetable_change(courses_json, change_summary)：修改/导入课表的唯一途径**——
+- **propose_course_change(op, day, ...)：删课/加课/改单节课的首选**——服务端算好新课表出确认卡
+- **propose_timetable_change(courses_json, change_summary)：整表重排/文件导入用**——
   把调整后的完整课表（JSON 数组）交给前端渲染成「确认修改」卡片，学生点确认后系统写入。
   **注意：写入不经过你**，所以卡片确认后不用（也不能）再调任何写入工具。
 - update_todo_status / remove_todo：标记完成或删除
@@ -552,6 +677,34 @@ def build_tools() -> dict[str, Tool]:
                 "required": ["courses_json"],
             },
             func=propose_timetable_change,
+        ),
+        "propose_course_change": Tool(
+            name="propose_course_change",
+            description=(
+                "**删课/加课/改单节课的首选工具**：你只需说清对哪天的哪节课做什么，"
+                "新课表由服务端基于当前周表算好并生成确认卡（不写入，等学生点确认）。"
+                "op=remove 删课（参数 day+course，可加 start 区分）；op=add 加课"
+                "（day+course+new_start+new_end+new_location）；op=update 改课"
+                "（day+course 定位，new_start/new_end/new_course/new_location 指定新值）。"
+                "**必须调用它出卡，绝不允许只在文字里问学生'确认吗'**。"
+                "没找到课或同名多节时，工具会返回提示，照它说的做。"
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "op": {"type": "string", "description": "remove / add / update"},
+                    "day": {"type": "integer", "description": "1=周一 … 7=周日"},
+                    "course": {"type": "string", "description": "目标课程名（remove/update 用）"},
+                    "start": {"type": "string", "description": "可选，同名多节课时用开始时间区分，如 08:00"},
+                    "new_start": {"type": "string", "description": "add/update：新开始时间 HH:MM"},
+                    "new_end": {"type": "string", "description": "add/update：新结束时间 HH:MM"},
+                    "new_course": {"type": "string", "description": "update：新课程名（可选）"},
+                    "new_location": {"type": "string", "description": "add/update：新地点（可选）"},
+                    "change_summary": {"type": "string", "description": "一句话说明改了什么（可选，会显示在卡上）"},
+                },
+                "required": ["op", "day"],
+            },
+            func=propose_course_change,
         ),
         "update_todo_status": Tool(
             name="update_todo_status",

@@ -137,6 +137,22 @@ class AgentEngine:
                                     "courses": raw,
                                 }]
 
+                        # 通用"结果即提案"：工具返回带 __proposal__ 的 JSON（如
+                        # propose_course_change，新课表由服务端算好），直接变确认卡。
+                        # 同一轮模型可能连出多张提案（如"周二早上的课"有两节），都保留让学生挑。
+                        if isinstance(result, str) and "__proposal__" in result:
+                            try:
+                                parsed = json.loads(result)
+                                prop = parsed.get("__proposal__") if isinstance(parsed, dict) else None
+                                if isinstance(prop, dict):
+                                    if self.options and all(
+                                            o.get("kind") == "timetable_change" for o in self.options):
+                                        self.options = self.options + [prop]
+                                    else:
+                                        self.options = [prop]
+                            except Exception:
+                                pass
+
                     # 4) 把工具结果作为"tool"角色消息回灌给模型，让它继续想
                     messages.append(
                         {

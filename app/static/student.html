@@ -433,48 +433,58 @@
       const wrap = document.createElement("div");
       wrap.className = "options";
 
-      // ---- ② 课表修改提案：高危操作，单张确认卡 ----
-      const tt = options.find(o => o.kind === "timetable_change");
-      if (tt) {
+      // ---- ② 课表修改提案：高危操作，每张提案一个确认按钮（可能多张，点任意一张即应用） ----
+      const tts = options.filter(o => o.kind === "timetable_change");
+      if (tts.length) {
         const hint = document.createElement("div");
         hint.className = "opt-hint";
-        hint.textContent = "🗓️ 课表修改提案（整表替换，确认后立即生效）：";
+        hint.textContent = tts.length > 1
+          ? `🗓️ 有 ${tts.length} 张课表修改提案（整表替换），点选你要的那一张确认：`
+          : "🗓️ 课表修改提案（整表替换，确认后立即生效）：";
         wrap.appendChild(hint);
-        const card = document.createElement("div");
-        card.className = "opt-card checked";
-        const info = document.createElement("div");
-        info.className = "info";
-        const n = (tt.courses || []).length;
-        info.innerHTML = `<b>${escapeHtml(tt.summary || "修改课表")}</b>` +
-          `<div class="meta">新课表共 ${n} 门课</div>`;
-        card.appendChild(info);
-        wrap.appendChild(card);
-        const btn = document.createElement("button");
-        btn.className = "confirm-btn";
-        btn.textContent = "✅ 确认修改课表";
-        btn.addEventListener("click", async () => {
-          btn.disabled = true; btn.textContent = "⏳ 正在写入…";
-          try {
-            const r = await fetch("/api/timetable/apply", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ courses: tt.courses }),
-            });
-            const d = await r.json();
-            if (d.ok) {
-              wrap.remove();
-              addMsg(botName(), `✅ 课表已更新，共 ${d.count} 门课。周表/月表已刷新。`, "bot", "planner");
-              loadScheduleView();
-            } else {
-              btn.disabled = false; btn.textContent = "✅ 确认修改课表";
-              addMsg(botName(), "写入失败：" + (d.error || "未知原因") + "。请再试一次，或让管家重新出提案。");
+
+        tts.forEach(tt => {
+          const card = document.createElement("div");
+          card.className = "opt-card checked";
+          const info = document.createElement("div");
+          info.className = "info";
+          const n = (tt.courses || []).length;
+          info.innerHTML = `<b>${escapeHtml(tt.summary || "修改课表")}</b>` +
+            `<div class="meta">新课表共 ${n} 门课</div>`;
+          card.appendChild(info);
+          wrap.appendChild(card);
+
+          const btn = document.createElement("button");
+          btn.className = "confirm-btn";
+          btn.style.marginTop = "6px";
+          btn.textContent = "✅ 确认：" + (tt.summary || "修改课表").slice(0, 24);
+          btn.addEventListener("click", async () => {
+            wrap.querySelectorAll("button").forEach(x => { x.disabled = true; });
+            btn.textContent = "⏳ 正在写入…";
+            try {
+              const r = await fetch("/api/timetable/apply", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ courses: tt.courses }),
+              });
+              const d = await r.json();
+              if (d.ok) {
+                wrap.remove();
+                addMsg(botName(), `✅ 课表已更新，共 ${d.count} 门课。周表/月表已刷新。`, "bot", "planner");
+                loadScheduleView();
+              } else {
+                wrap.querySelectorAll("button").forEach(x => { x.disabled = false; });
+                btn.textContent = "✅ 重试";
+                addMsg(botName(), "写入失败：" + (d.error || "未知原因") + "。请再试一次，或让管家重新出提案。");
+              }
+            } catch (e) {
+              wrap.querySelectorAll("button").forEach(x => { x.disabled = false; });
+              btn.textContent = "✅ 重试";
+              addMsg(botName(), "哎呀，网络好像开小差了，请稍后再试～");
             }
-          } catch (e) {
-            btn.disabled = false; btn.textContent = "✅ 确认修改课表";
-            addMsg(botName(), "哎呀，网络好像开小差了，请稍后再试～");
-          }
+          });
+          wrap.appendChild(btn);
         });
-        wrap.appendChild(btn);
         container.appendChild(wrap);
         return;
       }

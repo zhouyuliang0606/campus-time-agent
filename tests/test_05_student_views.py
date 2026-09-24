@@ -11,7 +11,7 @@
 """
 import sys
 
-from _harness import Checker, sandbox, make_client, title
+from _harness import Checker, sandbox, make_client, title, REAL_DATA_DIR
 
 
 def test_express_view_api():
@@ -215,6 +215,9 @@ def test_persona_rules_and_workorders():
                 "propose_timetable_change" in (proj / "app" / "agent" / "engine.py").read_text(encoding="utf-8"))
 
         # —— /api/timetable/apply 确定性写入口 ——
+        from app.store import save_timetable as _st
+        from app.modules.planner import get_timetable
+        orig_courses = list(get_timetable())  # 先存原表，测完写回（沙箱目录在进程内共享）
         ok_courses = [
             {"day": 1, "start": "08:00", "end": "09:40", "course": "高等数学", "location": "教三301"},
             {"day": 3, "start": "14:00", "end": "15:40", "course": "数据结构", "location": "机房B"},
@@ -230,8 +233,8 @@ def test_persona_rules_and_workorders():
         c.check("非法提案被拒（400 + 明细）", rb.status_code == 400)
         rc2 = client.post("/api/timetable/apply", json={"courses": []})
         c.check("空提案被拒", rc2.status_code == 400)
-        # 还原沙箱里的周表，免得影响同沙箱内后续断言
-        client.post("/api/timetable/apply", json={"courses": ok_courses})
+        # 把 apply 测试改掉的周表写回原样（沙箱目录在进程内是共享的，别祸及后面的批次）
+        _st(orig_courses)
 
         # —— 工单 API 链路：提交 → 管理端可见 → 改状态 ——
         r = client.post("/api/workorders", json={
@@ -263,6 +266,92 @@ def test_persona_rules_and_workorders():
     return c.summary("第七批（人设规矩与工单）")
 
 
+def test_course_change_proposals():
+    """第八批：单课程级课表提案（服务端算新表，模型只说对哪节课做什么）。"""
+    import json as _json
+    import os
+    import pathlib
+    from app.modules.planner import propose_course_change, get_timetable
+    from app.store import save_timetable
+
+    title("8. propose_course_change：删/加/改课提案由服务端算新表")
+    c = Checker()
+    with sandbox():
+        client = make_client()
+        # 沙箱的 DATA_DIR 在进程内首次 import 时就固定、首个沙箱退出后即被删，
+        # 所以这里主动把真实演示周表播种进当前生效的数据目录，保证有课可删
+        seed = _json.load(open(os.path.join(REAL_DATA_DIR, "student", "timetable.json"),
+                               encoding="utf-8"))
+        save_timetable(seed["courses"])
+        base_n = len(get_timetable())
+        c.check("沙箱演示周表就绪", base_n >= 10, f"{base_n} 门课")
+
+        # —— 删课：返回 __proposal__，新课表少一门且目标课消失 ——
+        r = propose_course_change("remove", day=1, course="高等数学")
+        p = _json.loads(r)["__proposal__"]
+        c.check("删课提案带 __proposal__（kind/summary/courses 齐全）",
+                p["kind"] == "timetable_change" and p["summary"] and isinstance(p["courses"], list))
+        c.check("新课表少了一门", len(p["courses"]) == base_n - 1)
+        c.check("周一高数已从提案里消失",
+                not any(x["day"] == 1 and x["course"] == "高等数学" for x in p["courses"]))
+        c.check("其余课程原样保留",
+                any(x["day"] == 1 and x["course"] == "大学英语" for x in p["courses"]))
+
+        # —— 模糊课名也能匹配 ——
+        r2 = propose_course_change("remove", day=1, course="高数")
+        c.check("模糊课名（高数→高等数学）也能出提案", "__proposal__" in r2)
+
+        # —— 同名多节：构造同一天两节同名课，要求带 start 区分 ——
+        from app.store import save_timetable
+        cur = get_timetable()
+        cur.append({"day": 1, "start": "18:00", "end": "19:40",
+                    "course": "高等数学", "location": "教三-201"})
+        save_timetable(cur)
+        r3 = propose_course_change("remove", day=1, course="高等数学")
+        c.check("同名多节被拦下并提示带 start", "start 参数区分" in r3, r3[:50])
+        r3b = propose_course_change("remove", day=1, course="高等数学", start="18:00")
+        p3b = _json.loads(r3b)["__proposal__"]
+        c.check("带 start 后精准删除晚间那节",
+                len(p3b["courses"]) == base_n and
+                not any(x["day"] == 1 and x["start"] == "18:00" for x in p3b["courses"]))
+        save_timetable([x for x in cur if not (x["day"] == 1 and x["start"] == "18:00")])
+
+        # —— 找不到的课：返回这天现存课清单，帮模型自我纠正 ——
+        r4 = propose_course_change("remove", day=5, course="不存在的课")
+        c.check("没找到课时列出当天现存课", "这天现存的课" in r4)
+
+        # —— 加课：写入提案 + 撞课拦截 ——
+        r5 = propose_course_change("add", day=6, course="围棋入门",
+                                   new_start="10:00", new_end="11:40", new_location="活动室")
+        p5 = _json.loads(r5)["__proposal__"]
+        c.check("加课提案新课表多一门", len(p5["courses"]) == base_n + 1)
+        c.check("新课在周六 10:00",
+                any(x["day"] == 6 and x["start"] == "10:00" for x in p5["courses"]))
+        r6 = propose_course_change("add", day=1, course="冲突课",
+                                   new_start="10:30", new_end="11:30")
+        c.check("与现有课撞时间的加课被拦", "撞了" in r6)
+
+        # —— 改课：时间/地点更新进提案 ——
+        r7 = propose_course_change("update", day=2, course="体育",
+                                   new_start="15:00", new_end="16:40")
+        p7 = _json.loads(r7)["__proposal__"]
+        tue_sport = [x for x in p7["courses"] if x["day"] == 2 and x["course"] == "体育"]
+        c.check("改课后周二体育变成 15:00-16:40",
+                tue_sport and tue_sport[0]["start"] == "15:00" and tue_sport[0]["end"] == "16:40")
+        c.check("改课不改变总门数", len(p7["courses"]) == base_n)
+
+        # —— 非法入参 ——
+        c.check("非法 op 被拒", "op 只能是" in propose_course_change("boom", day=1))
+        c.check("day 越界被拒", "越界" in propose_course_change("remove", day=9, course="高数"))
+
+        # —— 引擎通用捕获：源码含 __proposal__ 处理 ——
+        eng = (pathlib.Path(__file__).resolve().parent.parent / "app" / "agent" / "engine.py") \
+            .read_text(encoding="utf-8")
+        c.check("引擎含通用 __proposal__ 捕获（结果即提案）", "__proposal__" in eng)
+        c.check("引擎仍保留 propose_timetable_change 参数捕获", "propose_timetable_change" in eng)
+    return c.summary("第八批（单课程级课表提案）")
+
+
 if __name__ == "__main__":
     code = 0
     code |= test_express_view_api()
@@ -272,4 +361,5 @@ if __name__ == "__main__":
     code |= test_plan_month_calendar()
     code |= test_timetable_import_entry()
     code |= test_persona_rules_and_workorders()
+    code |= test_course_change_proposals()
     sys.exit(code)
