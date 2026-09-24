@@ -1,21 +1,29 @@
 """旗舰模块：课表时间规划（人话：这是项目的"门面"功能，专门展示 Agent 是怎么一步步推理的）。
 
-它给 Agent 四个工具：
+它给 Agent 五个工具：
   1) get_day_courses  —— 查某天上了哪些课
   2) find_free_slots  —— 算某天哪里有空
   3) plan_task        —— 根据空闲，自动排出一个学习计划
-  4) propose_todo_tool —— 把"建议"变成一张**能点的确认条**（只读，不写库）
+  4) propose_todo_slots_tool —— 把几段候选空档摊成一张**能打勾**的卡片（只读，不写库）
+  5) propose_todo_tool —— 学生已经报了准点时，出一张**单条**确认条（只读，不写库）
 
 Agent 拿到用户的问题（比如"我这周哪天有空复习高数？"），会自己决定调哪个工具、看结果、再组织回答。
-最后这一步是踩过坑才补上的：早先没有第四个工具，Agent 找完空档就在**文字里**写一句
+最后这一步是踩过坑才补上的：早先没有这四、五两件工具，Agent 找完空档就在**文字里**写一句
 「好，那我按这个出个提案：- 任务：健身 - 时间：周一 16:30~18:00」，
 学生回「可以」之后界面上连个【确认】按钮都没有——因为它压根没有出提案的手脚。
+
+⚠️ 4 和 5 的分工是**学生定的**（原话：「由 ai 帮我去挑选合适时间，**进行列举**……
+由我打勾，进行增加」）：
+学生没指定钟点时用 4（列几段让他自己勾，别替他做主），他已经报了准点才用 5。
 """
 import json
 import os
 
 from app.agent.tools import Tool
-from app.modules.planner import propose_todo_tool, propose_todo_tool_tool
+from app.modules.planner import (
+    propose_todo_slots_tool, propose_todo_slots_tool_tool,
+    propose_todo_tool, propose_todo_tool_tool,
+)
 
 # 示例课表文件路径：app/data/courses.json（__file__ 是当前文件，往上两级到 app，再进 data）
 _DATA_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "courses.json")
@@ -40,10 +48,14 @@ SYSTEM_PROMPT = """你是校园时间管家学生端的「课表时间规划」�
 - **学生只说了"哪天"、没说"几点"时，时间由你来想，不许反问他。**
   「周四加个健身」「我想周六自习」这类话，他要的就是"哪天哪会儿空着"这件事本身；
   你反问"你想几点"，等于把活儿原封不动退回去（学生投诉原话：
-  「没有帮我想时间，是我问了才说的」）。正确做法：先 find_free_slots 看那天，
-  或者干脆只把 date 交给 propose_todo_tool —— **时间它会自己从那天的空档里挑好**，
-  你再补一句"我看 XX 空着就排这儿了，不合适你说个点"。
-  只有两种情况才去问他：① 那天真的排不进；② 他连哪天都没说（那就只问日期，别问时间）。"""
+  「没有帮我想时间，是我问了才说的」）。正确做法：先 find_free_slots 看那天的空档，
+  再用 **propose_todo_slots_tool 一次列 2~4 段**给他挑——它会摊出一张**能打勾**的卡片，
+  学生自己勾一个或几个，勾完点【加入日程】才由系统写库。
+  ⛔ 不要只给一个点就替他定下来（学生明确要求过「由 ai 帮我去挑选合适时间，
+  **进行列举**……由我打勾」）。文字里也把这几段列一遍，并说清"都不合适就在
+  「其他时间」自己写一个"。
+  例外：**学生自己报了准点**（"周四下午两点到三点"）→ 用 propose_todo_tool
+  出单条确认条就够。真要问他什么，只问"要加什么事"，别问"几点到几点"。"""
 
 
 def _load() -> dict:
@@ -189,5 +201,6 @@ def build_tools() -> dict[str, Tool]:
             func=plan_task,
         ),
         # 说明书只维护一份（在 planner 里），免得改了一处、另一处还是老话术。
+        "propose_todo_slots_tool": propose_todo_slots_tool_tool(),
         "propose_todo_tool": propose_todo_tool_tool(),
     }

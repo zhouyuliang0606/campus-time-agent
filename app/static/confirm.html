@@ -60,6 +60,31 @@
   .done .big { font-size: 28px; }
   .back { margin-top: 12px; text-align: center; font-size: 12px; color: #7b86a3; }
   .back a { color: #3a6ff0; text-decoration: none; }
+
+  /* 候选时段（勾时间）：每一行就是一个"可以排在这儿"的时刻。
+     整行都可点（label 包着 checkbox），手机上手指点哪儿都行。 */
+  .slots { margin: 10px 0 2px; }
+  .slot {
+    display: flex; align-items: center; gap: 9px; cursor: pointer;
+    padding: 9px 11px; margin-bottom: 6px; border-radius: 10px;
+    background: #f7f9ff; border: 1px solid #e6ecfb;
+  }
+  .slot:hover { background: #eef3ff; border-color: #cfdcfb; }
+  .slot.on { background: #eaf1ff; border-color: #9fbcff; }
+  .slot input { width: 15px; height: 15px; accent-color: #3a6ff0; cursor: pointer; }
+  .slot-t { flex: 1; font-size: 13.5px; font-weight: 600; color: #24304f; }
+  .slot-m { font-size: 11.5px; color: #8a93ab; white-space: nowrap; }
+  /* 「其他时间」：学生自己写一句。这是学生明确要的口子——
+     "这个选项可以由我来自行补充"，不给他这条路，几段候选不合意就只能放弃。 */
+  .other { margin-top: 10px; padding-top: 10px; border-top: 1px dashed #e3e8f5; }
+  .other-l { display: block; font-size: 12.5px; font-weight: 600; color: #4a5675; margin-bottom: 5px; }
+  .other input {
+    width: 100%; padding: 8px 11px; font-size: 13px; color: #2a3350;
+    border: 1px solid #d8def0; border-radius: 9px; background: #fff;
+    font-family: inherit;
+  }
+  .other input:focus { outline: none; border-color: #3a6ff0; box-shadow: 0 0 0 3px #e8efff; }
+  .other-h { font-size: 11.5px; color: #8a93ab; margin-top: 5px; line-height: 1.6; }
 </style>
 </head>
 <body>
@@ -222,6 +247,68 @@ const KIND = {
       return `已删除：<b>${esc(p.title)}</b>（${esc(p.date)} ${esc(p.start)}-${esc(p.end)}），日程里已经没有它了。`;
     },
   },
+  // 候选时段：**学生自己挑**（本轮规格的核心）。
+  //
+  // 为什么要有这一类：上一版是"系统替他挑一个点、出一张单条确认条"，学生原话驳回——
+  //   「我定的太严了，你改一下，由 ai 帮我去挑选合适时间，**进行列举**，
+  //    采用和删除课表时同样的弹框，内容变成那几个时间的选择或者其他
+  //    （这个选项可以由我来自行补充），**由我打勾**，进行增加，
+  //    增加确认完立刻刷新日程」
+  // 所以这里三件事缺一不可：
+  //   ① 把几段候选**列出来**（不是只给一个点）；
+  //   ② 每段一个勾选框，**勾几个算几个**（可以一次排好几段）；
+  //   ③ 一个「其他时间」的输入框，自己写也行（认不出时间会如实说，不瞎猜）。
+  // 落库仍然只发生在按钮上：走 POST /api/todos/batch（逐条复核空档后写入）。
+  todo_slots: {
+    icon: "📝", title: "挑个时间加入日程", confirm: "加入日程", danger: false,
+    render(p) {
+      const ss = Array.isArray(p.slots) ? p.slots : [];
+      const rows = ss.map((s, i) => `
+        <label class="slot" data-i="${i}">
+          <input type="checkbox" class="slot-cb" value="${i}">
+          <span class="slot-t">${esc(s.label || ((s.date || "") + " " + (s.start || "") + "-" + (s.end || "")))}</span>
+          ${s.minutes ? `<span class="slot-m">约 ${Number(s.minutes)} 分钟</span>` : ""}
+        </label>`).join("");
+      return `<p class="summary">${esc(p.title || "待办")}</p>
+        <div class="meta">${esc(p.hint || "避开了课和已有的安排，挑一个方便的勾上（可以勾好几个）。")}</div>
+        <div class="slots">${rows || '<div class="empty">没有可用的空档。</div>'}</div>
+        <div class="other">
+          <label class="other-l" for="cfOther">其他时间（自己写一个）</label>
+          <input type="text" id="cfOther" placeholder="比如：周六下午三点到四点" autocomplete="off">
+          <div class="other-h">几段都不合适？在这儿写一句也行。认不出时间我会直说，不会乱猜一个。</div>
+        </div>`;
+    },
+    // 勾选 / 输入变了，按钮上的字跟着变（"+N 项"），学生一眼知道自己要写几条
+    after() {
+      bodyEl.querySelectorAll(".slot-cb").forEach(cb => {
+        cb.addEventListener("change", () => {
+          const row = cb.closest(".slot");
+          if (row) row.classList.toggle("on", cb.checked);
+          syncSlots();
+        });
+      });
+      const inp = document.getElementById("cfOther");
+      if (inp) inp.addEventListener("input", syncSlots);
+      syncSlots();
+    },
+    async apply(p) {
+      const picked = pickedSlots();
+      const inp = document.getElementById("cfOther");
+      const other = inp ? inp.value.trim() : "";
+      if (!picked.length && !other) {
+        throw new Error("还没选时间——勾一个，或者在「其他时间」里写一个");
+      }
+      return api("POST", "/api/todos/batch", {
+        session_id: sid(), title: p.title, slots: picked, other,
+      });
+    },
+    doneText(p, r) {
+      // 后端会把"写进去哪几条、哪几条没写成、哪句没认出来"合成一句人话，
+      // 原样显示比前端自己拼更准（前端不知道空档复核的结果）。
+      if (r && r.message) return esc(r.message).replace(/\n/g, "<br>");
+      return `已加入日程：<b>${esc(p.title)}</b>（${(r && r.count) || 0} 项）。`;
+    },
+  },
 };
 
 async function api(method, url, payload) {
@@ -235,6 +322,30 @@ async function api(method, url, payload) {
   try { data = JSON.parse(text); } catch (e) { data = { raw: text }; }
   if (!r.ok) throw new Error(data.error || data.detail || ("请求失败 " + r.status));
   return data;
+}
+
+// ———— 候选时段（todo_slots）专用的两个小工具 ————
+// 学生勾了哪几段（人话：把打勾的行变回 date/start/end，交给后端去写）
+function pickedSlots() {
+  const ss = (current && Array.isArray(current.slots)) ? current.slots : [];
+  const out = [];
+  bodyEl.querySelectorAll(".slot-cb").forEach(cb => {
+    if (!cb.checked) return;
+    const s = ss[Number(cb.value)];
+    if (s) out.push({ date: s.date, start: s.start, end: s.end });
+  });
+  return out;
+}
+
+// 按钮上的字跟着勾选变：勾了 2 段就写"加入日程（2 项）"，
+// 一段没勾、也没自填 → 按钮置灰（点下去只会被后端顶回来，不如别让他点）
+function syncSlots() {
+  const n = pickedSlots().length;
+  const inp = document.getElementById("cfOther");
+  const typed = !!(inp && inp.value.trim());
+  okBtn.textContent = n ? `加入日程（${n} 项）`
+    : (typed ? "加入「其他时间」" : k_confirm(current));
+  okBtn.disabled = !(n || typed);
 }
 
 function showDone(html) {
@@ -251,6 +362,9 @@ function showError(msg) {
   bodyEl.innerHTML = `<div class="empty">⚠️ ${esc(msg)}<br>
     <span style="font-size:12px;">数据没有改动，可以再试一次。</span></div>`;
   okBtn.disabled = false;
+  // 按钮上的字要还原：刚才被改成"⏳ 执行中…"了，不还原学生看到的是一颗
+  // 写着"执行中"的死按钮，不知道该不该再点（明明已经可以重试了）。
+  okBtn.textContent = k_confirm(current);
   busy = false;
   reportHeight();
 }
@@ -258,28 +372,32 @@ function showError(msg) {
 let fromParent = false;   // 提案是不是父页面直接递过来的（是的话就别再让接口结果覆盖它）
 
 function render(p) {
-  if (!p || !KIND[p.kind]) {
+  const k = p && KIND[p.kind];
+  if (!k) {
     bodyEl.innerHTML = `<div class="empty">当前没有待确认的变更。<br>
       <span style="font-size:12px;">这个页面是"出了提案才弹出来"的——不是常驻的。<br>
       去<b>学生端聊天</b>里说一句「把课表全部删除」或「把今天的复习线代安排到 19:00」，<br>
       聊天里就会挂出一条确认条。</span><br><br>
       <a href="/student" style="display:inline-block;padding:8px 18px;border-radius:10px;
          background:#3a6ff0;color:#fff;text-decoration:none;font-size:13px;">← 去学生端发起</a></div>`;
-  okBtn.disabled = true;
-  okBtn.style.display = "none";
-  tellParent("empty", {});
-  reportHeight();
-  return;
-}
+    okBtn.disabled = true;
+    okBtn.style.display = "none";
+    tellParent("empty", {});
+    reportHeight();
+    return;
+  }
   okBtn.style.display = "";
   current = p;
-  const k = KIND[p.kind];
   headEl.textContent = k.icon + " " + k.title;
   headEl.classList.toggle("danger", !!k.danger);
   bodyEl.innerHTML = k.render(p);
   okBtn.textContent = k.confirm;
   okBtn.className = "dlg-btn " + (k.danger ? "danger" : "primary");
   okBtn.disabled = false;
+  // 有些类目渲染完还要接线（候选时段要监听勾选/输入，好让按钮上的字数跟着变）。
+  // 做成可选钩子而不是塞进 render：render 在别处也被当成"纯拼 HTML"用，
+  // 让它顺手去挂事件容易出意外。
+  if (typeof k.after === "function") k.after(p);
   tellParent("loaded", { kind: p.kind });
   reportHeight();
 }

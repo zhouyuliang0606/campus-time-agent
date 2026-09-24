@@ -131,6 +131,18 @@
     .opt-card .info b { color: #3457d5; }
     .opt-card .info .meta { color: #6a7388; font-size: 12px; margin-top: 2px; }
     .opt-hint { font-size: 12px; color: #6a7388; margin-bottom: 6px; }
+    /* 候选时段卡（确认页载不进来时的内嵌兜底）：一行一个时间，整行可点 */
+    .slot-row {
+      display: flex; align-items: center; gap: 8px; cursor: pointer;
+      padding: 7px 9px; margin-top: 6px; border-radius: 8px;
+      background: #f2f5fd; border: 1px solid #e1e7f7; font-size: 13px;
+    }
+    .slot-row:hover { background: #eaf1ff; }
+    .slot-row input { width: 15px; height: 15px; accent-color: #4f7cff; cursor: pointer; flex: none; }
+    .slot-other {
+      width: 100%; margin-top: 8px; padding: 8px 10px; font-size: 13px;
+      border: 1px solid #d8def0; border-radius: 9px; font-family: inherit; color: #2a3350;
+    }
     .confirm-btn {
       margin-top: 4px; padding: 8px 16px; border: none; border-radius: 10px; cursor: pointer;
       background: #4f7cff; color: #fff; font-size: 13px;
@@ -557,9 +569,11 @@
       } else if (d.type === "height") {
         // 独立页面报来它内容的真实高度 → 把 iframe 调成刚好装得下，
         // 既不撑出一堆空白，也不把底下那行【取消】【确认】挤出可视区。
+        // 上限给到 560：候选时段那一类是"几段勾选 + 其他时间输入框"，
+        // 比"一句话摘要"高不少；卡在 430 会把输入框和按钮挤到看不见。
         if (cfWrap && d.h) {
           const f = cfWrap.querySelector("iframe");
-          if (f) f.style.height = Math.max(96, Math.min(430, Number(d.h) || 0)) + "px";
+          if (f) f.style.height = Math.max(96, Math.min(560, Number(d.h) || 0)) + "px";
         }
       }
     });
@@ -599,6 +613,92 @@
         wrap.appendChild(hint);
         container.appendChild(wrap);
         openConfirm(clears[clears.length - 1], container);   // 确认条 = /confirm 独立页面，嵌在消息下方
+        return;
+      }
+
+      // ---- ①-quater 候选时段卡：几个空档摊开、学生自己打勾（本轮规格） ----
+      //
+      // 学生原话（截图）：「由 ai 帮我去挑选合适时间，**进行列举**，采用和删除课表时
+      // 同样的弹框，内容变成那几个时间的选择或者其他（这个选项可以由我来自行补充），
+      // **由我打勾**，进行增加，**增加确认完立刻刷新日程**」。
+      // 所以它跟清空课表/删待办**同一个待遇**：走内嵌确认条（/confirm 那个独立页面），
+      // 勾选 + 「其他时间」输入都在那条里，这页只负责把它嵌进来、接住结果、刷新面板。
+      const slotsCards = options.filter(o => o.kind === "todo_slots");
+      if (slotsCards.length) {
+        const card = slotsCards[slotsCards.length - 1];
+        if (confirmPageOk) {
+          const hint = document.createElement("div");
+          hint.className = "opt-hint";
+          hint.textContent = "📝 挑一个（或几个）方便的时段：在下面这条确认条里打勾，想自己定就在「其他时间」里写一句。";
+          wrap.appendChild(hint);
+          container.appendChild(wrap);
+          openConfirm(card, container);
+          return;
+        }
+        // 兜底：确认页载不进来时，就地渲染勾选框 + 其他时间，
+        // 学生永远有路可走——不会因为一个 iframe 挂了就加不进日程。
+        const hint = document.createElement("div");
+        hint.className = "opt-hint";
+        hint.textContent = "📝 挑一个（或几个）方便的时段（勾好点【加入日程】）：";
+        wrap.appendChild(hint);
+        const list = (card.slots || []).map((s, i) =>
+          `<label class="slot-row" data-i="${i}">
+             <input type="checkbox" class="slot-cb" value="${i}">
+             <span>${escapeHtml(s.label || "")}</span>
+           </label>`).join("");
+        const box = document.createElement("div");
+        box.className = "opt-card";
+        box.innerHTML = `<div class="info"><b>${escapeHtml(card.title || "待办")}</b>${list}</div>`;
+        wrap.appendChild(box);
+        const other = document.createElement("input");
+        other.className = "slot-other";
+        other.placeholder = "其他时间（自己写，比如「周六下午三点到四点」）";
+        wrap.appendChild(other);
+        const go = document.createElement("button");
+        go.className = "confirm-btn";
+        go.style.marginTop = "6px";
+        go.textContent = "✅ 加入日程";
+        go.addEventListener("click", async () => {
+          const picked = [];
+          box.querySelectorAll(".slot-cb").forEach(cb => {
+            if (cb.checked) {
+              const s = (card.slots || [])[Number(cb.value)];
+              if (s) picked.push({ date: s.date, start: s.start, end: s.end });
+            }
+          });
+          if (!picked.length && !other.value.trim()) {
+            addMsg(botName(), "还没选时间——勾一个，或者在下面写一个。");
+            return;
+          }
+          go.disabled = true;
+          go.textContent = "⏳ 正在写入…";
+          try {
+            const r = await fetch("/api/todos/batch", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                session_id: sessionId(), title: card.title,
+                slots: picked, other: other.value.trim(),
+              }),
+            });
+            const d = await r.json().catch(() => ({}));
+            if (r.ok && d.ok) {
+              wrap.remove();
+              addMsg(botName(), d.message || "✅ 已加入日程，日程已刷新。", "bot", "planner");
+              loadScheduleView();      // 确认完立刻刷新日程，学生不用自己刷
+            } else {
+              go.disabled = false;
+              go.textContent = "✅ 重试";
+              addMsg(botName(), d.message || d.error || "写入失败，再试一次？");
+            }
+          } catch (e) {
+            go.disabled = false;
+            go.textContent = "✅ 重试";
+            addMsg(botName(), "哎呀，网络好像开小差了，请再试一次～");
+          }
+        });
+        wrap.appendChild(go);
+        container.appendChild(wrap);
         return;
       }
 

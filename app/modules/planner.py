@@ -39,6 +39,35 @@ AUTO_SLOT_LENGTH = 90    # 替他挑的那一段给多久（学生点头后写�
 # 一天的星期几怎么对应周表的 day 字段
 DAY_NAMES = {1: "周一", 2: "周二", 3: "周三", 4: "周四", 5: "周五", 6: "周六", 7: "周日"}
 
+# ---- 节次（"第几节课"）→ 具体时间 ----
+# 学生习惯用节次指时间：「在原本第一节课的位置加入健身代办」。
+# 演示课表按两节课一个时段算：
+# 第1-2节 08:00、第3-4节 10:00、第5-6节 14:00、第7-8节 16:00；晚上的课学生会直接说时间。
+# 这一份表**排待办和删课共用**：删课只要起点（拿去周表里反查那节课叫什么），
+# 排待办要整段（学生指的就是那"一整节课的位置"）。
+_PERIOD_RE = re.compile(r"第\s*([一二三四五六七八1-8])\s*节")
+_PERIOD_NUM = {"一": 1, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8,
+               "1": 1, "2": 2, "3": 3, "4": 4, "5": 5, "6": 6, "7": 7, "8": 8}
+_PERIOD_START = {1: "08:00", 2: "08:00", 3: "10:00", 4: "10:00",
+                 5: "14:00", 6: "14:00", 7: "16:00", 8: "16:00"}
+_PERIOD_SPAN = {1: ("08:00", "09:40"), 2: ("08:00", "09:40"),
+                3: ("10:00", "11:40"), 4: ("10:00", "11:40"),
+                5: ("14:00", "15:40"), 6: ("14:00", "15:40"),
+                7: ("16:00", "17:40"), 8: ("16:00", "17:40")}
+
+
+def period_span(text: str):
+    """「第一节课的位置」→ ("08:00", "09:40")（人话：学生拿节次指时间时要接得住）。
+
+    截图里那句就是它：「在原本第一节课的位置加入健身代办」——
+    "第一节课的位置"是**时间**，不是标题的一部分。认不出来就返回 None。
+    """
+    m = _PERIOD_RE.search(text or "")
+    if not m:
+        return None
+    return _PERIOD_SPAN.get(_PERIOD_NUM.get(m.group(1), 0))
+
+
 
 # ---------- 时间小工具 ----------
 
@@ -158,7 +187,8 @@ def _prefer_window(text: str):
 
 def pick_free_slot(date: str, prefer: str = "",
                    minutes: int = AUTO_SLOT_MINUTES,
-                   length: int = AUTO_SLOT_LENGTH) -> dict | None:
+                   length: int = AUTO_SLOT_LENGTH,
+                   not_before: int | None = None) -> dict | None:
     """替学生从那天的空档里挑一段（人话：他说"周四加个健身"，几点由系统算）。
 
     这是被投诉的那句「**没有帮我想时间，是我问了才说的**」的正解：
@@ -174,6 +204,10 @@ def pick_free_slot(date: str, prefer: str = "",
 
     挑不出来（那天满课、或空档都不够长）返回 None —— 由调用方如实告知，
     绝不硬凑一个时间写进日程。
+
+    :param not_before: 分钟数。给了就**不早于这个点**起手——列候选时会用到：
+        今天是"此刻往后"才有意义，不然上午问一句"加个健身"，
+        系统会把早上八点那段排给学生，而他看到的时候早过了。
     """
     slots = [s for s in find_free_slots(date, min_minutes=minutes) if s.get("start")]
     if not slots:
@@ -187,9 +221,11 @@ def pick_free_slot(date: str, prefer: str = "",
     best = max(slots, key=lambda s: (s["minutes"], to_minutes(s["start"])))
     # 起手点：不早于目标时间段的起点（学生说"下午"就别从早上开始）
     begin = max(to_minutes(best["start"]), lo)
+    if not_before is not None:
+        begin = max(begin, not_before)
     finish = min(begin + length, to_minutes(best["end"]))
     if finish - begin < minutes:
-        return None
+        return None        # 这段已经过去了 / 装不下 → 当作这天没有可用空档
     return {
         "date": date,
         "weekday": _weekday_name(date),
@@ -197,6 +233,337 @@ def pick_free_slot(date: str, prefer: str = "",
         "end": to_hhmm(finish),
         "minutes": finish - begin,
     }
+
+
+def _now_minutes() -> int:
+    """现在几点（换成分钟数，人话：判断"今天这段是不是已经过去了"）。"""
+    now = datetime.datetime.now()
+    return now.hour * 60 + now.minute
+
+
+# 一天切成三档（人话：学生嘴里的"上午/下午/晚上"）。
+# 为什么按这三档列候选，而不是"把最长的那段空档给他切一半"：
+# 学生要的是**几个可以挑的时间**（他自己打勾）。课表再空，他心里的备选
+# 也就是"上午 / 下午 / 晚上"这几档；给他一段 15:40-17:10、一段 17:40-19:10，
+# 他反而看不懂这两段有什么差别。切完还顺手避开了午休和太早的时段。
+DAY_PARTS = (("上午", 9 * 60, 12 * 60),
+             ("下午", 14 * 60, 18 * 60),
+             ("晚上", 19 * 60, 22 * 60))
+
+
+def _part_order(prefer: str = "") -> tuple:
+    """三档的先后（人话：学生说了"晚上"，晚上那段就排第一个）。
+
+    没说就按"下午 → 上午 → 晚上"——下午那档最像样：
+    早上要赶课、晚上容易困，"排件事"通常排在下午。
+    """
+    t = prefer or ""
+    if any(w in t for w in ("上午", "早上", "早晨", "一早")):
+        return ("上午", "下午", "晚上")
+    if any(w in t for w in ("晚上", "傍晚", "夜里", "今晚", "今夜")):
+        return ("晚上", "下午", "上午")
+    return ("下午", "上午", "晚上")
+
+
+def _span_free(date: str, span) -> bool:
+    """那天的某个时刻区间是不是完全空着（人话：这段能不能塞下这件事）。
+
+    走 find_free_slots 而不是自己比对课表：它会同时避开**课程**和**已排的待办**，
+    自己写一份迟早会漏掉一边（漏了待办，学生就会收到两个撞在一起的安排）。
+    """
+    s0, s1 = to_minutes(span[0]), to_minutes(span[1])
+    for s in find_free_slots(date, min_minutes=1):
+        if not s.get("start"):
+            continue
+        if to_minutes(s["start"]) <= s0 and to_minutes(s["end"]) >= s1:
+            return True
+    return False
+
+
+def _day_slots(date: str, prefer: str = "", limit: int = 3, rotate: int = 0) -> list:
+    """那一天里"像样的几段"（人话：上午/下午/晚上各给一段塞得进的）。
+
+    排序按 _part_order：学生点名了哪一档，那一档排第一个；没说就下午优先。
+    一天里某一档本来就不空（有课或有约）→ 那一档跳过，不硬塞——
+    列出来的每一段都是真能排的。
+
+    :param rotate: 学生**没点名**哪一档时，把三档的顺序往后挪几格。
+        给"跨天列候选"用的：不然连列三天，三条都是"下午 14:00-15:30"，
+        学生看着像同一个选项复制了三遍；挪一挪就变成
+        「明天下午 / 周六上午 / 周日晚上」，一眼看出有的挑。
+    """
+    not_before = (_now_minutes() + 30
+                  if date == datetime.date.today().isoformat() else None)
+    free = [s for s in find_free_slots(date, min_minutes=AUTO_SLOT_MINUTES)
+            if s.get("start")]
+    out = []
+    for name, plo, phi in DAY_PARTS:
+        for s in free:
+            begin = max(to_minutes(s["start"]), plo)
+            if not_before is not None:
+                begin = max(begin, not_before)
+            finish = min(begin + AUTO_SLOT_LENGTH, to_minutes(s["end"]), phi)
+            if finish - begin < AUTO_SLOT_MINUTES:
+                continue
+            out.append({"part": name, "date": date,
+                        "weekday": _weekday_name(date),
+                        "start": to_hhmm(begin), "end": to_hhmm(finish),
+                        "minutes": finish - begin})
+            break
+    order = list(_part_order(prefer))
+    if rotate and not _said_part(prefer):
+        rotate %= len(order)
+        order = order[rotate:] + order[:rotate]
+    out.sort(key=lambda s: order.index(s["part"]) if s["part"] in order else 9)
+    return out[:limit]
+
+
+def _said_part(text: str) -> bool:
+    """学生自己说了"上午/下午/晚上"没有（人话：他点名了就别替他挪顺序）。"""
+    t = text or ""
+    return any(w in t for w in ("上午", "早上", "早晨", "一早", "中午",
+                                "下午", "晚上", "傍晚", "夜里", "今晚", "今夜"))
+
+
+def candidate_slots(text: str = "", max_slots: int = 3, days_ahead: int = 5) -> list:
+    """替学生**列几个**候选时段（人话：不替他定一个，摊开来让他打勾）。
+
+    为什么要从"挑一个"改成"列几个"：学生原话——
+    「**由 ai 帮我去挑选合适时间，进行列举**……由我打勾，进行增加」。
+    只给一个时间，等于替他做了主；他要么全盘接受，要么再让你换一次，
+    来回两轮。摊出三段、他自己勾，通常一轮就定下来了。
+
+    列举规则（尽量好懂、别花哨）：
+      1. 学生说了哪一天 → **只列那天**（他说周四就是周四），那天里的
+         上午/下午/晚上各一段，最多 `max_slots` 段；那天真排不下就如实返回空列表，
+         由调用方去说，**不偷偷换到别的天**。
+      2. 没说哪天 → 从今天起往后逐天看，一天一段，凑够 `max_slots` 段。
+         今天只看"此刻之后"的时段（已经过去的上午不该出现在候选里）。
+      3. 学生提了「第N节课的位置」→ 那一段（按节次表换算）**排到第一位**，
+         前提是它真空着；那天被课占了就往后找最近一个空着的那天，
+         都占着就跳过——绝不把候选排在课上。
+    标题不在这里拼——这里只负责"时间"。
+    """
+    t = (text or "").strip()
+    prefer = t
+    today = datetime.date.today()
+    picked_day = _pick_date(t)
+    out = []
+
+    def _push(slot):
+        if slot and not any(s["date"] == slot["date"] and s["start"] == slot["start"]
+                            for s in out):
+            out.append(slot)
+
+    # ③ 先处理「第一节课的位置」这种按节次指时间的话
+    span = period_span(t)
+    if span:
+        days = ([picked_day] if picked_day
+                else [(today + datetime.timedelta(days=i)).isoformat()
+                      for i in range(days_ahead + 1)])
+        for d in days:
+            if d == today.isoformat() and to_minutes(span[1]) <= _now_minutes():
+                continue                      # 今天这一节已经过去了
+            if not _span_free(d, span):
+                continue                      # 那个位置被课占着 → 往后找
+            _push({"part": "上午" if to_minutes(span[0]) < 12 * 60 else "下午",
+                   "date": d, "weekday": _weekday_name(d),
+                   "start": span[0], "end": span[1],
+                   "minutes": to_minutes(span[1]) - to_minutes(span[0])})
+            break
+
+    if picked_day:
+        for s in _day_slots(picked_day, prefer, limit=max_slots):
+            _push(s)
+        return out[:max_slots]
+
+    for off in range(0, days_ahead + 1):
+        if len(out) >= max_slots:
+            break
+        day = (today + datetime.timedelta(days=off)).isoformat()
+        for s in _day_slots(day, prefer, limit=1, rotate=off):
+            _push(s)
+    return out[:max_slots]
+
+
+def parse_slot_text(text: str, title: str = "", fallback_date: str = "") -> dict | None:
+    """把学生在「其他」里自己填的一行字，解析成一张待办卡（人话：自填也要认）。
+
+    三种都认：
+      · 说全了（"周六 19:00-20:00"）→ 直接用他给的时间；
+      · 只说了哪天（"周六"）→ 那天替他挑一段空档；
+      · **只报了钟点、没报哪天**（"晚上七点到八点"）→ 拿 `fallback_date` 补上那天
+        （调用方传候选卡里最靠前的那天；那天这一节已经过了就顺延到明天）。
+        不补这一档，「其他」里最自然的写法会直接掉进"没认出来"，学生白填一行。
+    认不出来返回 None —— 由调用方如实告诉他"这行没认出来"，**不瞎猜一个时间**。
+    标题缺省用外面传进来的那件事（他说的是"其他时间"，不是"其他事情"）。
+    """
+    t = (text or "").strip()
+    if not t:
+        return None
+    prop = parse_add_todo(f"{t} {title}".strip())
+    if prop is None:
+        prop = auto_todo_proposal(f"{t} {title}".strip())
+    if prop is None:
+        prop = _span_only_proposal(t, title, fallback_date)
+    if prop is None:
+        return None
+    if title and prop.get("title") in ("", "待办"):
+        prop["title"] = title
+        prop["summary"] = (f"{title}｜{prop['date']}（{prop.get('weekday', '')}）"
+                           f"{prop['start']}-{prop['end']}")
+    return prop
+
+
+def _span_only_proposal(text: str, title: str, fallback_date: str) -> dict | None:
+    """只有起止钟点、没有日期的那一行字 → 用兜底那天补成一张卡（内部用）。
+
+    顺延规则：兜底那天就是今天、而这一段已经过去了 → 挪到明天。
+    宁可挪一天，也不给学生排一段"已经过去的晚上七点"。
+    """
+    begin, finish = _pick_span(text or "")
+    if not begin:
+        return None
+    day = (fallback_date or "").strip()
+    if _iso_weekday(day) == 0:
+        return None
+    if not finish:
+        finish = to_hhmm(to_minutes(begin) + 60)
+    if to_minutes(finish) <= to_minutes(begin):
+        return None
+    if day == datetime.date.today().isoformat() and to_minutes(begin) <= _now_minutes():
+        day = (datetime.date.today() + datetime.timedelta(days=1)).isoformat()
+    name = _pick_title(text or "")
+    if not name or name == "待办":
+        name = (title or "").strip() or "待办"
+    if name == "待办":
+        return None
+    wd = _weekday_name(day)
+    return {
+        "kind": "todo_add",
+        "title": name,
+        "date": day,
+        "start": begin,
+        "end": finish,
+        "weekday": wd,
+        "minutes": to_minutes(finish) - to_minutes(begin),
+        "summary": f"{name}｜{day}（{wd}）{begin}-{finish}",
+    }
+
+
+def build_todo_slots(title: str, slots: list, hint: str = "") -> dict:
+    """把几个候选时段包成一张「挑时间」的提案（人话：弹框里那串能打勾的时间）。
+
+    它的形状跟别的提案不一样：**一个提案里装着好几个时段**，学生勾哪个算哪个
+    （还能在「其他」里自己补一个）。所以它不是"已经定好的安排"，
+    而是"摊开来的备选"——真正写库要等学生勾完点确认，走 `/api/todos/batch`。
+    """
+    items = []
+    for s in slots or []:
+        if not (s.get("date") and s.get("start") and s.get("end")):
+            continue
+        items.append({
+            "date": s["date"],
+            "weekday": s.get("weekday", ""),
+            "start": s["start"],
+            "end": s["end"],
+            "minutes": s.get("minutes"),
+            "label": f"{s.get('weekday', '')}（{_mmdd(s['date'])}）"
+                     f"{s['start']}-{s['end']}",
+        })
+    return {
+        "kind": "todo_slots",
+        "title": title or "待办",
+        "slots": items,
+        "hint": hint,
+        "summary": f"{title or '待办'}｜{len(items)} 个候选时段",
+    }
+
+
+def _mmdd(date: str) -> str:
+    """2026-10-01 → 10/01（人话：弹框里那行字要短，学生扫一眼就懂）。"""
+    try:
+        return f"{int(date[5:7])}/{int(date[8:10])}"
+    except Exception:
+        return date
+
+
+def todo_title_of(text: str) -> str:
+    """从一句话里抠出"要加的那件事"（人话：候选卡上那个名字）。
+
+    `_pick_title` 是内部的抠法，外面（main.py 的候选分支、测试）也要用同一份，
+    所以在这里公开一个入口——抄第二份抠法迟早会走样。
+    """
+    try:
+        return _pick_title(text or "")
+    except Exception:
+        return "待办"
+
+
+def todo_slots_proposal(text: str, max_slots: int = 3) -> dict | None:
+    """学生只说了"加个健身"（没说几点）→ 摊开几个候选时段，让他自己打勾。
+
+    这是**本轮规格的核心改动**。上一版的做法是"系统替他挑一个时间、出一张单条确认卡"，
+    学生原话是「**我定的太严了，你改一下，由 ai 帮我去挑选合适时间，进行列举**……
+    由我打勾，进行增加」。只给一个点等于替他做了主：他要么全盘接受，要么再让你换一次，
+    来回两轮。摊出三段、他自己勾，通常一轮就定下来了。
+
+    返回一张 `kind="todo_slots"` 的提案（装着好几个时段），
+    还是一样**不写库**——真写入要等学生勾完、点弹框上那颗按钮，走 `/api/todos/batch`。
+
+    凑不出来（没有"要做什么事"、或者那天/那几天真排不下）返回 None，
+    交给调用方如实说缺什么、或者直说"这天满了"，**绝不硬凑一个时间**。
+    """
+    t = (text or "").strip()
+    if not t:
+        return None
+    title = _pick_title(t)
+    if not title or title == "待办":
+        return None          # 连"要做什么事"都没说 → 由追问分支去问，别拿"待办"占位
+    slots = candidate_slots(t, max_slots=max_slots)
+    if not slots:
+        return None          # 那天的空档真排不下（或全是过去时段）
+    day = _pick_date(t)
+    if day:
+        hint = (f"{day}（{_weekday_name(day)}）的空档都在这儿了——"
+                f"避开课和已有的安排，勾一个方便的。")
+    else:
+        hint = "避开课和已有的安排，挑一个方便的勾上（可以勾好几个）。"
+    return build_todo_slots(title, slots, hint=hint)
+
+
+def slot_is_free(date: str, start: str, end: str) -> bool:
+    """这段时间现在还是空的吗（人话：落库前再核一次，别把两件事排到同一个点）。
+
+    为什么不能只信学生勾的那一下：候选是**上一轮**算出来的，中间他可能自己
+    又往同一天加了一条；「其他」里自填的时段也可能正好压在他刚勾中的那段上。
+    复用 `_span_free` 走同一条判定（它同时避开课程和已排待办），
+    省得这里另写一份、漏掉一边。
+    """
+    s0, s1 = to_minutes(start), to_minutes(end)
+    if s0 < 0 or s1 < 0 or s1 <= s0:
+        return False
+    if _iso_weekday(date) == 0:
+        return False
+    return _span_free(date, (start, end))
+
+
+def is_slot_answer(text: str) -> bool:
+    """这句是在**挑时间**，还是在**开新单**（人话：候选卡下面那句补充怎么算）。
+
+    两种都得接住，但接法不一样：
+      · 「改成晚上七点到八点」「周六下午三点到四点」→ 挑时间，**事情沿用候选卡上那个**；
+      · 「周六加个游泳」→ 开新单（换成别的事了），得走正常的加待办链路重新解析。
+    判据就是有没有"要加什么事"的意图词/口语写法。
+    """
+    t = (text or "").strip()
+    if not t or len(t) > 40:
+        return False
+    if any(k in t for k in ("吗", "？", "?")):
+        return False
+    if any(w in t for w in _ADD_INTENT) or _ADD_TALK_RE.search(t):
+        return False
+    return _pick_span(t)[0] is not None or _pick_date(t) is not None
 
 
 def list_day_todos(date: str) -> list:
@@ -750,6 +1117,14 @@ def _pick_title(text: str) -> str:
     if m and 1 <= len(m.group(1)) <= 30:
         return m.group(1).strip()
     t = _normalize_clock(t)          # 先把「两点到三点」换成 2:00-3:00，下面的正则才擦得掉
+    # 「改成周六」「换到晚上七点」这类话里，"改成/换到"是**动作**不是事情的名字。
+    # 不擦的话，学生在候选卡下面回一句「改成周六」，标题就会变成「改成健身」。
+    t = re.sub(r"(改成|改到|换成|换到|换个时间|换个点|挪到|调整到|调到|重排|改一下|重来)", " ", t)
+    # 「第N节课」整块是时间（"在原本第一节课的位置加入健身"里的"第一节课的位置"）——
+    # 不擦掉的话标题会变成「原本第一节课的位置健身」，卡片上就是这一长串。
+    t = re.sub(r"第\s*[一二三四五六七八1-8]\s*节(课)?(的)?(位置|时候|时间|时段)?", " ", t)
+    # 「在…的位置/地方」也是时间状语，整块擦掉
+    t = re.sub(r"在[^\s，,。]{0,12}?(的)?(位置|地方|时段)", " ", t)
     t = _DATE_RE.sub(" ", t)
     # 单写日期的那两种形式也要擦掉，否则「删掉 2026-09-29 那条」的标题会变成一串日期
     t = _DATE_ONLY_RE.sub(" ", t)
@@ -767,7 +1142,8 @@ def _pick_title(text: str) -> str:
     # 「那你帮我加个健身在周四」这种口语，开头那串语气词得先削掉，
     # 否则待办标题会变成「那你帮我健身」——截图里卡片名就是这副别扭样子。
     # （长词排前面：正则的备选是"先匹配到的算数"，写成 (那|那么) 会先把"那"吃掉。）
-    t = re.sub(r"^(那么|那|您|你|咱们|我们|要不|不然|麻烦|就|先|再|请)+", "", t.lstrip())
+    t = re.sub(r"^(那么|那|您|你|咱们|我们|要不|不然|麻烦|就|先|再|请|原本|原来|以前|之前|把)+",
+               "", t.lstrip())
     t = re.sub(r"^(我要|我想|帮我|我想让|请帮我|给我|把|帮)\s*", "", t.lstrip())
     for w in _CONFIRM_WORDS:
         t = t.replace(w, " ")
@@ -778,7 +1154,8 @@ def _pick_title(text: str) -> str:
     # ⚠️ 上面那些 replace() 会在开头留下空格，把原来那句 `^(帮我|我要…)` 顶掉
     #    （"周日帮我安排游泳" → " 帮我 游泳" → 首字符是空格，"^" 就匹配不上了），
     #    所以"语气词 + 口语动词"这一轮**必须在去空格之后**再削一遍。
-    t = re.sub(r"^(那么|那|您|你|咱们|我们|要不|不然|麻烦|就|先|再|请)+", "", t)
+    t = re.sub(r"^(那么|那|您|你|咱们|我们|要不|不然|麻烦|就|先|再|请|原本|原来|以前|之前|把)+",
+               "", t)
     t = re.sub(r"^(我要|我想|帮我|我想让|请帮我|给我|把|帮)\s*", "", t)
     # 「加个健身」「记一条交电费」这类口语，动词和量词是连在一起的——
     # _ADD_INTENT 里只有"加一个/添加/预约"这些写法，"加个""添条"漏在外面，
@@ -787,7 +1164,9 @@ def _pick_title(text: str) -> str:
     _trimmed = re.sub(r"^[加添记]?(?:个|条|件|次|项|一下|一)?", "", t)
     if len(_trimmed) >= 2:
         t = _trimmed
-    t = t.strip("的")[:30]
+    # 「加入健身**代办**」——"代办/待办"是学生嘴里的类别词（还常写成"代办"），
+    # 不是事情本身；留在标题里就会看到「健身代办」这种卡片名。
+    t = re.sub(r"(待办|代办|事项|日程)$", "", t).strip("的")[:30]
     # 削到什么都不剩（"周四加一个"）→ 当作没标题，交给追问分支问"要加什么事"，
     # 别拿"加个"本身当待办名字写进日程。
     if not t or t in _EMPTY_TITLES:
@@ -1505,13 +1884,8 @@ def parse_add_course(text: str) -> dict | None:
 
 
 # ---- 删课：确定性解析（跟加课同一个思路：能由代码定死的，就别交给模型）----
-# "第N节"→ 上课时间。演示课表按两节课一个时段算：
-# 第1-2节 08:00、第3-4节 10:00、第5-6节 14:00、第7-8节 16:00；晚上的课学生会直接说时间。
-_PERIOD_RE = re.compile(r"第\s*([一二三四五六七八1-8])\s*节")
-_PERIOD_NUM = {"一": 1, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8,
-               "1": 1, "2": 2, "3": 3, "4": 4, "5": 5, "6": 6, "7": 7, "8": 8}
-_PERIOD_START = {1: "08:00", 2: "08:00", 3: "10:00", 4: "10:00",
-                 5: "14:00", 6: "14:00", 7: "16:00", 8: "16:00"}
+# "第N节"→ 上课时间：表在文件开头（`_PERIOD_START` / `_PERIOD_SPAN`），
+# 排待办和删课共用同一份，改一处两边都生效。
 
 # 删课意图词。刻意不收"不上"（"明天不上课"是闲聊不是指令）、
 # 不收光杆"删"（"把这条消息删了"跟课没关系），误伤比漏收难看。
@@ -1880,18 +2254,21 @@ def build_system_prompt() -> str:
    才调用 add_todo_tool 真正写进日程。学生没确认前，**绝对不要写入**。
 5. 学生提出调整（"太晚了""换个时间"），就重新查空档、再调用 propose_slots 提议，继续等。
 
-【学生只说了"哪天"、没说"几点" —— 时间由你算，不许反问他】
+【学生只说了"哪天"、没说"几点" —— 时间由你算，而且要**列几个**给他挑，不许反问他】
 学生说「周四加个健身」「我想在周六自习」时，他要的就是"哪天哪会儿空着"这件事本身。
 你反问他"你想几点到几点"，等于把活儿原封不动退回给他——
 他正是因为不知道哪天哪会儿有空才来问你（学生投诉原话：
 「**没有帮我想时间，是我问了才说的**」）。正确做法：
 · 先 find_free_slots(那天) 看真实空档；
-· 挑一段合适的：他说了"上午/下午/晚上"就只在那一段里挑，没说就挑**最长的那段**
-  （下午/傍晚往往比一早更合适），排一段 60~90 分钟的就行，别把整段空档都占掉；
-· 调 propose_todo_tool 把确认条挂出来（date 传那天、start/end 传你挑的起止）；
-· 文字里说清"我看 XX 空着，就排这儿了"，再补一句"这个点不合适你说个时间就行"。
-⛔ 只有两种情况才去问他：① 那天真的排不进（如实说"这天满了，换个日子"）；
-② 他连"哪天"都没说 —— 那就**只问日期，别问时间**。
+· **一次列 2~4 段候选**：他说了"上午/下午/晚上"就只在那一段里挑，
+  没说就上午/下午/晚上各给一段（用 propose_todo_slots_tool，它会把这几段摊成能打勾的卡片）；
+· 文字里也把这几段列一遍，并说清"**在卡片上打勾**，勾完点【加入日程】我就写进去，
+  都不合适就在「其他时间」自己写一个"。
+⛔ 不要只给一个点就替他定下来——学生明确要求过「由 ai 帮我去挑选合适时间，**进行列举**……
+  由我打勾」（只给一个点，他要么全盘接受、要么再让你换一次，来回两轮）。
+⛔ 也不要为了凑时间反问学生——真要问，只问"要加什么事"。
+   他说了哪天、那天真排不进 → 如实说"这天满了，换个日子"。
+   （学生已经自己报了准点的情况另说：那样用 propose_todo_tool 出**单条**确认条就够。）
 
 【硬性约束】
 - 待办不能跟课程撞时间（工具会自动拦截，但你要先自己看清楚）。
@@ -1951,8 +2328,13 @@ def build_system_prompt() -> str:
 - get_weekly_timetable：看整周课程
 - find_free_slots(date, min_minutes)：查某天空档
 - list_day_todos(date)：看某天已排了什么
+- **propose_todo_slots_tool(title, when)：学生要加一件事、还没定哪个点时用它**——
+  它查出那天的几段空档（when 留空就跨天各给一段），摊成一张**能打勾**的卡片，
+  学生自己勾一个或几个，勾完点【加入日程】才写库。**这是默认用法。**
 - **propose_slots(options_json)：把候选结构化地交给前端渲染成可勾选卡片。
   提完候选后必须调用它**（options_json 是 JSON 数组，每条含 title/date/start/end）。**
+- **propose_todo_tool(title, date/when...)：学生已经报了准点时**，出**单条**"要不要排在这儿"
+  的确认条。（只给 date 也行，时间它会自己挑，但那样只有一段——能列几段就别用它。）
 - add_todo_tool(title, date, start, end, note)：**确认后**才写入
 - **propose_clear_timetable()：清空整张课表**——只出确认弹窗，纯只读，写完就停手
 - **propose_course_change(op, day, ...)：删课/加课/改单节课的首选**——服务端算好新课表出确认卡
@@ -2024,6 +2406,13 @@ def build_tools() -> dict[str, Tool]:
             },
             func=list_day_todos,
         ),
+        # 出确认条的两件（都是**只读**：真写入永远在系统那侧）：
+        #   · propose_todo_tool      → 已经定好一个点，出单条"要不要排在这儿"
+        #   · propose_todo_slots_tool→ 还没定哪个点，摊开几段**让学生自己打勾**
+        # 学生明确要求过第二种（原话：「由 ai 帮我去挑选合适时间，进行列举……由我打勾」），
+        # 所以它在本模块的工具箱里是**首选**，propose_todo_tool 退成"学生报了准点"时才用。
+        "propose_todo_tool": propose_todo_tool_tool(),
+        "propose_todo_slots_tool": propose_todo_slots_tool_tool(),
         "add_todo_tool": Tool(
             name="add_todo_tool",
             description=(
@@ -2173,6 +2562,7 @@ def build_scheduling_tools() -> dict[str, Tool]:
     names = ("get_weekly_timetable", "find_free_slots", "list_day_todos", "propose_slots")
     picked = {n: all_tools[n] for n in names if n in all_tools}
     picked["propose_todo_tool"] = propose_todo_tool_tool()
+    picked["propose_todo_slots_tool"] = propose_todo_slots_tool_tool()
     return picked
 
 
@@ -2192,6 +2582,8 @@ def propose_todo_tool_tool() -> Tool:
             "**学生只说了哪天、没说到几点时，把 date 给上就行，"
             "时间由系统从那天的空档里挑好**——⛔ 不要为了凑 start 去反问学生'你想几点'，"
             "他要的就是'哪天哪会儿空着'这件事本身。"
+            "⚠️ 但它只出**一段**时间。学生没说定要哪个点时，优先用 propose_todo_slots_tool "
+            "**一次列几段让他自己打勾**；只有在学生已经报了准点、或者只需要一个建议时才用它。"
             "调用成功界面上会挂出【确认加入】按钮，学生点了才写库；"
             "没调用这个工具就不要说'提案已发给你'。"
         ),
@@ -2214,4 +2606,72 @@ def propose_todo_tool_tool() -> Tool:
             "required": ["title"],
         },
         func=propose_todo_tool,
+    )
+
+
+def propose_todo_slots_tool(title: str, when: str = "") -> str:
+    """把"哪几段时间空着"做成一张**能打勾**的候选卡（只读，不写库）。
+
+    跟 propose_todo_tool 的分工（这一条很关键，别混）：
+      · propose_todo_tool：已经定好**一个点** → 出一张"要不要排在这儿"的单条确认条；
+      · 就是这一件：还没定哪个点 → **摊开几段**让学生自己勾（本轮规格的正解）。
+    学生原话：「由 ai 帮我去挑选合适时间，**进行列举**……由我打勾，进行增加」。
+
+    :param title: 要加的那件事（"健身"）
+    :param when: 学生那句时间描述（"周四"、"周四下午"、"周六"）；可以空着——
+        空着就**跨天**列几段（今天往后逐天一段），一样比他再问一轮快。
+    :return: 带 __proposal__ 的 JSON 字符串（引擎据此在聊天里挂出候选条）；
+        凑不出来时返回 error + hint，让模型照 hint 去问**正确的那件事**。
+    """
+    blob = " ".join(x for x in ((when or "").strip(), (title or "").strip()) if x).strip()
+    if not blob:
+        return json.dumps({
+            "error": "至少给个任务名",
+            "hint": "title 传「健身」这样的事名；时间不确定就留空，系统会自己列几段。",
+        }, ensure_ascii=False)
+    card = todo_slots_proposal(blob)
+    if card is None:
+        return json.dumps({
+            "error": "凑不出候选时段",
+            "hint": ("两种可能：① 连'要加什么事'都还没说清 → 问学生**要加什么事**，"
+                     "⛔ 不要问'你想几点'；② 那几天课和待办都排满了 → 如实说"
+                     "'这几天排满了，换个日子'。（若学生已经报了具体钟点，"
+                     "改用 propose_todo_tool 出单条确认条。）"),
+            "got": blob,
+        }, ensure_ascii=False)
+    return json.dumps({
+        "__proposal__": card,
+        "human": (f"候选卡已经挂在下面了：《{card['title']}》共 {len(card['slots'])} 段空档。"
+                  f"**要学生在卡片上打勾**，勾完点【加入日程】才写库；"
+                  f"文字里也把这几段列一遍，并告诉他'都不合适就在「其他时间」自己写一个'。"
+                  f"⛔ 严禁说已经写好了、也别再反问他几点。"),
+    }, ensure_ascii=False)
+
+
+def propose_todo_slots_tool_tool() -> Tool:
+    """把 propose_todo_slots_tool 包成 Agent 工具（`build_scheduling_tools` 里共用一份）。"""
+    return Tool(
+        name="propose_todo_slots_tool",
+        description=(
+            "把几个候选时段摊开成一张**可打勾**的卡片（只出提案，不写库）。"
+            "**学生说了要加一件事、但没指定具体钟点时，用这个**——"
+            "title 任务名（'健身'），when 写学生那句时间描述（'周四'、'周四下午'、'周六'），"
+            "when 留空也行（系统会从今天起逐天各列一段）。"
+            "一次列 2~4 段，学生在卡片上自己勾一个或几个，"
+            "勾完点【加入日程】才由系统写库。"
+            "⛔ 不要为了凑时间反问学生'你想几点'（他要的就是'哪几段空着'）；"
+            "⛔ 学生已经报了准点时改用 propose_todo_tool；"
+            "⛔ 没调用工具就不要说'提案已发给你'、更不要说'已经排好了'。"
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "description": "任务名称，如 健身"},
+                "when": {"type": "string",
+                         "description": "学生那句时间描述，如 '周四'、'周四下午'；可空",
+                         "default": ""},
+            },
+            "required": ["title"],
+        },
+        func=propose_todo_slots_tool,
     )

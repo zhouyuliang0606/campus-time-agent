@@ -55,14 +55,18 @@ from app.modules.planner import (
     parse_add_course,
     parse_add_todo,
     parse_remove_course,
+    parse_slot_text,
     parse_todo_from_reply,
     render_todo_remove_list,
     resolve_todo_remove,
     resolve_todo_remove_reply,
+    slot_is_free,
+    todo_slots_proposal,
     wants_remove_todo,
     wants_remove_todo_loose,
     is_add_todo_answer,
     is_add_todo_followup,
+    is_slot_answer,
     pick_todo_missing,
     retime_todo_proposal,
     todo_missing_advice,
@@ -143,12 +147,17 @@ ASSISTANT_RULES = """
       「周四加个健身」「我想周六自习」这类话，他要的就是"哪天哪会儿空着"这件事本身——
       你反问"你想几点到几点"，等于把活儿原封不动退回去（学生投诉原话：
       「**没有帮我想时间，是我问了才说的**」）。正确做法：
-      ① 先 find_free_slots 看那天的空档；② 挑一段合适的（他说了"上午/下午/晚上"
-      就只在那一段里挑）；③ 调 propose_todo_tool 把确认条挂出来
-      （把 date 给它就够，**它自己会从那天的空档里挑时间**）；
-      ④ 文字里说清"我看 XX 空着，就排这儿了"，再补一句"这个点不合适就说得改到几点"。
-      只有两种情况才去问他：① 那天真的排不进（如实说"这天满了、换个日子"）；
-      ② 他连"哪天"都没说（那就只问日期，**别问时间**）。
+      ① 先 find_free_slots 看那天的空档；② **把 2~4 段候选摊开列出来**
+      （他说了"上午/下午/晚上"就只在那一段里挑，没说就上午/下午/晚上各给一段）；
+      ③ 调 propose_todo_slots_tool 把**能打勾的候选条**挂出来。
+      ⛔ **不要只给一个点**——学生明确要求过「由 ai 帮我去挑选合适时间，**进行列举**……
+      由我打勾」（只给一个点等于替他做了主，他要么全盘接受、要么再让你换一次，来回两轮）。
+      ④ 文字里也把这几段列一遍，并说清"在卡片上打勾，勾完点【加入日程】才写库；
+      都不合适就在「其他时间」自己写一个"。
+      只有两种情况才去问他：① 那天/那几天真的排不进（如实说"满了、换个日子"）；
+      ② 他连"要加什么事"都没说清（那就问**要加什么事**，⛔ 别问"几点到几点"）。
+      例外：**学生自己报了准点**（"周四下午两点到三点"）→ 用 propose_todo_tool
+      出单条确认条就够，别再摊三段让他重挑。
    ⛔ 学生报出"哪天/几点"要往日程里加事时，**一定要调工具把确认条挂出来**。
       光在文字里写「- 任务：健身 - 时间：周四 15:40~17:10 - 点【确认】就入库了」
       等于没出条——界面上一个按钮都没有，学生回"确认"时系统也不知道他在确认什么
@@ -244,6 +253,64 @@ def _pending_todo_remove(session_id: str) -> dict | None:
     return None
 
 
+def _pending_todo_slots(session_id: str) -> dict | None:
+    """暂存里那张**候选时段**卡（人话：上一轮摊给学生打勾的那几段时间）。
+
+    跟 _pending_todo 的差别：todo_add 是"已经定好一个点、就等你点头"，
+    todo_slots 是"几个点摊开、你自己挑"。学生挑完是走弹框上的按钮
+    （前端直接打 /api/todos/batch），但他也可能**在聊天里报一个点**
+    （"改成周六下午"、"晚上七点到八点"）——那就要接住，别让它掉回模型。
+    """
+    entry = peek_pending(session_id) or {}
+    for o in entry.get("options") or []:
+        if isinstance(o, dict) and o.get("kind") == "todo_slots" and not o.get("applied"):
+            return o
+    return None
+
+
+def _slots_answer(card: dict, lead: str = "") -> str:
+    """候选卡出条时那句回话（人话：把"我替你挑了哪几段"摊在聊天里）。
+
+    为什么聊天里也要把几段列一遍：确认条是个 iframe，万一它没载进来
+    （网络抖动、环境不让嵌），学生至少还能在文字里看见有哪几段可挑，
+    而不是"管家说了半天，我什么都没看到"——上一轮被投诉的就是这个。
+    """
+    title = card.get("title") or "待办"
+    slots = card.get("slots") or []
+    lines = "\n".join(f"　· {s.get('label', '')}" for s in slots)
+    return (
+        f"{lead}"
+        f"📝 **{title}** 这件事我替你看了几个空着的时间段（都避开了课和已有的安排）：\n\n"
+        f"{lines}\n\n"
+        f"下面的确认条里可以直接**打勾**——勾一个、或者勾几个都行，"
+        f"勾好点【加入日程】我就写进去。\n"
+        f"这几段都不合适？在确认条的「其他时间」里自己写一个也行"
+        f"（比如「周六下午三点到四点」）。"
+    )
+
+
+def _offer_response(session_id: str, card: dict, message: str,
+                    answer: str, phase: str) -> dict:
+    """把一张待办提案挂进暂存 + 组装响应（人话：出条这件事只写一遍）。
+
+    抽出来是因为现在有**三个出口**都要挂条：学生说「加个健身」（3c）、
+    学生在候选卡下面报了准点（3c-pre）、系统刚问过一轮而学生答了"确认"（3a-c 兜底）。
+    抄三份迟早走样——比如有一处忘了写 `save_pending`，
+    学生点了按钮后端找不到提案，现象又是"点了没反应"。
+    """
+    save_pending(session_id, [card])
+    append_conversation(session_id, "user", message)
+    append_conversation(session_id, "assistant", f"已生成待办确认：{card.get('summary', '')}")
+    return {
+        "module": "planner",
+        "session_id": session_id,
+        "answer": answer,
+        "trace": [{"step": 1, "phase": phase, "answer": card.get("summary", "")}],
+        "options": [card],
+        "awaiting_choice": True,
+    }
+
+
 def _remember_todo_options(session_id: str, options: list) -> list:
     """把候选时段记进暂存（人话：学生点【确认所选】时，系统要自己认出是哪一张）。
 
@@ -255,6 +322,15 @@ def _remember_todo_options(session_id: str, options: list) -> list:
     picks = []
     for o in options or []:
         if not (isinstance(o, dict) and o.get("date") and o.get("start") and o.get("end")):
+            # 候选时段卡（todo_slots）**没有** date/start/end —— 它是"好几个时段摊着、
+            # 等学生挑"，不是"已经定好一个点"。上面的完整性检查会把它整张过滤掉，
+            # 所以要先单独接住，而且**原样**存进暂存（kind 不改）：
+            # 转成 todo_pick 那套（单个时段已定）会把候选列表整个丢掉，
+            # 学生再回一句「确认」，`_pending_todo_slots` 就找不到该给他哪几段了。
+            if isinstance(o, dict) and o.get("kind") == "todo_slots" and o.get("slots"):
+                picks.append({**o, "summary": o.get("summary")
+                              or f"{o.get('title') or '待办'}｜"
+                                 f"{len(o['slots'])} 个候选时段"})
             continue
         # ⚠️ 只有"加待办"类提案才记成候选时段。
         # 删待办提案（todo_remove）也带 date/start/end，要是被顺手记成 todo_pick，
@@ -409,6 +485,19 @@ async def chat(req: Request):
                 "options": [],
                 "awaiting_choice": False,
             }
+        # 学生回"确认"，可暂存里那张是**候选时段卡**（几个点摊着、他还没勾）——
+        # 这时候不能当成"他点头了"就随便挑一个写进去：他根本不知道你会写哪一个，
+        # 而写进去的是一条真安排，写错了还得再来一轮删。
+        # 正解：把候选条**再挂一遍**，并且说清楚"得你自己勾一个"。
+        # 这一支必须排在下面任何"执行"之前，也排在 apply_*（会把暂存 take 走）之前。
+        only_slots = _pending_todo_slots(session_id)
+        if only_slots:
+            return _offer_response(
+                session_id, only_slots, message,
+                _slots_answer(only_slots,
+                              lead="先别急——这几个时间段得**你挑一个**，我这边还没收到你的勾选，"
+                                   "**一条都没写进去。**\n\n"),
+                "🗓️ 只回了「确认」还没勾时间 → 候选条再挂一遍，不替学生挑")
         # **清空课表的确认**：按新规格，弹窗点【确认】是优先方式，
         # 在聊天框回"确认删除"这类确认文字是**备选方式，同样要执行**（需求③）。
         # 早先这里为了保护"删空不可恢复"硬加了一道"必须点按钮"的闸门，
@@ -664,9 +753,19 @@ async def chat(req: Request):
         # 还有第三种：学生原话只说了"哪天"、没说"几点"（「那你帮我加一个健身在周四」），
         # 管家上一轮又只是在文字里客气了一句（既没调工具、格式也对不上）——
         # 前两路都解析不出完整提案。这时**别再让他空等**：
-        # 照 3c 分支的正解，替他查那天的空档、挑一段，把确认条挂出来。
+        # 照 3c 分支的正解，查空档、把候选时段摊出来，让他打勾。
         # 这正是截图那一幕：学生回「确认」→ 界面上什么都没有、日程里也没写进去。
+        #
+        # 注意顺序：先试"摊候选"（本轮规格），再退回"替他挑一个"的旧路子——
+        # 旧路子只在候选卡彻底列不出来时才用（比如标题没了），聊胜于无。
         if proposal is None and not already_written and add_req:
+            slots_card = todo_slots_proposal(add_req)
+            if slots_card is not None:
+                return _offer_response(
+                    session_id, slots_card, message,
+                    _slots_answer(slots_card,
+                                  lead="刚才那次可能没接上，我把空着的时间段重新列一遍——\n\n"),
+                    "🗓️ 确认落空 → 重新摊出候选时段（让打勾）")
             guessed = auto_todo_proposal(add_req)
             if guessed is not None:
                 proposal, from_butler, auto_filled = guessed, True, True
@@ -813,89 +912,86 @@ async def chat(req: Request):
             and (is_add_todo_followup(message) or wants_retime_todo(message)):
         retimed = retime_todo_proposal(held_add, message)
         if retimed is not None:
-            save_pending(session_id, [retimed])
-            append_conversation(session_id, "user", message)
-            append_conversation(session_id, "assistant",
-                                f"已生成待办确认：{retimed['summary']}")
-            return {
-                "module": "planner",
-                "session_id": session_id,
-                "answer": (
-                    f"📝 好，按你说的改成 **{retimed['date']}（{retimed['weekday']}）"
-                    f"{retimed['start']}-{retimed['end']}**——"
-                    f"要不要把 **{retimed['title']}** 排在这儿？\n"
-                    f"下面点一下【确认加入】我就写进去，回一句「确认」也一样。"
-                ),
-                "trace": [{"step": 1, "phase": "🕘 按学生说的点换时间 → 重出确认条",
-                           "answer": retimed["summary"]}],
-                "options": [retimed],
-                "awaiting_choice": True,
-            }
+            return _offer_response(
+                session_id, retimed, message,
+                (f"📝 好，按你说的改成 **{retimed['date']}（{retimed['weekday']}）"
+                 f"{retimed['start']}-{retimed['end']}**——"
+                 f"要不要把 **{retimed['title']}** 排在这儿？\n"
+                 f"下面点一下【确认加入】我就写进去，回一句「确认」也一样。"),
+                "🕘 按学生说的点换时间 → 重出确认条")
+
+    # 3c-pre2) **学生刚看到一串候选、在聊天里自己报了个点** → 就着他给的点出条。
+    #     为什么要有这一支：候选卡摊出来的是"几个时间让你挑"，学生的答法有两种——
+    #     ① 在确认条上打勾（走弹框按钮，前端直连 /api/todos/batch）；
+    #     ② **直接在聊天里说**（"改成晚上七点到八点"、"那就周六吧"）。
+    #     ② 是最自然的，接不住就掉回模型——模型只会说"已经帮你排好啦"，日程里空的。
+    #     判据用 is_slot_answer：只认"纯时间/纯日期"的句子，"周六加个游泳"那种
+    #     换了事情的说法不算，它得走下面的正常加待办链路重新解析标题。
+    held_slots = _pending_todo_slots(session_id)
+    if held_slots and not is_confirmation(message) and is_slot_answer(message):
+        fb = next((s.get("date") or "" for s in (held_slots.get("slots") or [])
+                   if isinstance(s, dict)), "")
+        one = parse_slot_text(message, held_slots.get("title") or "待办", fb)
+        if one is not None:
+            return _offer_response(
+                session_id, one, message,
+                (f"📝 好，那 **{one['title']}** 就定在 "
+                 f"**{one['date']}（{one['weekday']}）{one['start']}-{one['end']}**。\n"
+                 f"下面点一下【确认加入】我就写进去，回一句「确认」也一样。"),
+                "🕘 学生在候选卡下面自己报了时间 → 出单条确认条")
 
     if wants_add_todo(message) or (asking_add and is_add_todo_answer(message)):
         # 追问后的补充回答（学生先说"帮我安排周二的游泳"，再补"下午两点到三点"）：
         # 补充那句里没有标题、也没有日期，单独解析会把标题弄丢——
         # 把上一句原话拼回来一起算。识别标记就是下面追问分支写进会话历史的那句"加待办缺细节"。
+        blob = (prev_user + "，" + message) if (asking_add and prev_user) else message
         proposal = None
         if asking_add and prev_user:
             proposal = parse_add_todo(prev_user + "，" + message)
         if proposal is None:
             proposal = parse_add_todo(message)
-        # 学生只说了"哪天"、没说"几点"（「那我加一个健身在周四」）——
-        # 这时候**不许把问题推回去**问他"几点到几点"。
-        # 被截屏投诉的原话就是这一条：「**没有帮我想时间，是我问了才说的**」：
-        # 学生正是因为不知道哪天哪会儿空着才来问管家，你反问他几点，
-        # 他只能瞎报一个，或者干脆放弃——等于没帮上忙。
-        # 正解：自己去查那天的空档，挑一段排上，把确认条挂出来（写库仍要学生点头）。
-        if proposal is None:
-            blob = (prev_user + "，" + message) if (asking_add and prev_user) else message
-            proposal = auto_todo_proposal(blob)
         if proposal is not None:
-            save_pending(session_id, [proposal])
-            append_conversation(session_id, "user", message)
-            append_conversation(session_id, "assistant", f"已生成待办确认：{proposal['summary']}")
-            if proposal.get("auto"):
-                # 时间是系统替他挑的 —— 话里要说清"这是我挑的，不合适你改"，
-                # 免得学生以为这是他自己说过的时间。
-                answer = (
-                    f"📝 我看了一下，{proposal['date']}（{proposal['weekday']}）"
-                    f"**{proposal['start']}-{proposal['end']} 是空着的**，"
-                    f"就先把 **{proposal['title']}** 排在这儿了"
-                    f"（共 {proposal['minutes']} 分钟）。\n"
-                    f"下面点一下【确认加入】我就写进日程，回一句「确认」也一样。\n"
-                    f"这个点不合适的话，直接说「改成晚上七点到八点」就行。"
-                )
-            else:
-                answer = (
-                    f"📝 要不要把 **{proposal['title']}** 排进日程？"
-                    f"{proposal['date']}（{proposal['weekday']}）{proposal['start']}-{proposal['end']}。"
-                    f"下面点一下【确认加入】我就写进去，回一句「确认」也一样。"
-                )
-            return {
-                "module": "planner",
-                "session_id": session_id,
-                "answer": answer,
-                "trace": [{
-                    "step": 1,
-                    "phase": ("🗓️ 学生只说了哪天 → 系统挑空档出提案" if proposal.get("auto")
-                              else "📝 生成待办提案（系统判定）"),
-                    "answer": proposal["summary"],
-                }],
-                "options": [proposal],
-                "awaiting_choice": True,
-            }
-        # 系统拼不出日期/时刻（比如学生只说"帮我安排游泳"）。
-        # **不能**把话交给模型——实测它会回"搞定！已经正式写进你的待办啦"，
+            # 学生**自己报了准点** → 就着他给的这个点出条，一条就够。
+            # 不必再摊候选：他已经说清要哪个点了，再摊三个等于让他重挑一遍。
+            return _offer_response(
+                session_id, proposal, message,
+                (f"📝 要不要把 **{proposal['title']}** 排进日程？"
+                 f"{proposal['date']}（{proposal['weekday']}）"
+                 f"{proposal['start']}-{proposal['end']}。\n"
+                 f"下面点一下【确认加入】我就写进去，回一句「确认」也一样。"),
+                "📝 生成待办提案（系统判定）")
+
+        # 学生只说了"哪天"、或者压根没说时间（「那你帮我加一个健身在周四」「加个健身」）。
+        #
+        # 这一档的规格**本轮改过一次**，两版都记在这儿，免得后人再翻回去：
+        #   · 上一版：系统**替他挑一个**时间、出一张"就排在这儿了"的单条确认条。
+        #     当时的理由是"不许反问学生几点"（投诉原话：「没有帮我想时间，是我问了才说的」）。
+        #     方向是对的，但做法太死——学生原话是
+        #     「**我定的太严了，你改一下，由 ai 帮我去挑选合适时间，进行列举**……
+        #      采用和删除课表时同样的弹框，内容变成那几个时间的选择或者其他，
+        #      由我打勾，进行增加，增加确认完立刻刷新日程」。
+        #     只给一个点等于替他做了主：他要么全盘接受、要么再让你换一次，来回两轮。
+        #   · 这一版：**摊开几个空档让他自己打勾**（todo_slots 卡，嵌确认条渲染，
+        #     勾完点【加入日程】直接打 /api/todos/batch 落库并刷新日程面板）。
+        #
+        # 不变的那条铁律：这里**只出提案，一个字节都不写库**；挑不出来的照样如实说，
+        # 绝不硬凑一个时间。反问学生"几点到几点"依然禁止——他去查空档是他的正事。
+        slots_card = todo_slots_proposal(blob)
+        if slots_card is not None:
+            return _offer_response(
+                session_id, slots_card, message, _slots_answer(slots_card),
+                "🗓️ 学生没给准点 → 系统列出几个空档候选（让打勾）")
+
+        # 候选都列不出来。两类情况，话术不能混为一谈（todo_missing_advice 分得清）：
+        #   ① 学生根本没说要加什么事 / 没说哪一天 → 正常追问；
+        #   ② 学生说了哪天、可**那天真排不进**（上面已经查过空档了）
+        #      → 要如实说"这天满了"，别让他一遍遍补"几点几点"。
+        #
+        # 也**不能**把话交给模型——实测它会回"搞定！已经正式写进你的待办啦"，
         # 日程里其实什么都没有（schedule 模块连一个写入工具都没有，纯属嘴甜）。
         # 照删课的规矩：缺什么就追问什么，标记"加待办缺细节"写进历史，
         # 学生下一句补充由上面的合并逻辑接着算。
-        #
-        # 注意：走到这儿有两类情况，话术不能混为一谈（todo_missing_advice 分得清）：
-        #   ① 学生根本没说是哪天 → 正常反问；
-        #   ② 学生说了哪天、可**那天真排不进**（上面 auto_todo_proposal 查过空档了）
-        #      → 要如实说"这天满了"，别让他一遍遍补"几点几点"。
         clear_pending(session_id)
-        blob = (prev_user + "，" + message) if (asking_add and prev_user) else message
         missing = pick_todo_missing(blob)
         append_conversation(session_id, "user", message)
         append_conversation(session_id, "assistant", "加待办缺细节")
@@ -1573,6 +1669,131 @@ def _weekday_of(date: str) -> str:
         return _weekday_name(date)
     except Exception:
         return ""
+
+
+@app.post("/api/todos/batch")
+async def todo_add_batch(req: Request):
+    """学生勾完候选时段、点【加入日程】按的就是这儿（人话：一次写进他勾中的那几段）。
+
+    为什么另开一个"批量"接口，而不是让前端循环调 `POST /api/todos`：
+      · **空档复核要在同一批里逐条做**。候选是上一轮算出来的，中间学生可能自己又
+        往同一天加了一条；循环调用时每条各自判断，看不见"同一批里刚写进去的那条"，
+        两条就会压在同一个点上。这里逐条写、逐条复查，后一条能看见前一条。
+      · **回执要合成一句**。"已加入日程：健身｜周六 09:00-10:30 等 2 项"
+        比两行零散回执好读，也让 3a-c 的"确认落空"兜底能靠它判断"最近真的写过"。
+      · 前端只发一次请求，失败就是整体失败，不会出现"勾了三个、写进去一个半"。
+
+    写权限依然在系统这侧：模型手里没有这个接口，它最多只能出提案。
+    """
+    body = await req.json()
+    sid = (body.get("session_id") or "").strip()
+    title = (body.get("title") or "").strip() or "待办"
+    note = (body.get("note") or "").strip()
+    raw_slots = body.get("slots") if isinstance(body.get("slots"), list) else []
+    other = (body.get("other") or "").strip()
+
+    # 1) 先把前端递来的勾选项归一化（去重、丢掉字段不全的）
+    chosen, seen = [], set()
+    for s in raw_slots:
+        if not isinstance(s, dict):
+            continue
+        d = (s.get("date") or "").strip()
+        st = (s.get("start") or "").strip()
+        en = (s.get("end") or "").strip()
+        if not (d and st and en) or (d, st) in seen:
+            continue
+        seen.add((d, st))
+        chosen.append((d, st, en))
+
+    if not chosen and not other:
+        # 一个都没勾、也没自填 —— 这不是错误，是学生手滑点了按钮。
+        # 说清楚该干什么，比返回一个冷冰冰的 400 有用。
+        return JSONResponse(
+            {"error": "还没选时间——勾一个，或者在「其他时间」里写一个"}, status_code=400)
+
+    added, skipped = [], []
+
+    def _write(d: str, st: str, en: str, t: str) -> bool:
+        """写一条（先复核空档）。返回是否真的写进去了。"""
+        if not slot_is_free(d, st, en):
+            skipped.append({
+                "date": d, "start": st, "end": en,
+                "label": f"{d}（{_weekday_of(d)}）{st}-{en}",
+                "reason": "这段时间已经被课或别的安排占了",
+            })
+            return False
+        added.append(add_todo(t or title, d, st, en, note=note))
+        return True
+
+    # 2) 逐条写他勾中的那几段（后一条能看见前一条，所以不会自己撞自己）
+    for d, st, en in chosen:
+        _write(d, st, en, title)
+
+    # 3) 「其他时间」里自填的那一行——**认不出来就如实说，不瞎猜一个时间**
+    unparsed = ""
+    if other:
+        fb = chosen[0][0] if chosen else ""
+        if not fb:
+            # 学生一段都没勾、只写了「其他」——兜底那天取候选卡里最靠前的那天，
+            # 这样他写「晚上七点到八点」（只有钟点、没写哪天）也能落地。
+            held = peek_pending(sid) or {}
+            for o in held.get("options") or []:
+                if isinstance(o, dict) and o.get("kind") == "todo_slots":
+                    fb = next((s.get("date") or "" for s in (o.get("slots") or [])
+                               if isinstance(s, dict)), "")
+                    break
+        prop = parse_slot_text(other, title, fb)
+        if prop is None:
+            unparsed = other
+        else:
+            key = (prop["date"], prop["start"])
+            if key in seen:
+                skipped.append({"date": prop["date"], "start": prop["start"],
+                                "end": prop["end"], "label": other,
+                                "reason": "这个点你上面已经勾过了"})
+            else:
+                seen.add(key)
+                _write(prop["date"], prop["start"], prop["end"], prop.get("title") or title)
+
+    # 4) 回执写进会话历史 —— 学生一点完就刷新页面的话，
+    #    聊天里还得留着"我确实加过"，不然他又会怀疑刚才没写进去。
+    if added and sid:
+        from app.agent.pending import mark_applied
+        mark_applied(sid)      # 标记那张候选卡已执行，别再被"确认"重复触发一次
+        shown = "、".join(f"{i.get('date', '')}（{_weekday_of(i.get('date', ''))}）"
+                          f"{i.get('start', '')}-{i.get('end', '')}" for i in added[:3])
+        tail = "" if len(added) <= 3 else f" 等 {len(added)} 项"
+        append_conversation(sid, "assistant", f"已加入日程：{title}｜{shown}{tail}")
+
+    if added:
+        parts = [f"✅ 已加入日程：**{title}**"]
+        for i in added:
+            d = i.get("date", "")
+            parts.append(f"　· {d}（{_weekday_of(d)}）{i.get('start', '')}-{i.get('end', '')}")
+        if skipped:
+            parts.append("下面这几段没写进去（已经排了别的）：")
+            parts += [f"　· {s['label']}——{s['reason']}" for s in skipped]
+        if unparsed:
+            parts.append(f"「其他」里那句我没看懂时间：**{unparsed}**——"
+                         f"换个写法试试，比如「周六下午三点到四点」。")
+        message = "\n".join(parts)
+    elif skipped:
+        message = ("这几段都没写进去（已经排了别的安排）：\n"
+                   + "\n".join(f"　· {s['label']}——{s['reason']}" for s in skipped)
+                   + "\n换一段，或者在「其他时间」里自己写一个。")
+    else:
+        message = (f"「其他」里那句我没认出时间：**{unparsed}**——"
+                   f"换个写法试试，比如「周六下午三点到四点」。")
+
+    return {
+        "ok": bool(added),
+        "title": title,
+        "count": len(added),
+        "added": added,
+        "skipped": skipped,
+        "unparsed": unparsed,
+        "message": message,
+    }
 
 
 @app.put("/api/todos/{tid}")
