@@ -475,7 +475,16 @@ async def chat(req: Request):
         # 工具都没有，日程里其实什么都没有。照清空课表的样子把话捞回来：
         # 找到学生最近那句加待办的原话，重新走一遍确定性解析，
         # 出得了提案就重新挂确认条；出不了就继续交给模型正常聊。
-        add_req = next(
+        #
+        # 但有个前提：最近几轮**没真的写进去过**。学生加完待办、回一句"好的"，
+        # 话里也带确认词，这时再挂一次确认条、他再点一下就是重复写两条。
+        # 判据就是系统自己写进会话的那句回执（"已加入日程"）。
+        recent_msgs = get_conversation(session_id)[-6:]
+        already_written = any(
+            ("已加入日程" in (m.get("content") or "")
+             or "已按你的确认" in (m.get("content") or ""))
+            for m in recent_msgs if m.get("role") == "assistant")
+        add_req = "" if already_written else next(
             (m.get("content") or "" for m in reversed(get_conversation(session_id)[-8:])
              if m.get("role") == "user"
              and not is_confirmation(m.get("content") or "")

@@ -481,6 +481,19 @@ def test_add_todo_chinese_clock():
                 any(t["title"] == "游泳" and t["date"] == day5
                     for t in list_todos(day5)),
                 [t["title"] + "@" + t["date"] for t in list_todos(day5)])
+
+        # —— ⑥ 写成功了就别再挂确认条：学生多回一句「好的」不该写出第二条 ——
+        n_written = len([t for t in list_todos(day5)
+                         if t["title"] == "游泳" and t["date"] == day5])
+        r7 = client.post("/api/chat", json={"message": "好的", "session_id": sid3})
+        c.check("已经写成功过，就不再把原话捞出来重新出提案",
+                not (r7.json().get("options") or []),
+                (r7.json().get("answer") or "")[:50])
+        client.post("/api/chat", json={"message": "确认", "session_id": sid3})
+        c.check("所以也不会重复写第二条",
+                len([t for t in list_todos(day5)
+                     if t["title"] == "游泳" and t["date"] == day5]) == n_written,
+                [t["title"] + "@" + t["date"] for t in list_todos(day5)])
     return c.summary("第五批（加待办·口语时间 / 追问 / 确认落空）")
 
 
