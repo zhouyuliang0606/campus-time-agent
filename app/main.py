@@ -467,9 +467,13 @@ async def chat_reset(req: Request):
 
 
 def _render(name: str) -> HTMLResponse:
-    """读取 static 目录下的某个页面并返回（人话：统一的"吐页面"小工具）。"""
+    """读取 static 目录下的某个页面并返回（人话：统一的"吐页面"小工具）。
+
+    带 no-store 头是故意的：告诉浏览器"这页别缓存，每次都要新的"。
+    不然演示时改完 HTML，刷新看到的还是旧页面（甚至空白），很耽误事。
+    """
     with open(os.path.join(STATIC_DIR, name), encoding="utf-8") as f:
-        return HTMLResponse(f.read())
+        return HTMLResponse(f.read(), headers={"Cache-Control": "no-store"})
 
 
 @app.get("/", response_class=HTMLResponse)
