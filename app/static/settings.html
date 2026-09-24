@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>助手设置 · 校园时间管家</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; font-family: "PingFang SC", "Microsoft YaHei", sans-serif;
+      background: #f4f6fb; color: #1f2733;
+    }
+    header {
+      background: linear-gradient(135deg, #4f7cff, #6a5cff);
+      color: #fff; padding: 18px 24px;
+      display: flex; align-items: center; gap: 14px;
+    }
+    header h1 { margin: 0; font-size: 20px; }
+    header .links { margin-left: auto; display: flex; gap: 10px; }
+    header .links a {
+      color: #fff; font-size: 13px; opacity: .95; text-decoration: none;
+      background: rgba(255,255,255,.18); padding: 4px 12px; border-radius: 8px;
+    }
+    .wrap { max-width: 720px; margin: 18px auto; padding: 0 16px; }
+    .card {
+      background: #fff; border-radius: 14px; padding: 18px 18px 20px; margin-bottom: 16px;
+      box-shadow: 0 4px 16px rgba(40,60,120,.08);
+    }
+    .card h2 { margin: 0 0 4px; font-size: 16px; }
+    .card .desc { font-size: 13px; color: #6a7388; margin: 0 0 14px; }
+
+    /* 助手名字 */
+    .name-row { display: flex; gap: 10px; align-items: center; }
+    .name-row input {
+      flex: 1; padding: 11px 14px; border: 1px solid #d8def0; border-radius: 10px; font-size: 14px; outline: none;
+    }
+    .name-row input:focus { border-color: #4f7cff; }
+    .btn {
+      padding: 0 20px; border: none; border-radius: 10px; cursor: pointer;
+      background: #4f7cff; color: #fff; font-size: 14px; height: 42px;
+    }
+    .btn.ghost { background: #eef2ff; color: #3457d5; }
+    .saved { font-size: 12px; color: #2faa6a; margin-left: 10px; opacity: 0; transition: .2s; }
+    .saved.show { opacity: 1; }
+
+    /* 性格卡片 */
+    .persona {
+      display: flex; align-items: flex-start; gap: 12px; cursor: pointer;
+      border: 1.5px solid #d8def0; border-radius: 12px; padding: 12px 14px; margin-bottom: 10px; transition: .15s;
+    }
+    .persona:hover { border-color: #4f7cff; }
+    .persona.active { border-color: #4f7cff; background: #eef2ff; }
+    .persona .em { font-size: 26px; line-height: 1; }
+    .persona .body { flex: 1; }
+    .persona .nm { font-weight: 600; font-size: 14px; }
+    .persona .meta { font-size: 12px; color: #6a7388; margin-top: 3px; }
+    .persona .tick { color: #4f7cff; font-size: 18px; align-self: center; visibility: hidden; }
+    .persona.active .tick { visibility: visible; }
+
+    .foot { text-align: center; font-size: 12px; color: #8a93a6; margin: 6px 0 24px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>⚙ 助手设置</h1>
+    <div class="links">
+      <a href="/student">← 返回学生端</a>
+      <a href="/">← 返回登录</a>
+    </div>
+  </header>
+
+  <div class="wrap">
+    <!-- 助手名字 -->
+    <div class="card">
+      <h2>助手名字</h2>
+      <p class="desc">给你的校园时间管家起个你喜欢的称呼，会显示在对话里（默认「管家」）。</p>
+      <div class="name-row">
+        <input id="name" maxlength="12" placeholder="比如：小管、小园、阿助…" />
+        <button class="btn" id="saveName">保存</button>
+        <span class="saved" id="nameSaved">已保存 ✓</span>
+      </div>
+    </div>
+
+    <!-- 助手性格 -->
+    <div class="card">
+      <h2>助手性格</h2>
+      <p class="desc">挑一个你喜欢的聊天腔调，之后每次对话都会用这个风格（也可在设置里随时换）。</p>
+      <div id="personaList"><!-- 性格卡片由 JS 从 /api/student-personas 生成 --></div>
+      <span class="saved" id="personaSaved">已选择 ✓</span>
+    </div>
+
+    <div class="foot">设置都保存在本机浏览器，不会上传；清除浏览器数据后会回到默认。</div>
+  </div>
+
+  <script>
+    function escapeHtml(s) {
+      return String(s).replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+    }
+
+    // ---------- 助手名字 ----------
+    const nameInput = document.getElementById("name");
+    const nameSaved = document.getElementById("nameSaved");
+    nameInput.value = localStorage.getItem("campustime_name") || "管家";
+    document.getElementById("saveName").addEventListener("click", () => {
+      const v = nameInput.value.trim() || "管家";
+      localStorage.setItem("campustime_name", v);
+      nameSaved.classList.add("show");
+      setTimeout(() => nameSaved.classList.remove("show"), 1500);
+    });
+
+    // ---------- 助手性格 ----------
+    const list = document.getElementById("personaList");
+    const personaSaved = document.getElementById("personaSaved");
+    async function loadPersonas() {
+      let personas = [];
+      try {
+        personas = (await (await fetch("/api/student-personas")).json()).personas || [];
+      } catch (e) { list.innerHTML = '<div class="meta">性格加载失败，请刷新重试。</div>'; return; }
+      if (!personas.length) { list.innerHTML = '<div class="meta">暂无可选性格。</div>'; return; }
+      // 默认选中：上次选过的，或第一套
+      const saved = localStorage.getItem("campustime_persona") || personas[0].key;
+      localStorage.setItem("campustime_persona", saved);
+      personas.forEach(p => {
+        const el = document.createElement("div");
+        el.className = "persona" + (p.key === saved ? " active" : "");
+        el.dataset.key = p.key;
+        el.innerHTML =
+          `<div class="em">${p.emoji || ""}</div>` +
+          `<div class="body"><div class="nm">${escapeHtml(p.name)}</div>` +
+          `<div class="meta">${escapeHtml(p.desc || "")} · ${escapeHtml(p.style || "")}</div></div>` +
+          `<div class="tick">✓</div>`;
+        el.addEventListener("click", () => {
+          localStorage.setItem("campustime_persona", p.key);
+          document.querySelectorAll(".persona").forEach(x => x.classList.toggle("active", x.dataset.key === p.key));
+          personaSaved.classList.add("show");
+          setTimeout(() => personaSaved.classList.remove("show"), 1500);
+        });
+        list.appendChild(el);
+      });
+    }
+    loadPersonas();
+  </script>
+</body>
+</html>

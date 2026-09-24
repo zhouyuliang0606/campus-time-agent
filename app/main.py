@@ -525,6 +525,12 @@ async def student_page():
     return _render("student.html")
 
 
+@app.get("/settings", response_class=HTMLResponse)
+async def settings_page():
+    """学生助手设置页：改助手名字、挑聊天性格、返回登录等都在这里。"""
+    return _render("settings.html")
+
+
 @app.get("/admin", response_class=HTMLResponse)
 async def admin_page():
     """管理员端（发布通知 + 接收学生消息 + 知识库维护 + 客服人格配置）。"""

@@ -151,18 +151,12 @@
 </head>
 <body>
   <header>
-    <h1>校园时间管家 · 学生端 <a href="/" style="font-size:13px;color:#fff;float:right;opacity:.9;text-decoration:none;">← 返回登录</a></h1>
+    <h1>校园时间管家 · 学生端 <a href="/settings" style="font-size:13px;color:#fff;float:right;opacity:.9;text-decoration:none;" title="助手设置">⚙ 设置</a></h1>
     <p>一个入口办四件事：课表安排 · 校园问答 · 快递 · 外卖</p>
     <a href="/plan" style="float:right;margin-top:-26px;color:#fff;font-size:13px;opacity:.95;text-decoration:none;background:rgba(255,255,255,.18);padding:4px 12px;border-radius:8px;">📅 我的日程 →</a>
   </header>
 
   <div class="wrap">
-    <!-- 学生助手性格：自己挑一个聊天的腔调（选择本地记住，随对话发给后端） -->
-    <div class="persona-bar" id="personaBar">
-      <span class="lbl">🎭 助手性格：</span>
-      <!-- 性格按钮由 JS 从 /api/student-personas 动态生成 -->
-    </div>
-
     <!-- 校园通知（管理员在控制台发布，含附件可直接下载） -->
     <div class="notices">
       <div class="notices-head" id="noticesHead">
@@ -180,8 +174,8 @@
 
     <div id="log">
       <div class="msg bot">
-        <div class="who">管家</div>
-        <div class="bubble">你好，我是你的校园时间管家 👋 选一个模块开始，或直接说需求（比如"我有哪些快递待取？"）。</div>
+        <div class="who" id="greetWho">管家</div>
+        <div class="bubble" id="greetBubble">你好，我是你的校园时间管家 👋 选一个模块开始，或直接说需求（比如"我有哪些快递待取？"）。</div>
       </div>
     </div>
 
@@ -337,16 +331,16 @@
         });
         const data = await resp.json();
         showThinking(false);
-        if (data.error) addMsg("管家", "出错了：" + data.error);
+        if (data.error) addMsg(botName(), "出错了：" + data.error);
         else {
-          const el = addMsg("管家", data.answer, "bot", data.module);
+          const el = addMsg(botName(), data.answer, "bot", data.module);
           // 规划模块回了候选 → 渲染成可勾选卡片（学生点卡片才真正写入日程）
           if (data.options && data.options.length) renderOptions(el, data.options);
           logToAdmin(msg, data.module, data.answer); // 上报给管理员收件箱
         }
       } catch (e) {
         showThinking(false);
-        addMsg("管家", "网络或接口异常：" + e.message);
+        addMsg(botName(), "网络或接口异常：" + e.message);
       } finally {
         send.disabled = false;
       }
@@ -430,30 +424,9 @@
     send.addEventListener("click", () => sendMsg(text.value));
     text.addEventListener("keydown", e => { if (e.key === "Enter") sendMsg(text.value); });
 
-    // ---------- 学生助手性格选择栏（从后端拉三套预设，本地记住选择） ----------
-    async function loadPersonas() {
-      const bar = document.getElementById("personaBar");
-      let personas = [];
-      try {
-        personas = (await (await fetch("/api/student-personas")).json()).personas || [];
-      } catch (e) { return; }
-      if (!personas.length) return;
-      // 默认选中：上次选过的，或第一套（靠谱学长）
-      const saved = localStorage.getItem("campustime_persona") || personas[0].key;
-      localStorage.setItem("campustime_persona", saved);
-      personas.forEach(p => {
-        const b = document.createElement("span");
-        b.className = "persona" + (p.key === saved ? " active" : "");
-        b.dataset.key = p.key;
-        b.title = p.desc || "";
-        b.innerHTML = `<span class="em">${p.emoji || ""}</span>${escapeHtml(p.name)}`;
-        b.addEventListener("click", () => {
-          localStorage.setItem("campustime_persona", p.key);
-          document.querySelectorAll(".persona").forEach(x => x.classList.toggle("active", x.dataset.key === p.key));
-          addMsg("系统", `已切换为【${p.name}】风格，接下来我就用这个腔调和你聊～`, "sys");
-        });
-        bar.appendChild(b);
-      });
+    // 助手名字：本地记住（设置页里改），默认「管家」
+    function botName() {
+      return localStorage.getItem("campustime_name") || "管家";
     }
 
     // ---------- 语音输入（Web Speech API，中文；不支持则隐藏按钮） ----------
@@ -482,8 +455,15 @@
     // 进页面拉一次通知，之后每 30 秒刷新（管理员新发的通知会自己冒出来）
     loadNotices();
     setInterval(loadNotices, 30000);
-    // 拉性格预设并渲染选择栏；初始化语音输入
-    loadPersonas();
+    // 用本地保存的助手名字刷新开场白（名字在设置页里改）
+    (function refreshGreeting() {
+      const n = botName();
+      const who = document.getElementById("greetWho");
+      const bubble = document.getElementById("greetBubble");
+      if (who) who.textContent = n;
+      if (bubble) bubble.textContent = `你好，我是你的${n} 👋 选一个模块开始，或直接说需求（比如"我有哪些快递待取？"）。`;
+    })();
+    // 初始化语音输入
     initVoice();
   </script>
 </body>
