@@ -528,6 +528,7 @@ def propose_course_change(op: str, day: int, course: str = "", start: str = "",
 _CLEAR_SELF = (
     "清空课表", "课表清空", "清空整个", "整个课表", "全部课程", "所有课程",
     "全部课表", "课表全部", "全删课表", "课表全删", "一门不留", "一门都不留",
+    "删除课表", "课表删除", "删光", "课表删掉",
 )
 # 不带宾语（"全部删除""都删掉"），必须话里真点了课表/课程才认，
 # 否则"我的待办全部删除"会被误判成清课表
@@ -712,6 +713,119 @@ def parse_add_course(text: str) -> dict | None:
         "add", day, course, start,
         new_start=start, new_end=end, new_location=location,
     )
+    try:
+        proposal = (json.loads(raw) or {}).get("__proposal__")
+    except Exception:
+        proposal = None
+    if not isinstance(proposal, dict):
+        return None
+    proposal.setdefault("kind", "timetable_change")
+    return proposal
+
+
+# ---- 删课：确定性解析（跟加课同一个思路：能由代码定死的，就别交给模型）----
+# "第N节"→ 上课时间。演示课表按两节课一个时段算：
+# 第1-2节 08:00、第3-4节 10:00、第5-6节 14:00、第7-8节 16:00；晚上的课学生会直接说时间。
+_PERIOD_RE = re.compile(r"第\s*([一二三四五六七八1-8])\s*节")
+_PERIOD_NUM = {"一": 1, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8,
+               "1": 1, "2": 2, "3": 3, "4": 4, "5": 5, "6": 6, "7": 7, "8": 8}
+_PERIOD_START = {1: "08:00", 2: "08:00", 3: "10:00", 4: "10:00",
+                 5: "14:00", 6: "14:00", 7: "16:00", 8: "16:00"}
+
+# 删课意图词。刻意不收"不上"（"明天不上课"是闲聊不是指令）、
+# 不收光杆"删"（"把这条消息删了"跟课没关系），误伤比漏收难看。
+_REMOVE_INTENT = ("删除", "删掉", "去掉", "删了", "删一节", "删门", "移除", "退掉", "删课")
+
+
+def wants_remove_course(text: str) -> bool:
+    """判断一句话算不算「从周表里删掉一节课」（确定性分支用的开关）。
+
+    为什么要由系统接管：真模型最爱"只在文字里给个预览、让学生回「确认」"，
+    可它压根没调出提案工具——暂存里什么都没有，学生回了确认也是白回
+    （学生看到的就是"说了删除、弹窗不来、确认不删"）。
+    删课这件事学生说得很清楚（哪天、第几节或哪门课），剩下"新课表长什么样"
+    本来就该服务端算，没道理交给模型临场发挥。
+    """
+    t = (text or "").strip()
+    if not t or len(t) > 80:
+        return False
+    if not any(w in t for w in _REMOVE_INTENT):
+        return False
+    # "把课表全部删除/删除课表"是清空（另一条确定性分支管），不是删一节
+    if wants_clear_timetable(t):
+        return False
+    # 也不是加课（"删掉再加一节"这种混着说的让加课分支先接）
+    if wants_add_course(t):
+        return False
+    # 跟课有关就行：说了"课"字、提到了"第N节"、或点名了星期/课程——
+    # "去掉周二的高数""把周五的心理学选修删了"没写"课"字，但都是删课。
+    return ("课" in t) or bool(_PERIOD_RE.search(t)) or _pick_day(t) is not None
+
+
+def parse_remove_course(text: str) -> dict | None:
+    """把"删除周一第一节课"/"去掉周二的高数"解析成一张删课确认卡。
+
+    返回的是**提案**（含服务端算好的新课表），本函数一个字节都不写库；
+    学生点弹窗上的确认、或回一句"确认删除"，才由系统真正落库。
+    解析不出（没说星期/当天好几节课又没说哪节）就如实返回 None，
+    由上层追问，绝不把话交给模型自作主张。
+
+    课名的来历按可信度排四层：
+      ① 『』「」框着的 —— 学生特意框起来，最可信；
+      ② "第N节" —— 拿节次换算成时间，再从周表里查那节课叫什么；
+      ③ 文本里剩下的那截 —— "去掉周二的高数"清掉意图词和星期后剩"高数"，
+        交给 propose_course_change 的子序列匹配（高数→高等数学）；
+      ④ 周表反查 —— 那天只有一节课时，说了星期就够了。
+    """
+    t = (text or "").strip()
+    day = _pick_day(t)
+    if day is None:
+        return None
+    cur = list(get_timetable())
+
+    # ① 引号里的名字
+    course = ""
+    m = _QUOTE_RE.search(t)
+    if m and 1 <= len(m.group(1)) <= 20:
+        course = m.group(1).strip()
+
+    # ② "第N节" → 该时段的开课时间，课名从周表里反查
+    start = ""
+    pm = _PERIOD_RE.search(t)
+    if pm:
+        start = _PERIOD_START.get(_PERIOD_NUM.get(pm.group(1)) or 0, "")
+        if not course:
+            hits = [c for c in cur
+                    if int(c.get("day", 0)) == day and c.get("start") == start]
+            if len(hits) == 1:
+                course = str(hits[0].get("course", ""))
+
+    # ③ 文本里剩下的那截当课名（去掉意图词/星期/节次后还剩下的汉字）
+    if not course:
+        guess = re.sub(r"第\s*[一二三四五六七八1-8]\s*节", " ", t)
+        guess = re.sub(r"周[一二三四五六日天]", " ", guess)
+        for w in _REMOVE_INTENT:
+            guess = guess.replace(w, " ")
+        guess = re.sub(r"[^\w一-龥]+", " ", guess)
+        runs = [r for r in re.findall(r"[一-龥A-Za-z]{2,20}", guess)
+                if r not in ("课", "节课", "的课")]
+        if runs:
+            course = max(runs, key=len)
+
+    # ④ 周表反查：点明了星期、那天恰好只有一节课
+    if not course:
+        day_courses = [c for c in cur if int(c.get("day", 0)) == day]
+        if not day_courses:
+            return None          # 那天压根没课，没什么可删
+        if len(day_courses) == 1:
+            course = str(day_courses[0].get("course", ""))
+            start = str(day_courses[0].get("start", ""))
+        else:
+            return None          # 当天好几节课又没说哪节 → 上层追问
+
+    if not course:
+        return None
+    raw = propose_course_change("remove", day, course, start=start)
     try:
         proposal = (json.loads(raw) or {}).get("__proposal__")
     except Exception:

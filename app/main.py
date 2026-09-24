@@ -52,9 +52,11 @@ from app.modules.planner import (
     mock_planner,
     parse_add_course,
     parse_add_todo,
+    parse_remove_course,
     wants_add_course,
     wants_add_todo,
     wants_clear_timetable,
+    wants_remove_course,
 )
 from app.modules.student_persona import STUDENT_PERSONAS, persona_block, is_valid
 
@@ -572,6 +574,47 @@ async def chat(req: Request):
                 ),
             "trace": [{"step": 1, "phase": "🤔 加课缺星期（系统追问）",
                        "answer": "学生没说星期，先问清楚再出提案"}],
+            "options": [],
+            "awaiting_choice": False,
+        }
+
+    # 3f) **确定性删课分支**：跟清空/加课同一个思路，"删除周一第一节课"这种话
+    #     学生说得明明白白，剩下"新课表长什么样"该由服务端算，不该赌模型调不调工具。
+    #     实测真模型会**只在文字里给个预览、让学生回「确认」**，可它压根没调出提案工具
+    #     ——暂存里什么都没有，学生回了确认也是白回：弹窗不来、确认不删、删除失败。
+    if wants_remove_course(message):
+        proposal = parse_remove_course(message)
+        if proposal is not None:
+            save_pending(session_id, [proposal])
+            append_conversation(session_id, "user", message)
+            append_conversation(session_id, "assistant", f"已生成删课提案：{proposal.get('summary', '')}")
+            return {
+                "module": "planner",
+                "session_id": session_id,
+                "answer": (
+                    f"🗑️ 要删的是这一节：\"{proposal.get('summary', '')}\"。"
+                    f"弹窗已经打开了，点【确认变更】我才写；点【取消】周表原封不动。"
+                ),
+                "trace": [{"step": 1, "phase": "🗑️ 生成删课提案（系统判定）",
+                           "answer": str(proposal.get("summary") or "")}],
+                "options": [proposal],
+                "awaiting_choice": True,
+            }
+        # 解析不出来（没说星期 / 当天好几节课没说哪节）→ 系统追问，不交给模型
+        clear_pending(session_id)
+        append_conversation(session_id, "user", message)
+        append_conversation(session_id, "assistant", "删课缺细节")
+        return {
+            "module": "planner",
+            "session_id": session_id,
+            "answer": (
+                "想删哪一节，说得更具体一点：<br>"
+                "· 说星期 + 节次，比如「删除周二第二节」；<br>"
+                "· 或直接说课名，比如「去掉周五的心理学选修」。<br>"
+                "我算出新课表给你确认，你点头我才写进周表。"
+            ),
+            "trace": [{"step": 1, "phase": "🤔 删课缺细节（系统追问）",
+                       "answer": "没说清是哪节，先问清楚再出提案"}],
             "options": [],
             "awaiting_choice": False,
         }

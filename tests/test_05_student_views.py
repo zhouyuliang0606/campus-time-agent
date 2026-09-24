@@ -839,7 +839,52 @@ def test_confirm_ui_page_and_alt_confirm():
                 f"{n0} → {len(get_timetable())} 门")
         c.check("回复里说清了执行结果", "已" in (r2.json().get("answer") or ""),
                 (r2.json().get("answer") or "")[:60])
-    return c.summary("第十二批（独立确认页面 + 聊天确认备选方式）")
+
+        # —— ⑤ 确定性删课分支：学生原话直接出弹窗，不再赌模型调不调工具 ——
+        #     真模型最爱"只在文字里给个预览、让学生回「确认」"，可它压根没调出提案工具
+        #     ——暂存里什么都没有，学生回了确认也是白回（弹窗不来、确认不删、删除失败）。
+        #     ④ 已经把周一第一节删了，这里重新播种一份完整的，从头验"学生原话 → 弹窗"。
+        _st(seed["courses"])
+        n_full = len(get_timetable())
+        client.post("/api/chat/reset", json={"session_id": "sess-rm"})
+        from app.modules.planner import parse_remove_course, wants_remove_course
+        c.check("「删除周一第一节课」被认成删课", wants_remove_course("删除周一第一节课"))
+        c.check("「明天不上课」「把这条消息删了」不被误认",
+                not wants_remove_course("明天不上课")
+                and not wants_remove_course("把这条消息删了"))
+        r3 = client.post("/api/chat", json={
+            "message": "删除周一第一节课", "module": "planner", "session_id": "sess-rm",
+        })
+        d3 = r3.json()
+        opts3 = d3.get("options") or []
+        c.check("删课由系统出提案（弹窗确认，不再只回文字预览）",
+                any(o.get("kind") == "timetable_change" for o in opts3),
+                (d3.get("answer") or "")[:70])
+        c.check("删的是周一第一节（高等数学 08:00）",
+                bool(opts3) and "周一" in str(opts3[-1].get("summary", ""))
+                and "高等数学" in str(opts3[-1].get("summary", "")),
+                str(opts3[-1].get("summary", ""))[:60] if opts3 else "")
+        c.check("出提案阶段周表没动", len(get_timetable()) == n_full,
+                f"{n_full} → {len(get_timetable())}")
+        # 点弹窗确认 → 写入
+        card = next(o for o in opts3 if o.get("kind") == "timetable_change")
+        client.post("/api/timetable/apply", json={
+            "courses": card.get("courses"), "session_id": "sess-rm"})
+        c.check("确认后真的少了一门", len(get_timetable()) == n_full - 1,
+                f"{n_full} → {len(get_timetable())}")
+        c.check("周一第一节的课没了",
+                not any(c["day"] == 1 and c["start"] == "08:00" for c in get_timetable()))
+        # 当天好几节课又没说哪节 → 系统追问，绝不瞎删
+        r4 = client.post("/api/chat", json={
+            "message": "删掉周三的课", "module": "planner", "session_id": "sess-rm2"})
+        d4 = r4.json()
+        c.check("「删掉周三的课」没说哪节时系统追问（不瞎删也不交模型）",
+                not (d4.get("options") or []) and (
+                    "具体" in (d4.get("answer") or "") or "节" in (d4.get("answer") or "")),
+                (d4.get("answer") or "")[:60])
+        c.check("追问这轮周表没动", len(get_timetable()) == n_full - 1,
+                f"{n_full - 1} → {len(get_timetable())}")
+    return c.summary("第十二批（独立确认页面 + 聊天确认备选方式 + 确定性删课）")
 
 
 if __name__ == "__main__":
