@@ -24,7 +24,13 @@ SYSTEM_PROMPT = """你是校园时间管家学生端的「外卖助手」。
 工作原则：
 1. 学生问外卖，先调工具拿准确数据，别编取餐码和预计时间；
 2. 状态是"待取/配送中"的，提醒同学记得去取，别放凉了或超时；
-3. 用中文，语气轻松活泼一点。"""
+3. 用中文，语气轻松活泼一点。
+
+【上报工单规则 —— 必须遵守】
+学生反映外卖丢失、送错、超时很久等**需要管理员处理**的问题时：
+- **先问一句：「是否上报给管理端？」**，等学生明确说"上报/是/确认"后，才调用 submit_work_order 生成工单；
+- 学生没确认之前，**绝不许调用 submit_work_order**，也不许暗示已经上报了；
+- 只是问进度、催单、随口吐槽的，不需要上报，正常回答即可。"""
 
 
 def _load() -> dict:
@@ -80,6 +86,7 @@ def orders_view() -> list[dict]:
 
 
 def build_tools() -> dict[str, Tool]:
+    from app.modules.express import submit_work_order
     return {
         "list_my_orders": Tool(
             name="list_my_orders",
@@ -104,5 +111,21 @@ def build_tools() -> dict[str, Tool]:
                 "required": ["order_id"],
             },
             func=get_order,
+        ),
+        "submit_work_order": Tool(
+            name="submit_work_order",
+            description=(
+                "把学生确认上报的问题立案提交至管理端。**必须先问学生「是否上报给管理端」"
+                "并得到明确确认后才能调用**；学生没确认前严禁调用。"
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "kind": {"type": "string", "description": "问题类型，如 外卖丢失/送错餐/超时未送达"},
+                    "desc": {"type": "string", "description": "学生的补充描述，可留空"},
+                },
+                "required": ["kind"],
+            },
+            func=submit_work_order,
         ),
     }

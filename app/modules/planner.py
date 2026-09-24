@@ -382,6 +382,20 @@ def build_system_prompt() -> str:
 - 如果周表是空的（还没上传课表），先提醒学生去「我的日程」上传课表，
   否则无从判断什么时间空着。
 
+【个人数据隔离 —— 预览确认制，绝对不许跳过】
+你只能生成**预览方案**，学生确认之前绝不许真正写入数据库：
+1. **修改课表**（如"周一去掉第一节""把周三的课换个时间"）：
+   先用 get_weekly_timetable 拿到整周课程 → 生成**调整后的课表预览**
+   （列出改动前后对比，或完整的新课表清单）→ 明确问"确认这样改吗？"→
+   **学生确认后**，才把调整后的完整课表用 import_timetable 写入（它是整表替换，
+   所以必须带上未改动的课程，不能只传改动的那几条）。
+2. **导入课表文件**：读完文件后，先把解析出的课程列成预览清单给学生看
+   （几天几门课、有没有"第几节"换算成的时间），问"确认导入吗？"→
+   学生确认后才调用 import_timetable。没确认前绝不许调用。
+3. **删除/修改待办**（remove_todo、update_todo_status）：先列出要动的待办，
+   学生确认后再执行；删除是不可恢复的，更要问清楚。
+4. 学生说"改一下课表"却没说怎么改时，先问清楚改哪里，别自作主张。
+
 【工具用法】
 - get_weekly_timetable：看整周课程
 - find_free_slots(date, min_minutes)：查某天空档
@@ -476,9 +490,11 @@ def build_tools() -> dict[str, Tool]:
         "import_timetable": Tool(
             name="import_timetable",
             description=(
-                "把学生上传的课表整理成结构化数据后写入周表（覆盖式）。"
+                "把整理好的课表写入周表（覆盖式）。**必须先把课程预览清单给学生看、"
+                "等学生明确确认导入后才能调用**——无论是文件导入还是修改课表。"
                 "入参是 JSON 字符串数组，每条含 day(1=周一..7=周日)、"
-                "start、end、course、location。写完学生就能在「我的日程」里看到课表了。"
+                "start、end、course、location；修改课表时必须传入调整后的**完整**课表"
+                "（含未改动的课程）。"
             ),
             parameters={
                 "type": "object",
@@ -494,7 +510,7 @@ def build_tools() -> dict[str, Tool]:
         ),
         "update_todo_status": Tool(
             name="update_todo_status",
-            description="把某条待办标记为已完成(done)或未完成(planned)。",
+            description="把某条待办标记为已完成(done)或未完成(planned)。**先跟学生确认是哪条、改成什么，再调用**。",
             parameters={
                 "type": "object",
                 "properties": {
@@ -507,7 +523,9 @@ def build_tools() -> dict[str, Tool]:
         ),
         "remove_todo": Tool(
             name="remove_todo",
-            description="删除一条待办。",
+            description=(
+                "删除一条待办（不可恢复）。**必须先向学生列出要删的待办并得到明确确认后才能调用**。"
+            ),
             parameters={
                 "type": "object",
                 "properties": {"todo_id": {"type": "string", "description": "待办编号"}},

@@ -59,6 +59,47 @@ def list_messages() -> list:
     return list(reversed(_read("student_messages.json", [])))
 
 
+# ============ 工单（人话：学生确认上报的问题，管理员能在管理端看到的正式记录） ============
+# 注意区别：student_messages 是"学生消息存档"，工单是**学生确认后**才生成的问题上报。
+# 按学生助手的人设规矩：普通日常对话不上报管理端，只有工单才进管理端视图。
+
+def add_workorder(kind: str, desc: str, source: str = "chat") -> dict:
+    """记一条工单（人话：学生确认要上报的问题，正式立案给管理员处理）。
+
+    :param kind: 问题类型，如 "疑似丢件" / "外卖丢失" / "包裹破损"
+    :param desc: 学生的补充描述
+    :param source: 来源，"chat"=聊天里跟管家说并确认的 / "panel"=快递面板表单提交的
+    """
+    items = _read("workorders.json", [])
+    item = {
+        "id": uuid.uuid4().hex[:8],
+        "ts": _now(),
+        "kind": kind or "其他问题",
+        "desc": desc or "",
+        "source": source,
+        "status": "待处理",
+    }
+    items.append(item)
+    _write("workorders.json", items)
+    return item
+
+
+def list_workorders() -> list:
+    """列出全部工单，倒序（最新在前）。"""
+    return list(reversed(_read("workorders.json", [])))
+
+
+def update_workorder_status(wo_id: str, status: str) -> dict | None:
+    """管理员处理工单后改状态（待处理 / 处理中 / 已解决）。"""
+    items = _read("workorders.json", [])
+    for it in items:
+        if it.get("id") == wo_id:
+            it["status"] = status
+            _write("workorders.json", items)
+            return it
+    return None
+
+
 def add_notice(title: str, content: str, attachment: dict | None = None) -> dict:
     """发一条通知（人话：管理员写一条通知，存进通知表）。
 

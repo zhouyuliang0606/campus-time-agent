@@ -293,7 +293,7 @@
             <span class="small" id="schRange" style="margin-left:4px;"></span>
             <span style="flex:1;"></span>
             <input type="file" id="ttFilePanel" style="display:none;" accept=".docx,.xlsx,.pptx,.pdf,.txt,.csv,.json,.md" />
-            <button class="tab" id="uploadTtPanel" title="上传课表文件，管家读完自动写进周表">📤 上传课表</button>
+            <button class="tab" id="uploadTtPanel" title="上传课表文件，管家读取后给出预览清单，确认后写进周表">📤 上传课表</button>
             <button class="tab" id="schPrev">←</button>
             <button class="tab" id="schNext">→</button>
             <a href="/plan" class="small" style="text-decoration:none;color:#4f7cff;">完整版日程 →</a>
@@ -505,28 +505,19 @@
         });
         const data = await resp.json();
         showThinking(false);
-        if (data.error) addMsg(botName(), "出错了：" + data.error);
+        if (data.error) addMsg(botName(), "哎呀，管家这边遇到了点小状况，请稍后再试或换个说法～");
         else {
           const el = addMsg(botName(), data.answer, "bot", data.module);
           // 规划模块回了候选 → 渲染成可勾选卡片（学生点卡片才真正写入日程）
           if (data.options && data.options.length) renderOptions(el, data.options);
-          logToAdmin(msg, data.module, data.answer); // 上报给管理员收件箱
+          // 人设规矩：普通对话不上报管理端，只有学生确认的工单才进管理端（见 submitWorkOrderToServer）
         }
       } catch (e) {
         showThinking(false);
-        addMsg(botName(), "网络或接口异常：" + e.message);
+        addMsg(botName(), "哎呀，网络好像开小差了，请稍后再试～");
       } finally {
         send.disabled = false;
       }
-    }
-
-    // 把学生这轮对话上报给管理员收件箱（异步、失败也不影响学生使用）
-    function logToAdmin(message, module, answer) {
-      fetch("/api/student-message", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message, module, answer }),
-      }).catch(() => {});
     }
 
     // ============ 主显示面板：卡片点击 → 切换视图（不跳页），聊天框始终保留在下面 ============
@@ -661,12 +652,12 @@
     document.getElementById("schNext").addEventListener("click", () => { if (schTab === "week") schWeekOffset++; else schMonthOffset++; renderSchCurrent(); });
 
     // 给管家的导入指令（面板上传与聊天上传共用同一段话）：
-    // 让它真的读文件内容 → 整理成结构化数据 → import_timetable 写进周表
+    // 人设规矩是"预览确认制"——管家先读文件、给课程预览清单，学生确认后才真正写入周表
     function timetableImportMsg(name, chars) {
-      return `我上传了一份课表文件《${name}》（共 ${chars} 字）。请先用 read_uploaded_file 读取它的内容，` +
-        `把里面的课程整理成结构化数据，再调用 import_timetable 写进我的周表。` +
-        `day 用 1=周一 到 7=周日，时间用 HH:MM。如果文件里有"第几节"这类表述，` +
-        `请按学校常见上课时间换算成具体时刻。写完之后用一句话告诉我导入了几门课。`;
+      return `我上传了一份课表文件《${name}》（共 ${chars} 字）。请先用 read_uploaded_file 读取内容，` +
+        `把解析出的课程整理成**预览清单**给我看（星期、时间、课程名、地点；"第几节"这类表述` +
+        `按学校常见上课时间换算成 HH:MM，day 用 1=周一 到 7=周日）。` +
+        `先不要写入周表，等我确认后再导入。`;
     }
 
     // 面板里直接上传课表：上传文件 → 发给管家（planner 模块）→ 结果进聊天 + 刷新周月表
@@ -693,14 +684,13 @@
           method: "POST", headers: { "Content-Type": "application/json" },
           body: JSON.stringify(body),
         })).json();
-        st.textContent = d.answer ? "管家：" + d.answer.slice(0, 60) : "已请求管家导入";
+        st.textContent = d.answer ? "管家已给出课表预览，请在下方聊天里确认后再导入" : "已请求管家读取课表";
         // 同步留痕到聊天框：这段"管家帮我导课表"的对话学生能翻到
-        addMsg("我", `📤 上传课表《${f.name}》，请管家帮我排进周表`, "user");
-        addMsg(botName(), d.answer || "已收到课表，处理中。", "bot", "planner");
-        logToAdmin(`📤 上传课表《${f.name}》请管家导入`, "planner", d.answer || "");
-        await loadScheduleView(); // 周表/月表立刻刷新出导入的课程
+        addMsg("我", `📤 上传课表《${f.name}》，请管家读取并给我预览清单`, "user");
+        addMsg(botName(), d.answer || "已收到课表，正在读取。", "bot", "planner");
+        // 按人设规矩：导入课表属于规划操作，不上报管理端；学生确认后才会真正写入
       } catch (e) {
-        st.textContent = "❌ 出错了：" + e.message;
+        st.textContent = "哎呀，网络好像开小差了，请稍后再试";
       }
       document.getElementById("ttFilePanel").value = "";
     });
@@ -742,18 +732,32 @@
         if (w) sendMsg(`我的快递工单（${w.ts} 提交）：${w.type} —— ${w.desc || "无补充描述"}。请帮我跟进处理。`);
       }));
     }
-    document.getElementById("woSubmit").addEventListener("click", () => {
+    document.getElementById("woSubmit").addEventListener("click", async () => {
+      const type = document.getElementById("woType").value;
+      const desc = document.getElementById("woDesc").value.trim();
       const list = myWorkOrders();
-      list.push({
+      const item = {
         id: "w" + Date.now(),
         ts: new Date().toLocaleString("zh-CN", { hour12: false }),
-        type: document.getElementById("woType").value,
-        desc: document.getElementById("woDesc").value.trim(),
+        type,
+        desc,
         status: "已提交",
-      });
+      };
+      list.push(item);
       localStorage.setItem("campustime_workorders", JSON.stringify(list));
       document.getElementById("woDesc").value = "";
       renderWorkOrders();
+      // 同步上报服务端：管理端（/admin）能看到这条工单记录并跟进处理
+      try {
+        const r = await fetch("/api/workorders", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ kind: type, desc, source: "panel" }),
+        });
+        const d = await r.json();
+        if (d.ok) item.serverId = d.workorder.id;
+        localStorage.setItem("campustime_workorders", JSON.stringify(list));
+      } catch (e) { /* 上报失败不影响本地记录，下次「让管家跟进」还能补报 */ }
     });
 
     // ---- ③ 外卖：订单列表 ----
@@ -839,11 +843,11 @@
             c.addEventListener("click", () => sendMsg(q));
             chipsBox.appendChild(c);
           });
-          // 课表文件快捷入口：管家读文件 → import_timetable 自动写进周表（固定走 planner 模块）
+          // 课表文件快捷入口：管家读文件 → 给预览清单 → 学生确认 → import_timetable 写进周表（固定走 planner 模块）
           const ic = document.createElement("div");
           ic.className = "chip";
           ic.style.borderColor = "#4f7cff";
-          ic.textContent = "📅 把这份课表导入周表";
+          ic.textContent = "📅 让管家读取这份课表";
           ic.addEventListener("click", () => sendMsg(timetableImportMsg(d.file.name, d.file.chars), "planner"));
           chipsBox.appendChild(ic);
         } else {

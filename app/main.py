@@ -29,6 +29,7 @@ from app.store import (
     get_conversation, append_conversation, clear_conversation,
     get_timetable_data, list_todos, list_todos_in_month,
     add_todo, update_todo, delete_todo,
+    add_workorder, list_workorders, update_workorder_status,
 )
 from app.modules.faq import SYSTEM_PROMPT as FAQ_PROMPT, build_tools as faq_tools
 from app.modules.express import SYSTEM_PROMPT as EXPRESS_PROMPT, build_tools as express_tools
@@ -76,6 +77,23 @@ FILE_HINT = """
 3. 基于读到的**真实内容**作答——文件里没有的信息千万不要编造，宁可直接说没找到。
 """
 
+# 学生端 AI 助手的统一人设规矩（学生要求写进人设的四条，全局生效）。
+# 与 FILE_HINT 同理：改一处、所有模块都生效，不用去每个模块重复写。
+ASSISTANT_RULES = """
+【你的人设规矩 —— 所有场景都必须遵守】
+1. 输出要求：回答简洁、贴合学生使用场景，不冗长废话；遇到乱码、损坏文件、异常输入，
+   友好提示学生重试或换一份文件，**禁止把系统内部报错、堆栈、字段名直接暴露给学生**；
+   绝不输出暴力、低俗、煽动类内容。
+2. 上报工单：不是学生的每句话都上报管理端。只有学生提出外卖丢失、快递问题这类
+   **需要管理员处理**的情况时，先问一句「是否上报给管理端？」，学生明确确认后才生成工单；
+   普通日常对话、排课、规划待办一律不上报。
+3. 个人数据隔离：每个学生的数据相互独立，你的操作只影响当前学生。你可以生成
+   **修改课表、增删待办的预览方案**，但学生确认之前绝不许真正写入数据库；
+   涉及写入的工具（如 add_todo_tool、import_timetable）必须等学生点头后才能调用。
+4. 自我定位：你是辅助工具，不是决策者。所有对用户数据的改动，决定权永远在学生本人；
+   学生上传的文件（docx/xlsx 等）只读取内容，**禁止修改或覆盖源文件**。
+"""
+
 router = Router()
 
 
@@ -110,8 +128,8 @@ async def chat(req: Request):
     # 2) 取该模块的系统提示和工具箱（提示可能是函数，按需调用以拼入最新人格）
     prompt_src, build_tools = REGISTRY.get(module_key, (DEFAULT_PROMPT, lambda: {}))
     base_prompt = prompt_src() if callable(prompt_src) else prompt_src
-    # 统一拼上"你会读文件"的说明，每个模块因此都能利用用户上传的资料
-    prompt = base_prompt + FILE_HINT
+    # 统一拼上"你会读文件"的说明 + 学生助手人设规矩，每个模块都生效
+    prompt = base_prompt + FILE_HINT + ASSISTANT_RULES
     # 学生端选了性格，且不是驿站模块（驿站用管理员配的人格），就把性格腔调拼进去
     if persona_key and module_key != "station":
         prompt += "\n" + persona_block(persona_key)
@@ -201,6 +219,39 @@ async def student_message(req: Request):
 async def admin_messages():
     """管理员端拉取学生消息收件箱（倒序，最新在前）。"""
     return {"messages": list_messages()}
+
+
+# ============ 工单（学生确认上报的问题 → 管理端可见的正式记录） ============
+
+@app.post("/api/workorders")
+async def workorder_create(req: Request):
+    """提交一条工单（人话：面板表单提交的；聊天里由助手调 submit_work_order 工具落库）。"""
+    body = await req.json()
+    kind = (body.get("kind") or "").strip()
+    if not kind:
+        return JSONResponse({"error": "问题类型不能为空"}, status_code=400)
+    item = add_workorder(kind=kind, desc=(body.get("desc") or "").strip(),
+                         source=body.get("source") or "panel")
+    return {"ok": True, "workorder": item}
+
+
+@app.get("/api/workorders")
+async def workorder_list():
+    """管理端查看全部工单（倒序）。"""
+    return {"workorders": list_workorders()}
+
+
+@app.post("/api/workorders/{wo_id}/status")
+async def workorder_set_status(wo_id: str, req: Request):
+    """管理员处理工单后更新状态（待处理/处理中/已解决）。"""
+    body = await req.json()
+    status = (body.get("status") or "").strip()
+    if status not in ("待处理", "处理中", "已解决"):
+        return JSONResponse({"error": "status 只能是 待处理/处理中/已解决"}, status_code=400)
+    item = update_workorder_status(wo_id, status)
+    if not item:
+        return JSONResponse({"error": "工单不存在"}, status_code=404)
+    return {"ok": True, "workorder": item}
 
 
 @app.post("/api/admin/notify")

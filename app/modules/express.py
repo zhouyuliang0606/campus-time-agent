@@ -26,7 +26,27 @@ SYSTEM_PROMPT = """你是校园时间管家学生端的「快递助手」。
 1. 学生问快递，先调工具拿准确数据，绝对不要瞎编取件码；
 2. 看到"滞留"件（到件超过 3 天没取），要主动提醒尽快取，避免被退回；
 3. 已取的件不用再提醒；
-4. 用中文，语气像宿管阿姨一样热心、清楚。"""
+4. 用中文，语气像宿管阿姨一样热心、清楚。
+
+【上报工单规则 —— 必须遵守】
+学生反映快递丢失、破损、取件码异常等**需要管理员处理**的问题时：
+- **先问一句：「是否上报给管理端？」**，等学生明确说"上报/是/确认"后，才调用 submit_work_order 生成工单；
+- 学生没确认之前，**绝不许调用 submit_work_order**，也不许暗示已经上报了；
+- 只是随口吐槽、查询状态、问怎么取件的，不需要上报，正常回答即可。"""
+
+
+def submit_work_order(kind: str, desc: str = "") -> str:
+    """生成一条工单提交至管理端（人话：学生**明确确认上报后**才调用这个立案）。
+
+    管理员在管理端（/admin）能看到这条工单记录。学生没确认前不许调用。
+    """
+    from app.store import add_workorder
+    item = add_workorder(kind=kind, desc=desc, source="chat")
+    return (
+        f"✅ 工单已上报管理端（编号 {item['id']}）：{item['kind']}"
+        + (f" —— {item['desc']}" if item["desc"] else "")
+        + "。管理员会尽快处理，处理进度可在快递面板的「我提交过的工单」里看到。"
+    )
 
 
 def _load() -> dict:
@@ -141,5 +161,21 @@ def build_tools() -> dict[str, Tool]:
                 "required": ["pickup_code"],
             },
             func=get_by_code,
+        ),
+        "submit_work_order": Tool(
+            name="submit_work_order",
+            description=(
+                "把学生确认上报的问题立案提交至管理端。**必须先问学生「是否上报给管理端」"
+                "并得到明确确认后才能调用**；学生没确认前严禁调用。"
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "kind": {"type": "string", "description": "问题类型，如 疑似丢件/包裹破损/取件码异常"},
+                    "desc": {"type": "string", "description": "学生的补充描述，可留空"},
+                },
+                "required": ["kind"],
+            },
+            func=submit_work_order,
         ),
     }
