@@ -83,13 +83,14 @@ def main():
                         return pg.locator(sel).first.inner_text()
                 return ""
 
-            # 出提案后优先唤起**独立确认页面**（/confirm，被 iframe 载进遮罩），
+            # 出提案后唤起**确认条**：内容是 /confirm 独立页面，但嵌在聊天流里
+            # （学生要求：不要单独弹一个全屏弹窗，要附着在聊天框上）。
             # 一轮出好几张时才退回内嵌卡片。点确认要两种形态都认得。
             def confirm_now():
-                mask = pg.locator("#ttClearMask")
-                if "show" in (mask.get_attribute("class") or ""):
+                bar = pg.locator(".cf-inline .cf-frame")
+                if bar.count():
                     pg.wait_for_timeout(1200)      # 等独立页面把提案渲染好
-                    pg.frame_locator("#cfFrame").locator("#cfOk").click()
+                    pg.frame_locator(".cf-inline .cf-frame").locator("#cfOk").click()
                     pg.wait_for_timeout(2500)
                     return True
                 if pg.locator(".confirm-btn").count():
@@ -99,8 +100,7 @@ def main():
                 return False
 
             def has_entry():
-                mask = pg.locator("#ttClearMask")
-                return ("show" in (mask.get_attribute("class") or "")
+                return (pg.locator(".cf-inline .cf-frame").count() > 0
                         or pg.locator(".confirm-btn").count() > 0)
 
             print("\n======== ① 加待办：说一句 → 出卡 → 点确认 → 日程当场看得到 ========")

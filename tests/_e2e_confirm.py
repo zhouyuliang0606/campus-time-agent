@@ -67,25 +67,33 @@ def main():
                   not any(k in bot_text for k in ("我没有权限", "没有工具权限", "手动操作", "麻烦你")))
             check("助手确实说出了要删哪一节", "高等数学" in bot_text, bot_text[:60].replace("\n", " "))
 
-            # 确认入口有两种形态：独立确认页面（弹窗，优先）/ 内嵌卡片（多张提案时）
-            mask_shown = "show" in (page.locator("#ttClearMask").get_attribute("class") or "")
+            # 确认入口有两种形态：内嵌确认条（单张提案，优先，贴在聊天流里）/ 内嵌卡片（多张提案时）
+            bars = page.locator(".cf-inline .cf-frame").count()
             cards = page.locator(".opt-card").count()
-            check("界面上出现了确认入口（弹窗或确认卡）", mask_shown or cards >= 1,
-                  f"弹窗={mask_shown} 卡片={cards} 张")
-            if mask_shown:
-                check("弹窗是单独一个 UI 页面（iframe 载 /confirm）",
-                      "/confirm" in (page.locator("#cfFrame").get_attribute("src") or ""))
+            check("界面上出现了确认入口（确认条或确认卡）", bars >= 1 or cards >= 1,
+                  f"确认条={bars} 卡片={cards} 张")
+            if bars:
+                check("确认条内容是单独一个 UI 页面（iframe 载 /confirm）",
+                      "/confirm" in (page.locator(".cf-inline .cf-frame").first.get_attribute("src") or ""))
+                # 学生的原话：弹窗不要单独出现，附着在聊天框上。
+                # 所以确认条必须是 #log 里的一个节点，而不是浮在页面上的全屏遮罩。
+                inside_log = page.evaluate("""() => {
+                    const b = document.querySelector('.cf-inline');
+                    const l = document.getElementById('log');
+                    return !!(b && l && l.contains(b));
+                }""")
+                check("确认条附着在聊天框上（在消息流里面，不是浮层）", inside_log)
+                check("没有全屏遮罩挡着", page.locator(".mask.show").count() == 0)
+                bar_box = page.locator(".cf-inline").first.bounding_box()
+                input_box = page.locator("#text").first.bounding_box()
+                check("确认条在输入框上方（跟着消息走，不压住输入区）",
+                      bool(bar_box and input_box and bar_box["y"] < input_box["y"]),
+                      f"确认条 y={bar_box and int(bar_box['y'])} 输入框 y={input_box and int(input_box['y'])}")
             n_before = timetable_count(page)
             check("出卡之后周表还没被动（确认前不写库）", n_before == n0, f"{n0} → {n_before}")
 
-            # —— 关键一步：不点弹窗按钮，直接在聊天框回一句「确认」（需求③备选方式）——
-            #     弹窗是全屏遮罩，开着的时候输入框点不到，所以先按 Esc 把它收起来。
-            #     对改课类提案来说，Esc 只是收起弹窗，提案还挂在后端——正好用来验备选方式。
-            if mask_shown:
-                page.keyboard.press("Escape")
-                page.wait_for_timeout(600)
-                check("Esc 能收起弹窗（不点按钮也能继续聊）",
-                      "show" not in (page.locator("#ttClearMask").get_attribute("class") or ""))
+            # —— 关键一步：不点确认条按钮，直接在聊天框回一句「确认」（需求③备选方式）——
+            #     确认条是内嵌的、不挡输入框，所以能直接接着打字。
             box.click()
             box.fill("确认删除")
             box.press("Enter")

@@ -12,6 +12,16 @@
     background: #f2f4fa; color: #2a3350;
     display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 20px;
   }
+  /* 被学生端嵌进聊天流时：不要垂直居中和留白，紧凑贴着消息，
+     看起来就像聊天流里的一条卡片（不是浮在页面上方的弹窗） */
+  body.embed { min-height: auto; padding: 0; align-items: stretch; }
+  body.embed .dlg {
+    width: 100%; border-radius: 12px; box-shadow: none;
+    border: 1px solid #e6ecfb;
+  }
+  body.embed .dlg-head { padding: 10px 14px; font-size: 14px; }
+  body.embed .dlg-body { padding: 12px 14px; }
+  body.embed .dlg-foot { padding: 8px 14px; }
   /* 作为独立页面打开时：把弹窗卡片摆在页面正中（跟嵌在聊天页里长得一样） */
   .dlg {
     width: min(460px, 100%); background: #fff; border-radius: 14px; overflow: hidden;
@@ -69,7 +79,8 @@
 // 这是**单独的一个 UI 页面**（/confirm），专门用来做变更确认。
 // 它有两个用法：
 //   ① 直接打开 /confirm?session=xxx —— 学生能单独看到"这次要改什么"；
-//   ② 被学生端聊天页用 iframe 载进来当弹窗 —— 视觉与交互完全一致。
+//   ② 被学生端聊天页用 iframe 载进**确认条**（贴在消息下面，不弹全屏遮罩）
+//      —— 视觉与交互完全一致，只是尺寸收成一条。
 //
 // 铁律（跟后端一致，别在这里破例）：
 //   · 本页只负责"把提案念清楚 + 把学生的按钮点下去"，自己不做任何数据加工；
@@ -79,11 +90,27 @@
 // ——————————————————————————————————————————————————————————
 
 const inFrame = (() => { try { return window.self !== window.top; } catch (e) { return true; } })();
+if (inFrame) document.body.classList.add("embed");
 
 function tellParent(type, payload) {
   // 嵌在聊天页里时，用 postMessage 把结果告诉父页面，好让它刷新课表/待办面板
   if (!inFrame) return;
   try { window.parent.postMessage({ source: "campustime-confirm", type, ...payload }, "*"); } catch (e) {}
+}
+
+// 嵌在聊天流里时，把内容的真实高度报给父页面——
+// 让它把 iframe 调成刚好装得下：不撑出一堆空白，也别把按钮挤出可视区。
+// 注意量的是 body 的实际渲染高度，不是 documentElement.scrollHeight——
+// 后者最小也等于 iframe 视口高度，量出来永远是"现在的高度"，等于白报。
+function reportHeight() {
+  if (!inFrame) return;
+  const h = Math.ceil(document.body.getBoundingClientRect().height);
+  try {
+    window.parent.postMessage({ source: "campustime-confirm", type: "height", h }, "*");
+  } catch (e) {}
+}
+if (inFrame && typeof ResizeObserver !== "undefined") {
+  new ResizeObserver(() => reportHeight()).observe(document.body);
 }
 
 function params() { return new URLSearchParams(location.search); }
@@ -197,6 +224,7 @@ function showDone(html) {
     <div style="margin-top:6px;font-size:13px;">${html}</div></div>`;
   okBtn.style.display = "none";
   cancelBtn.textContent = "关闭";
+  reportHeight();
 }
 
 function showError(msg) {
@@ -204,6 +232,7 @@ function showError(msg) {
     <span style="font-size:12px;">数据没有改动，可以再试一次。</span></div>`;
   okBtn.disabled = false;
   busy = false;
+  reportHeight();
 }
 
 let fromParent = false;   // 提案是不是父页面直接递过来的（是的话就别再让接口结果覆盖它）
@@ -213,14 +242,15 @@ function render(p) {
     bodyEl.innerHTML = `<div class="empty">当前没有待确认的变更。<br>
       <span style="font-size:12px;">这个页面是"出了提案才弹出来"的——不是常驻的。<br>
       去<b>学生端聊天</b>里说一句「把课表全部删除」或「把今天的复习线代安排到 19:00」，<br>
-      弹窗就会自己跳出来。</span><br><br>
+      聊天里就会挂出一条确认条。</span><br><br>
       <a href="/student" style="display:inline-block;padding:8px 18px;border-radius:10px;
          background:#3a6ff0;color:#fff;text-decoration:none;font-size:13px;">← 去学生端发起</a></div>`;
-    okBtn.disabled = true;
-    okBtn.style.display = "none";
-    tellParent("empty", {});
-    return;
-  }
+  okBtn.disabled = true;
+  okBtn.style.display = "none";
+  tellParent("empty", {});
+  reportHeight();
+  return;
+}
   okBtn.style.display = "";
   current = p;
   const k = KIND[p.kind];
@@ -231,6 +261,7 @@ function render(p) {
   okBtn.className = "dlg-btn " + (k.danger ? "danger" : "primary");
   okBtn.disabled = false;
   tellParent("loaded", { kind: p.kind });
+  reportHeight();
 }
 
 async function load() {
@@ -268,7 +299,7 @@ okBtn.addEventListener("click", async () => {
 cancelBtn.addEventListener("click", () => {
   // 取消 = 什么都不做：不调任何写入接口，数据一根汗毛都不动
   tellParent("cancelled", { kind: current && current.kind });
-  if (inFrame) return;                       // 嵌在聊天页里：交给父页面关掉弹窗
+  if (inFrame) return;                       // 嵌在聊天页里：交给父页面把确认条撤掉
   bodyEl.innerHTML = `<div class="empty">已取消，没有做任何改动。</div>
     <div class="back"><a href="/student">← 回到学生端</a></div>`;
   okBtn.style.display = "none";

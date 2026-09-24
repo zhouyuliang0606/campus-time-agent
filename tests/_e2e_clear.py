@@ -2,7 +2,7 @@
 
 对应需求的五条约束，逐条在真实页面上验：
   · 只出提案，AI 不许自己删、不许谎称已删；
-  · 弹窗有【确认】【取消】；
+  · 确认条（附着在聊天框上，不弹全屏遮罩）有【确认】【取消】；
   · 点确认由后端执行，点取消什么都不发生；
   · 删完自动刷新，页面上能直观看到空课表；
   · 删除动作只来自前端按钮，后端没有前端这一下就拒绝。
@@ -50,16 +50,16 @@ def say(page, text):
     page.wait_for_timeout(6000)
 
 
-def wait_mask(page, timeout=8000):
-    """等弹窗真正显示出来；等不到就把机器人最后几句捞出来，方便一眼看出卡在哪。"""
+def wait_bar(page, timeout=8000):
+    """等确认条真正显示出来；等不到就把机器人最后几句捞出来，方便一眼看出卡在哪。"""
     try:
-        page.wait_for_selector("#ttClearMask.show", state="visible", timeout=timeout)
+        page.wait_for_selector(".cf-inline .cf-frame", state="visible", timeout=timeout)
         return True
     except Exception:
         msgs = page.locator(".msg")
         tail = [msgs.nth(i).inner_text().replace("\n", " / ")[:160]
                 for i in range(max(0, msgs.count() - 3), msgs.count())]
-        print("  ⚠️ 弹窗没出来，机器人最后说的是：")
+        print("  ⚠️ 确认条没出来，机器人最后说的是：")
         for t in tail:
             print("     ·", t)
         return False
@@ -99,25 +99,25 @@ def main():
             check("助手没有谎称已经删掉", "已经" not in bot or "清空" not in bot,
                   bot[:70].replace("\n", " "))
 
-            mask = page.locator("#ttClearMask")
-            check("出提案这一轮弹窗就冒出来了", wait_mask(page))
-            check("前端弹出了确认弹窗", mask.evaluate("e => e.classList.contains('show')"))
-            # 弹窗 UI 现在是一个**单独的页面**（/confirm），被 iframe 载进遮罩里，
+            check("出提案这一轮确认条就冒出来了", wait_bar(page))
+            # 确认 UI 是一个**单独的页面**（/confirm），被 iframe 内嵌在聊天流里（不弹遮罩），
             # 所以按钮要到 frame 里面找：#cfOk / #cfCancel
-            cf = page.frame_locator("#cfFrame")
-            check("弹窗是单独一个 UI 页面（iframe 载的 /confirm）",
-                  "/confirm" in (page.locator("#cfFrame").get_attribute("src") or ""))
-            check("弹窗上有【确认清空】按钮", cf.locator("#cfOk").count() == 1)
-            check("弹窗上有【取消】按钮", cf.locator("#cfCancel").count() == 1)
+            cf = page.frame_locator(".cf-inline .cf-frame")
+            check("确认条附着在聊天流里（内嵌，不弹全屏遮罩）",
+                  page.locator(".cf-inline").count() == 1)
+            check("确认条内容是单独一个 UI 页面（iframe 载的 /confirm）",
+                  "/confirm" in (page.locator(".cf-inline .cf-frame").get_attribute("src") or ""))
+            check("确认条上有【确认清空】按钮", cf.locator("#cfOk").count() == 1)
+            check("确认条上有【取消】按钮", cf.locator("#cfCancel").count() == 1)
             page.wait_for_timeout(1200)   # 等独立页面把提案读出来渲染好
             txt = cf.locator("#cfBody").inner_text()
-            check("弹窗说清要清掉几门课", str(n0) in txt, txt[:60].replace("\n", " "))
+            check("确认条说清要清掉几门课", str(n0) in txt, txt[:60].replace("\n", " "))
             check("出提案阶段课表没被动", tt_count(page) == n0, f"{n0} → {tt_count(page)}")
 
             # —— 先测「取消」：什么都不该发生 ——
             cf.locator("#cfCancel").click()
             page.wait_for_timeout(600)
-            check("点【取消】弹窗关闭", not mask.evaluate("e => e.classList.contains('show')"))
+            check("点【取消】确认条被拿掉", page.locator(".cf-inline").count() == 0)
             check("点【取消】课表原封不动", tt_count(page) == n0, f"仍 {tt_count(page)} 门")
 
             # —— 后端没有前端这一下就拒绝 ——
@@ -132,15 +132,15 @@ def main():
 
             # —— 再问一次，走「确认」——
             say(page, "把课表全部删除，一门都不留")
-            check("再次出弹窗", wait_mask(page))
+            check("再次出确认条", wait_bar(page))
 
             # 确认按钮点下去之前，先确认页面还没刷新
             page.wait_for_timeout(1200)   # 等独立页面把提案渲染好
             cf.locator("#cfOk").click()
             page.wait_for_timeout(2500)
 
-            check("点【确认清空】后弹窗关闭",
-                  not mask.evaluate("e => e.classList.contains('show')"))
+            check("点【确认清空】后确认条被拿掉",
+                  page.locator(".cf-inline").count() == 0)
             n_after = tt_count(page)
             check("课表真的空了", n_after == 0, f"{n0} → {n_after} 门")
 

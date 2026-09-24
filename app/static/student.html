@@ -137,18 +137,19 @@
     }
     .confirm-btn:disabled { opacity: .5; cursor: not-allowed; }
 
-    /* 清空课表确认弹窗（必须学生亲手点按钮才允许删库） */
+    /* 遮罩弹窗：现在只有「清理聊天记录」在用；改日程的确认改成内嵌确认条了 */
     .mask {
       display: none; position: fixed; inset: 0; background: rgba(20, 26, 45, .45);
       z-index: 90; align-items: center; justify-content: center; padding: 20px;
     }
     .mask.show { display: flex; }
-    /* 弹窗内容由 /confirm 这个独立页面承载（需求：弹窗为单独 ui 页面）。
-       高度收窄：弹窗只放变更摘要 + 确认/取消，不放整张课表清单 */
+    /* 变更确认条：附着在聊天流里（不弹全屏遮罩），内容是 /confirm 独立页面 */
+    .cf-inline { margin: 6px 0 10px; }
+    /* 高度是兜底值：/confirm 载进来后会按内容真实高度回传，这里再被 JS 改掉 */
     .cf-frame {
-      width: min(420px, 100%); height: 300px;
-      border: 0; border-radius: 14px; background: #fff;
-      box-shadow: 0 18px 48px rgba(20, 26, 45, .28);
+      display: block; width: min(420px, 92%); height: 170px;
+      border: 0; border-radius: 12px; background: #fff;
+      box-shadow: 0 6px 18px rgba(20, 26, 45, .12);
     }
     .dlg {
       width: min(460px, 100%); background: #fff; border-radius: 14px; overflow: hidden;
@@ -344,13 +345,11 @@
         </div>
       </div>
 
-      <!-- 清空课表确认弹窗：学生点【确认】才会让后端删，点【取消】什么都不发生 -->
-      <!-- 变更确认弹窗：弹窗 UI 本身是**单独一个页面**（/confirm），
-           这里只负责把它载进来当遮罩弹窗，并接住它回传的确认/取消结果。
-           好处是确认这件事有了自己的 URL 和自己的代码，能单独打开、单独验收。 -->
-      <div id="ttClearMask" class="mask">
-        <iframe id="cfFrame" class="cf-frame" src="" title="变更确认"></iframe>
-      </div>
+      <!-- 变更确认条：确认 UI 本身是**单独一个页面**（/confirm），
+           这里只负责把它载进来，贴在出提案那条消息的下面——
+           好处是确认这件事有了自己的 URL 和自己的代码，能单独打开、单独验收；
+           而学生看到的不是浮在页面上方的全屏弹窗，就是聊天流里的一小条。
+           出提案时由 openConfirm() 动态创建一条 .cf-inline，处理完整个拿掉。 -->
 
       <!-- ② 快递：包裹列表 + 工单提交与记录 -->
       <div class="view" id="view-express">
@@ -491,40 +490,51 @@
       return el;
     }
 
-    // ---- 清空课表确认弹窗：删库动作唯一的发生地 ----
-    // 铁律：只有这个弹窗上的【确认清空】按钮会去调后端；AI 出完提案就撒手了，
-    // 它既调不到删除接口，也无权替学生决定。点【取消】／按 Esc／点遮罩 → 原封不动。
-    // ---- 变更确认弹窗：内容是 /confirm 这个**单独的 UI 页面** ----
-    // 为什么改成 iframe 载一个独立页面（需求点名"弹窗为单独 ui 页面"）：
-    // 确认这件事（把要改什么念清楚 + 确认/取消两个按钮）从此有了自己的 URL、
-    // 自己的代码，能单独打开 /confirm?session=xxx 验收，也能被这里载进来当弹窗。
-    // 分工不变：本页只管"弹出来 + 接住结果"，写库依旧由后端那几个接口执行。
-    const clearMask = document.getElementById("ttClearMask");
-    const cfFrame = document.getElementById("cfFrame");
-    let cfKind = null;          // 弹窗里当前这份提案的类型
-    let cfPending = null;       // 弹窗里当前这份提案（原样交给独立页面渲染）
+    // ---- 变更确认条：写库动作唯一的发生地 ----
+    // 铁律：只有确认条上的【确认】按钮（或聊天里回确认文字）会让后端真的写；
+    // AI 出完提案就撒手了，它既调不到写入接口，也无权替学生决定。
+    // 点【取消】→ 原封不动。
+    // ---- 变更确认条：内容是 /confirm 这个**单独的 UI 页面**，但**附着在聊天框上** ----
+    // 呈现形态按学生的要求来：不要全屏大弹窗，确认条就像一条消息一样
+    // 嵌在聊天流里（出提案那条消息的下方），底下就是【取消】【确认】一小行。
+    // 分工不变：/confirm 独立页面负责"念清楚变更 + 两个按钮"，写库仍由后端接口执行；
+    // 这页只负责把它嵌进来 + 接住结果。
+    let cfKind = null;          // 当前内嵌确认条对应的提案类型
+    let cfPending = null;       // 当前内嵌确认条对应的提案
+    let cfWrap = null;          // 当前内嵌确认条的容器（处理完要整个拿掉）
 
-    function openConfirm(prop) {
+    function openConfirm(prop, container) {
+      removeCfWrap();          // 上一次的确认条还没处理完又来新的 → 旧的先撤
       cfPending = prop;
       cfKind = prop && prop.kind;
-      // 加时间戳：换一次提案就重新加载一次，免得 iframe 还停在上一次的画面
-      cfFrame.src = "/confirm?session=" + encodeURIComponent(sessionId()) + "&t=" + Date.now();
-      clearMask.classList.add("show");
+      cfWrap = document.createElement("div");
+      cfWrap.className = "cf-inline";
+      const fr = document.createElement("iframe");
+      fr.className = "cf-frame";
+      fr.title = "变更确认";
+      cfWrap.appendChild(fr);
+      (container || log).appendChild(cfWrap);
       // 页面加载完再把提案塞过去（它自己也能从 /api/pending 读，这里是双保险：
       // 一轮出多张提案时，父页面知道该显示哪一张）
-      cfFrame.onload = () => {
+      fr.onload = () => {
         try {
-          cfFrame.contentWindow.postMessage(
+          fr.contentWindow.postMessage(
             { source: "campustime-student", type: "pending", pending: prop, session: sessionId() },
             "*");
         } catch (e) {}
       };
+      // 兜底：万一 /confirm 没载进来（网络异常、或环境不让用 iframe），
+      // 退回内嵌确认卡——学生永远有路可走，不会因为确认条挂了就改不了日程。
+      fr.addEventListener("error", () => {
+        confirmPageOk = false;
+        removeCfWrap();
+      });
+      fr.src = "/confirm?session=" + encodeURIComponent(sessionId()) + "&t=" + Date.now();
+      log.scrollTop = log.scrollHeight;
     }
 
-    function hideConfirm() {
-      clearMask.classList.remove("show");
-      cfFrame.onload = null;
-      cfFrame.src = "";        // 卸掉，下次重新加载
+    function removeCfWrap() {
+      if (cfWrap) { cfWrap.remove(); cfWrap = null; }
       cfKind = null; cfPending = null;
     }
 
@@ -534,22 +544,28 @@
       if (!d || d.source !== "campustime-confirm") return;
       if (d.type === "applied") {
         // ④ 入库成功后自动刷新课表/待办面板——学生不用手动刷新
-        hideConfirm();
+        removeCfWrap();
         addMsg(botName(), "✅ 已经按你的确认改好了，日程已刷新。", "bot", "planner");
         loadScheduleView();
       } else if (d.type === "cancelled") {
         // 取消：清空课表这种高危提案必须通知后端作废（留着会变成后门），
         // 其余提案原样保留——学生随后在聊天里回一句"确认"还能接着执行。
         if (d.kind === "timetable_clear") abandonClear();
-        else { hideConfirm(); addMsg(botName(), "好的，已取消，没有做任何改动。", "bot", "planner"); }
+        else { removeCfWrap(); addMsg(botName(), "好的，已取消，没有做任何改动。", "bot", "planner"); }
       } else if (d.type === "empty") {
-        hideConfirm();      // 后端已经没有待确认的提案了（多半刚被执行过）
+        removeCfWrap();     // 后端已经没有待确认的提案了（多半刚被执行过）
+      } else if (d.type === "height") {
+        // 独立页面报来它内容的真实高度 → 把 iframe 调成刚好装得下，
+        // 既不撑出一堆空白，也不把底下那行【取消】【确认】挤出可视区。
+        if (cfWrap && d.h) {
+          const f = cfWrap.querySelector("iframe");
+          if (f) f.style.height = Math.max(96, Math.min(430, Number(d.h) || 0)) + "px";
+        }
       }
     });
 
-    // 点【取消】/按 Esc/点遮罩，都算「放弃」。
-    // 对清空课表来说，只关弹窗不算放弃——那样后端还存着一张提案，
-    // 谁再调一次删除接口课还是会被清掉，所以必须把提案作废。
+    // 清空课表的「放弃」：不只是拿掉确认条，还要把后端那份提案作废——
+    // 不然提案还挂着，谁再调一次删除接口课还是会被清掉。
     async function abandonClear() {
       try {
         await fetch("/api/timetable/clear", {
@@ -558,46 +574,31 @@
           body: JSON.stringify({ session_id: sessionId(), confirm: false, abandon: true }),
         });
       } catch (e) { /* 作废失败也不该卡住学生，下面照样按放弃处理 */ }
-      hideConfirm();
+      removeCfWrap();
       addMsg(botName(), "好的，已放弃清空课表，周表现在还是老样子。", "bot", "planner");
     }
 
-    function confirmCancel() {
-      if (cfKind === "timetable_clear") abandonClear();
-      else { hideConfirm(); addMsg(botName(), "好的，已取消，没有做任何改动。", "bot", "planner"); }
-    }
-
-    clearMask.addEventListener("click", e => { if (e.target === clearMask) confirmCancel(); });
-    document.addEventListener("keydown", e => {
-      if (e.key === "Escape" && clearMask.classList.contains("show")) confirmCancel();
-    });
-
-    // 兜底：万一 /confirm 这个独立页面没载进来（网络异常、或环境不让用 iframe），
-    // 退回原来的内嵌确认卡——学生永远有路可走，不会因为弹窗挂了就改不了日程。
+    // 兜底开关：确认页载不进来时，renderOptions 退回旧式内嵌确认卡
     let confirmPageOk = true;
-    cfFrame.addEventListener("error", () => {
-      confirmPageOk = false;
-      hideConfirm();
-    });
 
     // 把后端返回的候选渲染成卡片。
     // 两种形态：① 候选时间段（可勾选，确认后发回聊天由 AI 写入待办）；
     // ② 课表修改提案（kind=timetable_change，单张确认卡，点确认直接调 /api/timetable/apply
     //    由系统写入——写入不经过 AI，从根上杜绝"确认了但数据没变"/"没有权限"的问题）；
-    // ③ 清空课表提案（kind=timetable_clear，不走卡片，直接弹确认弹窗，见上）。
+    // ③ 清空课表提案（kind=timetable_clear，不走卡片，直接挂确认条，见上）。
     function renderOptions(container, options) {
       const wrap = document.createElement("div");
       wrap.className = "options";
 
-      // ---- ③ 清空课表：弹窗，不落卡片 ----
+      // ---- ③ 清空课表：挂确认条，不落卡片 ----
       const clears = options.filter(o => o.kind === "timetable_clear");
       if (clears.length) {
         const hint = document.createElement("div");
         hint.className = "opt-hint";
-        hint.textContent = "🗑️ 管家出了一张清空课表的确认弹窗，在弹窗上点【确认清空】我才会执行：";
+        hint.textContent = "🗑️ 清空课表是个大动作，在下面这条确认条上点【确认清空】我才会执行：";
         wrap.appendChild(hint);
         container.appendChild(wrap);
-        openConfirm(clears[clears.length - 1]);   // 弹窗 = /confirm 独立页面
+        openConfirm(clears[clears.length - 1], container);   // 确认条 = /confirm 独立页面，嵌在消息下方
         return;
       }
 
@@ -605,15 +606,15 @@
       //     没有它学生就只能干等一句客服嘴上说的"已经加上"——实测复盘，日程里什么都没有。
       //     写入同样不经过 AI：点【确认加入】直接打 /api/todos，写完当场刷新日程面板。
       const adds = options.filter(o => o.kind === "todo_add");
-      // 需求②：出提案后**优先唤起弹窗**确认，弹窗展示变更内容 + 【确认】【取消】。
-      // 单张提案才走弹窗；一次好几张时仍用卡片，学生要挑是哪一张。
+      // 需求②：出提案后**优先唤起确认条**，展示变更内容 + 【确认】【取消】。
+      // 单张提案才走确认条；一次好几张时仍用卡片，学生要挑是哪一张。
       if (confirmPageOk && adds.length === 1) {
         const hint = document.createElement("div");
         hint.className = "opt-hint";
-        hint.textContent = "📝 要不要把这件事排进日程？在弹窗上点【确认加入】我才会写：";
+        hint.textContent = "📝 要不要把这件事排进日程？在下面这条确认条上点【确认加入】我才会写：";
         wrap.appendChild(hint);
         container.appendChild(wrap);
-        openConfirm(adds[adds.length - 1]);
+        openConfirm(adds[adds.length - 1], container);
         return;
       }
       if (adds.length) {
@@ -684,14 +685,14 @@
 
       // ---- ② 课表修改提案：高危操作，每张提案一个确认按钮（可能多张，点任意一张即应用） ----
       const tts = options.filter(o => o.kind === "timetable_change");
-      // 同上：单张提案走弹窗（/confirm 独立页面），多张时保留卡片让学生挑
+      // 同上：单张提案走确认条（/confirm 独立页面），多张时保留卡片让学生挑
       if (confirmPageOk && tts.length === 1) {
         const hint = document.createElement("div");
         hint.className = "opt-hint";
-        hint.textContent = "🗓️ 课表修改提案（整表替换），在弹窗上点【确认变更】才会生效：";
+        hint.textContent = "🗓️ 课表修改提案（整表替换），在下面这条确认条上点【确认变更】才会生效：";
         wrap.appendChild(hint);
         container.appendChild(wrap);
-        openConfirm(tts[tts.length - 1]);
+        openConfirm(tts[tts.length - 1], container);
         return;
       }
       if (tts.length) {

@@ -38,3 +38,6 @@ app/data/student/
 app/data/workorders.json
 app/data/student_messages.json
 server.log
+
+# ===== 端到端截图产物（只是给人看的证据，不入库） =====
+tests/_shots/

@@ -624,24 +624,30 @@ def test_clear_timetable_flow():
         again = propose_clear_timetable()
         c.check("空表时提示没课可清，而不是硬出一张卡", "本来就是空的" in again, again[:40])
 
-        # —— ⑦ 前端页面：弹窗是**单独一个 UI 页面**，载进遮罩里 ——
-        #     需求点名"弹窗为单独 ui 页面"，所以确认 UI 搬到 app/static/confirm.html，
-        #     学生端只留一个遮罩容器 + 一个 iframe 把它载进来，并接住确认/取消结果。
+        # —— ⑦ 前端页面：确认 UI 是**单独一个页面**（/confirm），
+        #     但按学生的要求**不单独弹窗**，而是做成一条确认条嵌在聊天流里 ——
+        #     需求点名"弹窗为单独 ui 页面"，所以确认 UI 搬到 app/static/confirm.html；
+        #     学生端出提案时动态建一条 .cf-inline 贴在消息下方，把 /confirm 用 iframe 载进来，
+        #     并接住它回传的确认/取消结果。
         proj = pathlib.Path(__file__).resolve().parent.parent
         page = (proj / "app" / "static" / "student.html").read_text(encoding="utf-8")
         cf = (proj / "app" / "static" / "confirm.html").read_text(encoding="utf-8")
         for needle, why in (
-            ('id="ttClearMask"', "遮罩容器还在（出提案时把它显示出来）"),
-            ('id="cfFrame"', "弹窗内容是独立页面（iframe 承载）"),
-            ('/confirm?session=', "学生端唤起的是 /confirm 这个单独的确认页面"),
+            ('cfWrap.className = "cf-inline"', "确认条是内嵌容器（附着在聊天框上，不是全屏遮罩）"),
+            ('(container || log).appendChild(cfWrap)', "确认条插在消息流里、那条消息的下面"),
+            ('/confirm?session=', "确认条内容是 /confirm 这个单独的确认页面"),
             ('campustime-confirm', "接住独立页面回传的确认/取消结果"),
+            ('d.type === "height"', "确认条按内容真实高度自适应（不留白、不挤出按钮）"),
             ('loadScheduleView()', "入库成功后自动刷新课表/待办面板"),
-            ('Escape', "支持 Esc 取消"),
         ):
             c.check(why, needle in page)
+        c.check("确认改课不再用全屏遮罩弹窗（学生明确要求过）",
+                'id="ttClearMask"' not in page)
         for needle, why in (
             ('id="cfOk"', "独立页面上有【确认】按钮"),
             ('id="cfCancel"', "独立页面上有【取消】按钮"),
+            ('body.embed', "被嵌进聊天流时切成紧凑样式（不居中、不留白）"),
+            ('reportHeight', "把内容真实高度报给父页面，好让确认条贴合内容"),
             ('/api/timetable/clear', "清空走的是清空专用接口"),
             ('confirm: true', "删除必须由前端显式确认才发得出去"),
             ('/api/timetable/apply', "课表变更走确定性写入口"),
