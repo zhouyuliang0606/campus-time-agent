@@ -35,3 +35,6 @@ app/data/student/
 
 # 注意：app/data/kb.json 是"入库的种子知识库"，有意保留版本管理，
 # 管理员在后台改条目后会出现 diff —— 这是知识内容本身，值得被记录。
+app/data/workorders.json
+app/data/student_messages.json
+server.log
