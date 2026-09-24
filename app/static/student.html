@@ -137,6 +137,38 @@
     }
     .confirm-btn:disabled { opacity: .5; cursor: not-allowed; }
 
+    /* 清空课表确认弹窗（必须学生亲手点按钮才允许删库） */
+    .mask {
+      display: none; position: fixed; inset: 0; background: rgba(20, 26, 45, .45);
+      z-index: 90; align-items: center; justify-content: center; padding: 20px;
+    }
+    .mask.show { display: flex; }
+    .dlg {
+      width: min(460px, 100%); background: #fff; border-radius: 14px; overflow: hidden;
+      box-shadow: 0 18px 48px rgba(20, 26, 45, .28);
+    }
+    .dlg-head {
+      padding: 14px 18px; font-size: 15px; font-weight: 700; color: #c0392b;
+      border-bottom: 1px solid #f0e2e2; background: #fff6f6;
+    }
+    .dlg-body { padding: 16px 18px; font-size: 13px; color: #333c52; line-height: 1.7; }
+    .dlg-warn {
+      background: #fff8ec; border: 1px solid #f5e3c8; border-radius: 10px;
+      padding: 10px 12px; font-size: 12px; color: #8a6522;
+    }
+    .dlg-foot {
+      display: flex; justify-content: flex-end; gap: 10px;
+      padding: 12px 18px; border-top: 1px solid #eef1f8; background: #fafbff;
+    }
+    .dlg-btn {
+      padding: 8px 18px; border-radius: 10px; font-size: 13px; cursor: pointer; border: 1px solid transparent;
+    }
+    .dlg-btn.ghost { background: #fff; border-color: #d8def0; color: #4a5675; }
+    .dlg-btn.ghost:hover { background: #f3f5fb; }
+    .dlg-btn.danger { background: #e23a3a; color: #fff; }
+    .dlg-btn.danger:hover { background: #c93030; }
+    .dlg-btn:disabled { opacity: .55; cursor: not-allowed; }
+
     /* 语音输入按钮 */
     .mic {
       padding: 0 14px; border: 1px solid #d8def0; background: #fff; color: #4f7cff;
@@ -305,6 +337,24 @@
         </div>
       </div>
 
+      <!-- 清空课表确认弹窗：学生点【确认】才会让后端删，点【取消】什么都不发生 -->
+      <div id="ttClearMask" class="mask">
+        <div class="dlg" role="dialog" aria-modal="true" aria-labelledby="ttClearTitle">
+          <div class="dlg-head">⚠️ 清空整张课表</div>
+          <div class="dlg-body">
+            <p id="ttClearSummary" style="margin:0 0 8px;line-height:1.6;"></p>
+            <div class="dlg-warn">
+              此操作<b>不可撤销</b>，清掉之后周表上就不会再有任何课程。<br />
+              如果只是想删个别几节，建议改在对话里告诉管家「去掉周几的某节课」。
+            </div>
+          </div>
+          <div class="dlg-foot">
+            <button class="dlg-btn ghost" id="ttClearCancel">取消</button>
+            <button class="dlg-btn danger" id="ttClearOk">确认清空</button>
+          </div>
+        </div>
+      </div>
+
       <!-- ② 快递：包裹列表 + 工单提交与记录 -->
       <div class="view" id="view-express">
         <div class="view-head"><span>📦 我的快递</span><span class="grow"></span><button class="close">收起面板 ✕</button></div>
@@ -425,13 +475,96 @@
       return el;
     }
 
+    // ---- 清空课表确认弹窗：删库动作唯一的发生地 ----
+    // 铁律：只有这个弹窗上的【确认清空】按钮会去调后端；AI 出完提案就撒手了，
+    // 它既调不到删除接口，也无权替学生决定。点【取消】／按 Esc／点遮罩 → 原封不动。
+    const clearMask = document.getElementById("ttClearMask");
+    let clearCtx = null;   // 当前弹窗对应的那份提案
+
+    function showClearModal(prop) {
+      clearCtx = prop;
+      const n = Number(prop.clear_count || 0);
+      document.getElementById("ttClearSummary").innerHTML =
+        `管家建议<b>清空全部 ${n} 门课</b>（${escapeHtml(prop.summary || "")}）。` +
+        `清空后周表上将一门课都不剩，需要重新上传课表才能继续排课。`;
+      clearMask.classList.add("show");
+      document.getElementById("ttClearOk").focus();
+    }
+
+    function hideClearModal() {
+      clearMask.classList.remove("show");
+      clearCtx = null;
+    }
+
+    // 点【取消】/按 Esc/点遮罩，都算「放弃」：关掉弹窗的同时把后端那份提案也作废。
+    // 只关弹窗不算放弃——那样后端还存着一张提案，谁再调一次删除接口课还是会被清掉。
+    async function abandonClear() {
+      try {
+        await fetch("/api/timetable/clear", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ session_id: sessionId(), confirm: false, abandon: true }),
+        });
+      } catch (e) { /* 作废失败也不该卡住学生，下面照样按放弃处理 */ }
+      hideClearModal();
+      addMsg(botName(), "好的，已放弃清空课表，周表现在还是老样子。", "bot", "planner");
+    }
+
+    document.getElementById("ttClearCancel").addEventListener("click", abandonClear);
+    clearMask.addEventListener("click", e => { if (e.target === clearMask) abandonClear(); });
+    document.addEventListener("keydown", e => {
+      if (e.key === "Escape" && clearMask.classList.contains("show")) abandonClear();
+    });
+
+    document.getElementById("ttClearOk").addEventListener("click", async () => {
+      const prop = clearCtx;
+      if (!prop) return;                       // 兜底：没有对应提案就绝不许删
+      const btn = document.getElementById("ttClearOk");
+      btn.disabled = true; btn.textContent = "⏳ 正在清空…";
+      try {
+        const r = await fetch("/api/timetable/clear", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          // confirm 必须由这次点击显式带上——这是删库唯一的开关
+          body: JSON.stringify({ session_id: sessionId(), confirm: true }),
+        });
+        const d = await r.json();
+        if (d.ok) {
+          hideClearModal();
+          addMsg(botName(),
+            `🗑️ 已清空 ${d.removed} 门课，周表现在是空的了（可重新上传课表）。`,
+            "bot", "planner");
+          await loadScheduleView();             // 删完立刻刷新，周表直观看到清空
+        } else {
+          btn.disabled = false; btn.textContent = "确认清空";
+          addMsg(botName(), "清空没成功：" + (d.error || "未知原因") + "。请再试一次。");
+        }
+      } catch (e) {
+        btn.disabled = false; btn.textContent = "确认清空";
+        addMsg(botName(), "哎呀，网络好像开小差了，请稍后再试～");
+      }
+    });
+
     // 把后端返回的候选渲染成卡片。
     // 两种形态：① 候选时间段（可勾选，确认后发回聊天由 AI 写入待办）；
     // ② 课表修改提案（kind=timetable_change，单张确认卡，点确认直接调 /api/timetable/apply
-    //    由系统写入——写入不经过 AI，从根上杜绝"确认了但数据没变"/"没有权限"的问题）。
+    //    由系统写入——写入不经过 AI，从根上杜绝"确认了但数据没变"/"没有权限"的问题）；
+    // ③ 清空课表提案（kind=timetable_clear，不走卡片，直接弹确认弹窗，见上）。
     function renderOptions(container, options) {
       const wrap = document.createElement("div");
       wrap.className = "options";
+
+      // ---- ③ 清空课表：弹窗，不落卡片 ----
+      const clears = options.filter(o => o.kind === "timetable_clear");
+      if (clears.length) {
+        const hint = document.createElement("div");
+        hint.className = "opt-hint";
+        hint.textContent = "🗑️ 管家出了一张清空课表的确认弹窗，你点【确认清空】我才会执行：";
+        wrap.appendChild(hint);
+        container.appendChild(wrap);
+        showClearModal(clears[clears.length - 1]);
+        return;
+      }
 
       // ---- ② 课表修改提案：高危操作，每张提案一个确认按钮（可能多张，点任意一张即应用） ----
       const tts = options.filter(o => o.kind === "timetable_change");

@@ -521,6 +521,80 @@ def propose_course_change(op: str, day: int, course: str = "", start: str = "",
     }, ensure_ascii=False)
 
 
+# 「学生要清空整张课表」的措辞。整表清空是不可逆操作，判定宁可保守也别误伤：
+#     "把周一的高数删掉"绝不能被判成清空 → 所以必须有"全部/所有/清空/一门不留"这类
+#     整表信号，且话里得点明是课表或课程，才认。
+# 自带宾语（说这句就等于在说课表），见到就认
+_CLEAR_SELF = (
+    "清空课表", "课表清空", "清空整个", "整个课表", "全部课程", "所有课程",
+    "全部课表", "课表全部", "全删课表", "课表全删", "一门不留", "一门都不留",
+)
+# 不带宾语（"全部删除""都删掉"），必须话里真点了课表/课程才认，
+# 否则"我的待办全部删除"会被误判成清课表
+_CLEAR_NEED_OBJ = ("全部删除", "全部删掉", "全删掉", "都删掉", "都删除")
+
+
+def wants_clear_timetable(text: str) -> bool:
+    """判断一句话算不算「我要清空整张课表」（人话：确定性分支用的开关）。
+
+    为什么不放进模型里判断？
+        实测同一句"把课表全部删除，一门都不留"，模型有时老老实实调
+        propose_clear_timetable，有时却反问"你是想全删还是只删几门"，
+        学生被绕回来，整条链路当场断掉。清空意图本就明明白白——
+        "学生点了什么按钮"这种才能交给模型，这种不该交。
+
+    :param text: 学生原话
+    """
+    t = (text or "").strip()
+    if not t:
+        return False
+    # 自带宾语的整表信号，见到就认
+    if any(p in t for p in _CLEAR_SELF):
+        return True
+    # 不带宾语的删除词，必须话里真点了课表/课程才算
+    if any(p in t for p in _CLEAR_NEED_OBJ):
+        return "课表" in t or "课程" in t
+    # 再兜一层："清空/清掉" + 点明是课表/课程，才算
+    if "清空" in t or "清掉" in t:
+        return "课表" in t or "课程" in t
+    return False
+
+
+def propose_clear_timetable(reason: str = "") -> str:
+    """清空整个周表的提案（人话：学生说"把课表全删了/清空课表"时用）。
+
+    三条铁律（对应需求，别改）：
+      1. 这是个**只读提案**——函数本身一个字节都不写库，只返回方案；
+      2. 模型拿到它只能转述"要清空几门课、让你确认"，**绝不能**自己去调任何删除接口；
+      3. **绝不能**在弹窗被点掉之前说"已经删了"。
+
+    真正的删除只走一条路：学生在本页看到确认弹窗 → 点【确认】→ 前端调
+    /api/timetable/clear → 后端执行。模型碰不到那条路。
+
+    :param reason: 一句话说明为什么要清空（可选，会显示在弹窗里）
+    """
+    cur = get_timetable()
+    n = len(cur)
+    if n == 0:
+        return "周表本来就是空的，没有课可清空，不用再确认了。"
+    courses = [{"day": int(c.get("day", 0)), "start": c.get("start", ""),
+                "end": c.get("end", ""), "course": c.get("course", ""),
+                "location": c.get("location", "")} for c in cur]
+    # courses 故意留空数组：表示"清空"。
+    # 执行时前端必须先把这份提案原样发回来（见 /api/timetable/clear），
+    # 后端比对一致才删——学生点确认这个动作本身就是唯一的开关。
+    summary = (reason.strip() if reason.strip()
+               else f"清空全部 {n} 门课")
+    return json.dumps({
+        "__proposal__": {
+            "kind": "timetable_clear",
+            "summary": summary,
+            "courses": [],
+            "clear_count": n,
+        }
+    }, ensure_ascii=False)
+
+
 def apply_pending_timetable_change(session_id: str) -> dict | None:
     """学生回一句"确认"时，**由系统把暂存的课表提案真正写入**（人话：不经过模型）。
 
@@ -565,6 +639,7 @@ def apply_pending_timetable_change(session_id: str) -> dict | None:
 
     return {
         "summary": str(proposals[-1].get("summary") or "修改课表"),
+        "kind": str(proposals[-1].get("kind") or "timetable_change"),
         "applied": done,
         "before": len(before),
         "after": len(after),
@@ -664,6 +739,16 @@ def build_system_prompt() -> str:
    ⛔ 上一轮踩的坑：提示里如果把上面那些错话原样写出来当反例，模型反而更容易学会。
       所以这里只描述"不能做什么"，一个错例句都不列。
    如果学生说"确认/可以"但上一轮你还没出过卡，**立刻调用 propose_course_change 把卡补上**。
+1b. **清空整张课表**（学生说"课表全删了""一门都不留""清空课表"）：
+   **只调用 propose_clear_timetable 出一张确认弹窗就够**，弹窗上有【确认】【取消】两个按钮。
+   ⛔ 三条红线，一条都不能破：
+      · **你没有任何删除接口可用于清空**——工具箱里没有一个能动周表的写入口，
+        这是刻意的：删除只能由学生点弹窗按钮触发，模型碰不到。
+      · **不许宣布结果**——数据在你说话时还在库里，学生点【取消】就白说一句，
+        这种谎话比不说更伤信任。你只说"确认弹窗已弹出，你点确认我就执行"。
+      · **不许替学生做决定**：不许说"我帮你清了""剩下几门我也顺手删了"，
+        你要说的是"清空 N 门课的确认弹窗已经弹出，你点确认我再执行"。
+      学生点【确认】→ 系统执行 → 页面自动刷新成空课表；点【取消】→ 什么都没发生。
 2. **导入课表文件 / 整表重排**：读完文件 → 构造完整课程列表（"第几节"换算成 HH:MM）→
    调用 propose_timetable_change 出确认卡。没出卡前绝不说"导入成功"。
 3. **删除/修改待办**（remove_todo、update_todo_status）：先列出要动的待办，
@@ -677,6 +762,7 @@ def build_system_prompt() -> str:
 - **propose_slots(options_json)：把候选结构化地交给前端渲染成可勾选卡片。
   提完候选后必须调用它**（options_json 是 JSON 数组，每条含 title/date/start/end）。**
 - add_todo_tool(title, date, start, end, note)：**确认后**才写入
+- **propose_clear_timetable()：清空整张课表**——只出确认弹窗，纯只读，写完就停手
 - **propose_course_change(op, day, ...)：删课/加课/改单节课的首选**——服务端算好新课表出确认卡
 - **propose_timetable_change(courses_json, change_summary)：整表重排/文件导入用**——
   把调整后的完整课表（JSON 数组）交给前端渲染成「确认修改」卡片，学生点确认后系统写入。
@@ -763,6 +849,21 @@ def build_tools() -> dict[str, Tool]:
                 "required": ["title", "date", "start", "end"],
             },
             func=add_todo_tool,
+        ),
+        "propose_clear_timetable": Tool(
+            name="propose_clear_timetable",
+            description=(
+                "**清空整个周表**的唯一途径（学生说'把课表全删了''清空课表''一门都不留'时用）。"
+                "这个工具是纯只读的——它只生成一张清空确认弹窗，**一个字节都不写库**，"
+                "也**没有任何删除接口给你调用**。你只负责告诉学生'要清空几门课，确认弹窗已弹出'。"
+                "⛔ 严禁说'我已经帮你清空了'。学生点了弹窗上的【确认】，由系统执行，"
+                "点到【取消】就什么都没发生。"
+            ),
+            parameters={
+                "type": "object",
+                "properties": {},
+            },
+            func=lambda: propose_clear_timetable(),
         ),
         "propose_timetable_change": Tool(
             name="propose_timetable_change",

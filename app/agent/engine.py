@@ -148,8 +148,13 @@ class AgentEngine:
                                 parsed = json.loads(result)
                                 prop = parsed.get("__proposal__") if isinstance(parsed, dict) else None
                                 if isinstance(prop, dict):
-                                    if self.options and all(
-                                            o.get("kind") == "timetable_change" for o in self.options):
+                                    # 只有"课表提案"之间才谈得上并存（多张修改卡叠加着落库）。
+                                    # 候选时间段（kind 为空）和清空提案不参与叠加，各占各的位置，
+                                    # 免得一张清空弹窗把学生还没选的时间候选给顶掉。
+                                    same_kind = all(
+                                        o.get("kind") == prop.get("kind")
+                                        for o in self.options if o.get("kind"))
+                                    if self.options and same_kind:
                                         self.options = self.options + [prop]
                                     else:
                                         self.options = [prop]

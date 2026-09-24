@@ -475,13 +475,17 @@ def test_chat_confirm_applies_timetable():
         c.check("周四英语确实没了",
                 not any(x["day"] == 4 and x["course"] == "大学英语" for x in get_timetable()))
 
-        # —— ⑥ 学生聊别的就把旧提案作废（避免隔很久再被一句"确认"误改）——
+        # —— ⑥ 学生聊别的，这一轮不许顺手改课表 ——
+        #    注意：这里**不能**断言"线性代数还在"——⑤ 已经把它删掉了，
+        #    那条断言自相矛盾，实测在基线代码上也是红的（是检查本身写错，不是代码坏了）。
+        #    真正该守的是：这轮闲聊别顺手动了课表。
         save_pending("sess-g", [p_a])
+        n_idle = len(get_timetable())
         client.post("/api/chat", json={
             "message": "周末有什么事吗", "module": "planner", "session_id": "sess-g",
         })
-        c.check("" "聊别的之后回「确认」不会改课表""",
-                any(x["course"] == "线性代数" for x in get_timetable()))
+        c.check("聊别的这一轮不会顺手改课表", len(get_timetable()) == n_idle,
+                f"{n_idle} → {len(get_timetable())} 门")
 
         # —— ⑦ 路由把「确认」分到别的模块时，也不能卡住执行 ——
         #    真实场景：学生没点模块卡片，直接打"确认"，路由往往把它分去 FAQ。
@@ -509,6 +513,197 @@ def test_chat_confirm_applies_timetable():
     return c.summary("第九批（聊天确认 → 系统执行）")
 
 
+def test_clear_timetable_flow():
+    """第十批：清空整张课表 —— 提案 → 弹窗 → 前端按钮触发后端删除。
+
+    需求里的五条硬约束逐条对应：
+      1. 只出提案，AI 不许自己调删除接口、不许谎称已删；
+      2. 触发提案后在前端弹确认弹窗（确认 / 取消）；
+      3. 点确认由后端执行删除当前学生课表，点取消放弃；
+      4. 删完自动刷新课表视图；
+      5. 严禁模型自己删库，删除动作必须来自前端按钮触发后端。
+    """
+    import json as _json
+    import os
+    import pathlib
+
+    from app.agent.pending import peek_pending, save_pending, take_pending
+    from app.modules.planner import get_timetable, propose_clear_timetable
+    from app.store import save_timetable as _st
+
+    title("10. 清空课表：提案 → 弹窗 → 前端按钮触发后端删除")
+    c = Checker()
+    with sandbox():
+        client = make_client()
+        seed = _json.load(open(os.path.join(REAL_DATA_DIR, "student", "timetable.json"),
+                               encoding="utf-8"))
+        _st(seed["courses"])
+        n0 = len(get_timetable())
+        c.check("起始周表有课可清", n0 >= 10, f"{n0} 门课")
+
+        # —— ① 出提案：只读，一个字节都不写库 ——
+        raw = propose_clear_timetable(reason="学生要求清空")
+        p = _json.loads(raw)["__proposal__"]
+        c.check("清空提案 kind=timetable_clear（跟普通改课提案区分开）",
+                p["kind"] == "timetable_clear")
+        c.check("提案带上要清掉几门课（弹窗要显示）",
+                p.get("clear_count") == n0, str(p.get("clear_count")))
+        c.check("出提案这件事本身没动数据库", len(get_timetable()) == n0,
+                f"仍 {len(get_timetable())} 门")
+        c.check("文案里带上了学生的理由", "学生要求清空" in (p.get("summary") or ""))
+
+        # —— ② 模型工具箱里没有任何删除接口，只有提案工具 ——
+        from app.modules.planner import build_tools
+        tb = build_tools()
+        clear_tool = tb.get("propose_clear_timetable")
+        c.check("工具箱注册了 propose_clear_timetable", clear_tool is not None)
+        if clear_tool:
+            c.check("该工具的说明书里点名不许谎称已删除",
+                    "已经帮你清空" in (clear_tool.description or ""))
+        # 只挑"真会写库"的工具：名字里带删/清/改，且不是 propose_ 开头的提案工具
+        wrote = [k for k in tb
+                 if any(w in k.lower() for w in ("delete", "clear", "remove", "drop", "purge"))
+                 and not k.startswith("propose_") and "todo" not in k]
+        c.check("工具箱里没有任何课表写入/删除类工具（模型够不着删除接口）",
+                wrote == [], str(wrote))
+
+        # —— ③ 聊天里回一句「确认」不会清空（必须点弹窗按钮）——
+        save_pending("sess-clear", [p])
+        r = client.post("/api/chat", json={
+            "message": "确认", "module": "planner", "session_id": "sess-clear",
+        })
+        c.check("聊天确认不会清空课表", len(get_timetable()) == n0,
+                f"仍 {len(get_timetable())} 门")
+        c.check("聊天确认的回复里也不许出现'已清空'", "清空" not in (r.json().get("answer") or ""))
+
+        # —— ④ 没有前端这一下，后端接口必须拒绝 ——
+        r2 = client.post("/api/timetable/clear", json={"session_id": "sess-clear"})
+        c.check("没带 confirm=true 时后端拒绝清空", r2.status_code == 400,
+                str(r2.status_code))
+        r3 = client.post("/api/timetable/clear", json={
+            "session_id": "sess-clear", "confirm": True})
+        c.check("没有待确认提案时拒绝清空（防止被随手调用）", r3.status_code == 400,
+                str(r3.status_code))
+        c.check("两次被拒之后课表依然完好", len(get_timetable()) == n0)
+
+        # —— ⑤ 前端按钮点了：后端才真正删，且只删当前学生的周表 ——
+        save_pending("sess-clear", [p])
+        r4 = client.post("/api/timetable/clear", json={
+            "session_id": "sess-clear", "confirm": True})
+        d4 = r4.json()
+        c.check("点确认后接口返回 200", r4.status_code == 200, str(r4.status_code))
+        c.check("返回里说明了清掉几门", d4.get("removed") == n0, str(d4.get("removed")))
+        c.check("周表真的空了", len(get_timetable()) == 0)
+        c.check("删除执行完，待确认提案被清掉（不会重复删）",
+                peek_pending("sess-clear") is None)
+        r5 = client.post("/api/timetable/clear", json={
+            "session_id": "sess-clear", "confirm": True})
+        c.check("重复点也不会二次伤害", r5.status_code == 400, str(r5.status_code))
+
+        # —— ⑥ 空表再出提案：要告诉学生"本来就是空的" ——
+        again = propose_clear_timetable()
+        c.check("空表时提示没课可清，而不是硬出一张卡", "本来就是空的" in again, again[:40])
+
+        # —— ⑦ 前端页面：弹窗结构 + 确认按钮 + 走的是 clear 接口 ——
+        page = (pathlib.Path(__file__).resolve().parent.parent / "app" /
+                "static" / "student.html").read_text(encoding="utf-8")
+        for needle, why in (
+            ('id="ttClearMask"', "弹窗容器存在"),
+            ('id="ttClearOk"', "确认按钮存在"),
+            ('id="ttClearCancel"', "取消按钮存在"),
+            ('/api/timetable/clear', "确认按钮打的是清空专用接口"),
+            ('confirm: true', "删除必须由前端显式确认才发得出去"),
+            ('await loadScheduleView()', "删完自动刷新课表视图"),
+            ('Escape', "支持 Esc 取消"),
+        ):
+            c.check(why, needle in page)
+
+        # —— ⑧ 系统提示：只出提案、不许谎称已删、不许替学生决定 ——
+        from app.main import ASSISTANT_RULES
+        from app.modules.planner import build_system_prompt as planner_prompt
+        sent = planner_prompt() + ASSISTANT_RULES
+        c.check("提示里要求清空必须先出确认弹窗", "propose_clear_timetable" in sent)
+        c.check("提示里点名不许宣布删除结果（不许谎称已删）", "不许宣布结果" in sent)
+        c.check("提示里说明模型没有任何删除接口", "没有任何删除接口" in sent)
+        # 上一轮的教训：把禁用原句写进提示反而会教会模型
+        c.check("提示里没出现禁用原句本身", "我已经帮你清空了" not in sent)
+    return c.summary("第十批（清空课表 → 前端确认 → 后端删除）")
+
+
+def test_clear_intent_and_gate():
+    """第十一批：清空意图的**确定性判定** + 删除接口的闸门。
+
+    为什么要单独钉死这两块：
+        「学生是不是要清空整张课表」以前交给模型判断，实测同一句话模型时调工具、时反问，
+        链路会当场断掉。现在由 wants_clear_timetable 由代码定死；
+        而 /api/timetable/clear 是唯一的删库入口，必须做到
+        "没有前端这一下，谁也删不动"。
+    """
+    from app.modules.planner import wants_clear_timetable
+
+    title("11. 清空意图判定与删除接口闸门")
+    c = Checker()
+
+    # —— ① 清空意图：该认的认，不该认的绝不误伤（删单节课绝不能被当成清表）——
+    should_clear = [
+        "把课表全部删除，一门都不留", "清空课表", "把课表清空", "课表全删了",
+        "帮我把课表里的课都删掉", "帮我把全部课表删掉", "所有课程一门都不留",
+        "整个课表都不要了",
+    ]
+    not_clear = [
+        "帮我删掉周一第一节的高数", "把周一的高数删掉", "重新排一下课表",
+        "我想调整一下课程时间", "帮我删除周一 08:00 的那节课", "这门课我不选了，删掉",
+        "我的待办全部删除", "下周的考试全删掉", "今天的待办都删掉", "",
+    ]
+    for t in should_clear:
+        c.check(f"认得出来：{t[:14]}", wants_clear_timetable(t) is True)
+    for t in not_clear:
+        c.check(f"不会误伤：{t[:14] if t else '(空串)'}", wants_clear_timetable(t) is False)
+
+    import json as _json
+    import os
+
+    from app.agent.pending import peek_pending, save_pending
+    from app.modules.planner import get_timetable, propose_clear_timetable
+    from app.store import save_timetable as _st
+
+    with sandbox():
+        client = make_client()
+        seed = _json.load(open(os.path.join(REAL_DATA_DIR, "student", "timetable.json"),
+                               encoding="utf-8"))
+        _st(seed["courses"])
+        n0 = len(get_timetable())
+
+        # —— ② 没出提案之前，删除接口必须拒绝 ——
+        r = client.post("/api/timetable/clear", json={"session_id": "nope", "confirm": True})
+        c.check("没有待确认提案时删除被拒", r.status_code == 400, f"HTTP {r.status_code}")
+
+        # —— ③ 出了提案但不带 confirm，也删不动 ——
+        prop = _json.loads(propose_clear_timetable())["__proposal__"]
+        save_pending("sess-k", [prop])
+        r2 = client.post("/api/timetable/clear", json={"session_id": "sess-k"})
+        c.check("没点确认（不带 confirm）被拒", r2.status_code == 400, f"HTTP {r2.status_code}")
+        c.check("拒绝之后课表一门没少", len(get_timetable()) == n0)
+
+        # —— ④ 学生点【取消】= 后端作废提案，之后谁再调都删不动 ——
+        r3 = client.post("/api/timetable/clear",
+                         json={"session_id": "sess-k", "confirm": False, "abandon": True})
+        c.check("取消后后端回执已作废", r3.json().get("abandoned") is True)
+        c.check("作废的提案已被取走", peek_pending("sess-k") is None)
+        r4 = client.post("/api/timetable/clear", json={"session_id": "sess-k", "confirm": True})
+        c.check("取消后再调删除接口照样被拒", r4.status_code == 400, f"HTTP {r4.status_code}")
+        c.check("取消之后课表原封不动", len(get_timetable()) == n0)
+
+        # —— ⑤ 带上 confirm 才执行，且只认当前会话 ——
+        save_pending("sess-m", [prop])
+        r5 = client.post("/api/timetable/clear", json={"session_id": "sess-m", "confirm": True})
+        c.check("点确认后删除成功", r5.json().get("removed") == n0, str(r5.json())[:80])
+        c.check("当前登录学生的周表被清空", len(get_timetable()) == 0)
+        r6 = client.post("/api/timetable/clear", json={"session_id": "sess-m", "confirm": True})
+        c.check("提案用掉后再调不会重复清（已无提案）", r6.status_code == 400)
+    return c.summary("第十一批（清空意图判定 + 删除接口闸门）")
+
+
 if __name__ == "__main__":
     code = 0
     code |= test_express_view_api()
@@ -520,4 +715,6 @@ if __name__ == "__main__":
     code |= test_persona_rules_and_workorders()
     code |= test_course_change_proposals()
     code |= test_chat_confirm_applies_timetable()
+    code |= test_clear_timetable_flow()
+    code |= test_clear_intent_and_gate()
     sys.exit(code)

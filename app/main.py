@@ -5,6 +5,7 @@
           → engine 跑 ReAct 循环（必要时调工具）→ 返回回答 + 思考轨迹
 """
 import datetime
+import json
 import os
 import uuid
 from typing import Any
@@ -14,7 +15,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.agent.engine import AgentEngine
-from app.agent.pending import clear_pending, is_confirmation, peek_pending
+from app.agent.pending import clear_pending, is_confirmation, peek_pending, save_pending
 from app.agent.router import Router
 from app.config import DEBUG, check_config, get_llm_config
 from app.llm.client import DeepSeekClient, LLMError
@@ -42,7 +43,12 @@ from app.modules.files import build_tools as files_tools
 from app.modules.station import build_system_prompt as STATION_PROMPT, build_tools as station_tools
 # planner 也是"可调用提示"：每次对话都要把**今天的日期**动态拼进去，
 # 否则学生说"明天"，AI 根本算不出是哪一天
-from app.modules.planner import build_system_prompt as PLANNER_PROMPT, build_tools as planner_tools, mock_planner
+from app.modules.planner import (
+    build_system_prompt as PLANNER_PROMPT,
+    build_tools as planner_tools,
+    mock_planner,
+    wants_clear_timetable,
+)
 from app.modules.student_persona import STUDENT_PERSONAS, persona_block, is_valid
 
 # 项目根目录（本文件在 app/ 下，根目录是上一级）
@@ -104,6 +110,21 @@ ASSISTANT_RULES = """
 router = Router()
 
 
+def _parse_clear_proposal() -> dict | None:
+    """跑一次只读的清空提案，取出其中要交给前端的提案（人话：AI 只出方案，不碰数据）。
+
+    返回 None 表示周表本来就是空的（没什么可清），交回模型按老规矩回话。
+    """
+    from app.modules.planner import propose_clear_timetable
+
+    raw = propose_clear_timetable()
+    try:
+        prop = (json.loads(raw) or {}).get("__proposal__")
+    except Exception:
+        prop = None
+    return prop if isinstance(prop, dict) else None
+
+
 @app.get("/api/health")
 async def health():
     """健康检查（人话：不依赖大模型密钥，用来确认服务正常启动了）。"""
@@ -159,7 +180,9 @@ async def chat(req: Request):
     if is_confirmation(message) and peek_pending(session_id):
         from app.modules.planner import apply_pending_timetable_change
         applied = apply_pending_timetable_change(session_id)
-        if applied:
+        # 清空课表是例外：必须学生亲手点弹窗上的【确认】，
+        # 在聊天框回一句"确认"不算——删空是不可恢复的操作，多一道人工闸门。
+        if applied and applied.get("kind") != "timetable_clear":
             append_conversation(session_id, "user", message)
             append_conversation(session_id, "assistant", f"已执行：{applied['summary']}")
             return {
@@ -176,6 +199,30 @@ async def chat(req: Request):
             }
         # 暂存里只有别的类型提案（比如时间候选）→ 清掉，交回模型按老规矩处理
         clear_pending(session_id)
+
+    # 3b) **确定性清空分支**（人话：学生明说"课表全删了"，直接出弹窗，不劳模型判断）
+    #    跟上面"一句确认即落库"是同一个思路：能由代码定死的，就别交给模型。
+    #    实测同一句话，模型时而是调 propose_clear_timetable，时而是反问"你确定要全删吗"，
+    #    学生被绕回来，链路当场断掉——清空意图本来就明明白白，该由系统接管。
+    #    这里只负责"出提案 + 弹窗"，**一个字节都不写库**；真删要等学生点弹窗上的【确认】。
+    if wants_clear_timetable(message):
+        proposal = _parse_clear_proposal()
+        if proposal is not None:
+            save_pending(session_id, [proposal])
+            append_conversation(session_id, "user", message)
+            append_conversation(session_id, "assistant", f"已生成清空提案：{proposal.get('summary', '')}")
+            return {
+                "module": module_key,
+                "session_id": session_id,
+                "answer": (
+                    f"🗑️ 已为你生成**清空 {proposal.get('clear_count', 0)} 门课**的确认弹窗，"
+                    f"在弹窗上点【确认清空】才会执行，点【取消】就什么都不变。"
+                ),
+                "trace": [{"step": 1, "phase": "🧹 生成清空提案（系统判定）",
+                           "answer": str(proposal.get("summary") or "")}],
+                "options": [proposal],
+                "awaiting_choice": True,
+            }
 
     # 4) 组装引擎并跑 ReAct 循环（会按需调用工具）
     engine = AgentEngine(system_prompt=prompt, tools=tools, session_id=session_id)
@@ -529,6 +576,51 @@ async def timetable_get():
     """读周表课程（人话：日程页周视图的课程格子数据源）。"""
     data = get_timetable_data()
     return {"courses": data.get("courses", []), "updated_at": data.get("updated_at", "")}
+
+
+@app.post("/api/timetable/clear")
+async def timetable_clear(req: Request):
+    """清空整个周表 —— **唯一**的清空入口，只能由前端确认弹窗的按钮触发。
+
+    为什么把它单独拆出来，而不是让 AI 调？
+        需求里的硬约束：严禁 AI 模型自己执行数据库删除，删除动作必须来自
+        前端按钮触发后端。所以这里做成"必须带上一份待确认的清空提案"，
+        而那份提案只有在学生真的在弹窗上点了【确认】之后才会被前端回传。
+        模型既没有调用这个接口的工具，就算它想（比如嘴上说"已清空"），
+        没有前端这一下，库里一门课都不会少。
+
+    :param session_id: 前端当前会话，用来校验"确实有学生刚点了确认"
+    :param confirm: 必须显式为 True——前端按钮点了才会传
+    """
+    from app.agent.pending import take_pending
+    from app.modules.planner import get_timetable
+    body = await req.json()
+    sid = (body.get("session_id") or "").strip()
+    if body.get("confirm") is not True:
+        # 学生点了弹窗上的【取消】——后端把手上那份待确认提案一并作废。
+        # 不作废会留个后门：取消之后后端还存着一张提案，谁再调一次这个接口照样能清库，
+        # 学生以为已经放弃了，课却还是没了。
+        if body.get("abandon") is True:
+            take_pending(sid)
+            return {"ok": True, "abandoned": True, "removed": 0}
+        return JSONResponse({"error": "清空必须由前端确认弹窗触发"}, status_code=400)
+
+    entry = take_pending(sid) or {}
+    proposals = [o for o in (entry.get("options") or [])
+                 if isinstance(o, dict) and o.get("kind") == "timetable_clear"]
+    if not proposals:
+        return JSONResponse(
+            {"error": "没有待确认的清空提案，请先在对话里让助手出一张清空确认弹窗"},
+            status_code=400)
+
+    before = get_timetable()
+    save_timetable([])   # 当前登录学生本人的周表，整体清空
+    return {
+        "ok": True,
+        "count": 0,
+        "removed": len(before),
+        "summary": str(proposals[-1].get("summary") or "清空课表"),
+    }
 
 
 @app.post("/api/timetable/apply")
