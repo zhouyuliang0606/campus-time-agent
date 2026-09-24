@@ -74,6 +74,11 @@ def get_order(order_id: str) -> str:
     return f"没找到订单号 {order_id} 的外卖，请核对一下。"
 
 
+def orders_view() -> list[dict]:
+    """学生端卡片视图用的结构化外卖列表（只读，数据与 AI 工具同一份）。"""
+    return [dict(o) for o in _load().get("orders", [])]
+
+
 def build_tools() -> dict[str, Tool]:
     return {
         "list_my_orders": Tool(

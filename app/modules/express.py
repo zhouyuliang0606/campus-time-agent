@@ -101,6 +101,21 @@ def get_by_code(pickup_code: str) -> str:
     return f"没找到取件码为 {pickup_code} 的快递，请核对一下。"
 
 
+def packages_view() -> list[dict]:
+    """学生端卡片视图用的结构化快递列表（只读，人话：给前端面板直接展示用）。
+
+    AI 对话仍然走上面的三个工具；这里只是把同一份数据整理好递给前端，
+    状态标签复用 _status_label——滞留判断逻辑只有这一份，不会两处打架。
+    """
+    out = []
+    for p in _load().get("packages", []):
+        q = dict(p)
+        q["label"] = _status_label(p)
+        q["stay_days"] = _days_since(p.get("arrived_at", ""))
+        out.append(q)
+    return out
+
+
 def build_tools() -> dict[str, Tool]:
     return {
         "list_my_packages": Tool(

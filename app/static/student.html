@@ -146,7 +146,118 @@
     .mic.recording { background: #ffe1e1; color: #e23a3a; border-color: #ffb3b3; animation: pulse 1s infinite; }
     @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .6; } }
 
-    @media (max-width: 600px) { .modules { grid-template-columns: repeat(2, 1fr); } }
+    /* ============ 主显示面板：点卡片切换这里（不跳页），聊天框始终保留在下面 ============ */
+    #panel { margin-top: 12px; }
+    .view {
+      display: none; background: #fff; border-radius: 12px;
+      box-shadow: 0 4px 16px rgba(40,60,120,.08); overflow: hidden;
+    }
+    .view-head {
+      display: flex; align-items: center; gap: 8px; padding: 12px 16px;
+      border-bottom: 1px solid #eef0f6; font-size: 14px; font-weight: 600;
+    }
+    .view-head .grow { flex: 1; }
+    .view-head .close {
+      border: 1px solid #d8def0; background: #fff; color: #6a7388; border-radius: 8px;
+      padding: 4px 10px; font-size: 12px; cursor: pointer; font-weight: 400;
+    }
+    .view-head .close:hover { color: #e0414a; border-color: #f3c2c5; }
+    .view-body { padding: 14px 16px; max-height: 430px; overflow-y: auto; }
+    .empty { color: #8a93a6; font-size: 13px; text-align: center; padding: 16px; }
+
+    /* ① 课表安排：周表 + 月表（精简版；完整版在 /plan） */
+    .tab {
+      padding: 6px 14px; border: 1px solid #d8def0; background: #fff; color: #4a5366;
+      border-radius: 8px; cursor: pointer; font-size: 13px;
+    }
+    .tab.active { background: #4f7cff; color: #fff; border-color: #4f7cff; }
+    .wk { display: grid; grid-template-columns: repeat(7, 1fr); gap: 6px; }
+    .wk .wd { text-align: center; font-size: 12px; color: #8a93a6; padding: 2px 0; }
+    .wk .wd.today { color: #4f7cff; font-weight: 700; }
+    .wk .day {
+      background: #fafbff; border: 1px solid #eef0f6; border-radius: 8px;
+      min-height: 110px; padding: 4px;
+    }
+    .wk .day.today { border-color: #4f7cff; background: #f7faff; }
+    .evt {
+      font-size: 11px; border-left: 3px solid; border-radius: 4px;
+      padding: 2px 5px; margin-top: 3px; overflow: hidden;
+      white-space: nowrap; text-overflow: ellipsis;
+    }
+    .evt.course { background: #eaf1ff; border-color: #4f7cff; color: #24406e; }
+    .evt.todo   { background: #fff5e6; border-color: #f0a03c; color: #7a5212; }
+    .evt.todo.done { background: #eef7ef; border-color: #7dc48a; color: #3f6b48; text-decoration: line-through; }
+    .evt .tm { opacity: .75; font-size: 10px; }
+    .mcal { display: grid; grid-template-columns: repeat(7, 1fr); gap: 5px; }
+    .mcal .wd { text-align: center; font-size: 12px; color: #8a93a6; }
+    .mcal .d {
+      min-height: 44px; border: 1px solid #eef0f6; border-radius: 8px;
+      padding: 3px 5px; font-size: 12px; cursor: pointer; position: relative; background: #fff;
+    }
+    .mcal .d:hover { border-color: #4f7cff; }
+    .mcal .d.out { opacity: .35; }
+    .mcal .d.today { border-color: #4f7cff; background: #f7faff; box-shadow: inset 0 0 0 1px #4f7cff; }
+    .mcal .d.sel { background: #eef2ff; }
+    .mcal .badge {
+      position: absolute; right: 4px; top: 3px; background: #f0a03c; color: #fff;
+      border-radius: 8px; font-size: 10px; padding: 0 5px;
+    }
+    .mcal .titles { margin-top: 2px; font-size: 10px; color: #7a5212; }
+    .mcal .titles div {
+      background: #fff5e6; border-radius: 3px; padding: 0 3px; margin-top: 2px;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+
+    /* ②③ 快递/外卖列表行 */
+    .row {
+      display: flex; align-items: center; gap: 10px; border: 1px solid #eef0f6;
+      border-radius: 10px; padding: 9px 12px; margin-bottom: 8px;
+    }
+    .row .code { font-weight: 700; color: #3457d5; font-size: 15px; min-width: 68px; }
+    .row .info { flex: 1; font-size: 13px; }
+    .row .info .sub { color: #8a93a6; font-size: 12px; margin-top: 2px; }
+    .st { display: inline-block; border-radius: 10px; padding: 2px 9px; font-size: 12px; color: #fff; flex: none; }
+    .st.wait { background: #f0a03c; }
+    .st.stay { background: #e0414a; }
+    .st.done { background: #7dc48a; }
+    .st.cook { background: #4f7cff; }
+    .st.move { background: #8a6fe8; }
+
+    /* 快递工单（本地记录，学生端无账号体系，与助手名字/性格同一套取舍） */
+    .wo-form { border: 1px dashed #d8def0; border-radius: 10px; padding: 10px 12px; margin: 6px 0 14px; }
+    .wo-form select, .wo-form textarea {
+      width: 100%; font-size: 13px; border: 1px solid #d8def0; border-radius: 8px;
+      padding: 7px 9px; margin-top: 6px; font-family: inherit; outline: none;
+    }
+    .wo-form button {
+      margin-top: 8px; padding: 7px 16px; border: none; border-radius: 8px;
+      background: #4f7cff; color: #fff; font-size: 13px; cursor: pointer;
+    }
+    .wo-item {
+      display: flex; align-items: center; gap: 10px; border: 1px solid #eef0f6;
+      border-radius: 10px; padding: 8px 12px; margin-bottom: 8px; font-size: 13px;
+    }
+    .wo-item .t { flex: 1; }
+    .wo-item .t .sub { color: #8a93a6; font-size: 12px; margin-top: 2px; }
+    .wo-item .mini {
+      padding: 4px 10px; border: 1px solid #d8def0; border-radius: 6px;
+      background: #fff; cursor: pointer; font-size: 12px; color: #4f7cff; flex: none;
+    }
+
+    /* ④ 校园问答：高频问题按钮墙 */
+    .faq-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
+    .faq-btn {
+      border: 1.5px solid #d8def0; background: #fafbff; border-radius: 10px;
+      padding: 10px 8px; font-size: 13px; cursor: pointer; text-align: center;
+      color: #1f2733; transition: .15s;
+    }
+    .faq-btn:hover { border-color: #4f7cff; background: #eef2ff; color: #3457d5; }
+
+    @media (max-width: 600px) {
+      .modules { grid-template-columns: repeat(2, 1fr); }
+      .faq-grid { grid-template-columns: 1fr; }
+      .wk { grid-template-columns: repeat(2, 1fr); }
+    }
   </style>
 </head>
 <body>
@@ -170,6 +281,63 @@
     <!-- 四个模块导航 -->
     <div class="modules" id="modules"></div>
     <div class="hint" id="hint">点上面的模块进入对应助手，或直接提问（我会自动识别意图）。</div>
+
+    <!-- 主显示面板：点上面的卡片就切换这里的内容（不跳新页面），底部聊天框始终保留 -->
+    <div id="panel">
+      <!-- ① 课表安排：周表 + 月表（精简版，完整版去 /plan） -->
+      <div class="view" id="view-schedule">
+        <div class="view-head"><span>🗓️ 课表安排</span><span class="grow"></span><button class="close">收起面板 ✕</button></div>
+        <div class="view-body">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;flex-wrap:wrap;">
+            <button class="tab active" id="tabWeek">周表</button>
+            <button class="tab" id="tabMonth">月表</button>
+            <span class="small" id="schRange" style="margin-left:4px;"></span>
+            <span style="flex:1;"></span>
+            <button class="tab" id="schPrev">←</button>
+            <button class="tab" id="schNext">→</button>
+            <a href="/plan" class="small" style="text-decoration:none;color:#4f7cff;">完整版日程 →</a>
+          </div>
+          <div id="schWeek"></div>
+          <div id="schMonth" style="display:none;"></div>
+          <div id="schDayDetail" style="display:none;margin-top:10px;"></div>
+        </div>
+      </div>
+
+      <!-- ② 快递：包裹列表 + 工单提交与记录 -->
+      <div class="view" id="view-express">
+        <div class="view-head"><span>📦 我的快递</span><span class="grow"></span><button class="close">收起面板 ✕</button></div>
+        <div class="view-body">
+          <div id="expList"></div>
+          <div class="wo-form">
+            <b style="font-size:13px;">📨 快递有问题？提交个工单</b>
+            <select id="woType">
+              <option>快递没收到</option>
+              <option>包裹破损</option>
+              <option>取件码异常</option>
+              <option>疑似丢件</option>
+              <option>其他问题</option>
+            </select>
+            <textarea id="woDesc" rows="2" placeholder="简单描述一下情况（比如：取件码扫不开柜门）"></textarea>
+            <button id="woSubmit">提交工单</button>
+          </div>
+          <b style="font-size:13px;">📋 我提交过的工单</b>
+          <div id="woList" style="margin-top:8px;"></div>
+        </div>
+      </div>
+
+      <!-- ③ 外卖：订单列表 -->
+      <div class="view" id="view-takeout">
+        <div class="view-head"><span>🍱 我的外卖</span><span class="grow"></span><button class="close">收起面板 ✕</button></div>
+        <div class="view-body"><div id="tkList"></div></div>
+      </div>
+
+      <!-- ④ 校园问答：高频问题按钮墙（点按钮直接问管家） -->
+      <div class="view" id="view-faq">
+        <div class="view-head"><span>❓ 校园问答</span><span class="small" style="font-weight:400;">点按钮直接问管家</span><span class="grow"></span><button class="close">收起面板 ✕</button></div>
+        <div class="view-body"><div class="faq-grid" id="faqGrid"></div></div>
+      </div>
+    </div>
+
     <div class="chips" id="chips"></div>
 
     <div id="log">
@@ -223,10 +391,12 @@
     });
 
     function selectModule(key) {
+      // 再点一次已选中的卡片 = 收起面板，回到"纯聊天"状态
+      if (currentModule === key) { collapsePanel(); return; }
       currentModule = key;
       // 高亮当前卡片
       document.querySelectorAll(".mod").forEach(d => d.classList.toggle("active", d.dataset.key === key));
-      hint.textContent = `已进入【${MODULES[key].name}】模块，问我吧～`;
+      hint.textContent = `已进入【${MODULES[key].name}】，上面是它的面板；也可以继续在聊天框问我～`;
       // 渲染该模块的示例问题
       chipsBox.innerHTML = "";
       MODULES[key].chips.forEach(q => {
@@ -236,7 +406,8 @@
         c.addEventListener("click", () => sendMsg(q));
         chipsBox.appendChild(c);
       });
-      addMsg("系统", `已切换到【${MODULES[key].name}】模块`, "sys");
+      // 切换主显示面板（不往聊天里塞"已切换"的系统消息——面板本身就是回应）
+      showView(VIEW_OF[key]);
     }
 
     function addMsg(who, content, kind, module) {
@@ -353,6 +524,209 @@
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ message, module, answer }),
       }).catch(() => {});
+    }
+
+    // ============ 主显示面板：卡片点击 → 切换视图（不跳页），聊天框始终保留在下面 ============
+    // 面板里只做"展示 + 快捷提问"，所有 AI 对话仍走同一个 sendMsg，聊天业务逻辑零改动。
+    const VIEW_OF = { schedule: "view-schedule", express: "view-express", takeout: "view-takeout", faq: "view-faq" };
+    const FAQQS = [
+      "图书馆几点关门？", "校车在哪坐、几点发车？", "教务系统网址是多少？怎么选课？",
+      "宿舍晚上几点断电？", "食堂几点开饭？", "校医院在哪、门诊时间？",
+      "怎么申请奖学金？", "学生证丢了怎么补办？", "校园网 WiFi 怎么连？", "快递驿站几点关门？",
+    ];
+
+    // title 属性里可能有引号，这里在 escapeHtml 基础上把双引号也转掉
+    const escQ = s => escapeHtml(String(s)).replace(/"/g, "&quot;");
+
+    function showView(name) {
+      document.querySelectorAll("#panel .view").forEach(v => { v.style.display = "none"; });
+      if (name && name !== "view-default") document.getElementById(name).style.display = "block";
+      // 每次切进来都重新拉数据（比如刚在聊天里确认了待办，切回面板就能看到新的）
+      if (name === "view-schedule") loadScheduleView();
+      if (name === "view-express") loadExpressView();
+      if (name === "view-takeout") loadTakeoutView();
+      if (name === "view-faq") renderFaq();
+    }
+
+    // 收起面板：回到"纯聊天"状态（卡片取消高亮、示例问题清空）
+    function collapsePanel() {
+      currentModule = null;
+      document.querySelectorAll(".mod").forEach(d => d.classList.remove("active"));
+      hint.textContent = "点上面的模块进入对应助手，或直接提问（我会自动识别意图）。";
+      chipsBox.innerHTML = "";
+      showView("view-default");
+    }
+    document.querySelectorAll("#panel .close").forEach(b => b.addEventListener("click", collapsePanel));
+
+    // ---- ① 课表安排：精简版周表 + 月表（数据与 /plan 同源，只读展示；管理去完整版） ----
+    const WD = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"];
+    const isoD = d => d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+    const isoWd = d => d.getDay() === 0 ? 7 : d.getDay();
+    const minsOf = hhmm => { const [h, m] = String(hhmm).split(":").map(Number); return h * 60 + m; };
+    function mondayOf(d) { const t = new Date(d); t.setDate(t.getDate() - (isoWd(d) - 1)); t.setHours(0, 0, 0, 0); return t; }
+
+    let schTab = "week", schWeekOffset = 0, schMonthOffset = 0, schSelDate = null;
+    let schCourses = [], schTodos = [];
+
+    async function loadScheduleView() {
+      try {
+        const t = await (await fetch("/api/timetable")).json(); schCourses = t.courses || [];
+        const td = await (await fetch("/api/todos")).json(); schTodos = td.todos || [];
+      } catch (e) { /* 拉不到就按空数据渲染，不炸面板 */ }
+      renderSchCurrent();
+    }
+    function renderSchCurrent() { if (schTab === "week") renderSchWeek(); else renderSchMonth(); }
+
+    function renderSchWeek() {
+      const base = mondayOf(new Date()); base.setDate(base.getDate() + schWeekOffset * 7);
+      const days = []; for (let i = 0; i < 7; i++) { const d = new Date(base); d.setDate(d.getDate() + i); days.push(d); }
+      const todayIso = isoD(new Date());
+      document.getElementById("schRange").textContent =
+        isoD(days[0]) + " ~ " + isoD(days[6]) + (schWeekOffset === 0 ? "（本周）" : "");
+      let html = '<div class="wk">';
+      days.forEach(d => {
+        const dIso = isoD(d), wd = isoWd(d);
+        // 一天的事件 = 课程（按星期匹配）+ 待办（按日期精确匹配），按开始时间排序
+        const evts = [
+          ...schCourses.filter(c => Number(c.day) === wd).map(c =>
+            ({ s: minsOf(c.start), e: minsOf(c.end), cls: "course", name: c.course, tm: c.start + "-" + c.end, loc: c.location || "" })),
+          ...schTodos.filter(t => t.date === dIso).map(t =>
+            ({ s: minsOf(t.start), e: minsOf(t.end), cls: t.status === "done" ? "todo done" : "todo", name: t.title, tm: t.start + "-" + t.end, loc: "" })),
+        ].filter(x => x.e > x.s).sort((a, b) => a.s - b.s);
+        const inner = evts.map(x =>
+          `<div class="evt ${x.cls}" title="${escQ(x.name)} ${x.tm}">` +
+          `<span class="tm">${x.tm}</span> ${escapeHtml(x.name)}${x.loc ? " · " + escapeHtml(x.loc) : ""}</div>`).join("");
+        html += `<div>
+          <div class="wd ${dIso === todayIso ? "today" : ""}">${WD[wd - 1]}<br><span class="small">${d.getMonth() + 1}/${d.getDate()}</span></div>
+          <div class="day ${dIso === todayIso ? "today" : ""}">${inner || '<div class="empty" style="padding:10px 2px;">无安排</div>'}</div>
+        </div>`;
+      });
+      document.getElementById("schWeek").innerHTML = html + "</div>";
+    }
+
+    function renderSchMonth() {
+      const now = new Date();
+      const v = new Date(now.getFullYear(), now.getMonth() + schMonthOffset, 1);
+      const y = v.getFullYear(), m = v.getMonth();
+      document.getElementById("schRange").textContent = y + " 年 " + (m + 1) + " 月";
+      const first = new Date(y, m, 1), startIdx = isoWd(first) - 1, dim = new Date(y, m + 1, 0).getDate();
+      const byDate = {}; schTodos.forEach(t => { (byDate[t.date] = byDate[t.date] || []).push(t); });
+      const todayIso = isoD(now);
+      let html = '<div class="mcal">' + WD.map(w => `<div class="wd">${w}</div>`).join("");
+      for (let i = 0; i < startIdx; i++) html += '<div class="d out"></div>';
+      for (let d = 1; d <= dim; d++) {
+        const dIso = isoD(new Date(y, m, d)), list = byDate[dIso] || [], isT = dIso === todayIso;
+        let inner = `<div>${d}</div>`;
+        // 非当天显示"N 项"角标；当天直接把待办标题列出来（与 /plan 月表一致的规则）
+        if (list.length && !isT) inner += `<span class="badge">${list.length} 项</span>`;
+        if (isT && list.length) inner += '<div class="titles">' + list.slice(0, 2).map(t =>
+          `<div>${t.start} ${escapeHtml(t.title)}</div>`).join("") + "</div>";
+        html += `<div class="d ${isT ? "today" : ""} ${dIso === schSelDate ? "sel" : ""}" data-date="${dIso}">${inner}</div>`;
+      }
+      document.getElementById("schMonth").innerHTML = html + "</div>";
+      document.querySelectorAll("#schMonth .d[data-date]").forEach(el =>
+        el.addEventListener("click", () => { schSelDate = el.dataset.date; renderSchMonth(); renderSchDay(); }));
+      renderSchDay();
+    }
+
+    function renderSchDay() {
+      const box = document.getElementById("schDayDetail");
+      if (!schSelDate) { box.innerHTML = '<div class="empty">点月历里任意一天，看当天安排</div>'; return; }
+      const list = schTodos.filter(t => t.date === schSelDate).sort((a, b) => a.start.localeCompare(b.start));
+      box.innerHTML = list.length
+        ? `<b style="font-size:13px;">${schSelDate} 的待办</b>` + list.map(t =>
+            `<div class="evt todo ${t.status === "done" ? "done" : ""}" style="font-size:12px;margin-top:6px;white-space:normal;">${t.start}-${t.end} ${escapeHtml(t.title)}</div>`).join("")
+        : `<div class="empty">${schSelDate} 还没有待办</div>`;
+    }
+
+    document.getElementById("tabWeek").addEventListener("click", () => { schTab = "week"; setSchTab(); });
+    document.getElementById("tabMonth").addEventListener("click", () => { schTab = "month"; setSchTab(); });
+    function setSchTab() {
+      document.getElementById("tabWeek").classList.toggle("active", schTab === "week");
+      document.getElementById("tabMonth").classList.toggle("active", schTab === "month");
+      document.getElementById("schWeek").style.display = schTab === "week" ? "block" : "none";
+      document.getElementById("schMonth").style.display = schTab === "month" ? "block" : "none";
+      document.getElementById("schDayDetail").style.display = schTab === "month" ? "block" : "none";
+      renderSchCurrent();
+    }
+    document.getElementById("schPrev").addEventListener("click", () => { if (schTab === "week") schWeekOffset--; else schMonthOffset--; renderSchCurrent(); });
+    document.getElementById("schNext").addEventListener("click", () => { if (schTab === "week") schWeekOffset++; else schMonthOffset++; renderSchCurrent(); });
+
+    // ---- ② 快递：包裹列表 + 工单（工单记录存 localStorage，学生端无账号体系） ----
+    async function loadExpressView() {
+      const box = document.getElementById("expList");
+      try {
+        const d = await (await fetch("/api/express")).json();
+        const pkgs = d.packages || [];
+        box.innerHTML = pkgs.length ? pkgs.map(p => {
+          const cls = p.label === "滞留" ? "stay" : (p.label === "已取" ? "done" : "wait");
+          const stay = p.label === "滞留" ? `（已 ${p.stay_days} 天）` : "";
+          return `<div class="row">
+            <span class="st ${cls}">${p.label}${stay}</span>
+            <span class="code">${escapeHtml(p.pickup_code)}</span>
+            <span class="info">${escapeHtml(p.item)}<div class="sub">${escapeHtml(p.station)} · 到件 ${p.arrived_at}</div></span>
+          </div>`;
+        }).join("") : '<div class="empty">暂无快递记录</div>';
+      } catch (e) { box.innerHTML = '<div class="empty">快递数据加载失败</div>'; }
+      renderWorkOrders();
+    }
+
+    function myWorkOrders() {
+      try { return JSON.parse(localStorage.getItem("campustime_workorders") || "[]"); }
+      catch (e) { return []; }
+    }
+    function renderWorkOrders() {
+      const list = myWorkOrders().slice().reverse(); // 最新在前
+      const box = document.getElementById("woList");
+      box.innerHTML = list.length ? list.map(w => `
+        <div class="wo-item">
+          <span class="st wait">已提交</span>
+          <span class="t">${escapeHtml(w.type)}<div class="sub">${escapeHtml(w.desc || "（无补充描述）")} · ${w.ts}</div></span>
+          <button class="mini" data-wo="${escQ(w.id)}">让管家跟进</button>
+        </div>`).join("") : '<div class="empty">还没有提交过工单</div>';
+      box.querySelectorAll(".mini").forEach(b => b.addEventListener("click", () => {
+        const w = myWorkOrders().find(x => x.id === b.dataset.wo);
+        if (w) sendMsg(`我的快递工单（${w.ts} 提交）：${w.type} —— ${w.desc || "无补充描述"}。请帮我跟进处理。`);
+      }));
+    }
+    document.getElementById("woSubmit").addEventListener("click", () => {
+      const list = myWorkOrders();
+      list.push({
+        id: "w" + Date.now(),
+        ts: new Date().toLocaleString("zh-CN", { hour12: false }),
+        type: document.getElementById("woType").value,
+        desc: document.getElementById("woDesc").value.trim(),
+        status: "已提交",
+      });
+      localStorage.setItem("campustime_workorders", JSON.stringify(list));
+      document.getElementById("woDesc").value = "";
+      renderWorkOrders();
+    });
+
+    // ---- ③ 外卖：订单列表 ----
+    async function loadTakeoutView() {
+      const box = document.getElementById("tkList");
+      try {
+        const d = await (await fetch("/api/takeout")).json();
+        const orders = d.orders || [];
+        box.innerHTML = orders.length ? orders.map(o => {
+          const cls = o.status === "制作中" ? "cook" : (o.status === "配送中" ? "move" : "wait");
+          return `<div class="row">
+            <span class="st ${cls}">${escapeHtml(o.status)}</span>
+            <span class="info"><b>${escapeHtml(o.shop)}</b> · ${escapeHtml(o.items)}
+              <div class="sub">预计 ${o.eta} · ${escapeHtml(o.pickup_point)}${o.pickup_code ? " · 取餐码 " + escapeHtml(o.pickup_code) : ""}</div></span>
+          </div>`;
+        }).join("") : '<div class="empty">暂无外卖订单</div>';
+      } catch (e) { box.innerHTML = '<div class="empty">外卖数据加载失败</div>'; }
+    }
+
+    // ---- ④ 校园问答：高频问题按钮墙（点击即发送，答案从知识库检索） ----
+    function renderFaq() {
+      const g = document.getElementById("faqGrid");
+      if (g.dataset.done) return; // 只渲染一次
+      g.innerHTML = FAQQS.map(q => `<button class="faq-btn">${escapeHtml(q)}</button>`).join("");
+      g.querySelectorAll(".faq-btn").forEach((b, i) => b.addEventListener("click", () => sendMsg(FAQQS[i])));
+      g.dataset.done = "1";
     }
 
     // ---------- 校园通知（管理员发布，学生看到，含附件可下载） ----------

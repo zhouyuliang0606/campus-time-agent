@@ -33,6 +33,9 @@ from app.store import (
 from app.modules.faq import SYSTEM_PROMPT as FAQ_PROMPT, build_tools as faq_tools
 from app.modules.express import SYSTEM_PROMPT as EXPRESS_PROMPT, build_tools as express_tools
 from app.modules.takeout import SYSTEM_PROMPT as TAKEOUT_PROMPT, build_tools as takeout_tools
+# 学生端卡片视图的只读数据源（人话：给面板展示用的，不参与 AI 对话）
+from app.modules.express import packages_view as express_packages_view
+from app.modules.takeout import orders_view as takeout_orders_view
 from app.modules.files import build_tools as files_tools
 from app.modules.station import build_system_prompt as STATION_PROMPT, build_tools as station_tools
 # planner 也是"可调用提示"：每次对话都要把**今天的日期**动态拼进去，
@@ -501,6 +504,22 @@ async def chat_reset(req: Request):
     if sid:
         clear_conversation(sid)
     return {"ok": True}
+
+
+# ============ 学生端卡片视图：快递/外卖只读展示 ============
+# 这两个接口只做"把结构化数据读给前端面板看"这一件事：
+# AI 对话仍走 /api/chat + 各模块工具，读写逻辑一概不经过这里。
+
+@app.get("/api/express")
+async def express_view():
+    """学生端快递卡片的数据源（只读，状态标签已按到件天数实时算好）。"""
+    return {"packages": express_packages_view()}
+
+
+@app.get("/api/takeout")
+async def takeout_view():
+    """学生端外卖卡片的数据源（只读）。"""
+    return {"orders": takeout_orders_view()}
 
 
 def _render(name: str) -> HTMLResponse:
