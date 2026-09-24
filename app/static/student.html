@@ -88,6 +88,64 @@
     }
     .attach:hover { background: #eef2ff; }
     .tag { display:inline-block; font-size:11px; background:#eef2ff; color:#4f7cff; border-radius:6px; padding:1px 6px; margin-left:6px;}
+
+    /* 学生助手性格选择栏（自己挑一个聊天腔调，本地记住） */
+    .persona-bar {
+      display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+      background: #fff; border-radius: 12px; padding: 10px 14px; margin-bottom: 12px;
+      box-shadow: 0 4px 16px rgba(40,60,120,.06);
+    }
+    .persona-bar .lbl { font-size: 13px; color: #6a7388; margin-right: 2px; }
+    .persona {
+      display: inline-flex; align-items: center; gap: 6px; cursor: pointer;
+      border: 1.5px solid #d8def0; border-radius: 18px; padding: 5px 12px; font-size: 13px;
+      background: #fff; color: #1f2733; transition: .15s; user-select: none;
+    }
+    .persona:hover { border-color: #4f7cff; }
+    .persona.active { border-color: #4f7cff; background: #eef2ff; color: #3457d5; font-weight: 600; }
+    .persona .em { font-size: 15px; }
+
+    /* "正在思考…" 底部提示（取代思考轨迹） */
+    .thinking {
+      display: none; align-items: center; gap: 8px; margin: 4px 0 12px; font-size: 13px; color: #6a7388;
+    }
+    .thinking.show { display: flex; }
+    .thinking .dots span {
+      display: inline-block; width: 6px; height: 6px; margin: 0 1px; border-radius: 50%; background: #9aa6c0;
+      animation: blink 1.2s infinite both;
+    }
+    .thinking .dots span:nth-child(2) { animation-delay: .2s; }
+    .thinking .dots span:nth-child(3) { animation-delay: .4s; }
+    @keyframes blink { 0%,80%,100% { opacity: .25; } 40% { opacity: 1; } }
+
+    /* 候选时间段卡片（可勾选） */
+    .options { margin-top: 10px; border-top: 1px dashed #d8def0; padding-top: 10px; }
+    .opt-card {
+      display: flex; align-items: flex-start; gap: 10px; background: #f7f9ff; border: 1.5px solid #e1e7f7;
+      border-radius: 10px; padding: 10px 12px; margin-bottom: 8px; cursor: pointer; transition: .15s;
+    }
+    .opt-card:hover { border-color: #4f7cff; }
+    .opt-card.checked { border-color: #4f7cff; background: #eef2ff; }
+    .opt-card input { margin-top: 3px; width: 16px; height: 16px; accent-color: #4f7cff; cursor: pointer; flex: none; }
+    .opt-card .info { font-size: 13px; line-height: 1.5; }
+    .opt-card .info b { color: #3457d5; }
+    .opt-card .info .meta { color: #6a7388; font-size: 12px; margin-top: 2px; }
+    .opt-hint { font-size: 12px; color: #6a7388; margin-bottom: 6px; }
+    .confirm-btn {
+      margin-top: 4px; padding: 8px 16px; border: none; border-radius: 10px; cursor: pointer;
+      background: #4f7cff; color: #fff; font-size: 13px;
+    }
+    .confirm-btn:disabled { opacity: .5; cursor: not-allowed; }
+
+    /* 语音输入按钮 */
+    .mic {
+      padding: 0 14px; border: 1px solid #d8def0; background: #fff; color: #4f7cff;
+      border-radius: 10px; cursor: pointer; font-size: 18px; line-height: 1;
+    }
+    .mic:hover { background: #eef2ff; }
+    .mic.recording { background: #ffe1e1; color: #e23a3a; border-color: #ffb3b3; animation: pulse 1s infinite; }
+    @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .6; } }
+
     @media (max-width: 600px) { .modules { grid-template-columns: repeat(2, 1fr); } }
   </style>
 </head>
@@ -99,6 +157,12 @@
   </header>
 
   <div class="wrap">
+    <!-- 学生助手性格：自己挑一个聊天的腔调（选择本地记住，随对话发给后端） -->
+    <div class="persona-bar" id="personaBar">
+      <span class="lbl">🎭 助手性格：</span>
+      <!-- 性格按钮由 JS 从 /api/student-personas 动态生成 -->
+    </div>
+
     <!-- 校园通知（管理员在控制台发布，含附件可直接下载） -->
     <div class="notices">
       <div class="notices-head" id="noticesHead">
@@ -121,10 +185,17 @@
       </div>
     </div>
 
+    <!-- "正在思考…" 底部提示：替代原来的思考轨迹，等 AI 回话时显示 -->
+    <div class="thinking" id="thinking">
+      <span>🤖 正在思考…</span>
+      <span class="dots"><span></span><span></span><span></span></span>
+    </div>
+
     <div class="inputbar">
       <input type="file" id="file" style="display:none;" />
       <button class="attach" id="attach" title="上传资料给管家读">📎</button>
-      <input id="text" placeholder="说点什么…" />
+      <button class="mic" id="mic" title="语音输入（中文）">🎤</button>
+      <input id="text" placeholder="说点什么…（可点 🎤 语音输入）" />
       <button id="send">发送</button>
     </div>
   </div>
@@ -174,22 +245,61 @@
       addMsg("系统", `已切换到【${MODULES[key].name}】模块`, "sys");
     }
 
-    function addMsg(who, content, kind, trace, module) {
+    function addMsg(who, content, kind, module) {
       const el = document.createElement("div");
       el.className = "msg " + (kind === "sys" ? "sys" : (who === "我" ? "user" : "bot"));
       let html = `<div class="who">${who}${module ? `<span class="tag">${module}</span>` : ""}</div>`;
       html += `<div class="bubble">${escapeHtml(content)}</div>`;
-      if (trace && trace.length) {
-        const lines = trace.map(t => {
-          if (t.action) return `${t.phase || ""} ${t.action}(${JSON.stringify(t.args || {})})`;
-          if (t.answer) return `${t.phase || ""} ${t.answer}`;
-          return t.phase || "";
-        }).join("\n");
-        html += `<div class="trace">🧠 Agent 思考轨迹：\n${escapeHtml(lines)}</div>`;
-      }
+      // 注意：学生端**不展示** Agent 思考轨迹（避免吓到非技术评委）；
+      // 取而代之的是底部「正在思考…」提示，藏在 sendMsg 里。
       el.innerHTML = html;
       log.appendChild(el);
       log.scrollTop = log.scrollHeight;
+      return el;
+    }
+
+    // 把后端返回的候选时间段（options）渲染成可勾选卡片 + 「确认所选」按钮。
+    // 学生勾选后点确认，前端把「确认：日期 起-止 标题」发回，后端识别到日期时间就真的写入日程。
+    function renderOptions(container, options) {
+      const wrap = document.createElement("div");
+      wrap.className = "options";
+      const hint = document.createElement("div");
+      hint.className = "opt-hint";
+      hint.textContent = "勾选你想要的时间，点「确认所选」即可排入日程：";
+      wrap.appendChild(hint);
+
+      const cards = [];
+      options.forEach(o => {
+        const card = document.createElement("label");
+        card.className = "opt-card";
+        const cb = document.createElement("input");
+        cb.type = "checkbox";
+        cb.addEventListener("change", () => card.classList.toggle("checked", cb.checked));
+        const info = document.createElement("div");
+        info.className = "info";
+        info.innerHTML =
+          `<b>${escapeHtml(o.title || "待办")}</b>` +
+          `<div class="meta">${escapeHtml(o.date)}（${escapeHtml(o.weekday || "")}）` +
+          ` ${escapeHtml(o.start)}-${escapeHtml(o.end)} · 约 ${o.minutes != null ? o.minutes : "?"} 分钟</div>`;
+        card.appendChild(cb);
+        card.appendChild(info);
+        wrap.appendChild(card);
+        cards.push({ cb, opt: o });
+      });
+
+      const btn = document.createElement("button");
+      btn.className = "confirm-btn";
+      btn.textContent = "✅ 确认所选";
+      btn.addEventListener("click", () => {
+        const picked = cards.filter(c => c.cb.checked).map(c => c.opt);
+        if (!picked.length) { alert("先勾选至少一个时间段～"); return; }
+        // 每个选中项拼成「确认 日期 起-止 标题」，后端（Mock/真模型）识别日期时间即写入
+        const msg = picked.map(o => `确认 ${o.date} ${o.start}-${o.end} ${o.title || "待办"}`).join("\n");
+        wrap.remove(); // 清掉卡片，避免重复提交
+        sendMsg(msg);
+      });
+      wrap.appendChild(btn);
+      container.appendChild(wrap);
     }
 
     function escapeHtml(s) {
@@ -204,26 +314,38 @@
       return sid;
     }
 
+    // 底部「正在思考…」指示器
+    const thinkingEl = document.getElementById("thinking");
+    function showThinking(show) { thinkingEl.classList.toggle("show", !!show); }
+
     async function sendMsg(msg) {
-      if (!msg.trim()) return;
+      if (!msg || !msg.trim()) return;
       addMsg("我", msg);
       text.value = "";
       send.disabled = true;
+      showThinking(true); // 等待期间显示「正在思考…」，不展示内部轨迹
       try {
         const body = { message: msg, session_id: sessionId() };
         if (currentModule) body.module = currentModule; // 显式锁定模块
+        // 随对话带上学生自选的助手性格（本地记住的 key）
+        const pk = localStorage.getItem("campustime_persona");
+        if (pk) body.persona = pk;
         const resp = await fetch("/api/chat", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(body),
         });
         const data = await resp.json();
+        showThinking(false);
         if (data.error) addMsg("管家", "出错了：" + data.error);
         else {
-          addMsg("管家", data.answer, "bot", data.trace, data.module);
+          const el = addMsg("管家", data.answer, "bot", data.module);
+          // 规划模块回了候选 → 渲染成可勾选卡片（学生点卡片才真正写入日程）
+          if (data.options && data.options.length) renderOptions(el, data.options);
           logToAdmin(msg, data.module, data.answer); // 上报给管理员收件箱
         }
       } catch (e) {
+        showThinking(false);
         addMsg("管家", "网络或接口异常：" + e.message);
       } finally {
         send.disabled = false;
@@ -308,9 +430,61 @@
     send.addEventListener("click", () => sendMsg(text.value));
     text.addEventListener("keydown", e => { if (e.key === "Enter") sendMsg(text.value); });
 
+    // ---------- 学生助手性格选择栏（从后端拉三套预设，本地记住选择） ----------
+    async function loadPersonas() {
+      const bar = document.getElementById("personaBar");
+      let personas = [];
+      try {
+        personas = (await (await fetch("/api/student-personas")).json()).personas || [];
+      } catch (e) { return; }
+      if (!personas.length) return;
+      // 默认选中：上次选过的，或第一套（靠谱学长）
+      const saved = localStorage.getItem("campustime_persona") || personas[0].key;
+      localStorage.setItem("campustime_persona", saved);
+      personas.forEach(p => {
+        const b = document.createElement("span");
+        b.className = "persona" + (p.key === saved ? " active" : "");
+        b.dataset.key = p.key;
+        b.title = p.desc || "";
+        b.innerHTML = `<span class="em">${p.emoji || ""}</span>${escapeHtml(p.name)}`;
+        b.addEventListener("click", () => {
+          localStorage.setItem("campustime_persona", p.key);
+          document.querySelectorAll(".persona").forEach(x => x.classList.toggle("active", x.dataset.key === p.key));
+          addMsg("系统", `已切换为【${p.name}】风格，接下来我就用这个腔调和你聊～`, "sys");
+        });
+        bar.appendChild(b);
+      });
+    }
+
+    // ---------- 语音输入（Web Speech API，中文；不支持则隐藏按钮） ----------
+    function initVoice() {
+      const mic = document.getElementById("mic");
+      const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+      if (!SR) { mic.style.display = "none"; return; } // 浏览器不支持就直接隐藏
+      const rec = new SR();
+      rec.lang = "zh-CN";
+      rec.interimResults = false;
+      rec.maxAlternatives = 1;
+      let recording = false;
+      mic.addEventListener("click", () => { if (recording) rec.stop(); else { try { rec.start(); } catch (e) {} } });
+      rec.onstart = () => { recording = true; mic.classList.add("recording"); };
+      rec.onend = () => { recording = false; mic.classList.remove("recording"); };
+      rec.onerror = (e) => {
+        recording = false; mic.classList.remove("recording");
+        if (e.error === "not-allowed") alert("麦克风权限被拒绝，请在浏览器允许后重试。");
+      };
+      rec.onresult = (ev) => {
+        const txt = (ev.results && ev.results[0] && ev.results[0][0].transcript) || "";
+        if (txt) { text.value = (text.value ? text.value + " " : "") + txt; text.focus(); }
+      };
+    }
+
     // 进页面拉一次通知，之后每 30 秒刷新（管理员新发的通知会自己冒出来）
     loadNotices();
     setInterval(loadNotices, 30000);
+    // 拉性格预设并渲染选择栏；初始化语音输入
+    loadPersonas();
+    initVoice();
   </script>
 </body>
 </html>
