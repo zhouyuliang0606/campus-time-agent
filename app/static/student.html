@@ -143,9 +143,10 @@
       z-index: 90; align-items: center; justify-content: center; padding: 20px;
     }
     .mask.show { display: flex; }
-    /* 弹窗内容由 /confirm 这个独立页面承载（需求：弹窗为单独 ui 页面） */
+    /* 弹窗内容由 /confirm 这个独立页面承载（需求：弹窗为单独 ui 页面）。
+       高度收窄：弹窗只放变更摘要 + 确认/取消，不放整张课表清单 */
     .cf-frame {
-      width: min(460px, 100%); height: 340px;
+      width: min(420px, 100%); height: 300px;
       border: 0; border-radius: 14px; background: #fff;
       box-shadow: 0 18px 48px rgba(20, 26, 45, .28);
     }

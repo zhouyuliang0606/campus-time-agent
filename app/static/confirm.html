@@ -102,6 +102,9 @@ const cancelBtn = document.getElementById("cfCancel");
 let current = null;   // 当前这份提案
 let busy = false;
 
+// 各类提案上确认按钮的文字（render 里要引用，先声明一个取值函数）
+function k_confirm(p) { return (KIND[p.kind] || {}).confirm || "确认"; }
+
 const KIND = {
   timetable_clear: {
     icon: "🗑️", title: "清空整张课表", confirm: "确认清空", danger: true,
@@ -124,13 +127,11 @@ const KIND = {
     icon: "📚", title: "课表变更", confirm: "确认变更", danger: false,
     render(p) {
       const cs = Array.isArray(p.courses) ? p.courses : [];
-      const day = ["", "周一", "周二", "周三", "周四", "周五", "周六", "周日"];
-      const rows = cs.slice(0, 12).map(c =>
-        `<li>${day[Number(c.day) || 0] || ("第" + c.day + "天")} ${esc(c.start)}-${esc(c.end)}
-          《${esc(c.course)}》${c.location ? " @ " + esc(c.location) : ""}</li>`).join("");
+      // 学生只要"确认/取消"两个字：一句话说清改了什么 + 变更后几门课，足够了。
+      // 之前把整张新课表 11 门全列出来，弹窗被撑到一屏高，按钮都挤没了。
       return `<p class="summary">${esc(p.summary || "课表变更")}</p>
-        <div class="meta">变更后共 <b>${cs.length}</b> 门课${rows ? "：" : ""}</div>
-        ${rows ? `<ul class="courses">${rows}</ul>` : ""}`;
+        <div class="meta">确认后周表共 <b>${cs.length}</b> 门课。</div>
+        <div class="dlg-warn">点【${esc(k_confirm(p))}】才写入周表；点【取消】原封不动。</div>`;
     },
     async apply(p) {
       return api("POST", "/api/timetable/apply",
