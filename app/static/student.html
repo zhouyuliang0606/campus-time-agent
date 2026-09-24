@@ -262,9 +262,15 @@
 </head>
 <body>
   <header>
-    <h1>校园时间管家 · 学生端 <a href="/settings" style="font-size:13px;color:#fff;float:right;opacity:.9;text-decoration:none;" title="助手设置">⚙ 设置</a></h1>
+    <!-- 头部用 flex 排：标题居左，两个入口按钮居右。
+         之前用 float + 负 margin 让「完整日程」叠在标题行右侧，点击区域会被
+         右浮的「设置」压住——点上去没反应。flex 布局后互不遮挡。 -->
+    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+      <h1 style="margin:0;font-size:20px;flex:1;">校园时间管家 · 学生端</h1>
+      <a href="/plan" style="color:#fff;font-size:13px;text-decoration:none;background:rgba(255,255,255,.18);padding:5px 12px;border-radius:8px;">📅 完整日程</a>
+      <a href="/settings" style="color:#fff;font-size:13px;text-decoration:none;background:rgba(255,255,255,.18);padding:5px 12px;border-radius:8px;" title="助手设置">⚙ 设置</a>
+    </div>
     <p>一个入口办四件事：我的日程 · 校园问答 · 快递 · 外卖</p>
-    <a href="/plan" style="float:right;margin-top:-26px;color:#fff;font-size:13px;opacity:.95;text-decoration:none;background:rgba(255,255,255,.18);padding:4px 12px;border-radius:8px;">📅 完整日程 →</a>
   </header>
 
   <div class="wrap">
