@@ -1,4 +1,4 @@
-"""加课 / 加待办 / 会话历史：三条"说了却看不到结果"的链路回归护栏。
+"""加课 / 加待办 / 会话历史 / 清理聊天记录：四条"说了却看不到结果"的链路回归护栏。
 
 为什么单独成一批？
     学生报过一次：「跟客服说了加课、加代办，回复已经加上，但日程里啥都没有，
@@ -10,7 +10,9 @@
       2. 配了大模型密钥后跑的是真模型，模型最爱说"已经加上了"，其实一个字没写；
       3. 学生端只往 sessions.json 里写、从不读回来 → 刷新即失忆。
 
-    这一批把三条链路钉死：系统算出提案（不写库）→ 学生点头 → 系统写入 → 前端能刷新看到。
+    这一批把前三条链路钉死：系统算出提案（不写库）→ 学生点头 → 系统写入 → 前端能刷新看到。
+    第四批（清理聊天记录）说的是同一类事的另一头——删数据只能由学生点按钮触发后端，
+    AI 既调不到、也无权替学生决定。两条合起来："写了要看得见，删了要真删掉"。
 """
 import datetime
 import json as _json
@@ -235,14 +237,114 @@ def test_conversation_history():
     return c.summary("第三批（会话历史恢复）")
 
 
+def test_clear_conversation():
+    """第四批：清理聊天记录——学生亲手点按钮，AI 碰不到。
+
+    为什么要守这条：清空课表那条规矩已经被学生投诉过一回，聊天记录是同一类事——
+    删数据只能由学生点按钮触发后端。AI 既调不到这个接口，也没权替学生决定
+    这段对话要不要留着；它要是在回答里说"我帮你清了"，那纯属撒谎。
+
+    顺手要钉住两件容易被绕过去的事：
+      · 清完必须换新的 session id，不然学生一按 F5，restoreHistory 又把旧的捞回来，
+        "清了跟没清一个样"；
+      · 清掉这段对话时，挂在暂存里的那张确认卡要一起作废，
+        否则学生手滑再回一句「确认」，系统照着一张早已无人认领的提案去写库。
+    """
+    title("4. 清理聊天记录：按钮触发后端，课表待办不受影响")
+    c = Checker()
+    from app.agent.pending import clear_pending, peek_pending, save_pending
+    from app.store import (append_conversation, get_conversation, get_timetable,
+                           list_todos, save_timetable)
+
+    with sandbox():
+        client = make_client()
+        seed_timetable()
+        today = datetime.date.today().isoformat()
+
+        # —— ① 先把一段"聊过天"的局面造出来：3 条记录 + 1 张待确认提案 ——
+        sid = "clear-chat-1"
+        append_conversation(sid, "user", "帮我看下这周空档")
+        append_conversation(sid, "assistant", "周六整天都空着")
+        append_conversation(sid, "user", "那就周六加一节体育")
+        save_pending(sid, [{"kind": "todo_add", "title": "体育", "date": today,
+                            "start": "19:00", "end": "20:30"}])
+        n_tt = len(get_timetable())
+        n_todo = len(list_todos(today))
+        c.check("前置：会话里确实有 3 条", len(get_conversation(sid)) == 3,
+                f"{len(get_conversation(sid))} 条")
+        c.check("前置：暂存里确实挂着一张待确认卡", peek_pending(sid) is not None)
+
+        # —— ② 学生点【清空记录】：后端执行 ——
+        r = client.post("/api/chat/reset", json={"session_id": sid})
+        d = r.json() if r.headers.get("content-type", "").startswith("application/json") else {}
+        c.check("/api/chat/reset 返回 200", r.status_code == 200, r.status_code)
+        c.check("回执里报了清掉几条", d.get("removed") == 3, str(d))
+
+        c.check("服务器上这段历史真的没了", get_conversation(sid) == [],
+                f"还剩 {len(get_conversation(sid))} 条")
+        c.check("读回接口也跟着空了",
+                client.get(f"/api/conversation/{sid}").json().get("messages") == [])
+        c.check("暂存里的那张确认卡一起作废",
+                peek_pending(sid) is None, str(peek_pending(sid))[:60])
+
+        # —— ③ 课表和待办一根汗毛都不许掉 ——
+        c.check("课表没被顺手删掉", len(get_timetable()) == n_tt,
+                f"{n_tt} → {len(get_timetable())} 门")
+        c.check("待办没被顺手删掉", len(list_todos(today)) == n_todo,
+                f"{n_todo} → {len(list_todos(today))} 条")
+
+        # —— ④ 作废之后，学生再回一句「确认」也不能写出东西 ——
+        #     这条是整批里最重要的一条：提案已经随会话一起没了，
+        #     系统不许再照着一张没人认领的卡去写库。
+        #
+        #     顺带说明「确认」这句话本身会怎样：它被当成了新的一轮请求，
+        #     planner 又算出来一张空档卡——这没关系，重要的是**旧的那张不见了**，
+        #     系统不可能再拿它去写库。所以断言盯的是"旧提案没有被复活"，
+        #     而不是"一张卡都不能有"（那样会把正常的追问也一起误伤）。
+        r2 = client.post("/api/chat", json={
+            "message": "确认", "module": "planner", "session_id": sid,
+        })
+        c.check("清空后再说【确认】没写出东西",
+                not any(t["title"] == "体育" for t in list_todos(today)),
+                [t["title"] for t in list_todos(today)])
+        after = peek_pending(sid)
+        old_card = [o for o in ((after or {}).get("options") or [])
+                    if o.get("title") == "体育" or o.get("start") == "19:00"]
+        c.check("被清空的那张卡没有复活",
+                not old_card,
+                _json.dumps(after, ensure_ascii=False)[:80])
+
+        # —— ⑤ 别的表动得动，别把别的会话误伤了 ——
+        append_conversation("clear-other", "user", "这条要留着")
+        client.post("/api/chat/reset", json={"session_id": sid})
+        c.check("清 A 会话不会连累 B 会话",
+                any(m["content"] == "这条要留着" for m in get_conversation("clear-other")))
+
+        # —— ⑥ 手滑参数不能把服务打崩 ——
+        c.check("空 session_id 不炸",
+                client.post("/api/chat/reset", json={"session_id": ""}).status_code == 200)
+        r3 = client.post("/api/chat/reset", json={"session_id": ""})
+        c.check("空 session_id 报删了 0 条", r3.json().get("removed") == 0, str(r3.json()))
+        r4 = client.post("/api/chat/reset", json={"session_id": "x" * 200})
+        c.check("超长 session_id 被忽略且不炸（返回 0 条）",
+                r4.json().get("removed") == 0, str(r4.json())[:60])
+        c.check("清一个从没聊过的会话也只是空操作",
+                client.post("/api/chat/reset", json={"session_id": "never-chatted"}).json()
+                .get("removed") == 0)
+
+        clear_pending("clear-other")
+    return c.summary("第四批（清理聊天记录）")
+
+
 def main():
     global code
     print("\n" + "=" * 60)
-    print("test_06_add_things：加课 / 加待办 / 会话历史")
+    print("test_06_add_things：加课 / 加待办 / 会话历史 / 清理记录")
     print("=" * 60)
     code |= test_add_todo_pipeline()
     code |= test_add_course_pipeline()
     code |= test_conversation_history()
+    code |= test_clear_conversation()
     return code
 
 

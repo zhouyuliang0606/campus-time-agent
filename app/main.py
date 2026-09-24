@@ -952,13 +952,22 @@ async def conversation_get(sid: str):
 
 @app.post("/api/chat/reset")
 async def chat_reset(req: Request):
-    """清空一段会话（人话：聊跑偏了或想重开一局时用）。"""
+    """清空一段会话（人话：聊跑偏了或想重开一局时用）。
+
+    学生是自己点了界面上的【清空记录】才走到这儿的——
+    跟清空课表一个道理：删数据这件事只能由学生亲手点的按钮触发，AI 碰不到。
+
+    为什么顺手清掉待确认提案：会话都不要了，那张卡还挂在暂存里，
+    学生手滑再回一句「确认」，系统就会照着一张早已无人认领的提案去写库。
+    """
     body = await req.json()
     sid = (body.get("session_id") or "").strip()
-    if sid:
-        clear_conversation(sid)
-        clear_pending(sid)  # 会话清了，待确认的提案也作废，免得下次"确认"误伤
-    return {"ok": True}
+    if not sid or len(sid) > 64:
+        return {"ok": True, "removed": 0}
+    before = len(get_conversation(sid))
+    clear_conversation(sid)
+    clear_pending(sid)
+    return {"ok": True, "removed": before}
 
 
 # ============ 学生端卡片视图：快递/外卖只读展示 ============

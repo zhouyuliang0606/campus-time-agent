@@ -409,8 +409,27 @@
       <input type="file" id="file" style="display:none;" />
       <button class="attach" id="attach" title="上传资料给管家读">📎</button>
       <button class="mic" id="mic" title="语音输入（中文）">🎤</button>
+      <button class="mic" id="clearChat" title="清空与管家的聊天记录">🧹</button>
       <input id="text" placeholder="说点什么…（可点 🎤 语音输入）" />
       <button id="send">发送</button>
+    </div>
+
+    <!-- 清空聊天记录确认弹窗：跟清空课表一个规矩，学生亲手点【清空】才会调后端 -->
+    <div id="chatResetMask" class="mask">
+      <div class="dlg" role="dialog" aria-modal="true" aria-labelledby="chatResetTitle">
+        <div class="dlg-head" id="chatResetTitle">🧹 清空与管家的聊天记录</div>
+        <div class="dlg-body">
+          <p id="chatResetSummary" style="margin:0 0 8px;line-height:1.6;"></p>
+          <div class="dlg-warn">
+            删掉的是<b>这段对话的记录</b>，清完就从新的一段对话开始。<br />
+            <b>课表和日程不受影响</b>，已排进去的课和可待办都还在。
+          </div>
+        </div>
+        <div class="dlg-foot">
+          <button class="dlg-btn ghost" id="chatResetCancel">取消</button>
+          <button class="dlg-btn danger" id="chatResetOk">清空记录</button>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -1186,6 +1205,70 @@
         addMsg(who, m.content || "", m.role === "user" ? "user" : "bot");
       }
     }
+
+    // ---------- 清空与管家的聊天记录 ----------
+    // 规矩跟清空课表一模一样：只有学生亲手点【清空记录】才会去调后端，
+    // AI 既调不到这个接口，也没权替学生决定这段对话要不要保留。
+    const chatResetMask = document.getElementById("chatResetMask");
+    const greetEl = log.querySelector(".msg.bot");   // 开场白那条，清完得留着
+
+    function chatMsgCount() {
+      const n = log.querySelectorAll(".msg").length;
+      return greetEl ? Math.max(0, n - 1) : n;       // 减去开场白
+    }
+
+    function openChatReset() {
+      const n = chatMsgCount();
+      document.getElementById("chatResetSummary").innerHTML =
+        `当前这段对话里有 <b>${n} 条</b>消息。` +
+        (n <= 0
+          ? "现在还只有开场白，暂时没什么可清的。"
+          : "清空之后它们就都消失了，找不回来。");
+      chatResetMask.classList.add("show");
+      document.getElementById("chatResetCancel").focus();
+    }
+
+    function closeChatReset() { chatResetMask.classList.remove("show"); }
+
+    async function doClearChat() {
+      try {
+        const r = await fetch("/api/chat/reset", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ session_id: sessionId() }),
+        });
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok || d.ok === false) {
+          addMsg(botName(), "清空没成功，聊天记录原样保留，请再试一次。", "bot");
+          closeChatReset();
+          return;
+        }
+        // 服务器上那段历史已经没了，屏幕上也要回到"刚打开页面"的样子
+        if (greetEl) {
+          Array.from(log.children).forEach(el => { if (el !== greetEl) el.remove(); });
+        }
+        // 最关键的一步：换一个新的 session id。
+        // 不换的话，学生一按 F5，restoreHistory 又把旧记录一条条捞回来了，
+        // 清了跟没清一个样——这正是"刷新后记录又冒出来"的老毛病。
+        localStorage.setItem("campustime_session",
+          "s" + Math.random().toString(16).slice(2, 12));
+        addMsg(botName(), "好的，我们已经开始一段新的对话，之前那段记录我帮你清掉了。", "bot");
+        await loadScheduleView();          // 课表/日程不受影响，顺手确认一下还在
+      } catch (e) {
+        addMsg(botName(), "清空没成功，聊天记录原样保留，请再试一次。", "bot");
+      }
+      closeChatReset();
+    }
+
+    document.getElementById("clearChat").addEventListener("click", openChatReset);
+    document.getElementById("chatResetCancel").addEventListener("click", closeChatReset);
+    document.getElementById("chatResetOk").addEventListener("click", doClearChat);
+    chatResetMask.addEventListener("click", e => {
+      if (e.target === chatResetMask) closeChatReset();
+    });
+    document.addEventListener("keydown", e => {
+      if (e.key === "Escape" && chatResetMask.classList.contains("show")) closeChatReset();
+    });
 
     // 初始化语音输入
     initVoice();
