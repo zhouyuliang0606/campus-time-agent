@@ -51,7 +51,7 @@ app = FastAPI(title="校园时间管家 CampusTime", version="0.1.0")
 check_config()
 
 # —— 模块注册表（人话：每个模块在这里登记一下，路由命中后就能取用）——
-# 学生端四个模块：课表安排 / 校园问答 / 快递 / 外卖。以后加驿站侧、管理台照此加一行。
+# 学生端四个模块：我的日程 / 校园问答 / 快递 / 外卖。以后加驿站侧、管理台照此加一行。
 REGISTRY: dict[str, tuple[Any, Any]] = {
     "schedule": (SCHEDULE_PROMPT, schedule_tools),
     "faq": (FAQ_PROMPT, faq_tools),

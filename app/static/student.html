@@ -165,7 +165,7 @@
     .view-body { padding: 14px 16px; max-height: 430px; overflow-y: auto; }
     .empty { color: #8a93a6; font-size: 13px; text-align: center; padding: 16px; }
 
-    /* ① 课表安排：周表 + 月表（精简版；完整版在 /plan） */
+    /* ① 我的日程：周表 + 月表（精简版；完整版在 /plan） */
     .tab {
       padding: 6px 14px; border: 1px solid #d8def0; background: #fff; color: #4a5366;
       border-radius: 8px; cursor: pointer; font-size: 13px;
@@ -263,8 +263,8 @@
 <body>
   <header>
     <h1>校园时间管家 · 学生端 <a href="/settings" style="font-size:13px;color:#fff;float:right;opacity:.9;text-decoration:none;" title="助手设置">⚙ 设置</a></h1>
-    <p>一个入口办四件事：课表安排 · 校园问答 · 快递 · 外卖</p>
-    <a href="/plan" style="float:right;margin-top:-26px;color:#fff;font-size:13px;opacity:.95;text-decoration:none;background:rgba(255,255,255,.18);padding:4px 12px;border-radius:8px;">📅 我的日程 →</a>
+    <p>一个入口办四件事：我的日程 · 校园问答 · 快递 · 外卖</p>
+    <a href="/plan" style="float:right;margin-top:-26px;color:#fff;font-size:13px;opacity:.95;text-decoration:none;background:rgba(255,255,255,.18);padding:4px 12px;border-radius:8px;">📅 完整日程 →</a>
   </header>
 
   <div class="wrap">
@@ -284,9 +284,9 @@
 
     <!-- 主显示面板：点上面的卡片就切换这里的内容（不跳新页面），底部聊天框始终保留 -->
     <div id="panel">
-      <!-- ① 课表安排：周表 + 月表（精简版，完整版去 /plan） -->
+      <!-- ① 我的日程：周表 + 月表（精简版，完整版去 /plan） -->
       <div class="view" id="view-schedule">
-        <div class="view-head"><span>🗓️ 课表安排</span><span class="grow"></span><button class="close">收起面板 ✕</button></div>
+        <div class="view-head"><span>🗓️ 我的日程</span><span class="grow"></span><button class="close">收起面板 ✕</button></div>
         <div class="view-body">
           <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;flex-wrap:wrap;">
             <button class="tab active" id="tabWeek">周表</button>
@@ -365,7 +365,7 @@
   <script>
     // 四个模块的配置：名字、图标、示例问题
     const MODULES = {
-      schedule: { name: "课表安排", ico: "🗓️", chips: ["我这周哪天有空复习高数？", "周三都有什么课？", "帮我排 3 小时复习线代，优先周二", "周五下午有空吗？"] },
+      schedule: { name: "我的日程", ico: "🗓️", chips: ["我这周哪天有空复习高数？", "周三都有什么课？", "帮我排 3 小时复习线代，优先周二", "周五下午有空吗？"] },
       faq:      { name: "校园问答", ico: "❓", chips: ["图书馆几点关门？", "宿舍几点断电？", "校车在哪坐？", "怎么申请奖学金？"] },
       express:  { name: "快递",     ico: "📦", chips: ["我有哪些快递待取？", "取件码 B-5678 是什么？", "有没有滞留的快递？", "列出我所有快递"] },
       takeout:  { name: "外卖",     ico: "🍱", chips: ["我的外卖到哪了？", "有哪些待取的外卖？", "订单 T1 什么状态？", "去哪取我的外卖？"] },
@@ -558,7 +558,7 @@
     }
     document.querySelectorAll("#panel .close").forEach(b => b.addEventListener("click", collapsePanel));
 
-    // ---- ① 课表安排：精简版周表 + 月表（数据与 /plan 同源，只读展示；管理去完整版） ----
+    // ---- ① 我的日程：精简版周表 + 月表（数据与 /plan 同源，只读展示；管理去完整版） ----
     const WD = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"];
     const isoD = d => d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
     const isoWd = d => d.getDay() === 0 ? 7 : d.getDay();
