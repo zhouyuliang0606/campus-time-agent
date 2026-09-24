@@ -34,11 +34,12 @@ TESTS_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJ_DIR = os.path.dirname(TESTS_DIR)
 REAL_DATA_DIR = os.path.join(PROJ_DIR, "app", "data")
 
-# 运行期痕迹：密钥配置、上传的文件、通知、学生消息、工单。
-# 每次从零开始，免得上一次 e2e 的假密钥把这一次的结果带偏。
-# 跟 _harness.sandbox 那份清单保持一致的理由：两边分头维护迟早会走样。
-SCRATCH = ("settings.json", "uploads.json", "uploads",
-           "notices.json", "student_messages.json", "workorders.json")
+# 这里**故意不删任何文件**，跟 _harness.sandbox 那套"从零开始"的做法相反。
+# 为什么：e2e 要验的是真实环境下的完整行为，而 app/data/settings.json 里
+# 就放着演示用的模型密钥——早先照抄 sandbox 的清单把它删了，
+# e2e 服务器一启动就"还没配置大模型密钥"，走 faq 兜底，
+# 删课那条依赖模型的链路当场 5 项全红，看着像代码回归其实是环境缺了东西。
+# 副本测完整个删掉，所以真实演示数据依旧一个字节都不动。
 
 
 def _python_exe() -> str:
@@ -75,12 +76,6 @@ class e2e_server:
         self.tmp = tempfile.mkdtemp(prefix="campustime-e2e-")
         self.data = os.path.join(self.tmp, "data")
         shutil.copytree(REAL_DATA_DIR, self.data)
-        for name in SCRATCH:
-            p = os.path.join(self.data, name)
-            if os.path.isdir(p):
-                shutil.rmtree(p, ignore_errors=True)
-            elif os.path.exists(p):
-                os.remove(p)
 
         log = os.path.join(self.tmp, "server.log")
         env = dict(os.environ)
