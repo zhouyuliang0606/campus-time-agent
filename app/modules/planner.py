@@ -243,9 +243,11 @@ def mock_planner(message: str, history: list | None = None, persona_key: str = N
     """
     msg = (message or "").strip()
 
-    # 1) 导入课表的请求：无密钥模式下管家没法真的读文件，明确说明而不是乱给候选。
-    #    （真模型会走 read_uploaded_file → import_timetable 完成导入；这里只是兜底话术）
-    if "课表" in msg and any(k in msg for k in ("导入", "上传", "写进", "整理", "import_timetable")):
+    # 1) 课表修改/导入的请求：无密钥模式下管家没法真的读文件/构提案，明确说明而不是乱给候选。
+    #    （真模型会走 read_uploaded_file / get_weekly_timetable → propose_timetable_change 出确认卡）
+    if "课表" in msg and any(k in msg for k in (
+            "导入", "上传", "写进", "整理", "import_timetable",
+            "删除", "删掉", "去掉", "修改", "换课", "加一门")):
         return {
             "answer": "导入课表需要我真的读到你上传的文件内容，这要用到大模型——目前还没配置密钥。"
                       "请进管理控制台（/admin）的「API 配置」填好 Key 再传一次；"
@@ -303,21 +305,11 @@ def mock_planner(message: str, history: list | None = None, persona_key: str = N
     return {"answer": answer, "options": opts, "awaiting_choice": True}
 
 
-def import_timetable(courses_json: str) -> str:
-    """把整理好的课程写进周表（人话：学生传了课表文件后，AI 读完整理成这个格式存进来）。
+def validate_courses(courses: list) -> tuple[list, list]:
+    """校验并清洗课程列表（人话：day/时间不合法的挑出来，合格的整成规范格式）。
 
-    :param courses_json: JSON 字符串数组，每条形如
-        {"day":1,"start":"08:00","end":"09:40","course":"高等数学","location":"教三301"}
-        day 用 1=周一 … 7=周日
+    :returns: (cleaned, errors) —— cleaned 是规范化的课程列表，errors 是逐条错误说明
     """
-    try:
-        courses = json.loads(courses_json)
-    except Exception as e:
-        return f"没解析成功，需要合法的 JSON 数组：{e}"
-
-    if not isinstance(courses, list) or not courses:
-        return "内容为空或不是数组，请给出至少一门课。"
-
     cleaned, errors = [], []
     for i, c in enumerate(courses):
         if not isinstance(c, dict):
@@ -342,12 +334,60 @@ def import_timetable(courses_json: str) -> str:
             "course": str(c.get("course", "")).strip() or "未命名课程",
             "location": str(c.get("location", "")).strip(),
         })
+    return cleaned, errors
 
+
+def import_timetable(courses_json: str) -> str:
+    """把整理好的课程写进周表（**仅供测试与内部调用**——AI 不再直接持有这个写入工具，
+    修改/导入课表一律走 propose_timetable_change 提案 → 学生点确认卡 → 系统 apply）。
+
+    :param courses_json: JSON 字符串数组，每条形如
+        {"day":1,"start":"08:00","end":"09:40","course":"高等数学","location":"教三301"}
+        day 用 1=周一 … 7=周日
+    """
+    try:
+        courses = json.loads(courses_json)
+    except Exception as e:
+        return f"没解析成功，需要合法的 JSON 数组：{e}"
+
+    if not isinstance(courses, list) or not courses:
+        return "内容为空或不是数组，请给出至少一门课。"
+
+    cleaned, errors = validate_courses(courses)
     if errors:
         return "有几条没通过校验，请修正后重新调用：\n" + "\n".join(errors[:8])
 
     save_timetable(cleaned)
     return f"周表已更新，共写入 {len(cleaned)} 门课，学生可以在「我的日程」里看到了。"
+
+
+def propose_timetable_change(courses_json: str, change_summary: str = "") -> str:
+    """把调整/导入后的**完整课表**作为提案交给前端，渲染成「确认修改」卡片。
+
+    **这是 AI 修改课表的唯一途径**——本工具不写任何数据；学生点卡片上的
+    「确认修改」后，由前端直接调 /api/timetable/apply 确定性写入。
+    这样写入权不在模型手里：模型忘了调工具、重构 JSON 出错、或者嘴上说
+    "已删除"都不会再造成"说了没做"或"误写"的事故。
+
+    :param courses_json: JSON 数组字符串，调整后的**完整**课表（含未改动的课程），
+        每条含 day(1=周一..7=周日)、start、end、course、location
+    :param change_summary: 一句话说明改了什么，会显示在确认卡上
+    """
+    try:
+        courses = json.loads(courses_json)
+    except Exception as e:
+        return f"提案格式不对，需要合法的 JSON 数组：{e}"
+    if not isinstance(courses, list) or not courses:
+        return "提案为空或不是数组，至少要有一门课。"
+
+    cleaned, errors = validate_courses(courses)
+    if errors:
+        return "提案里有几条没通过校验，请修正后重新调用：\n" + "\n".join(errors[:8])
+
+    return (f"已把课表修改提案交给前端（共 {len(cleaned)} 门课）"
+            + (f"：{change_summary}" if change_summary else "")
+            + "。学生会在界面上看到「确认修改」卡片，点击后由系统执行写入。"
+              "在学生点确认之前，绝不要声称已经修改/删除完成。")
 
 
 # ---------- 系统提示 ----------
@@ -383,15 +423,14 @@ def build_system_prompt() -> str:
   否则无从判断什么时间空着。
 
 【个人数据隔离 —— 预览确认制，绝对不许跳过】
-你只能生成**预览方案**，学生确认之前绝不许真正写入数据库：
-1. **修改课表**（如"周一去掉第一节""把周三的课换个时间"）：
-   先用 get_weekly_timetable 拿到整周课程 → 生成**调整后的课表预览**
-   （列出改动前后对比，或完整的新课表清单）→ 明确问"确认这样改吗？"→
-   **学生确认后**，才把调整后的完整课表用 import_timetable 写入（它是整表替换，
-   所以必须带上未改动的课程，不能只传改动的那几条）。
-2. **导入课表文件**：读完文件后，先把解析出的课程列成预览清单给学生看
-   （几天几门课、有没有"第几节"换算成的时间），问"确认导入吗？"→
-   学生确认后才调用 import_timetable。没确认前绝不许调用。
+你只能生成**预览/提案**，学生确认之前数据库绝不会变；真正的写入由**系统**在学生点击确认卡后执行：
+1. **修改课表**（删课/换时间/加课，如"周一去掉第一节"）：
+   先用 get_weekly_timetable 拿整周课程 → 构造**调整后的完整课表**（必须含未改动的课程）
+   → 调用 propose_timetable_change 交给前端出「确认修改」卡片。
+   学生点确认后**系统自动写入**，你不需要也**无法**直接写周表——这是设计如此，**不是你没有权限**，
+   绝不要说"我没有权限删除/修改"。也绝不要在卡片确认前声称"已删除/已修改"。
+2. **导入课表文件**：读完文件 → 构造完整课程列表（"第几节"换算成 HH:MM）→
+   同样调用 propose_timetable_change 出确认卡，等学生点击确认。没出卡前绝不说"导入成功"。
 3. **删除/修改待办**（remove_todo、update_todo_status）：先列出要动的待办，
    学生确认后再执行；删除是不可恢复的，更要问清楚。
 4. 学生说"改一下课表"却没说怎么改时，先问清楚改哪里，别自作主张。
@@ -403,7 +442,9 @@ def build_system_prompt() -> str:
 - **propose_slots(options_json)：把候选结构化地交给前端渲染成可勾选卡片。
   提完候选后必须调用它**（options_json 是 JSON 数组，每条含 title/date/start/end）。**
 - add_todo_tool(title, date, start, end, note)：**确认后**才写入
-- import_timetable(courses_json)：学生上传课表后，把课程整理成 JSON 存进周表
+- **propose_timetable_change(courses_json, change_summary)：修改/导入课表的唯一途径**——
+  把调整后的完整课表（JSON 数组）交给前端渲染成「确认修改」卡片，学生点确认后系统写入。
+  **注意：写入不经过你**，所以卡片确认后不用（也不能）再调任何写入工具。
 - update_todo_status / remove_todo：标记完成或删除
 """
 
@@ -487,14 +528,14 @@ def build_tools() -> dict[str, Tool]:
             },
             func=add_todo_tool,
         ),
-        "import_timetable": Tool(
-            name="import_timetable",
+        "propose_timetable_change": Tool(
+            name="propose_timetable_change",
             description=(
-                "把整理好的课表写入周表（覆盖式）。**必须先把课程预览清单给学生看、"
-                "等学生明确确认导入后才能调用**——无论是文件导入还是修改课表。"
-                "入参是 JSON 字符串数组，每条含 day(1=周一..7=周日)、"
-                "start、end、course、location；修改课表时必须传入调整后的**完整**课表"
-                "（含未改动的课程）。"
+                "修改/导入课表的唯一途径：把调整后的**完整**课表提案交给前端渲染成「确认修改」卡片，"
+                "学生点确认后由系统直接写入周表（写入不经过你，确认后不要再调任何写入工具，"
+                "也不要声称你已修改）。入参 courses_json 是 JSON 数组字符串，每条含 "
+                "day(1=周一..7=周日)、start、end、course、location，必须包含未改动的课程；"
+                "change_summary 用一句话说明改了什么，会显示在卡片上。"
             ),
             parameters={
                 "type": "object",
@@ -502,11 +543,15 @@ def build_tools() -> dict[str, Tool]:
                     "courses_json": {
                         "type": "string",
                         "description": 'JSON 数组字符串，如 [{"day":1,"start":"08:00","end":"09:40","course":"高等数学","location":"教三301"}]',
-                    }
+                    },
+                    "change_summary": {
+                        "type": "string",
+                        "description": "一句话说明这次改了什么，如 删除周一第一节高等数学",
+                    },
                 },
                 "required": ["courses_json"],
             },
-            func=import_timetable,
+            func=propose_timetable_change,
         ),
         "update_todo_status": Tool(
             name="update_todo_status",

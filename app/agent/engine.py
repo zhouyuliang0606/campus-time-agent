@@ -120,6 +120,23 @@ class AgentEngine:
                             if isinstance(raw, list):
                                 self.options = raw
 
+                        # 课表修改提案：同样抓参数给前端渲染「确认修改」卡。
+                        # 学生点确认后由前端直接调 /api/timetable/apply 写入——
+                        # 写入权不在模型手里，从根上杜绝"嘴上说删了、数据没变"。
+                        elif fn_name == "propose_timetable_change":
+                            raw = args.get("courses_json")
+                            if isinstance(raw, str):
+                                try:
+                                    raw = json.loads(raw)
+                                except Exception:
+                                    raw = None
+                            if isinstance(raw, list) and raw:
+                                self.options = [{
+                                    "kind": "timetable_change",
+                                    "summary": str(args.get("change_summary") or "修改课表"),
+                                    "courses": raw,
+                                }]
+
                     # 4) 把工具结果作为"tool"角色消息回灌给模型，让它继续想
                     messages.append(
                         {

@@ -425,11 +425,61 @@
       return el;
     }
 
-    // 把后端返回的候选时间段（options）渲染成可勾选卡片 + 「确认所选」按钮。
-    // 学生勾选后点确认，前端把「确认：日期 起-止 标题」发回，后端识别到日期时间就真的写入日程。
+    // 把后端返回的候选渲染成卡片。
+    // 两种形态：① 候选时间段（可勾选，确认后发回聊天由 AI 写入待办）；
+    // ② 课表修改提案（kind=timetable_change，单张确认卡，点确认直接调 /api/timetable/apply
+    //    由系统写入——写入不经过 AI，从根上杜绝"确认了但数据没变"/"没有权限"的问题）。
     function renderOptions(container, options) {
       const wrap = document.createElement("div");
       wrap.className = "options";
+
+      // ---- ② 课表修改提案：高危操作，单张确认卡 ----
+      const tt = options.find(o => o.kind === "timetable_change");
+      if (tt) {
+        const hint = document.createElement("div");
+        hint.className = "opt-hint";
+        hint.textContent = "🗓️ 课表修改提案（整表替换，确认后立即生效）：";
+        wrap.appendChild(hint);
+        const card = document.createElement("div");
+        card.className = "opt-card checked";
+        const info = document.createElement("div");
+        info.className = "info";
+        const n = (tt.courses || []).length;
+        info.innerHTML = `<b>${escapeHtml(tt.summary || "修改课表")}</b>` +
+          `<div class="meta">新课表共 ${n} 门课</div>`;
+        card.appendChild(info);
+        wrap.appendChild(card);
+        const btn = document.createElement("button");
+        btn.className = "confirm-btn";
+        btn.textContent = "✅ 确认修改课表";
+        btn.addEventListener("click", async () => {
+          btn.disabled = true; btn.textContent = "⏳ 正在写入…";
+          try {
+            const r = await fetch("/api/timetable/apply", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ courses: tt.courses }),
+            });
+            const d = await r.json();
+            if (d.ok) {
+              wrap.remove();
+              addMsg(botName(), `✅ 课表已更新，共 ${d.count} 门课。周表/月表已刷新。`, "bot", "planner");
+              loadScheduleView();
+            } else {
+              btn.disabled = false; btn.textContent = "✅ 确认修改课表";
+              addMsg(botName(), "写入失败：" + (d.error || "未知原因") + "。请再试一次，或让管家重新出提案。");
+            }
+          } catch (e) {
+            btn.disabled = false; btn.textContent = "✅ 确认修改课表";
+            addMsg(botName(), "哎呀，网络好像开小差了，请稍后再试～");
+          }
+        });
+        wrap.appendChild(btn);
+        container.appendChild(wrap);
+        return;
+      }
+
+      // ---- ① 候选时间段：可勾选卡片 ----
       const hint = document.createElement("div");
       hint.className = "opt-hint";
       hint.textContent = "勾选你想要的时间，点「确认所选」即可排入日程：";
@@ -843,7 +893,7 @@
             c.addEventListener("click", () => sendMsg(q));
             chipsBox.appendChild(c);
           });
-          // 课表文件快捷入口：管家读文件 → 给预览清单 → 学生确认 → import_timetable 写进周表（固定走 planner 模块）
+          // 课表文件快捷入口：管家读文件 → 出「确认修改」卡片 → 学生点确认 → 系统写入周表（固定走 planner 模块）
           const ic = document.createElement("div");
           ic.className = "chip";
           ic.style.borderColor = "#4f7cff";

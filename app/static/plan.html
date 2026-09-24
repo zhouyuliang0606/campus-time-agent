@@ -160,6 +160,13 @@
       <div class="week" id="weekGrid"></div>
       <div id="weekEmpty" class="empty" style="display:none;"></div>
       <span id="status"></span>
+      <!-- 课表修改提案确认卡（AI 出提案、学生点确认、系统写入，写入不经过 AI） -->
+      <div id="ttConfirm" style="display:none;margin-top:10px;border:1px solid #f0a03c;background:#fff8ef;border-radius:10px;padding:10px 12px;">
+        <b style="font-size:13px;">🗓️ 课表修改提案（整表替换，确认后立即生效）</b>
+        <div class="small" id="ttConfirmSummary" style="margin:4px 0 8px;"></div>
+        <button class="btn" id="ttApply" style="background:#f0a03c;">✅ 确认修改课表</button>
+        <button class="btn ghost" id="ttReject">取消</button>
+      </div>
     </div>
 
     <!-- ============ 月表视图 ============ -->
@@ -355,14 +362,55 @@
       loadAll();
     }
 
-    // ---------- 上传课表 → 交给 AI 整理进周表 ----------
+    // ---------- 上传课表 → 交给 AI 整理成提案 → 确认卡 → 系统写入 ----------
     // 为什么不自己解析？课表格式千变万化（有的按表格、有的按第几节），
-    // 交给 Agent 读文件再调 import_timetable 更稳，也更符合本项目的设计。
+    // 交给 Agent 读文件更稳。写入走提案制：AI 只出 propose_timetable_change 提案，
+    // 学生点「确认修改」后前端直接调 /api/timetable/apply 确定性写入——
+    // 写入权不在模型手里，杜绝"嘴上说导入了、数据没变"。
+    let pendingProposal = null; // 暂存待确认的提案 {summary, courses}
+
+    function showTtConfirm(proposal) {
+      pendingProposal = proposal;
+      const box = document.getElementById("ttConfirm");
+      document.getElementById("ttConfirmSummary").textContent =
+        `${proposal.summary || "修改课表"} · 新课表共 ${(proposal.courses || []).length} 门课`;
+      box.style.display = "block";
+      box.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    }
+    document.getElementById("ttApply").addEventListener("click", async () => {
+      if (!pendingProposal) return;
+      const btn = document.getElementById("ttApply");
+      btn.disabled = true; btn.textContent = "⏳ 正在写入…";
+      try {
+        const r = await fetch("/api/timetable/apply", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ courses: pendingProposal.courses }),
+        });
+        const d = await r.json();
+        if (d.ok) {
+          setStatus(`✅ 课表已更新，共 ${d.count} 门课`);
+          document.getElementById("ttConfirm").style.display = "none";
+          pendingProposal = null;
+          await loadAll();
+        } else {
+          setStatus("❌ 写入失败：" + (d.error || "未知原因") + "，请重试");
+        }
+      } catch (e) {
+        setStatus("❌ 网络异常，请稍后再试");
+      }
+      btn.disabled = false; btn.textContent = "✅ 确认修改课表";
+    });
+    document.getElementById("ttReject").addEventListener("click", () => {
+      pendingProposal = null;
+      document.getElementById("ttConfirm").style.display = "none";
+      setStatus("已取消，课表保持原样");
+    });
+
     document.getElementById("uploadTt").addEventListener("click", () => document.getElementById("ttFile").click());
     document.getElementById("ttFile").addEventListener("change", async () => {
       const f = document.getElementById("ttFile").files[0];
       if (!f) return;
-      setStatus("⏳ 正在上传并让 AI 整理课表…（要读文件，稍等几秒）");
+      setStatus("⏳ 正在上传并让 AI 读取课表…（要读文件，稍等几秒）");
       const form = new FormData();
       form.append("file", f);
       try {
@@ -372,19 +420,23 @@
           method: "POST", headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             message: `我刚才上传了一份课表文件《${up.file.name}》（共 ${up.file.chars} 字）。` +
-                     `请先用 read_uploaded_file 读取它的内容，把里面的课程整理成结构化数据，` +
-                     `再调用 import_timetable 写进我的周表。day 用 1=周一 到 7=周日，时间用 HH:MM。` +
-                     `如果文件里有"第几节"这类表述，请按其学校的常见上课时间换算成具体时刻。` +
-                     `写完之后用一句话告诉我导入了几门课。`,
+                     `请先用 read_uploaded_file 读取它的内容，把解析出的课程整理成**完整课表提案**，` +
+                     `调用 propose_timetable_change 交给前端出确认卡（day 用 1=周一 到 7=周日，时间用 HH:MM，` +
+                     `"第几节"按学校常见上课时间换算）。先不要写入，等我确认。`,
             module: "planner",
             session_id: sessionId(),
           }),
         });
         const d = await r.json();
-        setStatus(d.answer ? "AI：" + d.answer.slice(0, 80) : "已请求 AI 导入");
-        await loadAll();
+        const tt = (d.options || []).find(o => o.kind === "timetable_change");
+        if (tt) {
+          showTtConfirm(tt);
+          setStatus("AI 已给出课表提案，请在上方确认后写入");
+        } else {
+          setStatus(d.answer ? "AI：" + d.answer.slice(0, 80) : "已请求 AI 读取课表");
+        }
       } catch (e) {
-        setStatus("❌ 出错了：" + e.message);
+        setStatus("❌ 网络异常，请稍后再试");
       }
       document.getElementById("ttFile").value = "";
     });

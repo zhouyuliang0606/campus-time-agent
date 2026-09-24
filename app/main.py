@@ -28,7 +28,7 @@ from app.store import (
     save_upload, list_uploads, get_upload, get_upload_meta, get_upload_raw_path,
     get_conversation, append_conversation, clear_conversation,
     get_timetable_data, list_todos, list_todos_in_month,
-    add_todo, update_todo, delete_todo,
+    add_todo, update_todo, delete_todo, save_timetable,
     add_workorder, list_workorders, update_workorder_status,
 )
 from app.modules.faq import SYSTEM_PROMPT as FAQ_PROMPT, build_tools as faq_tools
@@ -88,8 +88,9 @@ ASSISTANT_RULES = """
    **需要管理员处理**的情况时，先问一句「是否上报给管理端？」，学生明确确认后才生成工单；
    普通日常对话、排课、规划待办一律不上报。
 3. 个人数据隔离：每个学生的数据相互独立，你的操作只影响当前学生。你可以生成
-   **修改课表、增删待办的预览方案**，但学生确认之前绝不许真正写入数据库；
-   涉及写入的工具（如 add_todo_tool、import_timetable）必须等学生点头后才能调用。
+   **修改课表、增删待办的预览方案**，但学生确认之前数据库绝不会变；
+   修改课表走 propose_timetable_change 提案（学生点确认卡后**由系统写入**，不经过你）；
+   add_todo_tool 等写入工具必须等学生点头后才能调用。
 4. 自我定位：你是辅助工具，不是决策者。所有对用户数据的改动，决定权永远在学生本人；
    学生上传的文件（docx/xlsx 等）只读取内容，**禁止修改或覆盖源文件**。
 """
@@ -496,6 +497,28 @@ async def timetable_get():
     """读周表课程（人话：日程页周视图的课程格子数据源）。"""
     data = get_timetable_data()
     return {"courses": data.get("courses", []), "updated_at": data.get("updated_at", "")}
+
+
+@app.post("/api/timetable/apply")
+async def timetable_apply(req: Request):
+    """课表修改的**确定性写入口**（人话：学生点确认卡后前端直接调这里，不经过 AI）。
+
+    为什么写入不经过 AI？之前 AI 在学生确认后要自己重新构造整表 JSON 再调写入工具，
+    模型一旦没调工具、重构出错或嘴上说"已删除"，就会出现"确认了但数据没变"。
+    现在提案（AI 出）和执行（这里收）分开，确认即写入，结果可预期。
+    """
+    from app.modules.planner import validate_courses
+    body = await req.json()
+    courses = body.get("courses")
+    if not isinstance(courses, list) or not courses:
+        return JSONResponse({"error": "课程列表为空或格式不对"}, status_code=400)
+    cleaned, errors = validate_courses(courses)
+    if errors:
+        return JSONResponse(
+            {"error": "有课程没通过校验，请重新生成提案", "detail": errors[:8]},
+            status_code=400)
+    save_timetable(cleaned)
+    return {"ok": True, "count": len(cleaned), "courses": cleaned}
 
 
 @app.get("/api/todos")
