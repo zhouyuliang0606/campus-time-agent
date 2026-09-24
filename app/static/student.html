@@ -566,6 +566,76 @@
         return;
       }
 
+      // ---- ①-bis 待办确认卡：学生说"把 X 安排到今天 19:00-20:30"时系统算出来的那张 ----
+      //     没有它学生就只能干等一句客服嘴上说的"已经加上"——实测复盘，日程里什么都没有。
+      //     写入同样不经过 AI：点【确认加入】直接打 /api/todos，写完当场刷新日程面板。
+      const adds = options.filter(o => o.kind === "todo_add");
+      if (adds.length) {
+        const hint = document.createElement("div");
+        hint.className = "opt-hint";
+        hint.textContent = "📝 要不要把这件事排进日程？点【确认加入】我才会写：";
+        wrap.appendChild(hint);
+
+        adds.forEach(card => {
+          const box = document.createElement("div");
+          box.className = "opt-card checked";
+          box.innerHTML = `<div class="info"><b>${escapeHtml(card.title || "待办")}</b>` +
+            `<div class="meta">${escapeHtml(card.date || "")}（${escapeHtml(card.weekday || "")}）` +
+            ` ${escapeHtml(card.start || "")}-${escapeHtml(card.end || "")}` +
+            ` · 约 ${card.minutes != null ? card.minutes : "?"} 分钟</div></div>`;
+          wrap.appendChild(box);
+
+          const go = document.createElement("button");
+          go.className = "confirm-btn";
+          go.textContent = "✅ 确认加入";
+          go.style.marginTop = "6px";
+          go.addEventListener("click", async () => {
+            go.disabled = true;
+            go.textContent = "⏳ 正在写入…";
+            try {
+              const r = await fetch("/api/todos", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  title: card.title, date: card.date,
+                  start: card.start, end: card.end, note: card.note || "",
+                  session_id: sessionId(),   // 好让"已加入日程"这句话进历史，刷新后还在
+                }),
+              });
+              const d = await r.json();
+              if (d.ok) {
+                wrap.remove();
+                addMsg(botName(),
+                  `✅ 已加入日程：${card.title}｜${card.date}（${card.weekday}）${card.start}-${card.end}`,
+                  "bot", "planner");
+                loadScheduleView();   // 当场刷新，学生不用自己去刷新页面
+              } else {
+                go.disabled = false;
+                go.textContent = "✅ 重试";
+                addMsg(botName(), "写入失败：" + (d.error || "未知原因") + "，再试一次？");
+              }
+            } catch (e) {
+              go.disabled = false;
+              go.textContent = "✅ 重试";
+              addMsg(botName(), "哎呀，网络好像开小差了，请再试一次～");
+            }
+          });
+          wrap.appendChild(go);
+        });
+
+        const no = document.createElement("button");
+        no.className = "confirm-btn";
+        no.style.cssText = "background:#fff;color:#8a90a8;border:1px solid #d8def0;margin-top:6px";
+        no.textContent = "✖ 不要了";
+        no.addEventListener("click", () => {
+          wrap.remove();
+          addMsg(botName(), "好的，没排进日程，周日程保持原样。", "bot", "planner");
+        });
+        wrap.appendChild(no);
+        container.appendChild(wrap);
+        return;
+      }
+
       // ---- ② 课表修改提案：高危操作，每张提案一个确认按钮（可能多张，点任意一张即应用） ----
       const tts = options.filter(o => o.kind === "timetable_change");
       if (tts.length) {
@@ -1099,8 +1169,28 @@
       if (who) who.textContent = n;
       if (bubble) bubble.textContent = `你好，我是你的${n} 👋 选一个模块开始，或直接说需求（比如"我有哪些快递待取？"）。`;
     })();
+    // ---------- 会话历史恢复（人话：刷新页面，聊过的话还得在） ----------
+    // 之前这个页面只管往 sessions.json 里写、从来不读回来，学生一刷新就只剩开场白，
+    // 刚才跟管家敲定的时间、商量的进度整个消失，只能从头再问一遍。
+    // 这些话本来就被 append_conversation 老老实实存着，只是没人去读它。
+    async function restoreHistory() {
+      let data;
+      try {
+        const r = await fetch("/api/conversation/" + encodeURIComponent(sessionId()));
+        data = await r.json();
+      } catch (e) { return; }
+      const msgs = data.messages || [];
+      for (const m of msgs) {          // 开场白是 system 的，不重复渲染
+        if (!m || m.role === "system") continue;
+        const who = m.role === "user" ? "我" : botName();
+        addMsg(who, m.content || "", m.role === "user" ? "user" : "bot");
+      }
+    }
+
     // 初始化语音输入
     initVoice();
+    // 拉回上次的聊天记录（异步，不影响开场白先显示出来）
+    restoreHistory();
   </script>
 </body>
 </html>

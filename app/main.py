@@ -15,7 +15,9 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.agent.engine import AgentEngine
-from app.agent.pending import clear_pending, is_confirmation, peek_pending, save_pending
+from app.agent.pending import (
+    clear_pending, is_confirmation, peek_pending, save_pending, take_pending,
+)
 from app.agent.router import Router
 from app.config import DEBUG, check_config, get_llm_config
 from app.llm.client import DeepSeekClient, LLMError
@@ -44,9 +46,14 @@ from app.modules.station import build_system_prompt as STATION_PROMPT, build_too
 # planner 也是"可调用提示"：每次对话都要把**今天的日期**动态拼进去，
 # 否则学生说"明天"，AI 根本算不出是哪一天
 from app.modules.planner import (
+    add_todo_tool,
     build_system_prompt as PLANNER_PROMPT,
     build_tools as planner_tools,
     mock_planner,
+    parse_add_course,
+    parse_add_todo,
+    wants_add_course,
+    wants_add_todo,
     wants_clear_timetable,
 )
 from app.modules.student_persona import STUDENT_PERSONAS, persona_block, is_valid
@@ -125,6 +132,85 @@ def _parse_clear_proposal() -> dict | None:
     return prop if isinstance(prop, dict) else None
 
 
+def _pending_todo(session_id: str) -> dict | None:
+    """暂存里那张待确认的待办卡（人话：学生上一轮刚看到的确认卡）。"""
+    entry = peek_pending(session_id) or {}
+    for o in entry.get("options") or []:
+        if isinstance(o, dict) and o.get("kind") == "todo_add" and not o.get("applied"):
+            return o
+    return None
+
+
+def _remember_todo_options(session_id: str, options: list) -> list:
+    """把候选时段记进暂存（人话：学生点【确认所选】时，系统要自己认出是哪一张）。
+
+    为什么必须记下来：学生点完卡片，前端回发的是
+    "确认 2026-09-24 19:00-20:30 背单词"——这句话交给路由，会随机落到
+    planner / schedule / admin 中的任意一个，落到别处就没人写这条待办。
+    系统手里有这份候选，就能自己认出"就是它"，直接落库。
+    """
+    picks = []
+    for o in options or []:
+        if not (isinstance(o, dict) and o.get("date") and o.get("start") and o.get("end")):
+            continue
+        card = {**o, "kind": "todo_pick"}
+        card["title"] = o.get("title") or "待办"
+        card["summary"] = (
+            f"{card['title']}｜{card['date']}（{card.get('weekday', '')}）"
+            f"{card['start']}-{card['end']}"
+        )
+        picks.append(card)
+    if picks:
+        save_pending(session_id, picks)
+    return options
+
+
+def _match_todo_pick(session_id: str, message: str) -> dict | None:
+    """学生已经点了候选卡上的【确认所选】：从暂存里找出他选的那一张，直接写入。
+
+    返回 None 表示这次不是"确认候选"，交给后面的分支照旧处理。
+    """
+    parsed = parse_add_todo(message)
+    if not parsed:
+        return None
+    entry = peek_pending(session_id) or {}
+    for o in entry.get("options") or []:
+        if (isinstance(o, dict) and o.get("kind") == "todo_pick"
+                and o.get("date") == parsed["date"]
+                and o.get("start") == parsed["start"]):
+            return _todo_card(o, parsed)
+    return None
+
+
+def _todo_card(pick: dict, parsed: dict) -> dict:
+    """把候选归一成一张能直接落库的待办卡。
+
+    为什么要点这一步归一化：候选是**别的模块/别的模型**吐出来的，形状未必一致——
+    真实模型给的候选可能压根没有 weekday 字段。拿到手先补齐，
+    免得回话拼字符串时一个 KeyError 把整个请求打成 500，
+    学生眼里的现象就是"我点了确认，页面白屏"。
+    """
+    card = {**pick, "kind": "todo_add"}
+    card["title"] = pick.get("title") or parsed.get("title") or "待办"
+    card["date"] = pick.get("date") or parsed.get("date")
+    card["start"] = pick.get("start") or parsed.get("start")
+    card["end"] = pick.get("end") or parsed.get("end")
+    card["weekday"] = pick.get("weekday") or ""
+    card["summary"] = (
+        f"{card['title']}｜{card['date']}（{card['weekday']}）"
+        f"{card['start']}-{card['end']}"
+    )
+    return card
+
+
+def _write_todo(card: dict) -> dict:
+    """把一张待办确认卡真正写进日程（人话：系统落库，模型碰不到）。"""
+    return add_todo(
+        card["title"], card["date"], card["start"], card["end"],
+        note=card.get("note", ""),
+    )
+
+
 @app.get("/api/health")
 async def health():
     """健康检查（人话：不依赖大模型密钥，用来确认服务正常启动了）。"""
@@ -179,6 +265,28 @@ async def chat(req: Request):
     # 路由把这句分去哪个模块（实测"确认"常被分到 FAQ），点头就是点头，该执行就执行。
     if is_confirmation(message) and peek_pending(session_id):
         from app.modules.planner import apply_pending_timetable_change
+        # 待办确认：学生回一句"确认"，把上一轮那张待办确认卡真正写进日程。
+        # 为什么不能等路由决定：实测学生回一句"确认"，路由把它甩到 admin 模块，
+        # 收到的是"你回「确认」了，但我这边还没生成待办提案"——话都说到这份上了还写不进去，
+        # 学生只会觉得系统在耍他。这里把执行权收归系统，点头就是写入。
+        picked = _pending_todo(session_id)
+        if picked:
+            take_pending(session_id)
+            _write_todo(picked)
+            append_conversation(session_id, "user", message)
+            append_conversation(session_id, "assistant", f"已加入日程：{picked['summary']}")
+            return {
+                "module": "planner",
+                "session_id": session_id,
+                "answer": (
+                    f"✅ 已加入日程：**{picked['title']}**｜{picked['date']}"
+                    f"（{picked['weekday']}）{picked['start']}-{picked['end']}。"
+                ),
+                "trace": [{"step": 1, "phase": "✅ 学生确认（系统写入）",
+                           "answer": picked["summary"]}],
+                "options": [],
+                "awaiting_choice": False,
+            }
         applied = apply_pending_timetable_change(session_id)
         # 清空课表是例外：必须学生亲手点弹窗上的【确认】，
         # 在聊天框回一句"确认"不算——删空是不可恢复的操作，多一道人工闸门。
@@ -199,6 +307,27 @@ async def chat(req: Request):
             }
         # 暂存里只有别的类型提案（比如时间候选）→ 清掉，交回模型按老规矩处理
         clear_pending(session_id)
+
+    # 3a-bis) **候选卡确认分支**（人话：学生点【确认所选】，系统当场写入他选的那个时段）
+    #     排在加待办提案分支之前——他既然已经点过卡片了，就不该再被问一遍"要不要加"。
+    picked_now = _match_todo_pick(session_id, message)
+    if picked_now:
+        take_pending(session_id)
+        _write_todo(picked_now)
+        append_conversation(session_id, "user", message)
+        append_conversation(session_id, "assistant", f"已加入日程：{picked_now['summary']}")
+        return {
+            "module": "planner",
+            "session_id": session_id,
+            "answer": (
+                f"✅ 已加入日程：**{picked_now['title']}**｜{picked_now['date']}"
+                f"（{picked_now['weekday']}）{picked_now['start']}-{picked_now['end']}。"
+            ),
+            "trace": [{"step": 1, "phase": "✅ 学生选定时段（系统写入）",
+                       "answer": picked_now["summary"]}],
+            "options": [],
+            "awaiting_choice": False,
+        }
 
     # 3b) **确定性清空分支**（人话：学生明说"课表全删了"，直接出弹窗，不劳模型判断）
     #    跟上面"一句确认即落库"是同一个思路：能由代码定死的，就别交给模型。
@@ -244,6 +373,76 @@ async def chat(req: Request):
                 "awaiting_choice": True,
             }
 
+    # 3c) **确定性加待办分支**（人话：学生说"把 X 安排到今天 19:00-20:30"，
+    #     日期时刻由系统算、确认卡由系统出，学生点卡片或回一句"确认"才真写）
+    #     为什么不能交给路由和模型：实测同一句"帮我把今天的『复习线性代数』安排到 19:00 到 20:30"，
+    #     路由时而定 planner、时而定 schedule、时而定 admin——只有 planner 手里有写待办的工具，
+    #     于是客服这边时说"已经加上"、时说"你回确认了，但我这边还没生成待办提案"，
+    #     学生刷新日程也看不到东西。这条链路不能碰运气。
+    #     跟清空课表一个规矩：这里**只出提案，一个字节都不写库**。
+    if wants_add_todo(message):
+        proposal = parse_add_todo(message)
+        if proposal is not None:
+            save_pending(session_id, [proposal])
+            append_conversation(session_id, "user", message)
+            append_conversation(session_id, "assistant", f"已生成待办确认：{proposal['summary']}")
+            return {
+                "module": "planner",
+                "session_id": session_id,
+                "answer": (
+                    f"📝 要不要把 **{proposal['title']}** 排进日程？"
+                    f"{proposal['date']}（{proposal['weekday']}）{proposal['start']}-{proposal['end']}。"
+                    f"下面点一下【确认加入】我就写进去，回一句「确认」也一样。"
+                ),
+                "trace": [{"step": 1, "phase": "📝 生成待办提案（系统判定）",
+                           "answer": proposal["summary"]}],
+                "options": [proposal],
+                "awaiting_choice": True,
+            }
+        # 系统拼不出日期/时刻（学生没说清）→ 旧的候选时段那套照旧，但候选要进暂存，
+        # 否则学生点完卡片回发的"确认 日期 起-止 标题"依旧会被路由甩到别的模块、照样写不进去
+        clear_pending(session_id)
+
+    # 3c-bis) **确定性加课分支**（人话：学生说"周一加一节体育，19:00-20:40，体育馆"）
+    #     跟加待办同一个道理——配了密钥之后跑的是真模型，模型最爱说"已经加上了"，
+    #     结果周表里什么都没多。这里由系统算出新课表（整表替换的提案），
+    #     卡片上点【确认】才写入，学生看得见自己点头了什么。
+    if wants_add_course(message):
+        proposal = parse_add_course(message)
+        if proposal is not None:
+            save_pending(session_id, [proposal])
+            append_conversation(session_id, "user", message)
+            append_conversation(session_id, "assistant", f"已生成加课提案：{proposal.get('summary', '')}")
+            return {
+                "module": "planner",
+                "session_id": session_id,
+                "answer": (
+                    f"🗓️ 要不要往周表里加一节？\"{proposal.get('summary', '')}\"。"
+                    f"下面点一下【确认】我才写；点【取消】周表原封不动。"
+                ),
+                "trace": [{"step": 1, "phase": "🗓️ 生成加课提案（系统判定）",
+                           "answer": str(proposal.get("summary") or "")}],
+                "options": [proposal],
+                "awaiting_choice": True,
+            }
+        # 算不出是哪一天（比如学生只说"加一节毛概，10:00 到 11:40"）。
+        # 这种情况下**不能**把话交给模型——它多半回一句"已经加上了"，学生再去周表里找。
+        clear_pending(session_id)
+        append_conversation(session_id, "user", message)
+        append_conversation(session_id, "assistant", "加课缺星期")
+        return {
+            "module": "planner",
+            "session_id": session_id,
+                "answer": (
+                    "这门课要加在**星期几**？把星期说一下（比如「周三加一节《毛概》，"
+                    "10:00-11:40」），我算出新课表给你确认，你点头我才写进周表。"
+                ),
+            "trace": [{"step": 1, "phase": "🤔 加课缺星期（系统追问）",
+                       "answer": "学生没说星期，先问清楚再出提案"}],
+            "options": [],
+            "awaiting_choice": False,
+        }
+
     # 4) 组装引擎并跑 ReAct 循环（会按需调用工具）
     engine = AgentEngine(system_prompt=prompt, tools=tools, session_id=session_id)
 
@@ -261,7 +460,7 @@ async def chat(req: Request):
             "module": module_key,
             "session_id": session_id,
             "answer": result["answer"],
-            "options": result.get("options", []),
+            "options": _remember_todo_options(session_id, result.get("options", [])),
             "awaiting_choice": result.get("awaiting_choice", False),
             # 离线 Mock 没有真实思考轨迹；学生端也本就不展示轨迹
             "trace": [],
@@ -300,7 +499,7 @@ async def chat(req: Request):
         "session_id": session_id,
         "answer": result["answer"],
         "trace": result["trace"],
-        "options": result.get("options", []),
+        "options": _remember_todo_options(session_id, result.get("options", [])),
         "awaiting_choice": result.get("awaiting_choice", False),
     }
 
@@ -667,6 +866,9 @@ async def timetable_apply(req: Request):
     if sid:
         from app.agent.pending import mark_applied
         mark_applied(sid)
+        # 同待办一条理：学生是点了卡片才写进来的，这话要留进历史，
+        # 不然刷新一下"✅ 课表已更新"那句没了，学生又纳闷到底改没改。
+        append_conversation(sid, "assistant", f"课表已更新：共 {len(cleaned)} 门课")
     return {"ok": True, "count": len(cleaned), "courses": cleaned}
 
 
@@ -697,7 +899,22 @@ async def todo_add(req: Request):
     item = add_todo(title, date, start, end,
                     note=(body.get("note") or "").strip(),
                     category=(body.get("category") or "").strip())
+    # 学生是点卡片上的【确认加入】才走到这里的，这话得进会话历史——
+    # 否则一刷新页面，那两条"✅ 已加入日程"就消失了，学生又会以为刚才没加上。
+    sid = (body.get("session_id") or "").strip()
+    if sid:
+        append_conversation(sid, "assistant", f"已加入日程：{item.get('title', title)}"
+                            f"｜{date}（{_weekday_of(date)}）{start}-{end}")
     return {"ok": True, "todo": item}
+
+
+def _weekday_of(date: str) -> str:
+    """日期转"周几"（人话：历史里那句人话别写出来一串看不懂的日期格式）。"""
+    try:
+        from app.modules.planner import _weekday_name
+        return _weekday_name(date)
+    except Exception:
+        return ""
 
 
 @app.put("/api/todos/{tid}")
@@ -717,6 +934,20 @@ async def todo_delete(tid: str):
     if not delete_todo(tid):
         return JSONResponse({"error": "待办不存在"}, status_code=404)
     return {"ok": True}
+
+
+@app.get("/api/conversation/{sid}")
+async def conversation_get(sid: str):
+    """读回一段会话的历史（人话：学生刷新页面后，聊天记录要还在）。
+
+    为什么必须有它：学生端之前从不做这件事——刷新一下，聊天区就只剩下开场白，
+    学生刚跟管家商量的"排了什么时间"整个消失，只剩日程里那几条他自己也记不清的记录。
+    聊过的内容本来就被 append_conversation 好好存着，只是没人去读它。
+    """
+    sid = (sid or "").strip()
+    if not sid or len(sid) > 64:
+        return {"messages": []}
+    return {"messages": list(get_conversation(sid))}
 
 
 @app.post("/api/chat/reset")

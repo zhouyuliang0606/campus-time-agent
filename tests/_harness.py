@@ -63,10 +63,14 @@ class sandbox:
     然后告诉程序"以后数据都放这儿"（靠 CAMPUSTIME_DATA_DIR 这个环境变量）。
     测试再怎么折腾都只改那份副本，退出 with 时整个临时目录删掉。
 
-    用法（注意必须包住 import app.xxx，因为数据目录在 import 时就定下来了）：
+    用法（不用刻意包住 import，但包着更省心）：
         with sandbox():
             from app.main import app
             ...
+
+    app/store.py 现在每次读写都重新读一遍环境变量，所以一个进程里连开
+    好几个 sandbox() 也各管各的，不会互相串味——早期版本是导入时定死，
+    第二批之后所有写入都会落到真实演示数据上。
     """
 
     # 这几样是"运行时痕迹"，不是种子数据：密钥配置、上传的文件、通知、学生消息。
@@ -104,7 +108,8 @@ class sandbox:
 def data_path(*parts):
     """拼出**当前生效**数据目录下的路径，比如 data_path('kb.json')。
 
-    注意：必须在 sandbox() 之后调用，否则拿到的还是真实数据目录。
+    注意：必须在 sandbox() 之后调用，否则拿到的还是真实数据目录
+    （读真实数据的场景见 test_05，那儿要的是演示数据本来的样子）。
     """
     base = os.environ.get("CAMPUSTIME_DATA_DIR") or REAL_DATA_DIR
     return os.path.join(base, *parts)

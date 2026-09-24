@@ -1,0 +1,167 @@
+"""端到端测试的小环境（人话：给 e2e 单独开一份"干净的数据副本 + 一台独立服务器"）。
+
+为什么要有它？
+    e2e 是真的开浏览器点按钮，所以必须有一台真服务器；
+    但服务器默认读写的是 app/data —— 那正是要拿去演示的那份数据。
+
+    之前 e2e 直接打 127.0.0.1:8000（真实数据目录），跑一次就烂一次演示数据：
+       · 周表被写成 2 门课、清空链路那次更狠，12 门直接删到 0 门；
+       · 待办里堆出 20 多条「晨读」「看论文」「复习线性代数」；
+       · 更麻烦的是它还会污染 test_06 的沙箱——沙箱是"复制当时的 app/data"，
+         一份烂数据被复制进去，第二批断言就开始偶发失败，看着像代码不稳、其实是数据脏。
+
+    现在改成：临时复制一份 app/data → 让服务器只认这份副本 → 测完连人带目录一起删掉。
+    演示数据从此谁也碰不了，测试也能随跑随干净。
+
+用法：
+    from _e2e_env import e2e_server
+
+    with e2e_server() as srv:
+        page.goto(srv.url + "/student")       # 页面里所有 /api/xxx 都打到副本上
+        srv.seed_timetable([...])             # 想播种什么，写进副本，别碰真文件
+"""
+import json
+import os
+import pathlib
+import shutil
+import socket
+import subprocess
+import sys
+import tempfile
+import time
+
+TESTS_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJ_DIR = os.path.dirname(TESTS_DIR)
+REAL_DATA_DIR = os.path.join(PROJ_DIR, "app", "data")
+
+# 运行期痕迹：密钥配置、上传的文件、通知、学生消息、工单。
+# 每次从零开始，免得上一次 e2e 的假密钥把这一次的结果带偏。
+# 跟 _harness.sandbox 那份清单保持一致的理由：两边分头维护迟早会走样。
+SCRATCH = ("settings.json", "uploads.json", "uploads",
+           "notices.json", "student_messages.json", "workorders.json")
+
+
+def _python_exe() -> str:
+    """挑一个**装了 fastapi 的解释器**来起服务器。
+
+    系统 python 常常没装项目依赖（会报 No module named 'fastapi'），
+    项目自带的 .venv 里才有；所以优先用 .venv，找不到再退回当前解释器。
+    """
+    venv_py = os.path.join(PROJ_DIR, ".venv", "Scripts", "python.exe")
+    if os.path.exists(venv_py):
+        return venv_py
+    venv_py = os.path.join(PROJ_DIR, ".venv", "bin", "python")
+    if os.path.exists(venv_py):
+        return venv_py
+    return sys.executable
+
+
+def _free_port() -> int:
+    """找一个此刻没人占用的端口（人话：抢个空位儿，免得跟别的进程打架）。"""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+class e2e_server:
+    """一台"只认临时数据副本"的测试服务器，配合 with 使用。"""
+
+    def __init__(self, port: int | None = None):
+        self.port = port or _free_port()
+        self.url = f"http://127.0.0.1:{self.port}"
+
+    # ---- 进出 with ----
+    def __enter__(self):
+        self.tmp = tempfile.mkdtemp(prefix="campustime-e2e-")
+        self.data = os.path.join(self.tmp, "data")
+        shutil.copytree(REAL_DATA_DIR, self.data)
+        for name in SCRATCH:
+            p = os.path.join(self.data, name)
+            if os.path.isdir(p):
+                shutil.rmtree(p, ignore_errors=True)
+            elif os.path.exists(p):
+                os.remove(p)
+
+        log = os.path.join(self.tmp, "server.log")
+        env = dict(os.environ)
+        env["CAMPUSTIME_DATA_DIR"] = self.data
+        # creationflags=CREATE_NO_WINDOW：Windows 上别弹一个黑窗口出来
+        self.proc = subprocess.Popen(
+            [_python_exe(), "-m", "uvicorn", "app.main:app",
+             "--host", "127.0.0.1", "--port", str(self.port), "--log-level", "warning"],
+            cwd=PROJ_DIR, env=env, stdout=open(log, "w", encoding="utf-8"),
+            stderr=subprocess.STDOUT,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        self._wait_ready()
+        return self
+
+    def __exit__(self, *exc):
+        self.stop()
+        shutil.rmtree(self.tmp, ignore_errors=True)
+        print("\n[e2e 临时数据目录已删除，演示数据没被碰过]")
+        return False  # 不吞异常
+
+    # ---- 服务控制 ----
+    def stop(self):
+        if getattr(self, "proc", None) and self.proc.poll() is None:
+            for _ in range(20):
+                self.proc.terminate()
+                time.sleep(0.1)
+                if self.proc.poll() is not None:
+                    break
+            else:
+                self.proc.kill()          # 打死循环也一样收掉，别留僵尸进程
+            self.proc.wait(timeout=5) if hasattr(self.proc, "wait") else None
+        self.proc = None
+
+    def _wait_ready(self, timeout: float = 60.0):
+        """等服务器真的能应答（人话：别一进来就开测，服务器还没爬起来呢）。"""
+        import urllib.request
+        deadline = time.time() + timeout
+        last = ""
+        while time.time() < deadline:
+            if self.proc.poll() is not None:
+                raise RuntimeError(f"服务器进程已退出，日志：{self.tmp}/server.log\n{last}")
+            try:
+                with urllib.request.urlopen(self.url + "/api/timetable", timeout=1.5) as r:
+                    if r.status == 200:
+                        return
+            except Exception as e:       # 还没起来 / 端口还没监听，都算"再等等"
+                last = str(e)
+                time.sleep(0.4)
+        raise RuntimeError(f"服务器 {self.url} 迟迟没就绪，最后错误：{last}")
+
+    # ---- 播种数据（只写副本） ----
+    def seed_timetable(self, courses: list, updated: str = "2026-09-24 22:30:00"):
+        """把一份周表写进**副本**数据目录（等价于"把演示数据恢复成这样"）。"""
+        p = os.path.join(self.data, "student", "timetable.json")
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        with open(p, "w", encoding="utf-8") as f:
+            json.dump({"updated_at": updated, "courses": courses}, f,
+                      ensure_ascii=False, indent=2)
+
+    def seed_todos(self, todos: list):
+        """把一份待办写进**副本**数据目录。"""
+        p = os.path.join(self.data, "student", "todos.json")
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        with open(p, "w", encoding="utf-8") as f:
+            json.dump({"todos": todos}, f, ensure_ascii=False, indent=2)
+
+    @property
+    def demo_courses_path(self) -> pathlib.Path:
+        return pathlib.Path(self.data) / "student" / "timetable.json"
+
+
+def demo_courses_from_json() -> list:
+    """按 app/data/courses.json 还原出一份完整演示周表（day 换成 1=周一 那种写法）。
+
+    用它而不是硬编码一张表：courses.json 是演示数据的源头，
+    改了源头测试不必跟着改，也不会出现"测试里的表跟页面上的表对不上"。
+    """
+    raw = json.loads(open(os.path.join(REAL_DATA_DIR, "courses.json"),
+                          encoding="utf-8").read())
+    day = {"周一": 1, "周二": 2, "周三": 3, "周四": 4, "周五": 5,
+           "周六": 6, "周日": 7, "周天": 7}
+    return [{"day": day.get(c["day"], 1), "start": c["start"], "end": c["end"],
+             "course": c["name"], "location": c["location"]} for c in raw["courses"]]

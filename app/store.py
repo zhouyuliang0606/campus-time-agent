@@ -12,11 +12,27 @@ import uuid
 # 数据目录默认是 app/data；但可以用环境变量指到别处。
 # 为什么留这个开关：跑自动化测试时，让测试写一份临时副本，
 # 这样测试再怎么折腾（写假密钥、传文件）都碰不到真实演示数据。
-DATA_DIR = os.environ.get("CAMPUSTIME_DATA_DIR") or os.path.join(os.path.dirname(__file__), "data")
+
+# 数据目录**每次调用时**重新读环境变量，不在导入时定死。
+# 为什么这一点很要紧：测试沙箱的做法是"先切目录、再 import app.xxx"，
+# 而 Python 的模块一旦导入就缓存在内存里。早先 DATA_DIR 在导入时定死，
+# 结果第一批沙箱之后所有写操作都还指着真实演示数据——
+# 测试跑完 data/student/timetable.json 被改成 13 门、todos.json 里堆着十几条测试待办，
+# 看着像"测试偶发失败"，其实是测试一直在偷偷改演示数据。
+_DEFAULT_DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
+
+
+def _data_dir() -> str:
+    """当前生效的数据目录（人话：每次都重新问一遍环境变量，别信缓存）。"""
+    return os.environ.get("CAMPUSTIME_DATA_DIR") or _DEFAULT_DATA_DIR
+
+
+# 留个默认值给外部瞄一眼用，别再拿它拼路径——拼路径一律走 _data_dir()。
+DATA_DIR = _data_dir()
 
 
 def _path(name: str) -> str:
-    return os.path.join(DATA_DIR, name)
+    return os.path.join(_data_dir(), name)
 
 
 def _read(name: str, default):
@@ -298,8 +314,6 @@ def get_upload_raw_path(fid: str) -> str | None:
 # 单独一个 student/ 目录，是因为这属于"某个学生的个人数据"，
 # 跟上面的公共知识库、站点台账性质不同，以后做多用户时天然按用户隔离。
 
-STUDENT_DIR = os.path.join(DATA_DIR, "student")
-
 # 会话历史最多保留多少条消息（一问一答算两条）。
 # 留太少会记不住刚才商量好的安排，留太多又白烧 token，20 条够用。
 MAX_HISTORY = 20
@@ -307,7 +321,7 @@ MAX_HISTORY = 20
 
 def _spath(name: str) -> str:
     """学生个人库里某个文件的路径。"""
-    return os.path.join(STUDENT_DIR, name)
+    return os.path.join(_data_dir(), "student", name)
 
 
 def _sread(name: str, default):
@@ -321,7 +335,7 @@ def _sread(name: str, default):
 
 def _swrite(name: str, data) -> None:
     """写学生个人库里的一个 JSON 文件。"""
-    os.makedirs(STUDENT_DIR, exist_ok=True)
+    os.makedirs(os.path.join(_data_dir(), "student"), exist_ok=True)
     with open(_spath(name), "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 

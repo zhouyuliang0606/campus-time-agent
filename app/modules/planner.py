@@ -534,6 +534,273 @@ _CLEAR_SELF = (
 _CLEAR_NEED_OBJ = ("全部删除", "全部删掉", "全删掉", "都删掉", "都删除")
 
 
+# ---------- 「往日程里加一件事」的确定性判定 ----------
+# 跟上面清空课表是同一个思路：能把时间算出来的事，别交给路由和模型碰运气。
+#
+# 血泪背景（实测复现）：学生说"帮我把今天的『复习线性代数』安排到 19:00 到 20:30"，
+# 后端路由时而定到 planner、时而定到 schedule、时而定到 admin——
+# 只有 planner 手里有写待办的工具，于是同一句话时有时会写、有时只回一段空档分析；
+# 学生再回一句"确认"，路由把它甩到 admin，收到的答复是
+# "你回「确认」了，但我这边还没生成待办提案"——整条链路当场断死。
+# 学生眼里的世界就是：客服说已经加上了，日程里什么都没有，刷新也没用。
+#
+# 所以这里把"学生说了什么 + 时间落在哪"都由系统算死：
+# 能算出日期和起始时刻 → 系统直接出一张确认卡，点卡片或回一句"确认"才真写；
+# 算不出（比如学生压根没说哪天几点）→ 才交回 planner 出候选时段。
+_ADD_INTENT = (
+    "安排", "排一下", "排进", "排到", "加入", "加进", "添加", "加上",
+    "加一个", "记一下", "记进", "塞进", "预约",
+)
+# 括号里框出来的事，多半就是标题本身（学生习惯用 『』「」把任务名框起来）
+_QUOTE_RE = re.compile(r"[『「\"“]([^」』\"”]{1,40})[」』\"”]")
+_WEEKDAY_RE = re.compile(r"周([一二三四五六日天])")
+
+
+def _pick_span(text: str):
+    """从一句话里抠出「起-止」时间（人话：认得 19:00-20:30 / 19:00 到 20:30 / 19点到20点）。
+
+    返回 (start, end)，只给了一个时刻时 end 为 None。
+    """
+    t = text or ""
+    m = re.search(r"(\d{1,2}):(\d{2})\s*(?:到|至|-|~|～)\s*(\d{1,2}):(\d{2})", t)
+    if m:
+        return f"{int(m.group(1)):02d}:{m.group(2)}", f"{int(m.group(3)):02d}:{m.group(4)}"
+    m = re.search(r"(\d{1,2})\s*点\s*(?:到|至|-|~|～)\s*(\d{1,2})\s*点?", t)
+    if m:
+        return f"{int(m.group(1)):02d}:00", f"{int(m.group(2)):02d}:00"
+    m = re.search(r"(\d{1,2}):(\d{2})", t)
+    if m:
+        return f"{int(m.group(1)):02d}:{m.group(2)}", None
+    return None, None
+
+
+def _pick_date(text: str):
+    """从一句话里抠出日期（人话：2026-09-24 / 今天 / 明天 / 后天 / 周一）。"""
+    t = text or ""
+    m = _DATE_RE.search(t)
+    if m:
+        return m.group(1)
+    today = datetime.date.today()
+    for word, off in (("大后天", 3), ("后天", 2), ("明天", 1), ("今晚", 0), ("今夜", 0), ("今天", 0)):
+        if word in t:
+            return (today + datetime.timedelta(days=off)).isoformat()
+    m = _WEEKDAY_RE.search(t)
+    if m:
+        ch = "日" if m.group(1) == "天" else m.group(1)
+        want = "一二三四五六日".index(ch) + 1
+        base = datetime.date.today()
+        # 今天说的"周一"，指下一个周一（今天就是周一的话也算，往后推满一周更符合直觉）
+        return (base + datetime.timedelta(days=(want - base.isoweekday()) % 7 or 7)).isoformat()
+    return None
+
+
+def _pick_title(text: str) -> str:
+    """从一句话里剩下那部分抠出待办标题（人话：把时间、日期、安排这类废话都扔掉）。"""
+    t = text or ""
+    m = _QUOTE_RE.search(t)          # 优先拿『』「」框着的那段，最准
+    if m and 1 <= len(m.group(1)) <= 30:
+        return m.group(1).strip()
+    t = _DATE_RE.sub(" ", t)
+    t = re.sub(r"\d{1,2}\s*[:：]\s*\d{2}(?:\s*(?:到|至|-|~|～)\s*\d{1,2}\s*[:：]?\s*\d{2})?", " ", t)
+    t = re.sub(r"\d{1,2}\s*点到\s*\d{1,2}\s*点?", " ", t)
+    for w in ("大后天", "后天", "今天", "今晚", "今夜", "明天", "上午", "下午",
+              "晚上", "中午", "早上", "夜里", "周末"):
+        t = t.replace(w, " ")
+    t = re.sub(r"周[一二三四五六日天]", " ", t)
+    t = re.sub(r"^(我要|我想|帮我|我想让|请帮我|给我|把|帮)\s*", "", t)
+    for w in _CONFIRM_WORDS:
+        t = t.replace(w, " ")
+    for w in _ADD_INTENT + ("的安排", "一下", "一个", "里"):
+        t = t.replace(w, " ")
+    t = re.sub(r"[，,。！!？?、；;：:~～\-—『』「」\"'“”‘’]", " ", t)
+    t = re.sub(r"\s+", "", t).strip()
+    return t[:30] or "待办"
+
+
+def wants_add_todo(text: str) -> bool:
+    """判断一句话算不算「往日程里加一件事」（人话：确定性分支用的开关）。
+
+    只认短促的下单句。管它路由落到哪个模块、模型想说什么，系统都按这条链路走。
+    """
+    t = (text or "").strip()
+    if not t or len(t) > 80:      # 太长的多半是在聊天，不是在下单
+        return False
+    if not any(w in t for w in _ADD_INTENT):
+        # 没有意图词，但话里自带"完整日期 + 起止时间"的（比如"确认 2026-09-24 19:00-20:30 背单词"，
+        # 前端点候选卡回发的就是这副模样）也算下单——那是在指定时间，不是在问问题。
+        if not (_DATE_RE.search(t) and _pick_span(t)[0]
+                and not any(k in t for k in ("吗", "？", "?"))):
+            return False
+    # 课表类的话由课表那条路管，别抢（"周一加一节体育"要进的是周表，不是待办）
+    if "课表" in t or "课程" in t:
+        return False
+    return _pick_date(t) is not None or _pick_span(t)[0] is not None
+
+
+def parse_add_todo(text: str) -> dict | None:
+    """把一句话解析成一张待办确认卡（人话：系统自己算时间，模型一个字节都不用操心）。
+
+    日期和起始时刻有一个算不出来就返回 None——这种情况学生八成没说清，
+    交给 planner 出候选时段让他挑，比硬凑一个时间靠谱。
+
+    返回的 dict 只是**提案**，本函数不写库；学生点头后才由系统真正落库。
+    """
+    t = (text or "").strip()
+    date = _pick_date(t)
+    start, end = _pick_span(t)
+    if not date or not start:
+        return None
+    if not end:                    # 只给了开始时间，默认排 1 小时
+        end = to_hhmm(to_minutes(start) + 60)
+    title = _pick_title(t)
+    return {
+        "kind": "todo_add",
+        "title": title,
+        "date": date,
+        "start": start,
+        "end": end,
+        "weekday": _weekday_name(date),
+        "minutes": to_minutes(end) - to_minutes(start),
+        "summary": f"{title}｜{date}（{_weekday_name(date)}）{start}-{end}",
+    }
+
+
+def wants_add_course(text: str) -> bool:
+    """判断一句话算不算「往周表里加一门课」（人话：确定性分支用的开关）。
+
+    为什么也要由系统接管：配了大模型密钥之后，学生其实一直在跟真模型对话，
+    而模型是会"嘴上说已经加了、其实没动手"的——学生看到的回复是"已经加上了"，
+    周表里干干净净。加课这件事学生说得很清楚（哪天、几点、什么课），
+    剩下"新课表长什么样"本来就该服务端算，没道理交给模型临场发挥。
+    """
+    t = (text or "").strip()
+    if not t or len(t) > 80:
+        return False
+    has_intent = any(w in t for w in ("加课", "加一门课", "加一门", "加节课",
+                                      "加一节", "加门课", "加课程"))
+    # 没说"加课"这两个字的话，必须同时点明课表/课程、带上"加"和星期+时间
+    if not has_intent and not ("加" in t and ("课表" in t or "课程" in t)):
+        return False
+    day, begin = _pick_day(t), _pick_span(t)[0]
+    if day is not None and begin:
+        return True
+    # 有课名、有时钟、就是没说星期。这种情况也算"想加课"，
+    # 但要让**系统**去问清楚——交给模型的话，它多半回一句"已经加上了"。
+    return bool(begin) and bool(_pick_course_name(t))
+
+
+def parse_add_course(text: str) -> dict | None:
+    """把"周一加一节体育，体育馆，19:00 到 20:40"解析成一张加课确认卡。
+
+    返回的是**提案**（含算好的新课表），本函数一个字节都不写库；
+    学生点卡片上的确认、或回一句"确认"，才由系统真正落库。
+    """
+    t = (text or "").strip()
+    day = _pick_day(t)
+    start, end = _pick_span(t)
+    if day is None or not start:
+        # 没说星期就只能算到一半——与其让模型自作主张（它最爱说"已经加上了"），
+        # 不如让解析函数如实返回 None，由上层问清楚学生到底是哪天。
+        return None
+    if not end:
+        end = to_hhmm(to_minutes(start) + 90)
+    course = _pick_course_name(t)
+    if not course:
+        return None
+    location = _pick_location(t)
+    raw = propose_course_change(
+        "add", day, course, start,
+        new_start=start, new_end=end, new_location=location,
+    )
+    try:
+        proposal = (json.loads(raw) or {}).get("__proposal__")
+    except Exception:
+        proposal = None
+    if not isinstance(proposal, dict):
+        return None
+    proposal.setdefault("kind", "timetable_change")
+    return proposal
+
+
+def _pick_day(text: str) -> int | None:
+    """从一句话里抠出周几（人话：周一 … 周日，1=周一 … 7=周日）。"""
+    m = _WEEKDAY_RE.search(text or "")
+    if not m:
+        return None
+    ch = "日" if m.group(1) == "天" else m.group(1)
+    if ch not in "一二三四五六日":
+        return None
+    return "一二三四五六日".index(ch) + 1
+
+
+def _pick_course_name(text: str) -> str:
+    """抠出课程名（人话：优先取 『』「」框着的那段，其次是引号后的第一截）。"""
+    t = text or ""
+    m = _QUOTE_RE.search(t)
+    if m and 1 <= len(m.group(1)) <= 20:
+        return m.group(1).strip()
+    head = re.split(r"[，,。；;]", t)[0]
+    # "帮我加课：周二 10:00 到 11:40 数据结构" → "周二 10:00 到 11:40 数据结构"
+    head = re.split(r"[：:]", head)[-1]
+    head = re.sub(r"^(我要|我想|帮我|请帮我|给我|把|帮|在)\s*", "", head)
+    head = re.sub(r"周[一二三四五六日天]", "", head)
+    head = re.sub(r"\d{1,2}\s*[:：]\s*\d{2}.*$", "", head)
+    head = re.sub(r"[^\w一-龥]+", " ", head)
+    for w in _ADD_INTENT + ("加一节", "加一门", "加门", "课表", "课程", "课", "的"):
+        head = head.replace(w, " ")
+    head = re.sub(r"\s+", "", head).strip()
+    # 兜底：剩下的片段里挑最长的一截（"到 数据结构" 会挑中"数据结构"这种）
+    runs = re.findall(r"[一-龥A-Za-z]{2,20}", head)
+    return (max(runs, key=len) if runs else "")[:20]
+
+
+# 教室号长这样：教一-101 / 外语楼-305 / 机房-B / 教三-201。
+# 数字是它的正身，不是噪声——早先判"凡是带数字的都像时间"，把这些全扔了。
+_ROOM_RE = re.compile(r"[一-龥A-Za-z][-－]{0,2}\d{1,3}(?:[-－]?\d{1,3})?")
+
+
+def _looks_like_location(seg: str) -> bool:
+    """判断一小截算不算上课地点（人话：不像时间、不像动作，短且没标点）。"""
+    if not seg or len(seg) > 14:
+        return False
+    if any(w in seg for w in _ADD_INTENT):
+        return False
+    # "晚上 19 点到 20 点" 这种时段，丢掉
+    if any(w in seg for w in ("点", "时", "分")):
+        return False
+    # 带冒号的时间一律不是地点
+    if re.search(r"\d{1,2}\s*[:：]\s*\d{2}", seg):
+        return False
+    # 有数字没关系，但数字得是"教一-101"这种教室号，不能是光溜溜一串数
+    if re.search(r"\d", seg) and not _ROOM_RE.search(seg):
+        return False
+    return True
+
+
+def _pick_location(text: str) -> str:
+    """抠上课地点（人话：引号后面那截、不像时间的短词，多半就是地点）。
+
+    为什么这里要认数字：教室号天生带数字（教一-101、外语楼-305、机房-A），
+    原来的写法"凡是带数字的都当时间扔掉"，结果加进来的新课全没地点。
+    学生看到的就是"课加上了，可教室是空的"。
+    """
+    t = text or ""
+    m = _QUOTE_RE.search(t)
+    if m:
+        tail = t[m.end():]
+        parts = re.split(r"[，,。；;]|晚上|上午|下午|中午", tail)
+    else:
+        # 压根没用引号的（"周四加一节马原 教三-301 16点到17点"），
+        # 按逗号和空格切开逐段看——教室号形状太特别，误伤不到别的东西。
+        parts = re.split(r"[，,。；;]|\s+", t)
+    for seg in parts:
+        # 先把时间那一截切掉（"16:00 到 17:40"），再看剩下的是不是地点
+        seg = re.sub(r"\d{1,2}\s*[:：]\s*\d{2}.*$", "", seg).strip(" 　")
+        if _looks_like_location(seg):
+            return seg
+    return ""
+
+
 def wants_clear_timetable(text: str) -> bool:
     """判断一句话算不算「我要清空整张课表」（人话：确定性分支用的开关）。
 
