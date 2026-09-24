@@ -37,7 +37,8 @@ from app.modules.files import build_tools as files_tools
 from app.modules.station import build_system_prompt as STATION_PROMPT, build_tools as station_tools
 # planner 也是"可调用提示"：每次对话都要把**今天的日期**动态拼进去，
 # 否则学生说"明天"，AI 根本算不出是哪一天
-from app.modules.planner import build_system_prompt as PLANNER_PROMPT, build_tools as planner_tools
+from app.modules.planner import build_system_prompt as PLANNER_PROMPT, build_tools as planner_tools, mock_planner
+from app.modules.student_persona import STUDENT_PERSONAS, persona_block, is_valid
 
 # 项目根目录（本文件在 app/ 下，根目录是上一级）
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -93,6 +94,11 @@ async def chat(req: Request):
     if not message:
         return JSONResponse({"error": "消息不能为空"}, status_code=400)
 
+    # 学生端选的性格（前端随对话发来；只有合法 key 才生效，否则忽略）
+    persona_key = body.get("persona")
+    if not is_valid(persona_key):
+        persona_key = None
+
     # 1) 若前端显式指定了模块且合法，直接用；否则交给 router 自动分类意图
     module_key = body.get("module")
     if not (module_key and module_key in REGISTRY):
@@ -103,6 +109,9 @@ async def chat(req: Request):
     base_prompt = prompt_src() if callable(prompt_src) else prompt_src
     # 统一拼上"你会读文件"的说明，每个模块因此都能利用用户上传的资料
     prompt = base_prompt + FILE_HINT
+    # 学生端选了性格，且不是驿站模块（驿站用管理员配的人格），就把性格腔调拼进去
+    if persona_key and module_key != "station":
+        prompt += "\n" + persona_block(persona_key)
 
     # 工具箱 = 模块自己的工具 + 通用的文件读取工具。
     # 把"读文件"做成通用工具而不是复制进每个模块，
@@ -119,6 +128,23 @@ async def chat(req: Request):
 
     # 之前聊过的内容（让 Agent 记得住上一轮商量到哪了）
     history = get_conversation(session_id)
+
+    # 规划模块 + 没配密钥时，走确定性的离线 Mock 助手。
+    # 这样「查空档 → 给候选 → 学生勾选 → 写入」这套交互不用大模型也能完整演示，
+    # 评委没看到密钥也不影响看效果。
+    if module_key == "planner" and not get_llm_config()["api_key"]:
+        result = mock_planner(message, history, persona_key)
+        append_conversation(session_id, "user", message)
+        append_conversation(session_id, "assistant", result["answer"])
+        return {
+            "module": module_key,
+            "session_id": session_id,
+            "answer": result["answer"],
+            "options": result.get("options", []),
+            "awaiting_choice": result.get("awaiting_choice", False),
+            # 离线 Mock 没有真实思考轨迹；学生端也本就不展示轨迹
+            "trace": [],
+        }
 
     # 大模型可能因为"没配 Key / Key 无效 / 网络不通"失败。
     # 与其让前端收到一个看不懂的 500，不如把原因说成人话，直接显示在对话里。
@@ -147,12 +173,14 @@ async def chat(req: Request):
     append_conversation(session_id, "user", message)
     append_conversation(session_id, "assistant", result["answer"])
 
-    # 4) 返回最终回答 + 思考轨迹（前端可展示 Agent 怎么一步步想的）
+    # 4) 返回最终回答 + 思考轨迹（学生端不展示轨迹，但规划模块的候选选项要带回前端）
     return {
         "module": module_key,
         "session_id": session_id,
         "answer": result["answer"],
         "trace": result["trace"],
+        "options": result.get("options", []),
+        "awaiting_choice": result.get("awaiting_choice", False),
     }
 
 
@@ -265,6 +293,15 @@ async def persona_set(req: Request):
     rules = (body.get("rules") or "").strip()
     item = set_persona(name, role, tone, rules)
     return {"ok": True, "persona": item}
+
+
+@app.get("/api/student-personas")
+async def student_personas_get():
+    """学生端可选的三套助手性格（人话：学生自己挑跟哪种腔调的助手聊天）。
+
+    这是**学生助手**的性格，和驿站侧管理员配的客服人格（persona.json）是两回事。
+    """
+    return {"personas": STUDENT_PERSONAS}
 
 
 # ============ 文件上传（给 AI 助手读资料 / 给通知挂附件） ============

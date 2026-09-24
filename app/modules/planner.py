@@ -14,12 +14,14 @@ AI 自作主张塞进去，学生不认可就等于白排。
 """
 import datetime
 import json
+import re
 
 from app.agent.tools import Tool
 from app.store import (
     add_todo, delete_todo, get_timetable, list_todos,
     save_timetable, update_todo,
 )
+from app.modules.student_persona import mock_phrase
 
 MODULE_KEY = "planner"
 
@@ -187,6 +189,110 @@ def remove_todo(todo_id: str) -> str:
     return f"已删除编号 {todo_id} 的待办"
 
 
+def propose_slots(options_json: str) -> str:
+    """把候选时间段以结构化方式交给前端，渲染成可勾选的卡片（而不是挤在一段话里）。
+
+    什么时候调：助手已经用 find_free_slots 查好空档、准备问学生选哪个时调它。
+    前端会把这些候选显示成卡片，学生点一下就确认，助手才真正写入待办。
+    （引擎会捕获这个工具的参数，作为响应里的 options 发给前端。）
+    """
+    try:
+        opts = json.loads(options_json)
+    except Exception as e:
+        return f"候选格式不对：{e}"
+    if not isinstance(opts, list) or not opts:
+        return "没有候选可展示"
+    return f"已向前端展示 {len(opts)} 个候选时间段，等学生确认。"
+
+
+# ---------- 无密钥时的「确定性规划助手」（让排时间这套交互离线也能演示） ----------
+#
+# 没有配置大模型密钥时，真模型用不了，但学生端「提议候选 → 学生勾选 → 写入」这套
+# 交互又很想让评委看到。于是这里写一个轻量的「脚本助手」：只处理规划模块最常见的
+# 两种意图（提出一件要做的事 / 确认某个时间），直接调下面的纯函数工具，不碰网络。
+# 有密钥时走真模型，这个不会被用到。
+
+_DATE_RE = re.compile(r"(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2})-(\d{2}:\d{2})")
+# 从学生话里抠出"要做的事"当待办标题：去掉确认词、去掉日期时间。
+# 注意：这里**不能**放 ":" / "："——它们会把时间里的冒号（07:00）也吃掉，
+# 导致下面的日期正则匹配不上、整串日期时间漏进标题。冒号分隔符在 _guess_title 末尾单独清理。
+_CONFIRM_WORDS = ("确认安排", "确认", "选这个", "就用这个", "这个", "安排", "✅")
+
+
+def _guess_title(msg: str) -> str:
+    t = msg
+    for w in _CONFIRM_WORDS:
+        t = t.replace(w, " ")
+    # 先去掉「日期 起-止」（形如 2026-09-24 14:00-15:30）。必须在清理冒号之前做，
+    # 否则时间里的冒号被当分隔符吃掉后，这段就再也匹配不上了。
+    t = _DATE_RE.sub("", t)
+    t = re.sub(r"\s+", " ", t).strip(" -·")
+    # 去掉口语前缀，标题更干净
+    t = re.sub(r"^(我要|我想|帮我|我想让|请帮我|给我)\s*", "", t)
+    # 去掉开头可能残留的冒号 / 全角冒号等分隔符（确认词后面的「：」）
+    t = re.sub(r"^[\s：:·\-]+", "", t)
+    return t or "待办"
+
+
+def mock_planner(message: str, history: list | None = None, persona_key: str = None) -> dict:
+    """无密钥时处理规划对话（人话：一个会查空档、会给候选、会等你确认的极简助手）。
+
+    返回 {answer, options, awaiting_choice}：
+      - options 非空且 awaiting_choice=True 时，前端把候选渲染成可勾选卡片；
+      - 学生点卡片确认后，前端把"日期 起-止"塞进消息发回来，这里识别到就真的写入。
+    """
+    msg = (message or "").strip()
+
+    # 1) 周表是空的：先让学生去上传，否则无从判断空档
+    if not get_timetable():
+        return {"answer": mock_phrase(persona_key, "need_upload"), "options": [], "awaiting_choice": False}
+
+    # 2) 消息里带了「日期 起-止」→ 这是学生在点选项卡片确认，真正写入
+    matches = _DATE_RE.findall(msg)
+    if matches:
+        results = []
+        for (date, start, end) in matches:
+            title = _guess_title(msg)
+            results.append(add_todo_tool(title, date, start, end))
+        if any("已加入日程" in r for r in results):
+            head = mock_phrase(persona_key, "confirm")
+            return {"answer": head + "\n" + "\n".join(results), "options": [], "awaiting_choice": False}
+        # 都没写入（比如撞课），把原因原样告诉学生，让他换时间
+        return {"answer": "\n".join(results), "options": [], "awaiting_choice": False}
+
+    # 3) 学生提出一件要做的事 → 查近三天空档，给最多 3 个候选
+    base = datetime.date.today()
+    days = [(base + datetime.timedelta(days=off)).isoformat() for off in (0, 1, 2)]
+    opts = []
+    for d in days:
+        for s in find_free_slots(d, 60):
+            if "error" in s or "info" in s:
+                continue
+            opts.append({
+                "id": f"{d}-{s['start']}",
+                "title": _guess_title(msg),
+                "date": d,
+                "weekday": s["weekday"],
+                "start": s["start"],
+                "end": s["end"],
+                "minutes": s["minutes"],
+            })
+            if len(opts) >= 3:
+                break
+        if len(opts) >= 3:
+            break
+
+    if not opts:
+        return {"answer": mock_phrase(persona_key, "empty"), "options": [], "awaiting_choice": False}
+
+    lines = "\n".join(
+        f"{i + 1}. {o['date']}（{o['weekday']}）{o['start']}-{o['end']}（{o['minutes']} 分钟）"
+        for i, o in enumerate(opts)
+    )
+    answer = mock_phrase(persona_key, "propose") + "\n" + lines + "\n点一下你想要的时间就行～"
+    return {"answer": answer, "options": opts, "awaiting_choice": True}
+
+
 def import_timetable(courses_json: str) -> str:
     """把整理好的课程写进周表（人话：学生传了课表文件后，AI 读完整理成这个格式存进来）。
 
@@ -251,11 +357,13 @@ def build_system_prompt() -> str:
 【你的工作流程 —— 必须照做】
 1. 学生提出一件要做的事（比如"我要复习高数"），先用 find_free_slots 查空档；
    如果学生没说哪天，就优先看今天和明后两天。
-2. 给出 **2-3 个候选时间段**，说清楚每个的日期、星期、起止时间和时长。
-3. **然后停下来问学生**："你觉得哪个合适？" —— 这一步绝不能省。
-4. **只有学生明确同意之后**（比如"第一个可以""就这样""好"），
-   才调用 add_todo 真正写进日程。学生没确认前，**绝对不要写入**。
-5. 学生提出调整（"太晚了""换个时间"），就重新查空档再提议，继续问。
+2. 挑出 **2-3 个候选时间段**，然后**必须调用 propose_slots 工具**，
+   把这些候选以结构化形式交给前端——学生会在界面上看到可勾选的卡片，
+   **不要只在文字里罗列时间段**，否则学生没法点选。
+3. 文字里补一句"你点一下想要的时间就行"，然后**停下来等学生选** —— 这一步绝不能省。
+4. **只有学生明确同意之后**（比如"第一个可以""就用这个""好"），
+   才调用 add_todo_tool 真正写进日程。学生没确认前，**绝对不要写入**。
+5. 学生提出调整（"太晚了""换个时间"），就重新查空档、再调用 propose_slots 提议，继续等。
 
 【硬性约束】
 - 待办不能跟课程撞时间（工具会自动拦截，但你要先自己看清楚）。
@@ -268,6 +376,8 @@ def build_system_prompt() -> str:
 - get_weekly_timetable：看整周课程
 - find_free_slots(date, min_minutes)：查某天空档
 - list_day_todos(date)：看某天已排了什么
+- **propose_slots(options_json)：把候选结构化地交给前端渲染成可勾选卡片。
+  提完候选后必须调用它**（options_json 是 JSON 数组，每条含 title/date/start/end）。**
 - add_todo_tool(title, date, start, end, note)：**确认后**才写入
 - import_timetable(courses_json)：学生上传课表后，把课程整理成 JSON 存进周表
 - update_todo_status / remove_todo：标记完成或删除
@@ -301,6 +411,25 @@ def build_tools() -> dict[str, Tool]:
                 "required": ["date"],
             },
             func=find_free_slots,
+        ),
+        "propose_slots": Tool(
+            name="propose_slots",
+            description=(
+                "把候选时间段交给前端展示成可勾选的卡片。**查好空档、准备问学生选哪个时调用**。"
+                "入参 options_json 是 JSON 数组，每条含 title(待办标题)、date(如2026-09-25)、"
+                "start、end、可选 note。学生没确认前不要调用 add_todo。"
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "options_json": {
+                        "type": "string",
+                        "description": '候选数组的 JSON 字符串，如 [{"title":"复习高数","date":"2026-09-25","start":"19:00","end":"20:30"}]',
+                    }
+                },
+                "required": ["options_json"],
+            },
+            func=propose_slots,
         ),
         "list_day_todos": Tool(
             name="list_day_todos",

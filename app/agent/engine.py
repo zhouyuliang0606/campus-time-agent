@@ -36,6 +36,8 @@ class AgentEngine:
         self.system_prompt = system_prompt
         # trace 记录每一步在干嘛，前端可以展示成"思考轨迹"，是演示 Agent 推理的关键
         self.trace: list[dict] = []
+        # 规划模块调 propose_slots 时，把候选结构化选项暂存这里，最后带给前端
+        self.options: list[dict] = []
 
     def _schemas(self) -> list[dict] | None:
         """把所有工具翻译成模型能用的格式；没有工具就返回 None（模型只用文字回答）。"""
@@ -106,6 +108,18 @@ class AgentEngine:
                         else:
                             result = tool.func(**args)
 
+                        # 规划模块用 propose_slots 把候选"交给前端渲染成卡片"：
+                        # 抓它的结构化参数，作为响应里的 options 带回去
+                        if fn_name == "propose_slots":
+                            raw = args.get("options_json") or args.get("options")
+                            if isinstance(raw, str):
+                                try:
+                                    raw = json.loads(raw)
+                                except Exception:
+                                    raw = None
+                            if isinstance(raw, list):
+                                self.options = raw
+
                     # 4) 把工具结果作为"tool"角色消息回灌给模型，让它继续想
                     messages.append(
                         {
@@ -128,10 +142,17 @@ class AgentEngine:
             # 5) 模型没调工具，说明它觉得可以直接回答了
             answer = msg.get("content") or "（模型没有返回内容，请稍后再试）"
             self.trace.append({"step": step, "phase": "💡 最终回答", "answer": answer})
-            return {"answer": answer, "trace": self.trace}
+            return {
+                "answer": answer,
+                "trace": self.trace,
+                "options": self.options,
+                "awaiting_choice": bool(self.options),
+            }
 
         # 6) 超过步数限制仍没结论
         return {
             "answer": "我思考了几轮还是没完全理清楚，能换个说法、或给多一点信息吗？",
             "trace": self.trace,
+            "options": self.options,
+            "awaiting_choice": bool(self.options),
         }
