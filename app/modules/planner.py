@@ -689,6 +689,19 @@ def wants_add_todo(text: str) -> bool:
     t = (text or "").strip()
     if not t or len(t) > 80:      # 太长的多半是在聊天，不是在下单
         return False
+    # ⚠️ 下面这几条"让路"必须排在"有意图词就放行"前面。
+    # 否则"安排"这个词会把课表请求、学习计划请求一起拽过来——
+    # 先把不属于待办的交出去，再谈接住。
+    #
+    # 课表类的话由课表那条路管，别抢（"周一加一节体育"要进的是周表，不是待办）
+    if "课表" in t or "课程" in t:
+        return False
+    if any(w in t for w in ("加课", "加一门课", "加一节", "加门课", "加节课")):
+        return False
+    # "帮我安排这周的学习计划"是 schedule 模块的看家本领（找空档排计划），
+    # 不是往日程里塞一条待办。判据：说了"计划/规划"又没给具体钟点 → 让给 schedule。
+    if ("计划" in t or "规划" in t) and _pick_span(t)[0] is None:
+        return False
     # 学生明说了要加一件事（"帮我安排游泳""记一下交电费"），就算他没提日期时刻，
     # 系统也得接住——由确定性追问分支问他"哪天几点"，绝不能丢给模型。
     # （原来这里最后还要过一遍"日期/时刻有一个算得出"才放行，
@@ -696,20 +709,12 @@ def wants_add_todo(text: str) -> bool:
     #   模型回一句"我已经帮你排啦"，日程里空空如也。）
     if any(w in t for w in _ADD_INTENT):
         return True
-    if not any(w in t for w in _ADD_INTENT):
-        # 没有意图词，但话里自带"日期/星期 + 起止时间"的也算下单——
-        # （比如"确认 2026-09-24 19:00-20:30 背单词"，前端点候选卡回发的是这副模样；
-        #   "今天19:00-20:30 复习线性代数"、"周五下午3点20写作业"这种不带安排字样的也该接住）。
-        # 带疑问词的不算——那多半是在问课表，不是在下单。
-        if not (_pick_date(t) and _pick_span(t)[0]
-                and not any(k in t for k in ("吗", "？", "?"))):
-            return False
-    # 课表类的话由课表那条路管，别抢（"周一加一节体育"要进的是周表，不是待办）
-    if "课表" in t or "课程" in t:
-        return False
-    if any(w in t for w in ("加课", "加一门课", "加一节", "加门课", "加节课")):
-        return False
-    return _pick_date(t) is not None or _pick_span(t)[0] is not None
+    # 没有意图词，但话里自带"日期/星期 + 起止时间"的也算下单——
+    # （比如"确认 2026-09-24 19:00-20:30 背单词"，前端点候选卡回发的是这副模样；
+    #   "今天19:00-20:30 复习线性代数"、"周五下午3点20写作业"这种不带安排字样的也该接住）。
+    # 带疑问词的不算——那多半是在问课表，不是在下单。
+    return bool(_pick_date(t) and _pick_span(t)[0]
+                and not any(k in t for k in ("吗", "？", "?")))
 
 
 def parse_add_todo(text: str) -> dict | None:

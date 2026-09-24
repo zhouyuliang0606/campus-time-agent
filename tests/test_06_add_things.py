@@ -381,6 +381,18 @@ def test_add_todo_chinese_clock():
         c.check("只给星期不给时间时，缺的是「时间」",
                 pick_todo_missing("帮我安排周二的游泳") == "时间")
 
+        # —— ①-bis 只有意图、没说时间的短句，也要系统接住（不能漏给模型）——
+        #     实测漏出去的后果：模型回一张空档推荐表，学生再补一句时间又只是聊天，
+        #     日程里始终什么都没有。
+        c.check("「帮我安排游泳」算下单（由系统追问，不丢给模型）",
+                wants_add_todo("帮我安排游泳"))
+        c.check("「记一下交电费」也算", wants_add_todo("记一下交电费"))
+        # 但"安排学习计划"是 schedule 模块的看家本领（找空档排计划），不许被待办抢走
+        c.check("「帮我安排这周的学习计划」让给 schedule 模块",
+                not wants_add_todo("帮我安排这周的学习计划"))
+        c.check("「帮我安排一下课表」让给课表那条路",
+                not wants_add_todo("帮我安排一下课表"))
+
         # —— ② 出提案 → 确认 → 真落库（走的是学生截图里那整条链路）——
         sid = "oral-todo-1"
         r = client.post("/api/chat", json={
