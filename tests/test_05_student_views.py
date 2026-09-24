@@ -135,6 +135,34 @@ def test_plan_month_calendar():
     return c.summary("第五批（月表日历化）")
 
 
+def test_timetable_import_entry():
+    title("6. 学生端课表导入入口（上传给管家 → 管家自动写周表）")
+    c = Checker()
+    with sandbox():
+        client = make_client()
+        r = client.get("/student")
+        html = r.text
+        c.check("面板有「上传课表」按钮与文件框",
+                'id="uploadTtPanel"' in html and 'id="ttFilePanel"' in html)
+        c.check("面板有导入状态提示条", 'id="ttPanelStatus"' in html)
+        c.check("聊天上传后有「把这份课表导入周表」快捷入口", "把这份课表导入周表" in html)
+        c.check("导入消息让管家读文件并调 import_timetable",
+                "read_uploaded_file" in html and "import_timetable" in html)
+        c.check("sendMsg 支持模块覆盖（导入固定走 planner）",
+                "moduleOverride" in html)
+        # 无密钥时 Mock 对导入请求要给出明确说明（而不是乱给候选时间段）
+        rc = client.post("/api/chat", json={
+            "message": "我上传了一份课表文件《课表.xlsx》（共 200 字）。"
+                       "请读取它的内容并调用 import_timetable 写进我的周表。",
+            "module": "planner", "session_id": "ti1",
+        })
+        c.check("导入请求返回 200", rc.status_code == 200)
+        d = rc.json() or {}
+        c.check("无密钥时明确提示需要密钥", "密钥" in d.get("answer", ""), d.get("answer", "")[:40])
+        c.check("不会误给候选时间段", d.get("options") == [])
+    return c.summary("第六批（课表导入入口）")
+
+
 if __name__ == "__main__":
     code = 0
     code |= test_express_view_api()
@@ -142,4 +170,5 @@ if __name__ == "__main__":
     code |= test_student_panel_markup()
     code |= test_regression_existing_apis()
     code |= test_plan_month_calendar()
+    code |= test_timetable_import_entry()
     sys.exit(code)
