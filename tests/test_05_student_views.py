@@ -114,10 +114,32 @@ def test_regression_existing_apis():
     return c.summary("第四批（回归护栏）")
 
 
+def test_plan_month_calendar():
+    title("5. /plan 月表系统日历化（每天格子直接列课程+待办）")
+    c = Checker()
+    with sandbox():
+        client = make_client()
+        r = client.get("/plan")
+        c.check("/plan 返回 200", r.status_code == 200)
+        html = r.text
+        c.check("月表网格 monthGrid 存在", 'id="monthGrid"' in html)
+        c.check("格子里的课程/待办小条样式（mevt.course/mevt.todo）",
+                "mevt.course" in html and "mevt.todo" in html)
+        c.check("今天标注（tdy）", "tdy" in html)
+        c.check("超出折叠提示（还有 N 项）", "还有" in html and "项…" in html)
+        # 学生端面板的月表同步升级
+        rs = client.get("/student")
+        sh = rs.text
+        c.check("学生面板月表也有今天标注", "tdy" in sh)
+        c.check("学生面板月表用 evt 小条列课程+待办", 'class="evt ' in sh and "还有" in sh)
+    return c.summary("第五批（月表日历化）")
+
+
 if __name__ == "__main__":
     code = 0
     code |= test_express_view_api()
     code |= test_takeout_view_api()
     code |= test_student_panel_markup()
     code |= test_regression_existing_apis()
+    code |= test_plan_month_calendar()
     sys.exit(code)

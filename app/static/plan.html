@@ -79,7 +79,7 @@
     .month { display: grid; grid-template-columns: repeat(7, 1fr); gap: 6px; }
     .month .wd { text-align: center; font-size: 12px; color: #8a93a6; padding: 4px 0; }
     .day {
-      min-height: 84px; border: 1px solid #eef0f6; border-radius: 10px; padding: 6px;
+      min-height: 104px; border: 1px solid #eef0f6; border-radius: 10px; padding: 6px;
       cursor: pointer; background: #fff; position: relative;
     }
     .day:hover { border-color: #4f7cff; }
@@ -87,17 +87,17 @@
     .day.today { border-color: #4f7cff; background: #f7faff; box-shadow: inset 0 0 0 1px #4f7cff; }
     .day.sel { background: #eef2ff; }
     .day .num { font-size: 13px; font-weight: 600; }
-    .day .badge {
-      position: absolute; right: 6px; top: 6px; background: #f0a03c; color: #fff;
-      border-radius: 9px; font-size: 11px; padding: 0 6px; min-width: 18px; text-align: center;
+    .day .num .tdy { font-size: 10px; color: #4f7cff; font-weight: 700; }
+    /* 月表格子里的课程/待办小条（像系统日历 App 一样每天直接可见） */
+    .mevt {
+      font-size: 11px; border-left: 3px solid; border-radius: 4px;
+      padding: 1px 4px; margin-top: 3px; overflow: hidden;
+      white-space: nowrap; text-overflow: ellipsis;
     }
-    /* 当天直接在格子里显示待办标题（用户明确要求：当天的要能直接看见） */
-    .day .titles { margin-top: 4px; font-size: 11px; color: #7a5212; }
-    .day .titles div {
-      background: #fff5e6; border-radius: 4px; padding: 1px 4px; margin-top: 2px;
-      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-    }
-    .day .titles div.done { background: #eef7ef; color: #3f6b48; text-decoration: line-through; }
+    .mevt.course { background: #eaf1ff; border-color: #4f7cff; color: #24406e; }
+    .mevt.todo   { background: #fff5e6; border-color: #f0a03c; color: #7a5212; }
+    .mevt.todo.done { background: #eef7ef; border-color: #7dc48a; color: #3f6b48; text-decoration: line-through; }
+    .more { font-size: 10px; color: #a0a8bb; margin-top: 2px; }
 
     /* 某一天的详情面板 */
     .detail { margin-top: 14px; border-top: 1px dashed #d8def0; padding-top: 12px; }
@@ -173,7 +173,7 @@
         <button class="btn ghost" id="nextMonth">下月 →</button>
       </div>
       <div class="small" style="margin-bottom:8px;">
-        点任意一天，下面会列出当天的待办；今天是 <b id="todayLabel"></b>，当天待办直接显示在格子里。
+        像系统日历一样：每天格子里直接列出课程与待办（最多 3 条，超出折叠）；今天是 <b id="todayLabel"></b>，点某天可在下方看当天全部待办。
       </div>
       <div class="month" id="monthGrid"></div>
       <div class="detail" id="dayDetail"></div>
@@ -299,18 +299,19 @@
       for (let d = 1; d <= daysInMonth; d++) {
         const date = new Date(y, m, d);
         const dIso = iso(date);
+        const wd = isoWd(date);
         const list = byDate[dIso] || [];
         const isToday = dIso === todayIso;
         const isSel = dIso === selectedDate;
-        let inner = `<div class="num">${d}</div>`;
-        // 非当天：显示「有几项待办」的角标；当天：直接把待办标题列出来
-        if (list.length && !isToday) {
-          inner += `<span class="badge">${list.length} 项</span>`;
-        }
-        if (isToday && list.length) {
-          inner += `<div class="titles">` + list.slice(0, 3).map(t =>
-            `<div class="${t.status === "done" ? "done" : ""}">${t.start} ${esc(t.title)}</div>`).join("") + `</div>`;
-        }
+        // 像系统日历一样排：每天格子里直接列出 课程（按星期复现）+ 待办（按日期），
+        // 最多显示 3 条，超出的折叠成「还有 N 项」，点格子可在下方看当天全部待办
+        const evts = [
+          ...courses.filter(c => Number(c.day) === wd).map(c => ({ cls: "course", txt: `${c.start} ${c.course}` })),
+          ...list.map(t => ({ cls: t.status === "done" ? "todo done" : "todo", txt: `${t.start} ${t.title}` })),
+        ];
+        let inner = `<div class="num">${d}${isToday ? ' <span class="tdy">今天</span>' : ""}</div>`;
+        evts.slice(0, 3).forEach(e => { inner += `<div class="mevt ${e.cls}" title="${esc(e.txt)}">${esc(e.txt)}</div>`; });
+        if (evts.length > 3) inner += `<div class="more">还有 ${evts.length - 3} 项…</div>`;
         html += `<div class="day ${isToday ? "today" : ""} ${isSel ? "sel" : ""}" data-date="${dIso}">${inner}</div>`;
       }
       document.getElementById("monthGrid").innerHTML = html;
