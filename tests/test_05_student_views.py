@@ -148,14 +148,16 @@ def test_timetable_import_entry():
         c.check("聊天上传后有「让管家读取这份课表」快捷入口", "让管家读取这份课表" in html)
         c.check("导入消息先要预览、确认后才写（预览确认制）",
                 "预览清单" in html and "先不要写入周表" in html)
-        c.check("导入消息让管家读文件并调 import_timetable",
-                "read_uploaded_file" in html and "import_timetable" in html)
+        c.check("确认卡走 /api/timetable/apply 确定性写入（不经过 AI）",
+                "/api/timetable/apply" in html)
+        c.check("renderOptions 识别课表修改提案（timetable_change）",
+                "timetable_change" in html)
         c.check("sendMsg 支持模块覆盖（导入固定走 planner）",
                 "moduleOverride" in html)
         # 无密钥时 Mock 对导入请求要给出明确说明（而不是乱给候选时间段）
         rc = client.post("/api/chat", json={
             "message": "我上传了一份课表文件《课表.xlsx》（共 200 字）。"
-                       "请读取它的内容并调用 import_timetable 写进我的周表。",
+                       "请读取它的内容并调用 propose_timetable_change 出确认卡。",
             "module": "planner", "session_id": "ti1",
         })
         c.check("导入请求返回 200", rc.status_code == 200)
@@ -201,12 +203,35 @@ def test_persona_rules_and_workorders():
         planner_src = (proj / "app" / "modules" / "planner.py").read_text(encoding="utf-8")
         c.check("规划提示含【个人数据隔离 —— 预览确认制】",
                 "【个人数据隔离 —— 预览确认制" in planner_src)
-        c.check("改课表要求：预览 → 确认 → 整表写入",
-                "调整后的完整课表" in planner_src and "先不要写入" not in planner_src)
-        c.check("import_timetable 描述要求学生确认后才能调用",
-                "等学生明确确认导入后才能调用" in planner_src)
-        c.check("remove_todo 描述要求确认后才能删",
-                "得到明确确认后才能调用" in planner_src)
+        c.check("改课表要求：完整课表提案 → 确认卡 → 系统写入",
+                "调整后的完整课表" in planner_src and "系统自动写入" in planner_src)
+        c.check("明确告诉模型\"不是你没有权限\"，防止它拒绝执行",
+                "不是你没有权限" in planner_src)
+        c.check("propose_timetable_change 是修改课表唯一途径（工具已注册）",
+                '"propose_timetable_change"' in planner_src)
+        c.check("AI 工具箱已移除 import_timetable（写入权收归系统）",
+                '"import_timetable": Tool' not in planner_src)
+        c.check("引擎捕获提案参数 → 渲染确认卡",
+                "propose_timetable_change" in (proj / "app" / "agent" / "engine.py").read_text(encoding="utf-8"))
+
+        # —— /api/timetable/apply 确定性写入口 ——
+        ok_courses = [
+            {"day": 1, "start": "08:00", "end": "09:40", "course": "高等数学", "location": "教三301"},
+            {"day": 3, "start": "14:00", "end": "15:40", "course": "数据结构", "location": "机房B"},
+        ]
+        ra = client.post("/api/timetable/apply", json={"courses": ok_courses})
+        c.check("合法提案 apply 成功", ra.status_code == 200 and (ra.json() or {}).get("ok")
+                and (ra.json() or {}).get("count") == 2)
+        rt = client.get("/api/timetable")
+        c.check("apply 后周表真的变了（确定性写入）",
+                len((rt.json() or {}).get("courses", [])) == 2)
+        rb = client.post("/api/timetable/apply", json={
+            "courses": [{"day": 9, "start": "08:00", "end": "09:00", "course": "坏数据"}]})
+        c.check("非法提案被拒（400 + 明细）", rb.status_code == 400)
+        rc2 = client.post("/api/timetable/apply", json={"courses": []})
+        c.check("空提案被拒", rc2.status_code == 400)
+        # 还原沙箱里的周表，免得影响同沙箱内后续断言
+        client.post("/api/timetable/apply", json={"courses": ok_courses})
 
         # —— 工单 API 链路：提交 → 管理端可见 → 改状态 ——
         r = client.post("/api/workorders", json={
