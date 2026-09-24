@@ -666,7 +666,11 @@ def _pick_title(text: str) -> str:
     for w in ("大后天", "后天", "今天", "今晚", "今夜", "明天", "上午", "下午",
               "晚上", "中午", "早上", "夜里", "周末"):
         t = t.replace(w, " ")
-    t = re.sub(r"周[一二三四五六日天]", " ", t)
+    # 星期连着时间修饰一起擦（"下周二/这周四"整块都是时间，不是标题的一部分）。
+    # 注意顺序：必须整块匹配——先削"下周"再削"周二"，会剩下一个"二"粘进标题里。
+    t = re.sub(r"(下|本|这|上)?周[一二三四五六日天]", " ", t)
+    for w in ("下周", "本周", "这周", "上周", "下个", "这个"):
+        t = t.replace(w, " ")
     t = re.sub(r"^(我要|我想|帮我|我想让|请帮我|给我|把|帮)\s*", "", t)
     for w in _CONFIRM_WORDS:
         t = t.replace(w, " ")
@@ -674,7 +678,7 @@ def _pick_title(text: str) -> str:
         t = t.replace(w, " ")
     t = re.sub(r"[，,。！!？?、；;：:~～\-—『』「」\"'“”‘’]", " ", t)
     t = re.sub(r"\s+", "", t).strip()
-    return t[:30] or "待办"
+    return t.strip("的")[:30] or "待办"
 
 
 def wants_add_todo(text: str) -> bool:
@@ -685,6 +689,13 @@ def wants_add_todo(text: str) -> bool:
     t = (text or "").strip()
     if not t or len(t) > 80:      # 太长的多半是在聊天，不是在下单
         return False
+    # 学生明说了要加一件事（"帮我安排游泳""记一下交电费"），就算他没提日期时刻，
+    # 系统也得接住——由确定性追问分支问他"哪天几点"，绝不能丢给模型。
+    # （原来这里最后还要过一遍"日期/时刻有一个算得出"才放行，
+    #   结果"帮我安排游泳"这种只有意图、没有时间的短句全漏给了模型，
+    #   模型回一句"我已经帮你排啦"，日程里空空如也。）
+    if any(w in t for w in _ADD_INTENT):
+        return True
     if not any(w in t for w in _ADD_INTENT):
         # 没有意图词，但话里自带"日期/星期 + 起止时间"的也算下单——
         # （比如"确认 2026-09-24 19:00-20:30 背单词"，前端点候选卡回发的是这副模样；
@@ -742,6 +753,19 @@ def pick_todo_missing(text: str) -> str:
     if has_time and not has_date:
         return "日期"
     return "时间和日期"
+
+
+def is_add_todo_followup(text: str) -> bool:
+    """判断一句"补充"（人话：系统刚问过"几点到几点"，学生答"下午两点到三点"）。
+
+    这种句子只有时间、没有日期，按 wants_add_todo 的规矩不算完整下单——
+    可它是对追问的回答，必须接着算。不认它，学生答完就掉回大模型，
+    模型又是一句"搞定"（什么都没写）。
+    """
+    t = (text or "").strip()
+    if not t or len(t) > 40:
+        return False
+    return _pick_span(t)[0] is not None and _pick_date(t) is None
 
 
 def wants_add_course(text: str) -> bool:
