@@ -292,10 +292,13 @@
             <button class="tab" id="tabMonth">月表</button>
             <span class="small" id="schRange" style="margin-left:4px;"></span>
             <span style="flex:1;"></span>
+            <input type="file" id="ttFilePanel" style="display:none;" accept=".docx,.xlsx,.pptx,.pdf,.txt,.csv,.json,.md" />
+            <button class="tab" id="uploadTtPanel" title="上传课表文件，管家读完自动写进周表">📤 上传课表</button>
             <button class="tab" id="schPrev">←</button>
             <button class="tab" id="schNext">→</button>
             <a href="/plan" class="small" style="text-decoration:none;color:#4f7cff;">完整版日程 →</a>
           </div>
+          <div class="small" id="ttPanelStatus" style="margin:-4px 0 8px;min-height:14px;"></div>
           <div id="schWeek"></div>
           <div id="schMonth" style="display:none;"></div>
           <div id="schDayDetail" style="display:none;margin-top:10px;"></div>
@@ -482,7 +485,7 @@
     const thinkingEl = document.getElementById("thinking");
     function showThinking(show) { thinkingEl.classList.toggle("show", !!show); }
 
-    async function sendMsg(msg) {
+    async function sendMsg(msg, moduleOverride) {
       if (!msg || !msg.trim()) return;
       addMsg("我", msg);
       text.value = "";
@@ -490,7 +493,8 @@
       showThinking(true); // 等待期间显示「正在思考…」，不展示内部轨迹
       try {
         const body = { message: msg, session_id: sessionId() };
-        if (currentModule) body.module = currentModule; // 显式锁定模块
+        // moduleOverride：个别动作（如导入课表）必须走 planner 模块，不受当前面板影响
+        if (moduleOverride || currentModule) body.module = moduleOverride || currentModule;
         // 随对话带上学生自选的助手性格（本地记住的 key）
         const pk = localStorage.getItem("campustime_persona");
         if (pk) body.persona = pk;
@@ -656,6 +660,51 @@
     document.getElementById("schPrev").addEventListener("click", () => { if (schTab === "week") schWeekOffset--; else schMonthOffset--; renderSchCurrent(); });
     document.getElementById("schNext").addEventListener("click", () => { if (schTab === "week") schWeekOffset++; else schMonthOffset++; renderSchCurrent(); });
 
+    // 给管家的导入指令（面板上传与聊天上传共用同一段话）：
+    // 让它真的读文件内容 → 整理成结构化数据 → import_timetable 写进周表
+    function timetableImportMsg(name, chars) {
+      return `我上传了一份课表文件《${name}》（共 ${chars} 字）。请先用 read_uploaded_file 读取它的内容，` +
+        `把里面的课程整理成结构化数据，再调用 import_timetable 写进我的周表。` +
+        `day 用 1=周一 到 7=周日，时间用 HH:MM。如果文件里有"第几节"这类表述，` +
+        `请按学校常见上课时间换算成具体时刻。写完之后用一句话告诉我导入了几门课。`;
+    }
+
+    // 面板里直接上传课表：上传文件 → 发给管家（planner 模块）→ 结果进聊天 + 刷新周月表
+    document.getElementById("uploadTtPanel").addEventListener("click", () =>
+      document.getElementById("ttFilePanel").click());
+    document.getElementById("ttFilePanel").addEventListener("change", async () => {
+      const f = document.getElementById("ttFilePanel").files[0];
+      if (!f) return;
+      const st = document.getElementById("ttPanelStatus");
+      st.textContent = "⏳ 正在上传并让管家读课表…（要读文件，稍等几秒）";
+      const form = new FormData();
+      form.append("file", f);
+      try {
+        const up = await (await fetch("/api/upload", { method: "POST", body: form })).json();
+        if (!up.ok) { st.textContent = "❌ 上传失败：" + (up.error || ""); return; }
+        const body = {
+          message: timetableImportMsg(up.file.name, up.file.chars),
+          module: "planner",
+          session_id: sessionId(),
+        };
+        const pk = localStorage.getItem("campustime_persona");
+        if (pk) body.persona = pk;
+        const d = await (await fetch("/api/chat", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        })).json();
+        st.textContent = d.answer ? "管家：" + d.answer.slice(0, 60) : "已请求管家导入";
+        // 同步留痕到聊天框：这段"管家帮我导课表"的对话学生能翻到
+        addMsg("我", `📤 上传课表《${f.name}》，请管家帮我排进周表`, "user");
+        addMsg(botName(), d.answer || "已收到课表，处理中。", "bot", "planner");
+        logToAdmin(`📤 上传课表《${f.name}》请管家导入`, "planner", d.answer || "");
+        await loadScheduleView(); // 周表/月表立刻刷新出导入的课程
+      } catch (e) {
+        st.textContent = "❌ 出错了：" + e.message;
+      }
+      document.getElementById("ttFilePanel").value = "";
+    });
+
     // ---- ② 快递：包裹列表 + 工单（工单记录存 localStorage，学生端无账号体系） ----
     async function loadExpressView() {
       const box = document.getElementById("expList");
@@ -790,6 +839,13 @@
             c.addEventListener("click", () => sendMsg(q));
             chipsBox.appendChild(c);
           });
+          // 课表文件快捷入口：管家读文件 → import_timetable 自动写进周表（固定走 planner 模块）
+          const ic = document.createElement("div");
+          ic.className = "chip";
+          ic.style.borderColor = "#4f7cff";
+          ic.textContent = "📅 把这份课表导入周表";
+          ic.addEventListener("click", () => sendMsg(timetableImportMsg(d.file.name, d.file.chars), "planner"));
+          chipsBox.appendChild(ic);
         } else {
           addMsg("系统", "上传失败：" + (d.error || "未知原因"), "sys");
         }

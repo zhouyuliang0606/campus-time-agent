@@ -243,11 +243,21 @@ def mock_planner(message: str, history: list | None = None, persona_key: str = N
     """
     msg = (message or "").strip()
 
-    # 1) 周表是空的：先让学生去上传，否则无从判断空档
+    # 1) 导入课表的请求：无密钥模式下管家没法真的读文件，明确说明而不是乱给候选。
+    #    （真模型会走 read_uploaded_file → import_timetable 完成导入；这里只是兜底话术）
+    if "课表" in msg and any(k in msg for k in ("导入", "上传", "写进", "整理", "import_timetable")):
+        return {
+            "answer": "导入课表需要我真的读到你上传的文件内容，这要用到大模型——目前还没配置密钥。"
+                      "请进管理控制台（/admin）的「API 配置」填好 Key 再传一次；"
+                      "也可以先到「我的日程」里手动安排。",
+            "options": [], "awaiting_choice": False,
+        }
+
+    # 2) 周表是空的：先让学生去上传，否则无从判断空档
     if not get_timetable():
         return {"answer": mock_phrase(persona_key, "need_upload"), "options": [], "awaiting_choice": False}
 
-    # 2) 消息里带了「日期 起-止」→ 这是学生在点选项卡片确认，真正写入
+    # 3) 消息里带了「日期 起-止」→ 这是学生在点选项卡片确认，真正写入
     matches = _DATE_RE.findall(msg)
     if matches:
         results = []
@@ -260,7 +270,7 @@ def mock_planner(message: str, history: list | None = None, persona_key: str = N
         # 都没写入（比如撞课），把原因原样告诉学生，让他换时间
         return {"answer": "\n".join(results), "options": [], "awaiting_choice": False}
 
-    # 3) 学生提出一件要做的事 → 查近三天空档，给最多 3 个候选
+    # 4) 学生提出一件要做的事 → 查近三天空档，给最多 3 个候选
     base = datetime.date.today()
     days = [(base + datetime.timedelta(days=off)).isoformat() for off in (0, 1, 2)]
     opts = []
