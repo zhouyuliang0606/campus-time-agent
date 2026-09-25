@@ -134,7 +134,10 @@ def main():
             day_cell.wait_for(state="visible", timeout=15000)
             day_cell.click()
             page.wait_for_timeout(800)
-            day_cell.scroll_into_view_if_needed()
+            # 点完这一天，待办会出现在月历**下面**那块 `#schDayDetail` 里。
+            # 这里必须滚到**它**身上，不能停在格子上 —— 上一步滚的是格子，
+            # 那块说明还在视口外，截出来就只有月历、看不到待办（实测踩过）。
+            page.locator("#schDayDetail").scroll_into_view_if_needed()
             page.wait_for_timeout(500)
             shot(page, "36_span_month")
             detail = page.evaluate("""() => {
