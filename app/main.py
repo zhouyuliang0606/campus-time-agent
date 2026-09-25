@@ -61,6 +61,7 @@ from app.modules.planner import (
     parse_mode_answer,
     plan_todo_slot,
     mode_to_card,
+    claims_proposal_sent,
     render_todo_remove_list,
     rescue_proposal_from_reply,
     resolve_todo_remove,
@@ -329,6 +330,22 @@ def _rescue_answer(card: dict) -> str:
         f"{card.get('date')}（{card.get('weekday')}）"
         f"{card.get('start')}-{card.get('end')}。\n"
         "点【确认加入】执行；直接回一句「确认」也一样。"
+    )
+
+
+def _no_card_answer() -> str:
+    """卡补不出来、可它已经对学生说"已提交/已加入"了 → 如实纠正。
+
+    为什么这句不能留：学生看完就去等了，而库里一条都没有。
+    「嘴上说写好了」是我们从 `ai-logs/13` 一路修到现在的老毛病，
+    到这一版连"过去式"都出来了（实测原话：「已提交，等系统入库后周一待办里
+    就会多出「游泳 16:00~17:30」这一条。」——**什么都没挂、什么都没写**）。
+    """
+    return (
+        "⚠️ 先纠正一下：我这边**没有挂出确认条**，也**没有写进日程**——"
+        "刚才那句「已经提交 / 已经加入」不作数，是我说错了，别等它。\n\n"
+        "你再说一遍要加什么（比如「帮我加个游泳」），我重新出一张确认条；\n"
+        "**点【确认加入】、或者回一句「确认」**才会真正写进你的周表和月表。"
     )
 
 
@@ -952,9 +969,15 @@ async def chat(req: Request):
                 )
                 phase = "🗓️ 确认落空 → 学生只说了哪天，系统挑空档补出确认条"
             else:
+                # 方案是从**管家自己那句话**里捞回来的（from_butler）→ 得说清是
+                # "它只在文字里写了方案、卡片没跟上"。笼统一句"刚才那次可能没接上"
+                # 学生听不懂：他看到的正是"它说要有提案，可我这儿没有弹窗"。
+                lead = ("📝 我上一条只在文字里写了方案，**确认条没跟上**——我补一张：\n\n"
+                        if from_butler else
+                        "📝 刚才那次可能没接上，我把确认条又挂了出来——")
                 answer = (
-                    "📝 刚才那次可能没接上，我把确认条又挂了出来——"
-                    f"要不要把 **{proposal['title']}** 排进日程？"
+                    lead
+                    + f"要不要把 **{proposal['title']}** 排进日程？"
                     f"{proposal['date']}（{proposal['weekday']}）"
                     f"{proposal['start']}-{proposal['end']}。\n"
                     "点【确认加入】执行；直接回一句「确认」也一样。"
@@ -1501,6 +1524,16 @@ async def chat(req: Request):
                 "step": 1,
                 "phase": "🛟 模型没调工具 → 系统从它的话里补出确认条",
                 "answer": rescued.get("summary", ""),
+            }]
+        elif claims_proposal_sent(result["answer"]):
+            # 它自称"已经提交/已经加入"了，可方案**捞不出来**（正文里没有可认的
+            # 任务名或时间），系统补不出卡。这句话留着比没有更坏 ——
+            # 学生会以为安排好了、跑去等，而库里一条都没有。
+            # 删不掉这份假话，那就**如实纠正**并告诉他下一步怎么说。
+            final_answer = _no_card_answer()
+            final_trace = list(result["trace"] or []) + [{
+                "step": 1,
+                "phase": "⚠️ 模型自称已提交但系统补不出卡 → 如实纠正，不让学生空等",
             }]
 
     # 写进会话历史的是**学生最终看到的那一句**（补条之后的话术）。

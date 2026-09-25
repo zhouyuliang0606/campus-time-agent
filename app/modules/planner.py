@@ -1745,30 +1745,80 @@ def propose_todo_tool(title: str, when: str = "", date: str = "",
 _REPLY_TASK_RE = re.compile(r"(?:任务|事项|标题|安排)\s*[：:]\s*([^\n，,。；;：:｜|\-—]{1,30})")
 _REPLY_TIME_RE = re.compile(r"(?:时间|时段|几点)\s*[：:]\s*([^\n。；;｜|\-—]{1,40})")
 
+# —— 散文式方案的抠法（它这次没按上面那个格式写）——
+#
+# 实测它写过这么一段（学生截屏投诉：「**没有代办页**…没有出现弹窗」）：
+#   好的，帮你把「游泳」加到周一待办里，时间就按咱们说的 16:00~17:30 来。
+#   确认一下：**周一 16:00 游泳（1.5 小时）**，对吧？你回个「确认」，系统就入库了。
+# 任务名、日期、时段**三样全在**（`_pick_title` / `_pick_date` / `_pick_span`
+# 单独喂进去都能抠出来），可上面的固定格式一个都对不上 →
+# 整个方案被判成"捞不出来" → 卡片没挂、库没写，
+# 学生下一句「确认」，模型还回了一句"已提交，等系统入库后…"（彻头彻尾的假话）。
+#
+# 所以补两路抠法：先看引号里的词（模型写方案爱用「」把任务名括起来），
+# 再看"把 X 加到/排到"这种口语说法。
+_QUOTED_TITLE_RE = re.compile(r"[「『《“\"]([^」』》”\"\n]{2,12})[」』》”\"]")
+_TITLE_AFTER_VERB_RE = re.compile(
+    r"把\s*(.{2,16}?)\s*(?:加到|加进|加入|加|排到|排进|排上|放进|记到|记进|安排到|安排进)")
+
+# 引号里这些词**不是**任务名（"你回个「确认」"里的「确认」）。
+# 单独列一份，不并进 `_TITLE_NOISE`：那份是拿来判"学生说的这句话算不算一件事"的，
+# 而"确认"当待办名确实没意义 —— 只是这儿语境更特殊，独立一份更好读。
+_PROSE_TITLE_STOP = ("确认", "确定", "可以", "好的", "好", "取消", "是的", "加入", "行")
+
+
+def _pick_title_from_prose(t: str) -> str:
+    """从**散文式**的方案里抠任务名（人话：它这次没按格式写，那就照人话抠）。"""
+    for m in _QUOTED_TITLE_RE.finditer(t or ""):
+        cand = (m.group(1) or "").strip()
+        if cand in _PROSE_TITLE_STOP:
+            continue
+        if looks_like_thing(cand):
+            return cand
+    m = _TITLE_AFTER_VERB_RE.search(t or "")
+    if m:
+        cand = m.group(1).strip().strip(" 的了")
+        if looks_like_thing(cand):
+            return cand
+    return ""
+
 
 def parse_todo_from_reply(text: str) -> dict | None:
     """从**管家自己那句话**里把「任务 + 时间」捞出来（人话：它只说了没挂条，系统替它挂）。
 
     什么时候用：学生回「可以」/「确认」，但暂存里什么都没有——
     因为管家上一条只是把方案写在文字里，压根没调工具。
-    照「确认落空捞回学生原话」的思路，这一次是捞**管家给的方案**：
-    按固定格式（"任务/事项/标题：" + "时间/时段："）把内容还原成一张待办提案。
+    照「确认落空捞回学生原话」的思路，这一次是捞**管家给的方案**。
 
-    格式对不上就返回 None：宁可不出，也别从闲聊里瞎猜出一个待办。
+    两档：
+      · 固定格式（"任务/事项/标题：" + "时间/时段："）—— 一直是主力；
+      · **散文式**（"帮你把「游泳」加到周一待办里…你回个「确认」"）—— 后补的兜底。
+
+    第二档必须**要求它自称发过提案**（`claims_proposal_sent`）：散文抠法比固定格式
+    宽松得多，不加这一关，助手随便答一句「「高等数学」在周一 08:00-09:40 上课」
+    都会被当成一张待办提案挂出去。
+
+    两档都对不上就返回 None：宁可不出，也别从闲聊里瞎猜出一个待办。
     """
     t = text or ""
     m_task = _REPLY_TASK_RE.search(t)
     m_time = _REPLY_TIME_RE.search(t)
-    if not m_task or not m_time:
-        return None
-    when = m_time.group(1)
+    if m_task and m_time:
+        when = m_time.group(1)
+        name = m_task.group(1).strip().strip("\"'“”‘’『』「」") or "待办"
+    else:
+        if not claims_proposal_sent(t):
+            return None
+        name = _pick_title_from_prose(t)
+        if not name:
+            return None
+        when = t        # 日期和时段直接从整句里找
     day = _pick_date(when) or _pick_date(t)
     begin, finish = _pick_span(when)
     if not day or not begin:
         return None
     if not finish:
         finish = to_hhmm(to_minutes(begin) + 60)
-    name = m_task.group(1).strip().strip("\"'“”‘’『』「」") or "待办"
     return {
         "kind": "todo_add",
         "title": name,
@@ -1791,11 +1841,20 @@ _CLAIM_PROPOSAL_RE = re.compile(
     r"提案(?:已经|已)?(?:发|挂|生成|出)"
     r"|确认条(?:已经|已)?(?:挂|放|出)"
     r"|点(?:一下|击)?【?确认"
-    r"|就(?:能|会|可以)?入库")
+    r"|回个?「?确认」?"
+    r"|就(?:能|会|可以)?入库"
+    # 过去式的假话：它说"已经提交/入库/加进去了"，可界面上什么都没有。
+    # 实测原话：「已提交，等系统入库后周一待办里就会多出「游泳 16:00~17:30」这一条。」
+    # 这类比"我这就发提案"更坏 —— 学生看完就等着，什么也不会发生。
+    r"|(?:已经|已)(?:提交|入库|加入|写入|排好|安排好|放进)")
 
 
 def claims_proposal_sent(text: str) -> bool:
-    """判断管家这句话是不是在"自称已经把提案挂出来了"（人话：它说发了）。"""
+    """判断管家这句话是不是在"自称提案已经好了"（人话：它说发了、甚至说提交了）。
+
+    两种都算：**将来时**（"我这就把提案发出来"）和**过去时**（"已提交，等系统入库"）。
+    后者更坏——学生看完就等着，接口那边其实一张卡都没挂。
+    """
     return bool(_CLAIM_PROPOSAL_RE.search(text or ""))
 
 
