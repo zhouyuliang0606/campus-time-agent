@@ -463,6 +463,26 @@ def _slots_answer(card: dict, lead: str = "") -> str:
     )
 
 
+def _slots_lead(persona_key: str | None) -> str:
+    """给**确定性那一路**的候选卡回话也带上性格腔调（没选性格就返回空串）。
+
+    踩过的坑：性格原本只拼进**模型**的系统提示，可「加个健身」「我要去吃火锅」
+    这种最常见的说法走的是系统确定性分支（快、稳、不烧 token，也不怕模型乱发挥），
+    那一路上一个字都不带性格——学生明明选了「暖心朋友」，结果每次加待办
+    都听回同一句官方腔，换性格跟没换一样。
+    所以确定性分支出条时，也去 student_persona 里取一句同场景的话术当开头。
+    没选/选了非法 key 就返回空串，调用方照旧用那句不带性格的默认引导语。
+    """
+    if not persona_key:
+        return ""
+    try:
+        from app.modules.student_persona import mock_phrase
+        phrase = (mock_phrase(persona_key, "propose") or "").strip()
+    except Exception:
+        return ""
+    return (phrase + "\n\n") if phrase else ""
+
+
 def _offer_response(session_id: str, card: dict, message: str,
                     answer: str, phase: str) -> dict:
     """把一张待办提案挂进暂存 + 组装响应（人话：出条这件事只写一遍）。
@@ -1579,10 +1599,12 @@ async def chat(req: Request):
             # 写库仍要他点【加入日程】，一步不越权。
             slots = mode_to_card(mode_card, "self")
             if slots is not None:
+                # 开场那句带上学生自己选的性格腔调（没选就退回下面这句默认引导语）
+                _lead = _slots_lead(persona_key) or (
+                    "⏰ 给你找了几个空着的时间段，挑方便的勾上（可勾多个）：\n\n")
                 return _offer_response(
                     session_id, slots, message,
-                    _slots_answer(slots, lead="⏰ 给你找了几个空着的时间段，挑方便的勾上"
-                                             "（可勾多个）：\n\n"),
+                    _slots_answer(slots, lead=_lead),
                     "🙋 学生没定时间 → 摊出多个候选时段（让他打勾挑选，本轮规格）")
             # 连一个空档都排不出来（那几天全满）→ 退回系统单条 AI 敲定兜底
             picked = mode_to_card(mode_card, "ai")
