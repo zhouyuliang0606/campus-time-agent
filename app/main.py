@@ -1438,6 +1438,46 @@ async def chat(req: Request):
             "awaiting_choice": False,
         }
 
+    # —— 「卡片呢 / 怎么没弹卡」：学生在找上一轮的确认卡 ——
+    # 实测原话：「卡片呢」——被 router 分给 lostfound（LLM 把"卡"联想成校园卡），
+    # 模型还嘴上说"卡片挂出来了"，界面上一张卡都没有。规则：
+    #   · 话很短、在找卡 → 暂存里有提案就**原样重挂**（不重新生成、更不写库）；
+    #   · 暂存是空的 → 如实说"没有挂着的卡"，绝不让模型凭空编一张。
+    _FIND_CARD_WORDS = ("卡片", "弹卡", "卡呢", "没卡", "弹窗", "弹框", "确认条")
+    # ⚠️ 别把"报障"当成"找卡"：实测原话「**没有收到弹窗**」里也有"弹窗"两个字，
+    # 可它不是在问"上一张卡去哪了"，而是**投诉那张卡压根没生成**——
+    # 那一幕的正解在下面的「补条兜底」：从模型那段自相矛盾的话里把 16:00-17:30
+    # 捞出来、重新挂一张卡。被这里截走的话，学生只能收到一句"手上没有挂着的卡"，
+    # 报障那一幕就又白修了（第十一批测试钉的就是它）。
+    _CARD_NEVER_ARRIVED = ("没有收到", "没收到", "收不到", "没弹出来", "没出来",
+                           "没有出现", "没出现", "看不见", "没看见")
+    if (len(message) <= 12 and any(w in message for w in _FIND_CARD_WORDS)
+            and "吗" not in message
+            and not any(w in message for w in _CARD_NEVER_ARRIVED)):
+        _held = peek_pending(session_id) or {}
+        _held_opts = [o for o in (_held.get("options") or []) if isinstance(o, dict)]
+        append_conversation(session_id, "user", message)
+        if _held_opts:
+            return {
+                "module": "planner",
+                "session_id": session_id,
+                "answer": "📑 卡还在呢——就是下面这条，勾好/点【确认】就办。",
+                "trace": [{"step": 1, "phase": "📑 学生找卡 → 原样重挂暂存里的提案",
+                           "answer": _held.get("summary") or "已重挂"}],
+                "options": _held_opts,
+                "awaiting_choice": True,
+            }
+        return {
+            "module": "planner",
+            "session_id": session_id,
+            "answer": ("📑 现在手上没有挂着的卡。说一句「加个什么什么」"
+                       "（比如「我要周六去吃火锅」），我马上把确认条给你挂出来。"),
+            "trace": [{"step": 1, "phase": "📑 学生找卡 → 暂存为空，如实说",
+                       "answer": "暂存里没有提案"}],
+            "options": [],
+            "awaiting_choice": False,
+        }
+
     if wants_add_todo(message) or (asking_add and is_add_todo_answer(message)):
         # 追问后的补充回答（学生先说"帮我安排周二的游泳"，再补"下午两点到三点"）：
         # 补充那句里没有标题、也没有日期，单独解析会把标题弄丢——
