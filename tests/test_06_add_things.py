@@ -2817,6 +2817,76 @@ def test_missing_todo_check():
     return c.summary("第十六批（看不见 X → 系统核实，不甩锅不二选一）")
 
 
+def test_missing_todo_boundary():
+    """第十七批：「看不见 X」这条分支的**反向**边界。
+
+    上一批（第十六批）那 17 项全是"报障句被接住"的正向断言，方向没错，
+    但光有正向会放行两类事故：
+
+      · **误伤**：上一批只钉了「帮我加个游泳」这一句不算报障，没钉**问时间**的。
+        实测「游泳在哪天来着」被 `_MISSING_RE` 里的 `在哪` 接住——那是问时间、
+        不是看不见——还把残片「游泳天来着」当成事名，回给学生一句
+        「确实还没有「游泳天来着」」。
+      · **残片当名字**：抹场话是按词表替换的，替换不掉的碎屑留在结果里，
+        `_pick_title` 只看长度和噪声词，于是垃圾名照样过关。
+
+    这一批补另一半：问时间的、找空档的、定计划的不许被这条分支吃掉；
+    抠出来的名字不许是场话或碎屑；同时把正向那几条再钉一遍，防止改过头。
+    """
+    title("17. 「看不见 X」分支的反向边界：别误伤、别拿残片当名字")
+    c = Checker()
+    from app.modules.planner import missing_thing_of, _missing_title_ok
+
+    # —— ① 反向：问时间 / 找空档 / 定计划，都不是"看不见" ——
+    for s in ("游泳在哪天来着",
+              "帮我找一下游泳的时间",
+              "帮我安排一下这周的学习计划",
+              "那给我加上游泳吧"):
+        c.check(f"「{s}」不许被当成报障", missing_thing_of(s) is None,
+                missing_thing_of(s))
+
+    # —— ② 名字判据：真名放行，场话和碎屑一律否掉 ——
+    c.check("真名放行（游泳 / 有氧运动）",
+            _missing_title_ok("游泳") and _missing_title_ok("有氧运动"))
+    c.check("空名字否掉", not _missing_title_ok(""))
+    c.check("含场话的否掉（健身显示）", not _missing_title_ok("健身显示"))
+    c.check("含碎屑的否掉（游泳天来着）", not _missing_title_ok("游泳天来着"))
+
+    # —— ③ 正向防回归：收紧之后，报障句照样接得住 ——
+    for s in ("我现在没有看见日程显示周二游泳代办项目啊",
+              "怎么没有周二的游泳"):
+        m = missing_thing_of(s)
+        c.check(f"「{s}」仍然认得出事名（游泳）",
+                bool(m) and m.get("title") == "游泳", m)
+    c.check("「有氧运动」的『有』仍然保住",
+            (missing_thing_of("为什么我的有氧运动没显示") or {}).get("title")
+            == "有氧运动",
+            missing_thing_of("为什么我的有氧运动没显示"))
+    c.check("「我怎么没看到周一的健身」抠出来的是「健身」，不是「看到健身」",
+            (missing_thing_of("我怎么没看到周一的健身") or {}).get("title") == "健身",
+            missing_thing_of("我怎么没看到周一的健身"))
+
+    # —— ④ 走接口：问时间不许回「确实还没有」，也不许冒出残片 ——
+    with sandbox():
+        client = make_client()
+        r = client.post("/api/chat", json={
+            "message": "游泳在哪天来着", "module": "planner", "session_id": "miss-b-1"})
+        ans = (r.json().get("answer") or "")
+        c.check("问「在哪天」不许被当成没排（不许回「确实还没有」）",
+                "确实还没有" not in ans, ans[:70])
+        c.check("回话里不许冒出残片名", "天来着" not in ans, ans[:70])
+
+        r2 = client.post("/api/chat", json={
+            "message": "我现在没有看见日程显示周二游泳代办项目啊",
+            "module": "planner", "session_id": "miss-b-2"})
+        a2 = (r2.json().get("answer") or "")
+        c.check("报障原话走接口：认得出名字，回话里不带残片",
+                "游泳" in a2 and not any(w in a2 for w in ("天来着", "在哪")),
+                a2[:70])
+
+    return c.summary("第十七批（看不见 X 分支的反向边界）")
+
+
 def main():
     global code
     print("\n" + "=" * 60)
@@ -2838,6 +2908,7 @@ def main():
     code |= test_name_field_and_comma_sentence()
     code |= test_context_inherit_and_half_sentence()
     code |= test_missing_todo_check()
+    code |= test_missing_todo_boundary()
     return code
 
 
