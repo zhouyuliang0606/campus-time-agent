@@ -66,7 +66,24 @@ class Router:
             if keyword in text:
                 return module
 
-        # 2) 兜底用大模型分类（处理说不清楚的口语）
+        # 2) 再查**样本库**（零成本，离线也能用）
+        #    为什么要有这一档：上面那张 `_QUICK_MAP` 是 50 多个硬编码词的子串匹配，
+        #    学生换个说法就全落空，直接掉到 LLM 分类——而 LLM 会**联想**：
+        #    实测「卡片呢」被它顺着"卡"字想成校园卡，分去了失物招领，
+        #    界面上一张确认卡都没有（学生原话：「后面就不弹卡了」）。
+        #    样本库里存的是"以前真办成功过的说法"，命中就沿用当时那个模块，
+        #    既不用调 API，也比让模型临场发挥稳。
+        #    ⚠️ 这里**不调 LLM**：路由每句话都要走一次，加一次调用太贵；
+        #       LLM 那一档留给 /api/chat 里的意图层（只在规则全落空时才问）。
+        try:
+            from app.agent.intent import INTENT_MODULE, match_sample
+            hit = match_sample(user_input)
+            if hit and hit.get("intent") in INTENT_MODULE:
+                return INTENT_MODULE[hit["intent"]]
+        except Exception:
+            pass
+
+        # 3) 兜底用大模型分类（处理说不清楚的口语）
         try:
             msg = await self.llm.chat(
                 [
