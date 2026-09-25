@@ -66,6 +66,7 @@ from app.modules.planner import (
     missing_thing_of,
     _name_match as _planner_name_match,
     DAY_NAMES,
+    _weekday_name,
     has_concrete_span,
     render_todo_remove_list,
     rescue_proposal_from_reply,
@@ -87,6 +88,7 @@ from app.modules.planner import (
     wants_add_course,
     wants_add_todo,
     wants_clear_timetable,
+    wants_list_todo,
     wants_remove_course,
     wants_retime_todo,
 )
@@ -1256,6 +1258,42 @@ async def chat(req: Request):
                 session_id, slots, message,
                 _slots_answer(slots, lead="🙋 好，那时间你自己挑——"),
                 "🙋 他要自己挑 → 摊出候选时段（让打勾）")
+
+    # 3d) **读我已有待办（纯读，不写库、不弹窗）**
+    #     学生说「我的代办呢」「看看我的代办」「待办列表」「代办显示不出来」这类话，
+    #     没有任何"加/删"意图，就是想看一眼现在有哪些待办。
+    #     规矩跟别处一致：能由系统算死的就别交给模型——模型会**凭空编**一堆
+    #     "你目前有 3 条待办"（其实一个字都没读库）。这里直接 list_todos() 真查，
+    #     查到什么说什么；一条都没有也如实讲。
+    #     ⚠️ 位置必须在 3c-ter 之前：「代办显示不出来」既像"看不见 X"、又该走"读列表"，
+    #     但学生真正要的是"你把我的待办念给我听"——读出来比一句"确实还没有"更有用。
+    if wants_list_todo(message):
+        todos = list_todos()
+        if not todos:
+            answer = ("📋 你目前还没有任何待办。\n"
+                      "说一句「加个游泳，周四 19:00-20:30」，我就给你出确认条。")
+        else:
+            todos_sorted = sorted(
+                todos,
+                key=lambda x: (x.get("date") or "9999-99-99", x.get("start") or "00:00"))
+            lines = [f"📋 你目前的待办（共 {len(todos)} 条）："]
+            for t in todos_sorted:
+                wd = t.get("weekday") or _weekday_name(t.get("date") or "")
+                lines.append(
+                    f"· {t.get('title', '')}｜{t.get('date', '')}"
+                    f"（{wd}）{t.get('start', '')}-{t.get('end', '')}")
+            answer = "\n".join(lines)
+        append_conversation(session_id, "user", message)
+        append_conversation(session_id, "assistant", f"已列出待办：{len(todos)} 条")
+        return {
+            "module": "planner",
+            "session_id": session_id,
+            "answer": answer,
+            "trace": [{"step": 1, "phase": "📋 列出待办（系统读取）",
+                       "answer": f"{len(todos)} 条"}],
+            "options": [],
+            "awaiting_choice": False,
+        }
 
     # 3c-ter) **「看不见 X」的报障**——学生不是要加新事，是**问在不在**。
     #     实测那一幕（截图）：学生说「我现在没有看见日程显示周二游泳代办项目啊」，
