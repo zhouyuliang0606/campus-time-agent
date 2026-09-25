@@ -2007,6 +2007,19 @@ def test_prose_proposal_and_lie():
             not claims_proposal_sent("高等数学在教三-201，周一 08:00 上课。")
             and not claims_proposal_sent("今天天气不错。"))
 
+    # —— ③-b 那句假话现在还能**真捞出方案**（比只认错更好：别让学生重说一遍）——
+    #     第四轮补上"标题跟在时段后面"这一路之后，这句从"只能纠正"升级成"能补条"。
+    lie_card = parse_todo_from_reply(lie)
+    c.check("「已提交…「游泳 16:00~17:30」这一条」现在捞得出「游泳」",
+            bool(lie_card) and lie_card.get("title") == "游泳",
+            repr((lie_card or {}).get("title")))
+    c.check("时段后面紧跟的那个右引号不再被当成标题的一部分",
+            not (lie_card or {}).get("title", "").startswith("」"),
+            repr((lie_card or {}).get("title")))
+    c.check("时长照旧按 16:00-17:30 算成 90 分钟",
+            (lie_card or {}).get("minutes") == 90,
+            str((lie_card or {}).get("minutes")))
+
     # —— ④ 走接口：截图那三轮 ——
     class _FakeEngine:
         """假引擎：记下被调了几次；一旦被调到就吐那句假话。"""
@@ -2072,18 +2085,39 @@ def test_prose_proposal_and_lie():
                     [f"{t['title']}@{t['date']}" for t in api])
 
             # —— ⑤ 补不出卡、可它已经说「已提交」了 → 必须如实纠正 ——
+            #     什么叫"补不出"：它自称提交了、话里**也有具体时段**，
+            #     可那段里没有任何能当任务名用的东西（第四轮补的第三路抠法
+            #     会把「那条稍等生效就好」当名字，所以这里还多了一道噪声闸门）。
+            #     这时候界面上没有卡、库里也没有记录，那句"已提交"就是在骗人。
+            class _StaleLieEngine:
+                calls = 0
+
+                def __init__(self, *a, **kw):
+                    pass
+
+                async def run(self, message, history=None):
+                    type(self).calls += 1
+                    txt = ("已提交，周四 08:00~09:00 那条稍等生效就好，"
+                           "我这边不直接改数据。")
+                    return {"answer": txt,
+                            "trace": [{"step": 1, "phase": "💡 最终回答", "answer": txt}],
+                            "options": []}
+
+            _m.AgentEngine = _StaleLieEngine
             sid2 = "prose-lie"
             append_conversation(sid2, "user", "加")
             append_conversation(sid2, "assistant", "好的，我看看这几天哪儿空着。")
-            _FakeEngine.calls = 0
             r3 = client.post("/api/chat", json={"message": "确认",
                                                 "module": "schedule",
                                                 "session_id": sid2})
             d3 = r3.json()
             c.check("这一步确实掉给了模型（捞不出方案，系统兜不住）",
-                    _FakeEngine.calls == 1, f"调了 {_FakeEngine.calls} 次")
+                    _StaleLieEngine.calls == 1, f"调了 {_StaleLieEngine.calls} 次")
+            c.check("没补出任何卡（那段话里没有能当任务名的东西）",
+                    not (d3.get("options") or []),
+                    _json.dumps(d3.get("options"), ensure_ascii=False)[:110])
             c.check("那句「已提交」不许原样端给学生",
-                    "已提交，等系统入库后" not in (d3.get("answer") or ""),
+                    "已提交，周四 08:00~09:00 那条稍等生效就好" not in (d3.get("answer") or ""),
                     (d3.get("answer") or "")[:60])
             c.check("如实说明「没挂确认条、也没写进日程」",
                     "没有挂出确认条" in (d3.get("answer") or "")
@@ -2098,6 +2132,7 @@ def test_prose_proposal_and_lie():
                     bool(get_conversation(sid2))
                     and "没有挂出确认条" in (get_conversation(sid2)[-1].get("content") or ""),
                     (get_conversation(sid2)[-1].get("content") or "")[:60])
+            _m.AgentEngine = _FakeEngine
         finally:
             _m.AgentEngine = _real
 
@@ -2109,6 +2144,213 @@ def test_prose_proposal_and_lie():
     c.check("周表/月表读的是同一份待办接口",
             "/api/todos" in page)
     return c.summary("第十二批（散文式方案 / 「已提交」假话）")
+
+
+def test_span_first_title_and_claim_words():
+    """第十三批：又两种写法没被认出来 —— 「提案好了」和「标题跟在时段后面」。
+
+    报障原话：「**改完自动刷新日程，和删除课表一个逻辑，都是在日程做改变，
+    每次都不弹确认的框**」，配一张截图。那一幕三轮：
+
+        我：   周四早上吧
+        管家： 提案好了，就一条：
+              **周四 08:00~09:00 健身（1 小时）**
+              确认的话，回我一句「确认添加」就行，系统会帮你入库。想换时间也随时说。
+        我：   确认
+        管家： 收到，你回「确认」后由系统执行入库，我这边不直接改数据。
+              稍等确认条生效就好。周四 08:00~09:00 健身，练完记得吃口早饭再上课。
+
+    又是"卡片没挂、库没写"。两个断点：
+
+      ① `claims_proposal_sent` **不认「提案好了」「系统会帮你入库」
+         「回我一句「确认添加」」**这三个说法 → 兜底第一步就不启动；
+      ② 就算认了，`_pick_title_from_prose` 也抠不出任务名 —— 那句里
+         既没有「」引号、也没有"把 X 加到"，任务名「健身」是**跟在时段后面**的
+         （`**周四 08:00~09:00 健身（1 小时）**`），前两路都落在盲区。
+
+    这一批补第三路抠法（标题跟在时段后面）+ 认全那三种说法 +
+    一档"任务名用学生的、时间用它给的"合并策略，并给"假话纠正"加两道闸门。
+    """
+    title("13. 「提案好了」/ 标题跟在时段后面 / 假话纠正的闸门")
+    c = Checker()
+    from app.modules.planner import (_pick_title_from_prose, claims_proposal_sent,
+                                     has_concrete_span, parse_todo_from_reply,
+                                     rescue_proposal_from_reply)
+    from app.store import append_conversation, list_todos
+
+    prose = ('提案好了，就一条：\n\n**周四 08:00~09:00 健身（1 小时）**\n\n'
+             '确认的话，回我一句「确认添加」就行，系统会帮你入库。想换时间也随时说。')
+    lied = ('收到，你回「确认」后由系统执行入库，我这边不直接改数据。'
+            '稍等确认条生效就好。\n\n周四 08:00~09:00 健身，练完记得吃口早饭再上课。')
+
+    # —— ① 那三种说法都要认 ——
+    c.check("认得出「提案好了，就一条：」", claims_proposal_sent(prose))
+    c.check("认得出「系统会帮你入库」", claims_proposal_sent("系统会帮你入库。"))
+    c.check("认得出「回我一句「确认添加」就行」",
+            claims_proposal_sent("回我一句「确认添加」就行"))
+    c.check("认得出「由系统执行入库」", claims_proposal_sent("你回「确认」后由系统执行入库。"))
+    c.check("回归：将来时/过去式照样认",
+            claims_proposal_sent("我这就把提案发出来") and claims_proposal_sent("已提交"))
+    c.check("正经回答还是不认",
+            not claims_proposal_sent("高等数学在教三-201，周一 08:00 上课。"))
+
+    # —— ② 假话纠正的闸门：得先分得清"讲一件事"和"解释流程" ——
+    c.check("带具体时段 → 算在讲一件排好的事",
+            has_concrete_span(prose) and has_concrete_span("周四 08:00~09:00 健身"))
+    c.check("纯解释流程（没有时段）→ 不算",
+            not has_concrete_span("你点确认后系统才会入库，我这边不直接改数据。"))
+
+    # —— ③ 第三路抠法：标题跟在时段后面 ——
+    c.check("从「08:00~09:00 健身（1 小时）」里抠出「健身」",
+            _pick_title_from_prose(prose) == "健身",
+            repr(_pick_title_from_prose(prose)))
+    c.check("括号里的时长不会被当成任务名的一部分",
+            _pick_title_from_prose("**周四 08:00~09:00 健身（1 小时）**") == "健身")
+    c.check("引号里是「确认添加」这种非任务名时不许认（回归）",
+            _pick_title_from_prose("回我一句「确认添加」就行") == "",
+            repr(_pick_title_from_prose("回我一句「确认添加」就行")))
+    c.check("前两路（引号 / 把 X 加到）照旧（回归）",
+            _pick_title_from_prose("帮你把「游泳」加到周一待办里") == "游泳"
+            and _pick_title_from_prose("把健身加到周四") == "健身")
+    # 第三路是最松的一路——时段后面那几个字**可能是在说提案本身**，不是事名。
+    # 实测原话（第四轮抓到的）：「已提交，周四 08:00~09:00 那条稍等生效就好」
+    # 抠出来是「那条稍等生效就好」——长度够、也不含 `_TITLE_NOISE` 里的词，
+    # 就这么过了判真，卡片上会写「要不要把 **那条稍等生效就好** 排进日程？」
+    c.check("时段后面是在讲提案本身（那条/提交/稍等）→ 不许当任务名",
+            _pick_title_from_prose("已提交，周四 08:00~09:00 那条稍等生效就好。") == "",
+            repr(_pick_title_from_prose("已提交，周四 08:00~09:00 那条稍等生效就好。")))
+    c.check("时段后面跟的是「那条已经排好了」→ 也不许当任务名",
+            _pick_title_from_prose("周四 08:00~09:00 那条已经排好了，等系统入库。") == "",
+            repr(_pick_title_from_prose("周四 08:00~09:00 那条已经排好了，等系统入库。")))
+    c.check("时段后面只跟排版星号（**）→ 一个字都没有，不许当任务名",
+            _pick_title_from_prose("提案已经挂出来了：**周四 08:00~09:00**。") == "",
+            repr(_pick_title_from_prose("提案已经挂出来了：**周四 08:00~09:00**。")))
+    c.check("回归：真事名跟在时段后面照旧抠得出来",
+            _pick_title_from_prose("周四 08:00~09:00 健身") == "健身"
+            and _pick_title_from_prose("提案好了：周四 08:00~09:00 复习线代（1.5 小时）")
+            == "复习线代",
+            repr(_pick_title_from_prose("提案好了：周四 08:00~09:00 复习线代（1.5 小时）")))
+    # 噪声表和判真是个取舍：收得太宽会把**真名字**一起挡掉。
+    # 「写好/写完/排好」本来想收进去（"已经写好了"里就有），可它们能当动词用 ——
+    # 「写好论文」「排好队」都是正经待办名，收了就等于这两个名字永远排不进日程。
+    # 这条断言就是钉住这个边界：宁可漏掉几个噪声，也不误伤真名字。
+    c.check("「写好/排好」这类能当动词的，不许进噪声表（别误伤真名字）",
+            _pick_title_from_prose("周四 08:00~09:00 写好论文") == "写好论文"
+            and _pick_title_from_prose("周四 08:00~09:00 排好队形") == "排好队形",
+            repr(_pick_title_from_prose("周四 08:00~09:00 写好论文")))
+    c.check("而「那条/提交/稍等」这种只在讲操作的要挡住（两边都得顾上）",
+            _pick_title_from_prose("周四 08:00~09:00 那条稍等生效就好") == ""
+            and _pick_title_from_prose("周四 08:00~09:00 那条已经排好了") == "")
+
+    # —— ④ 整句捞出来 ——
+    for label, txt in (("第一句（提案）", prose), ("第二句（那句回执）", lied)):
+        p = parse_todo_from_reply(txt)
+        c.check(f"{label}也捞得出来：健身 + 周四 + 08:00-09:00",
+                bool(p) and p.get("title") == "健身" and p.get("weekday") == "周四"
+                and p.get("start") == "08:00" and p.get("end") == "09:00"
+                and p.get("minutes") == 60,
+                (p or {}).get("summary", ""))
+    c.check("不许误捞（第四轮加的三句）",
+            parse_todo_from_reply("「高等数学」在周一 08:00-09:40 上课，教室教三-201。") is None
+            and parse_todo_from_reply("你点确认后系统才会入库，我这边不直接改数据。") is None
+            and parse_todo_from_reply("今天天气不错，要不要去操场跑两圈？") is None)
+
+    # —— ⑤ 合并策略：任务名用学生的，时间用它给的 ——
+    #     构造一段"有时段、有自称、但抠不出任务名"的话（括号紧贴、没有引号）
+    merged = rescue_proposal_from_reply("提案好了：周四 08:00~09:00。（事名我没写）",
+                                        add_req="帮我加个健身")
+    c.check("它没写事名时，拿学生原话里的「健身」补上",
+            bool(merged) and merged.get("title") == "健身" and merged.get("weekday") == "周四"
+            and merged.get("start") == "08:00" and merged.get("end") == "09:00",
+            _json.dumps(merged, ensure_ascii=False)[:120] if merged else "None")
+
+    # —— ⑥ 走接口：截图那三轮 ——
+    class _FakeEngine:
+        calls = 0
+
+        def __init__(self, *a, **kw):
+            pass
+
+        async def run(self, message, history=None):
+            type(self).calls += 1
+            return {"answer": lied,
+                    "trace": [{"step": 1, "phase": "💡 最终回答", "answer": lied}],
+                    "options": []}
+
+    with sandbox():
+        seed_timetable()
+        import app.main as _m
+        _real = _m.AgentEngine
+        _m.AgentEngine = _FakeEngine
+        try:
+            client = make_client()
+            sid = "span-title"
+            append_conversation(sid, "user", "帮我加个健身")
+            append_conversation(sid, "assistant", "好，加在哪天？")
+            append_conversation(sid, "user", "周四早上吧")
+            append_conversation(sid, "assistant", prose)
+
+            r = client.post("/api/chat", json={"message": "确认",
+                                               "module": "schedule",
+                                               "session_id": sid})
+            d = r.json()
+            card = next((o for o in (d.get("options") or [])
+                         if o.get("kind") == "todo_add"), {})
+            c.check("学生回「确认」→ 卡片终于出现了（报障那一幕）",
+                    bool(card), _json.dumps(d.get("options"), ensure_ascii=False)[:120])
+            c.check("卡上是「健身」+ 周四 + 08:00-09:00",
+                    card.get("title") == "健身" and card.get("weekday") == "周四"
+                    and card.get("start") == "08:00" and card.get("end") == "09:00",
+                    card.get("summary", ""))
+            c.check("这一步压根没问模型（系统自己就能捞出来）",
+                    _FakeEngine.calls == 0, f"调了 {_FakeEngine.calls} 次")
+            c.check("还没写库（学生没点【确认加入】之前一条都不许写）",
+                    not list_todos("2026-10-01"))
+            c.check("措辞说清了是「确认条没跟上」（不再是含糊的「没接上」）",
+                    "确认条没跟上" in (d.get("answer") or ""),
+                    (d.get("answer") or "")[:60])
+
+            # 再确认一次 → 写进个人库（周表月表读的就是这份）
+            r2 = client.post("/api/chat", json={"message": "确认",
+                                                "module": "schedule",
+                                                "session_id": sid})
+            c.check("再回一句「确认」→ 真写进日程",
+                    any(t["title"] == "健身" and t["start"] == "08:00"
+                        and t["end"] == "09:00" for t in list_todos("2026-10-01")),
+                    [f"{t['title']} {t['start']}-{t['end']}"
+                     for t in list_todos("2026-10-01")])
+            c.check("回执里报了「已加入日程」（前端据此自动刷新周表/月表）",
+                    "已加入日程" in (r2.json().get("answer") or ""),
+                    (r2.json().get("answer") or "")[:60])
+
+            # —— ⑦ 假话纠正的闸门：纯流程解释不许被纠正 ——
+            class _FlowEngine:
+                calls = 0
+
+                def __init__(self, *a, **kw):
+                    pass
+
+                async def run(self, message, history=None):
+                    type(self).calls += 1
+                    txt = "收到，你点确认后由系统执行入库，我这边不直接改数据。"
+                    return {"answer": txt,
+                            "trace": [{"step": 1, "phase": "💡 最终回答", "answer": txt}],
+                            "options": []}
+
+            _m.AgentEngine = _FlowEngine
+            sid2 = "span-flow"
+            append_conversation(sid2, "user", "这个系统是怎么改日程的")
+            r3 = client.post("/api/chat", json={"message": "这个系统是怎么改日程的",
+                                                "module": "schedule",
+                                                "session_id": sid2})
+            c.check("纯解释流程（没有时段、也没说要加什么）→ 不许把它纠正当假话",
+                    "没有问题" not in (r3.json().get("answer") or "")
+                    and "入库" in (r3.json().get("answer") or ""),
+                    (r3.json().get("answer") or "")[:60])
+        finally:
+            _m.AgentEngine = _real
+
+    return c.summary("第十三批（提案好了 / 标题跟在时段后面 / 纠正闸门）")
 
 
 def main():
@@ -2128,6 +2370,7 @@ def main():
     code |= test_todo_mode_and_ai_plan()
     code |= test_rescue_when_model_forgot_tool()
     code |= test_prose_proposal_and_lie()
+    code |= test_span_first_title_and_claim_words()
     return code
 
 

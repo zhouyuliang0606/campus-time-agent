@@ -62,6 +62,7 @@ from app.modules.planner import (
     plan_todo_slot,
     mode_to_card,
     claims_proposal_sent,
+    has_concrete_span,
     render_todo_remove_list,
     rescue_proposal_from_reply,
     resolve_todo_remove,
@@ -1513,8 +1514,8 @@ async def chat(req: Request):
     final_answer = result["answer"]
     final_trace = result["trace"]
     if not model_opts:
-        rescued = rescue_proposal_from_reply(result["answer"],
-                                            _recent_add_request(session_id))
+        recent_add_req = _recent_add_request(session_id)
+        rescued = rescue_proposal_from_reply(result["answer"], recent_add_req)
         if rescued is not None:
             model_opts = [rescued]
             # 它那段文字在这一刻是自相矛盾的（前面说"还没生成出来"、后面说"已发出"），
@@ -1525,11 +1526,17 @@ async def chat(req: Request):
                 "phase": "🛟 模型没调工具 → 系统从它的话里补出确认条",
                 "answer": rescued.get("summary", ""),
             }]
-        elif claims_proposal_sent(result["answer"]):
+        elif claims_proposal_sent(result["answer"]) and (
+                has_concrete_span(result["answer"]) or recent_add_req):
             # 它自称"已经提交/已经加入"了，可方案**捞不出来**（正文里没有可认的
             # 任务名或时间），系统补不出卡。这句话留着比没有更坏 ——
             # 学生会以为安排好了、跑去等，而库里一条都没有。
             # 删不掉这份假话，那就**如实纠正**并告诉他下一步怎么说。
+            #
+            # 两道闸门（纠正是有代价的——会把一段本来没问题的回答换掉）：
+            #   · 它这段话里得带**具体时段**（`08:00~09:00`），
+            #     否则"你点确认后系统才会入库"这种流程解释也会被误伤；
+            #   · 或者学生最近确实说过要加什么（那这句"提交了"多半是在说他那件事）。
             final_answer = _no_card_answer()
             final_trace = list(result["trace"] or []) + [{
                 "step": 1,

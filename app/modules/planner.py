@@ -1229,6 +1229,11 @@ _TITLE_NOISE = (
     # 只剩动作词：说了"帮我安排"却没说安排什么
     "帮我", "帮忙", "安排", "添加", "加入", "加进", "排一下", "记一下",
 )
+# 一个名字里总得有个正经字符（汉字/字母/数字）。
+# 为什么单列：第三路抠法（标题跟在时段后面）实测会抠出 `**`——
+# 「提案已经挂出来了：**周四 08:00~09:00**」里时段后面紧跟的是两个星号，
+# 长度够、也不含噪声词，就这么过了判真，卡片上会写「要不要把 ** 排进日程？」
+_HAS_WORD_CHAR_RE = re.compile(r"[0-9A-Za-z\u4e00-\u9fff]")
 
 
 def _cn_num(s: str) -> int | None:
@@ -1378,13 +1383,16 @@ def looks_like_thing(name: str) -> bool:
       · 里面还有"小时/时间/大概" → 抠到的是时间，不是事；
       · 里面还有"待办/日程/事项" → 抠到的是类别词；
       · 整串就是"帮我/安排/添加"这种动作 → 他说了要加，但没说加什么；
-      · 太长（>24 字）→ 那是在说一整句话，不是在说一件事的名字。
+      · 太长（>24 字）→ 那是在说一整句话，不是在说一件事的名字；
+      · 一个字都没有、全是符号（`**`）→ 那是排版标记，不是名字。
     不像就当"没说清"，交给追问分支去问，绝不写进日程。
     """
     t = (name or "").strip()
     if len(t) < 2 or len(t) > 24:
         return False
     if t in _EMPTY_TITLES:
+        return False
+    if not _HAS_WORD_CHAR_RE.search(t):
         return False
     return not any(w in t for w in _TITLE_NOISE)
 
@@ -1757,30 +1765,103 @@ _REPLY_TIME_RE = re.compile(r"(?:时间|时段|几点)\s*[：:]\s*([^\n。；;�
 #
 # 所以补两路抠法：先看引号里的词（模型写方案爱用「」把任务名括起来），
 # 再看"把 X 加到/排到"这种口语说法。
-_QUOTED_TITLE_RE = re.compile(r"[「『《“\"]([^」』》”\"\n]{2,12})[」』》”\"]")
+_QUOTED_TITLE_RE = re.compile(r"[「『《“\"]([^」』》”\"\n]{2,24})[」』》”\"]")
 _TITLE_AFTER_VERB_RE = re.compile(
     r"把\s*(.{2,16}?)\s*(?:加到|加进|加入|加|排到|排进|排上|放进|记到|记进|安排到|安排进)")
+# 「标题跟在时段后面」——写日程最自然的一种写法，管家也爱这么写：
+#   **周四 08:00~09:00 健身（1 小时）**
+# 时段后面紧跟的那几个字就是任务名。
+#
+# ⚠️ 排除字符里**必须带上括号和引号**：实测漏了会抠出 `」这一条` 这种垃圾 ——
+# 原话是「…就会多出「游泳 16:00~17:30」这一条。」，时段后面紧跟的是右引号，
+# 不排掉它，标题就变成 `」这一条`，还一路通过了 `looks_like_thing`（长度够、不含噪声词）。
+_TITLE_AFTER_SPAN_RE = re.compile(
+    r"\d{1,2}:\d{2}\s*(?:到|至|-|~|～)\s*\d{1,2}:\d{2}\s*"
+    r"([^（）()「」『』《》“”\"'，,。；;：:｜|、\s\n]{2,12})")
 
 # 引号里这些词**不是**任务名（"你回个「确认」"里的「确认」）。
 # 单独列一份，不并进 `_TITLE_NOISE`：那份是拿来判"学生说的这句话算不算一件事"的，
 # 而"确认"当待办名确实没意义 —— 只是这儿语境更特殊，独立一份更好读。
 _PROSE_TITLE_STOP = ("确认", "确定", "可以", "好的", "好", "取消", "是的", "加入", "行")
 
+# 时段后面紧跟的那几个字，**可能在说提案本身、而不是在说事**。
+# 实测原话：「已提交，周四 08:00~09:00 那条稍等生效就好，我这边不直接改数据。」
+#   → 第三路抠出来的是「那条稍等生效就好」，长度够、也不含 `_TITLE_NOISE` 里的词，
+#     就这么过了判真，卡片上会写「要不要把 **那条稍等生效就好** 排进日程？」
+# 这份表只给**第三路**用（引号里的、和"把 X 加到"后面那一段更可信，
+# 不该被这份表误伤），判据是"这几个字眼在讲这次操作，不是在讲要做什么事"。
+#
+# 只收**有实测出处**或一看就不可能当任务名的：宁可少几条，也别误伤真名字。
+# （"写好/写完/排好"这类本来想加，可它们能当动词用——「写好后交」「排好队」
+#   都是正经待办名，收了会把真事名一起挡掉。）
+_SPAN_TITLE_NOISE = (
+    "提案", "确认条", "确认", "提交", "入库", "挂出",
+    "这条", "那条", "稍等", "生效", "收到", "已经", "以上",
+)
+
+
+def _clean_prose_title(cand: str, extra_noise: tuple = ()) -> str:
+    """把引号里那一串洗干净（人话：它有时候连时间一起括进来）。
+
+    实测它写过「**游泳 16:00~17:30**」「健身 - 时间：周四 15:40~17:10 - 范围：本周」
+    这种 —— 直接当任务名，卡片上就是一长串。做法：先把时段和零散钟点抠掉，
+    再按分隔符切开，取第一个**判得过真**的片段。
+
+    `extra_noise`：这一路自己的额外噪声词（见 `_SPAN_TITLE_NOISE`）。
+    """
+    cand = _CONCRETE_SPAN_RE.sub(" ", cand or "")
+    cand = re.sub(r"\d{1,2}\s*[:：]\s*\d{2}", " ", cand)
+    for piece in re.split(r"[-—–－：:｜|、,，。;；\s]+", cand):
+        piece = piece.strip().strip("的了的")
+        if extra_noise and any(w in piece for w in extra_noise):
+            continue
+        if looks_like_thing(piece):
+            return piece
+    return ""
+
 
 def _pick_title_from_prose(t: str) -> str:
-    """从**散文式**的方案里抠任务名（人话：它这次没按格式写，那就照人话抠）。"""
+    """从**散文式**的方案里抠任务名（人话：它这次没按格式写，那就照人话抠）。
+
+    三路，按"有多确定"排序：
+      ① 引号里的词（「游泳」）—— 管家最常用（可能连时间一起括进来，洗一遍）；
+      ② "把 X 加到/排到"（把健身加到周四）；
+      ③ 时段后面紧跟的词（`08:00~09:00 健身`）—— 写日程最自然的写法。
+    """
     for m in _QUOTED_TITLE_RE.finditer(t or ""):
         cand = (m.group(1) or "").strip()
         if cand in _PROSE_TITLE_STOP:
             continue
-        if looks_like_thing(cand):
-            return cand
+        cleaned = _clean_prose_title(cand)
+        if cleaned:
+            return cleaned
     m = _TITLE_AFTER_VERB_RE.search(t or "")
     if m:
-        cand = m.group(1).strip().strip(" 的了")
-        if looks_like_thing(cand):
-            return cand
+        cleaned = _clean_prose_title(m.group(1))
+        if cleaned:
+            return cleaned
+    m = _TITLE_AFTER_SPAN_RE.search(t or "")
+    if m:
+        cleaned = _clean_prose_title(m.group(1), _SPAN_TITLE_NOISE)
+        if cleaned:
+            return cleaned
     return ""
+
+
+def _make_todo_card(name: str, day: str, begin: str, finish: str) -> dict:
+    """把"任务名 + 日期 + 起止"拼成一张能直接落库的待办卡（人话：出卡这步只写一遍）。"""
+    if not finish:
+        finish = to_hhmm(to_minutes(begin) + 60)
+    return {
+        "kind": "todo_add",
+        "title": name,
+        "date": day,
+        "start": begin,
+        "end": finish,
+        "weekday": _weekday_name(day),
+        "minutes": to_minutes(finish) - to_minutes(begin),
+        "summary": f"{name}｜{day}（{_weekday_name(day)}）{begin}-{finish}",
+    }
 
 
 def parse_todo_from_reply(text: str) -> dict | None:
@@ -1817,18 +1898,7 @@ def parse_todo_from_reply(text: str) -> dict | None:
     begin, finish = _pick_span(when)
     if not day or not begin:
         return None
-    if not finish:
-        finish = to_hhmm(to_minutes(begin) + 60)
-    return {
-        "kind": "todo_add",
-        "title": name,
-        "date": day,
-        "start": begin,
-        "end": finish,
-        "weekday": _weekday_name(day),
-        "minutes": to_minutes(finish) - to_minutes(begin),
-        "summary": f"{name}｜{day}（{_weekday_name(day)}）{begin}-{finish}",
-    }
+    return _make_todo_card(name, day, begin, finish)
 
 
 # 「管家自称把提案发出去了」的说法（人话：它说挂出来了，可界面上一个按钮都没有）。
@@ -1843,19 +1913,41 @@ _CLAIM_PROPOSAL_RE = re.compile(
     r"|点(?:一下|击)?【?确认"
     r"|回个?「?确认」?"
     r"|就(?:能|会|可以)?入库"
+    # 「提案好了，就一条：」/「系统会帮你入库」/「回我一句「确认添加」就行」——
+    # 这三种说法一个字段都不沾上面那几条（实测踩过）。
+    # "入库"索性按整词算：在这套代码的语境里它只出现在提案/确认相关的话里。
+    r"|提案(?:已经|已)?好"
+    r"|入库"
+    r"|确认添加"
     # 过去式的假话：它说"已经提交/入库/加进去了"，可界面上什么都没有。
     # 实测原话：「已提交，等系统入库后周一待办里就会多出「游泳 16:00~17:30」这一条。」
     # 这类比"我这就发提案"更坏 —— 学生看完就等着，什么也不会发生。
     r"|(?:已经|已)(?:提交|入库|加入|写入|排好|安排好|放进)")
 
 
+# 一句里带**具体时段**（08:00~09:00 这种）。用来判断"它这段话是在讲一件排好的事"，
+# 而不是在解释流程（"你点确认后系统才会入库"这种就没时段）。
+_CONCRETE_SPAN_RE = re.compile(r"\d{1,2}:\d{2}\s*(?:到|至|-|~|～)\s*\d{1,2}:\d{2}")
+
+
 def claims_proposal_sent(text: str) -> bool:
     """判断管家这句话是不是在"自称提案已经好了"（人话：它说发了、甚至说提交了）。
 
-    两种都算：**将来时**（"我这就把提案发出来"）和**过去时**（"已提交，等系统入库"）。
-    后者更坏——学生看完就等着，接口那边其实一张卡都没挂。
+    三种都算：**将来时**（"我这就把提案发出来"）、**现在时**（"提案好了"）、
+    **过去时**（"已提交，等系统入库"）。越往后越坏 ——
+    过去时那种学生看完就等着，接口那边其实一张卡都没挂。
     """
     return bool(_CLAIM_PROPOSAL_RE.search(text or ""))
+
+
+def has_concrete_span(text: str) -> bool:
+    """这句话里有没有**具体时段**（`08:00~09:00`）。
+
+    用来分清"它这段话是在讲一件已经排好的事"和"它在解释流程"：
+    后者（"你点确认后系统才会入库"）没有时段，不该被当成假话去纠正 ——
+    纠正是有代价的（会把一段本来没问题的回答换掉）。
+    """
+    return bool(_CONCRETE_SPAN_RE.search(text or ""))
 
 
 def rescue_proposal_from_reply(text: str, add_req: str = "") -> dict | None:
@@ -1879,6 +1971,19 @@ def rescue_proposal_from_reply(text: str, add_req: str = "") -> dict | None:
     p = parse_todo_from_reply(t)
     if p is not None:
         return p
+    # 它那段话格式认不出、可**学生原话里有任务名**（"帮我加个健身"）——
+    # 那就把两边的信息合起来：**任务名用学生的，时间用它给出来的**。
+    # 人也是这么分工的：管家负责把时间定下来，事名是学生自己说的。
+    # （实测那段「提案好了，就一条：**周四 08:00~09:00 健身（1 小时）**」里，
+    #   时段有、日期有，就是格式恰好落在旧抠法的盲区。）
+    if add_req:
+        name = _pick_title_from_prose(t) or _pick_title(add_req)
+        day = _pick_date(t) or _pick_date(add_req)
+        begin, finish = _pick_span(t)
+        if not begin:
+            begin, finish = _pick_span(add_req)
+        if name and name != "待办" and day and begin:
+            return _make_todo_card(name, day, begin, finish)
     if not (add_req or "").strip():
         return None
     for maker in (todo_mode_proposal, todo_slots_proposal, auto_todo_proposal):
