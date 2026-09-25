@@ -356,6 +356,56 @@ def _recent_add_request(session_id: str, span: int = 8) -> str:
         "")
 
 
+# 「不去了」「算了」「取消」——删除/取消**动作**词。抠出的"标题"擦掉这些还
+# 剩不下东西 = 学生根本没点名（「不去了删了吧」抠出来的是「不去了删」这种残渣）。
+_DELETE_ACTION_WORDS = ("不去了", "不去", "取消", "算了", "删除", "删掉",
+                        "删了", "删", "去掉", "移除", "退掉", "改主意")
+# 学生用指代词点的那条（"把刚才那个删了"）——也算没点名，但指向同样明确。
+_BLIND_DELETE_HINTS = ("这个", "那个", "它", "刚才", "刚加", "刚排", "这条", "那条", "上次")
+
+
+def _is_blind_delete(text: str) -> bool:
+    """是不是**没点名**的删除（人话：他知道删哪条，就是懒得说名字）。"""
+    t = (text or "").strip()
+    if not t:
+        return False
+    if any(h in t for h in _BLIND_DELETE_HINTS):
+        return True
+    title = todo_title_of(t)
+    if not title or title == "待办":
+        return True
+    stripped = title
+    for w in _DELETE_ACTION_WORDS:
+        stripped = stripped.replace(w, "")
+    return not stripped.strip("的吧了呀哦呢啊嗯")
+
+
+def _recent_written_todos(session_id: str, span: int = 6) -> list:
+    """最近**真的写进日程**的待办 [(标题, 现在还在库里吗), ...]，按回执新→旧。
+
+    为什么要有它：「不去了删了吧」这种没点名的删除，指的就是上一轮刚写入的
+    那条——系统手里有这份账（自己写的「已加入日程：唱krv｜…」回执），
+    不该回一句"没找到叫这个的待办"把他推去月表手动删（截图实测那一幕）。
+
+    只认**写库回执**（_WRITTEN_RECEIPTS 里的"已加入日程"），
+    不认"已生成待办确认"那种挂卡标记——挂了卡他没确认的不算真写进去。
+    第二个元素核实的是**现在**还在不在库里：他要是已经手动删过，
+    就该回"这条已经不在了"，而不是再挂一张删不掉的确认卡。
+    """
+    out, seen = [], set()
+    in_db = {x.get("title") for x in list_todos()}
+    for m in reversed(get_conversation(session_id)[-span:]):
+        if m.get("role") != "assistant":
+            continue
+        content = (m.get("content") or "").replace("**", "")
+        for mm in re.finditer(r"已加入日程[：:]\s*([^｜|\n]+)", content):
+            title = mm.group(1).strip().rstrip("。").strip()
+            if title and title not in seen:
+                seen.add(title)
+                out.append((title, title in in_db))
+    return out
+
+
 def _rescue_answer(card: dict) -> str:
     """系统替模型补出卡片时那句回话。
 
@@ -1798,10 +1848,20 @@ async def chat(req: Request):
         # 学生是不是在回答"是哪一条"（回一句"第二条"或"游泳那条"）
         followup = asking_rm_todo and not rm_intent
         held = _pending_remove_candidates(session_id)
+        # 「不去了删了吧」这种**没点名**的删除 → 十有八九指的就是刚写入的那条。
+        # 系统手里有这份账（自己写的写库回执），把名字补上再走同一条解析路，
+        # 出卡、确认、落库全部沿用原有代码——不另抄一份"从回执造删卡"的逻辑。
+        probe = message
+        _blind_recent = None
+        if not followup and _is_blind_delete(message):
+            _blind_recent = _recent_written_todos(session_id)
+            _still = [t for t, ok in _blind_recent if ok]
+            if len(_still) == 1:
+                probe = f"删除{_still[0]}"
         if followup:
             res = resolve_todo_remove_reply(message, held)
         else:
-            res = resolve_todo_remove(message)
+            res = resolve_todo_remove(probe)
         status = res.get("status")
 
         if status == "ok":
@@ -1861,6 +1921,47 @@ async def chat(req: Request):
             clear_pending(session_id)
             day = res.get("day")
             where = f"{day}（{_weekday_of(day)}）" if day else ""
+            # 没点名的那几种情形，都比"没找到"有用（截图实测：学生被这句推去
+            # 月表手动删——可他明明刚在对话里加过，账就在回执里）：
+            if _blind_recent is not None:
+                _still = [t for t, ok in _blind_recent if ok]
+                _gone = [t for t, ok in _blind_recent if not ok]
+                if len(_still) > 1:
+                    # 最近写入的好几条都还在 → 列出来让他点名（绝不替他猜哪条）
+                    todos = [x for x in list_todos() if x.get("title") in _still]
+                    save_pending(session_id, [{"kind": "todo_remove_candidates",
+                                               "todos": todos,
+                                               "summary": "待删候选"}])
+                    append_conversation(session_id, "user", message)
+                    append_conversation(session_id, "assistant", "删待办缺细节")
+                    return {
+                        "module": "planner",
+                        "session_id": session_id,
+                        "answer": ("你最近刚排了这几条，要删的是哪一条？\n\n"
+                                   f"{render_todo_remove_list(todos)}\n\n"
+                                   "回我名字或序号就行——**你点头之前我一条都不会删。**"),
+                        "trace": [{"step": 1,
+                                   "phase": "🗑️ 没点名的删除 → 列出最近写入的几条让他点名",
+                                   "answer": f"候选 {len(todos)} 条"}],
+                        "options": [],
+                        "awaiting_choice": False,
+                    }
+                if _gone and not _still:
+                    # 回执里有、库里已经没了 → 他多半已经删过（或手动删过）
+                    append_conversation(session_id, "user", message)
+                    append_conversation(session_id, "assistant", "删待办：已经不在了")
+                    return {
+                        "module": "planner",
+                        "session_id": session_id,
+                        "answer": (f"🗑️ 「{_gone[0]}」已经不在日程里了——"
+                                   "可能刚才已经删掉（或在月表里手动删过）。"
+                                   "现在日程里一条都没少，不用再操作。"),
+                        "trace": [{"step": 1,
+                                   "phase": "🗑️ 没点名的删除 → 那条已经不在库里，如实说",
+                                   "answer": f"{_gone[0]} 已不在"}],
+                        "options": [],
+                        "awaiting_choice": False,
+                    }
             append_conversation(session_id, "user", message)
             append_conversation(session_id, "assistant", "删待办：没找到符合条件的")
             return {
