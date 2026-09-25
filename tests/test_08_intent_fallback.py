@@ -311,6 +311,78 @@ def test_rule_review():
     return c.summary("第六批（规则复核）")
 
 
+# ── ⑦ 没点名的删除：「不去了删了吧」要能定位到刚写入的那条 ─────────────────
+def test_blind_delete():
+    title("7. 没点名的删除 → 从写库回执里找回刚才那条（截图实测那一幕）")
+    c = Checker()
+    from app.main import _is_blind_delete, _recent_written_todos
+    from app.store import list_todos
+
+    c.check("「不去了删了吧」= 没点名（抠出来的『不去了删』擦掉动作词就什么都不剩）",
+            _is_blind_delete("不去了删了吧"))
+    c.check("「把刚才那个删了」= 没点名（指代词）", _is_blind_delete("把刚才那个删了"))
+    c.check("「删掉abc」= 点了名（abc 不是动作词残渣），不许替他猜",
+            not _is_blind_delete("删掉abc"))
+    c.check("正常的加待办句绝不判成删除", not _is_blind_delete("帮我安排个健身"))
+
+    with sandbox():
+        client = make_client()
+        _seed_timetable()
+        sid = "blind1"
+
+        # 先真写入一条（跟截图同一幕：出候选卡 → 勾一段 → /api/todos/batch）
+        r = client.post("/api/chat", json={
+            "message": "下周我要去唱krv", "module": "planner", "session_id": sid})
+        card = next((o for o in (r.json().get("options") or [])
+                     if o.get("kind") == "todo_slots"), {})
+        slot = (card.get("slots") or [{}])[0]
+        client.post("/api/todos/batch", json={
+            "session_id": sid, "title": card.get("title"),
+            "slots": [{"date": slot["date"], "start": slot["start"], "end": slot["end"]}]})
+
+        got = _recent_written_todos(sid)
+        c.check("写库回执被认出来了（自己写的账自己认）",
+                bool(got) and got[0][0] == "唱krv" and got[0][1] is True,
+                str(got))
+
+        # 截图那一句 → 这次要出删待办确认卡，而不是"没找到"
+        r2 = client.post("/api/chat", json={
+            "message": "不去了删了吧", "module": "planner", "session_id": sid})
+        opts = r2.json().get("options") or []
+        card2 = next((o for o in opts if o.get("kind") == "todo_remove"), {})
+        c.check("「不去了删了吧」→ 出删待办确认卡（不再推他去月表手动删）",
+                card2.get("kind") == "todo_remove", str([o.get("kind") for o in opts]))
+        c.check("卡上就是刚写入的那条（唱krv）", card2.get("title") == "唱krv",
+                card2.get("summary"))
+        c.check("仍是确认卡——删不可逆，他没点头之前一条都没删",
+                any(t["title"] == "唱krv" for t in list_todos()))
+
+        # 回「确认」→ 真删
+        client.post("/api/chat", json={
+            "message": "确认", "module": "planner", "session_id": sid})
+        c.check("回一句「确认」就真删了", all(t["title"] != "唱krv" for t in list_todos()))
+
+        # 另一幕：他已经在月表里手动删过 → 再说这句要如实说"已经不在了"
+        r3 = client.post("/api/chat", json={
+            "message": "下周我要去唱krv", "module": "planner", "session_id": sid})
+        card3 = next((o for o in (r3.json().get("options") or [])
+                      if o.get("kind") == "todo_slots"), {})
+        slot3 = (card3.get("slots") or [{}])[0]
+        client.post("/api/todos/batch", json={
+            "session_id": sid, "title": card3.get("title"),
+            "slots": [{"date": slot3["date"], "start": slot3["start"], "end": slot3["end"]}]})
+        todos = client.get("/api/todos").json().get("todos", [])
+        tid = next(t["id"] for t in todos if t["title"] == "唱krv")
+        client.delete(f"/api/todos/{tid}?session_id={sid}")
+        r4 = client.post("/api/chat", json={
+            "message": "不去了删了吧", "module": "planner", "session_id": sid})
+        d4 = r4.json()
+        c.check("已经手动删过 → 如实说「已经不在日程里了」，不再说没找到",
+                not (d4.get("options") or []) and "已经不在" in (d4.get("answer") or ""),
+                (d4.get("answer") or "")[:40])
+    return c.summary("第七批（没点名的删除）")
+
+
 if __name__ == "__main__":
     fails = 0
     fails += test_sample_store()
@@ -319,5 +391,6 @@ if __name__ == "__main__":
     fails += test_end_to_end()
     fails += test_router_sample_fallback()
     fails += test_rule_review()
+    fails += test_blind_delete()
     import sys
     sys.exit(1 if fails else 0)
