@@ -281,7 +281,8 @@ def _span_free(date: str, span) -> bool:
     return False
 
 
-def _day_slots(date: str, prefer: str = "", limit: int = 3, rotate: int = 0) -> list:
+def _day_slots(date: str, prefer: str = "", limit: int = 3,
+               rotate: int = 0, length: int = AUTO_SLOT_LENGTH) -> list:
     """那一天里"像样的几段"（人话：上午/下午/晚上各给一段塞得进的）。
 
     排序按 _part_order：学生点名了哪一档，那一档排第一个；没说就下午优先。
@@ -292,10 +293,13 @@ def _day_slots(date: str, prefer: str = "", limit: int = 3, rotate: int = 0) -> 
         给"跨天列候选"用的：不然连列三天，三条都是"下午 14:00-15:30"，
         学生看着像同一个选项复制了三遍；挪一挪就变成
         「明天下午 / 周六上午 / 周日晚上」，一眼看出有的挑。
+    :param length: 这一段要排多久。学生说了「大概三小时」就按 180 分钟找，
+        没说才用默认 90 分钟。空档不够长就跳过，绝不硬凑。
     """
     not_before = (_now_minutes() + 30
                   if date == datetime.date.today().isoformat() else None)
-    free = [s for s in find_free_slots(date, min_minutes=AUTO_SLOT_MINUTES)
+    min_needed = length
+    free = [s for s in find_free_slots(date, min_minutes=min_needed)
             if s.get("start")]
     out = []
     for name, plo, phi in DAY_PARTS:
@@ -303,8 +307,8 @@ def _day_slots(date: str, prefer: str = "", limit: int = 3, rotate: int = 0) -> 
             begin = max(to_minutes(s["start"]), plo)
             if not_before is not None:
                 begin = max(begin, not_before)
-            finish = min(begin + AUTO_SLOT_LENGTH, to_minutes(s["end"]), phi)
-            if finish - begin < AUTO_SLOT_MINUTES:
+            finish = min(begin + length, to_minutes(s["end"]), phi)
+            if finish - begin < min_needed:
                 continue
             out.append({"part": name, "date": date,
                         "weekday": _weekday_name(date),
@@ -349,6 +353,10 @@ def candidate_slots(text: str = "", max_slots: int = 3, days_ahead: int = 5) -> 
     prefer = t
     today = datetime.date.today()
     picked_day = _pick_date(t)
+    # 学生说了时长（"大概三小时"）→ 候选段就按 3 小时找；没说才回落 90 分钟。
+    # 这里必须认，不然候选卡上全是 90 分钟，学生会拿到「不是我想要的 3 小时」。
+    want = wanted_minutes(t) or AUTO_SLOT_LENGTH
+    want = max(5, min(int(want), 8 * 60))
     out = []
 
     def _push(slot):
@@ -374,7 +382,7 @@ def candidate_slots(text: str = "", max_slots: int = 3, days_ahead: int = 5) -> 
             break
 
     if picked_day:
-        for s in _day_slots(picked_day, prefer, limit=max_slots):
+        for s in _day_slots(picked_day, prefer, limit=max_slots, length=want):
             _push(s)
         return out[:max_slots]
 
@@ -382,7 +390,7 @@ def candidate_slots(text: str = "", max_slots: int = 3, days_ahead: int = 5) -> 
         if len(out) >= max_slots:
             break
         day = (today + datetime.timedelta(days=off)).isoformat()
-        for s in _day_slots(day, prefer, limit=1, rotate=off):
+        for s in _day_slots(day, prefer, limit=1, rotate=off, length=want):
             _push(s)
     return out[:max_slots]
 
