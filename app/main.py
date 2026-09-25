@@ -51,25 +51,32 @@ from app.modules.planner import (
     build_system_prompt as PLANNER_PROMPT,
     build_tools as planner_tools,
     build_scheduling_tools as scheduling_tools,
+    format_minutes,
     mock_planner,
     parse_add_course,
     parse_add_todo,
     parse_remove_course,
     parse_slot_text,
     parse_todo_from_reply,
+    parse_mode_answer,
+    plan_todo_slot,
+    mode_to_card,
     render_todo_remove_list,
     resolve_todo_remove,
     resolve_todo_remove_reply,
     slot_is_free,
+    todo_mode_proposal,
     todo_slots_proposal,
     wants_remove_todo,
     wants_remove_todo_loose,
     is_add_todo_answer,
     is_add_todo_followup,
+    is_mode_answer,
     is_slot_answer,
     pick_todo_missing,
     retime_todo_proposal,
     todo_missing_advice,
+    todo_title_of,
     wants_add_course,
     wants_add_todo,
     wants_clear_timetable,
@@ -143,21 +150,28 @@ ASSISTANT_RULES = """
       所以只能说"说一下时间/哪天，我算好给你出确认条"，禁止用"搞定／没问题／
       已经正式写进你的待办啦／刷新一下就能看到"这类话暗示已完成——
       说这话的时候数据库里空空如也，学生一刷新就发现被骗（这条被投诉过）。
-   ⛔ **学生说了"哪天"、没说"几点"时，时间由你算，不许反问他。**
-      「周四加个健身」「我想周六自习」这类话，他要的就是"哪天哪会儿空着"这件事本身——
-      你反问"你想几点到几点"，等于把活儿原封不动退回去（学生投诉原话：
-      「**没有帮我想时间，是我问了才说的**」）。正确做法：
-      ① 先 find_free_slots 看那天的空档；② **把 2~4 段候选摊开列出来**
-      （他说了"上午/下午/晚上"就只在那一段里挑，没说就上午/下午/晚上各给一段）；
-      ③ 调 propose_todo_slots_tool 把**能打勾的候选条**挂出来。
-      ⛔ **不要只给一个点**——学生明确要求过「由 ai 帮我去挑选合适时间，**进行列举**……
-      由我打勾」（只给一个点等于替他做了主，他要么全盘接受、要么再让你换一次，来回两轮）。
-      ④ 文字里也把这几段列一遍，并说清"在卡片上打勾，勾完点【加入日程】才写库；
-      都不合适就在「其他时间」自己写一个"。
+   ⛔ **学生要加一件事、还没定时间时，第一步不是列时间、也不是问他几点。**
+      学生原话：「**要区分两种，一种是我有时间规划了，一种是我没有时间规划让他帮我安排，
+      不要一上来就询问详细时间，先给弹窗，（有时间规划）（还没有，你帮我定），用户选择后……**」
+      所以：
+      · 先用 **propose_todo_mode_tool(title, when)** 出那张**二选一卡**（"你自己定" /
+        "你帮我挑"），挂出来，**停下来等他点**。别跳过这张卡直接甩时间段——
+        对"我随便、你看着办"的学生，先摊三个点等于把决定权又推回给他。
+      · 他点「我自己定」→ 再用 propose_todo_slots_tool 列 2~4 段让他打勾。
+      · 他点「你帮我挑」→ 由系统把时间规划出来（单条、并写清"为什么排在这儿"）。
+        时长按他说的来（「大概一个小时」就是 60 分钟，别一律排 90 分钟）。
+      ⛔ 不要反问他"你想几点到几点"——他不知道哪会儿空着才来问你（投诉原话：
+      「**没有帮我想时间，是我问了才说的**」）。
       只有两种情况才去问他：① 那天/那几天真的排不进（如实说"满了、换个日子"）；
       ② 他连"要加什么事"都没说清（那就问**要加什么事**，⛔ 别问"几点到几点"）。
       例外：**学生自己报了准点**（"周四下午两点到三点"）→ 用 propose_todo_tool
-      出单条确认条就够，别再摊三段让他重挑。
+      出单条确认条就够，别再问他。
+   ⛔ **不许拿学生那半句话当代办名挂出去。** 学生原话：
+      「**要识别啥才是真的事情，不是随便拿那一句话就去当代办加入日程了**」。
+      实测「大概一个小时帮我安排时间」被抠成「大概小时帮我时间」还挂出了候选卡，
+      「周三12点到2点我要去吃自助餐，帮我添加」被抠成「去吃自助餐帮我」——
+      前者根本不是一件事（只有时长），后者是个残渣名字。
+      判不出事名（只剩时长、"帮我安排"这类动作词）→ **只问"要安排什么事"**，不出卡。
    ⛔ 学生报出"哪天/几点"要往日程里加事时，**一定要调工具把确认条挂出来**。
       光在文字里写「- 任务：健身 - 时间：周四 15:40~17:10 - 点【确认】就入库了」
       等于没出条——界面上一个按钮都没有，学生回"确认"时系统也不知道他在确认什么
@@ -253,6 +267,40 @@ def _pending_todo_remove(session_id: str) -> dict | None:
     return None
 
 
+def _pending_todo_mode(session_id: str) -> dict | None:
+    """暂存里那张**二选一卡**（人话：上一轮问学生"时间你自己定还是我帮你挑"）。
+
+    它跟 todo_slots / todo_add 都不一样：那两张卡里**都有时间**，这一张**只有问题**。
+    所以在确认分支里必须排在最前面处理——学生回一句「确认」时，
+    他确认的可能是"我知道要做这件事"，可**还没选**时间由谁定：
+    这时候写任何时间进日程都是替他做主（写错了还得再来一轮删）。
+    """
+    entry = peek_pending(session_id) or {}
+    for o in entry.get("options") or []:
+        if isinstance(o, dict) and o.get("kind") == "todo_mode" and not o.get("applied"):
+            return o
+    return None
+
+
+def _mode_answer(card: dict, lead: str = "") -> str:
+    """二分卡出条时那句回话（人话：把这个二选一摊在聊天里）。
+
+    为什么聊天里也要写一遍这两个选项：确认条是个 iframe，万一没载进来
+    （网络抖动、环境不让嵌），学生至少还能在文字里看见有两条路可选，
+    而不是"管家说了半天，我什么都没看到"。
+    """
+    title = card.get("title") or "待办"
+    bits = [f"📝 **{title}** 这件事，先确认一下时间怎么定："]
+    if card.get("minutes"):
+        bits.append(f"你说的时长我记下了（约 {format_minutes(card.get('minutes'))}）。")
+    bits.append("　· **时间我自己定** —— 我列出几段空着的时间，你挑；")
+    bits.append("　　（几段都不合意，也可以在「其他时间」里自己写一句。）")
+    bits.append("　· **还没定，你帮我挑** —— 我按这件事该花多久，直接挑一段排上，")
+    bits.append("　　并告诉你为什么排在这儿。")
+    bits.append("下面那张卡上点一下就行。")
+    return lead + "\n".join(bits)
+
+
 def _pending_todo_slots(session_id: str) -> dict | None:
     """暂存里那张**候选时段**卡（人话：上一轮摊给学生打勾的那几段时间）。
 
@@ -321,13 +369,22 @@ def _remember_todo_options(session_id: str, options: list) -> list:
     """
     picks = []
     for o in options or []:
-        if not (isinstance(o, dict) and o.get("date") and o.get("start") and o.get("end")):
-            # 候选时段卡（todo_slots）**没有** date/start/end —— 它是"好几个时段摊着、
-            # 等学生挑"，不是"已经定好一个点"。上面的完整性检查会把它整张过滤掉，
-            # 所以要先单独接住，而且**原样**存进暂存（kind 不改）：
-            # 转成 todo_pick 那套（单个时段已定）会把候选列表整个丢掉，
-            # 学生再回一句「确认」，`_pending_todo_slots` 就找不到该给他哪几段了。
-            if isinstance(o, dict) and o.get("kind") == "todo_slots" and o.get("slots"):
+        # ⚠️ 这一段专门接"**没有** date/start/end 的提案"，两种都要原样保住（kind 不改）：
+        #
+        # 候选时段卡（todo_slots）：它是"好几个时段摊着、等学生挑"，不是"已经定好一个点"。
+        # 上面的完整性检查会把它整张过滤掉 —— 转成 todo_pick 那套（单个时段已定）
+        # 会把候选列表整个丢掉，学生再回一句「确认」，`_pending_todo_slots` 就找不到
+        # 该给他哪几段了。
+        #
+        # 二选一卡（todo_mode）：一样的道理，而且更脆 —— 它**连时间都没有**，
+        # 被过滤掉之后学生回「确认」时 `_pending_todo_mode` 什么都找不到，
+        # 现象就是"我点了没反应 / 它又问我一遍"。这是 todo_slots 刚踩过的坑，
+        # 同一段代码里必须一起接住。
+        if isinstance(o, dict) and not (o.get("date") and o.get("start") and o.get("end")):
+            if o.get("kind") == "todo_mode":
+                picks.append({**o, "summary": o.get("summary")
+                              or f"{o.get('title') or '待办'}｜还没定时间"})
+            elif o.get("kind") == "todo_slots" and o.get("slots"):
                 picks.append({**o, "summary": o.get("summary")
                               or f"{o.get('title') or '待办'}｜"
                                  f"{len(o['slots'])} 个候选时段"})
@@ -485,6 +542,17 @@ async def chat(req: Request):
                 "options": [],
                 "awaiting_choice": False,
             }
+        # 学生回"确认"，可暂存里那张是**二选一卡**（时间由谁定都还没选）——
+        # 这时候更不能写：他确认的可能是"我知道要做这件事"，
+        # 而不是"就按某个时间排上"。写哪个时间都是替他做主，写错了还要再来一轮删。
+        # 正解：把二选一卡**再挂一遍**，说清楚"得先选一种"。
+        only_mode = _pending_todo_mode(session_id)
+        if only_mode:
+            return _offer_response(
+                session_id, only_mode, message,
+                _mode_answer(only_mode,
+                             lead="先别急——**还没选时间怎么定**，我这边一条都没写进去。\n\n"),
+                "🗓️ 只回了「确认」还没选方式 → 二选一卡再挂一遍，不替学生定")
         # 学生回"确认"，可暂存里那张是**候选时段卡**（几个点摊着、他还没勾）——
         # 这时候不能当成"他点头了"就随便挑一个写进去：他根本不知道你会写哪一个，
         # 而写进去的是一条真安排，写错了还得再来一轮删。
@@ -756,9 +824,18 @@ async def chat(req: Request):
         # 照 3c 分支的正解，查空档、把候选时段摊出来，让他打勾。
         # 这正是截图那一幕：学生回「确认」→ 界面上什么都没有、日程里也没写进去。
         #
-        # 注意顺序：先试"摊候选"（本轮规格），再退回"替他挑一个"的旧路子——
-        # 旧路子只在候选卡彻底列不出来时才用（比如标题没了），聊胜于无。
+        # 注意顺序：先出**二选一卡**（本轮规格：先问"你自己定 / 我帮你挑"），
+        # 再退回"摊候选"，最后才退回"替他挑一个"的旧路子——
+        # 旧路子只在卡都出不来时才用（比如标题没了），聊胜于无。
         if proposal is None and not already_written and add_req:
+            mode_card = todo_mode_proposal(add_req)
+            if mode_card is not None:
+                return _offer_response(
+                    session_id, mode_card, message,
+                    _mode_answer(mode_card,
+                                 lead="刚才那次可能没接上——这件事咱们再对一次，"
+                                      "先说清时间怎么定：\n\n"),
+                    "🗓️ 确认落空 → 重新挂出二选一卡（先问时间怎么定）")
             slots_card = todo_slots_proposal(add_req)
             if slots_card is not None:
                 return _offer_response(
@@ -940,6 +1017,50 @@ async def chat(req: Request):
                  f"下面点一下【确认加入】我就写进去，回一句「确认」也一样。"),
                 "🕘 学生在候选卡下面自己报了时间 → 出单条确认条")
 
+    # 3c-pre3) **学生在聊天里回"你自己定 / 你帮我挑"** → 就着他选的那条路出卡。
+    #     为什么必须有这一支：两选一卡上的按钮是最好走的路（前端直接打
+    #     /api/todos/mode），但学生**更习惯直接在聊天框里说一句**——
+    #     「你帮我定吧」「我自己有时间」。这两句一个字都不含时间，
+    #     掉回模型那边就是又一轮自由发挥（实测模型会说"好的，方案A记下了"，
+    #     然后反问他"游泳馆周二中午开不开"——答完回"确认"，它说"我按你说的提上去"，
+    #     结果连一张确认条都没有，学生只能追问"确认条呢"）。
+    #     ⚠️ 必须排在 3c 前面：`is_mode_answer` 认的"帮我安排"里含 `_ADD_INTENT` 的
+    #     "安排"，排在后面就永远轮不到它。
+    held_mode = _pending_todo_mode(session_id)
+    if held_mode and not is_confirmation(message) and is_mode_answer(message):
+        mode = parse_mode_answer(message)
+        if mode is not None:
+            new_card = mode_to_card(held_mode, mode)
+            if new_card is None:
+                # 两条路都出不来（那天/那几天真排不下）→ 如实说，别硬凑一个时间
+                clear_pending(session_id)
+                title = held_mode.get("title") or "待办"
+                append_conversation(session_id, "user", message)
+                append_conversation(session_id, "assistant", f"{title}排不下")
+                return {
+                    "module": "planner",
+                    "session_id": session_id,
+                    "answer": (f"😥 **{title}** 这几天实在插不进去了——课和已经排好的事"
+                               f"把空档都占了。\n换个日子，或者你说个具体钟点，"
+                               f"我看看能不能挤一挤。"),
+                    "trace": [{"step": 1, "phase": "🗓️ 二分卡两条路都排不下",
+                               "answer": "如实告知，不硬凑时间"}],
+                    "options": [],
+                    "awaiting_choice": False,
+                }
+            if mode == "ai":
+                # **核心**：他让系统替他安排，那就真去规划——并把"为什么排在这儿"说清
+                ans = (f"🤖 好，我替你挑了：**{new_card['title']}** 排在 "
+                       f"**{new_card['date']}（{new_card['weekday']}）"
+                       f"{new_card['start']}-{new_card['end']}**。\n"
+                       f"{new_card.get('reason') or ''}\n"
+                       f"下面点一下【确认加入】我就写进去，回一句「确认」也一样。")
+                phase = "🤖 学生选了「你帮我挑」→ 系统规划出一段（单条确认条）"
+            else:
+                ans = _slots_answer(new_card, lead="🙋 好，时间你自己定——")
+                phase = "🙋 学生选了「我自己定」→ 列出候选时段（让打勾）"
+            return _offer_response(session_id, new_card, message, ans, phase)
+
     if wants_add_todo(message) or (asking_add and is_add_todo_answer(message)):
         # 追问后的补充回答（学生先说"帮我安排周二的游泳"，再补"下午两点到三点"）：
         # 补充那句里没有标题、也没有日期，单独解析会把标题弄丢——
@@ -961,36 +1082,54 @@ async def chat(req: Request):
                  f"下面点一下【确认加入】我就写进去，回一句「确认」也一样。"),
                 "📝 生成待办提案（系统判定）")
 
-        # 学生只说了"哪天"、或者压根没说时间（「那你帮我加一个健身在周四」「加个健身」）。
+        # 学生没说时间（「那你帮我加一个健身在周四」「加个健身」「帮我加个游泳」）。
         #
-        # 这一档的规格**本轮改过一次**，两版都记在这儿，免得后人再翻回去：
-        #   · 上一版：系统**替他挑一个**时间、出一张"就排在这儿了"的单条确认条。
-        #     当时的理由是"不许反问学生几点"（投诉原话：「没有帮我想时间，是我问了才说的」）。
-        #     方向是对的，但做法太死——学生原话是
+        # 这一档的规格**改过两次**，三版都记在这儿，免得后人再翻回去：
+        #   · 第一版：系统**替他挑一个**时间、出一张"就排在这儿了"的单条确认条。
+        #     理由是"不许反问学生几点"（投诉原话：「没有帮我想时间，是我问了才说的」）。
+        #     方向对，但做法太死——学生回：
         #     「**我定的太严了，你改一下，由 ai 帮我去挑选合适时间，进行列举**……
-        #      采用和删除课表时同样的弹框，内容变成那几个时间的选择或者其他，
-        #      由我打勾，进行增加，增加确认完立刻刷新日程」。
-        #     只给一个点等于替他做了主：他要么全盘接受、要么再让你换一次，来回两轮。
-        #   · 这一版：**摊开几个空档让他自己打勾**（todo_slots 卡，嵌确认条渲染，
-        #     勾完点【加入日程】直接打 /api/todos/batch 落库并刷新日程面板）。
+        #      由我打勾，进行增加」。
+        #   · 第二版：**摊开几个空档让他自己打勾**（todo_slots 卡 + /api/todos/batch）。
+        #     这回方向也对了，但又漏了学生后半句：
+        #     「**要区分两种，一种是我有时间规划了，一种是我没有时间规划让他帮我安排，
+        #      不要一上来就询问详细时间，先给弹窗，（有时间规划）（还没有，你帮我定）**」。
+        #     不分这两种，一律先摊候选 —— 对一个"随便，你看着办"的学生，
+        #     摊三个时间段等于又把决定权推回去了。
+        #   · **这一版**：先出**二选一卡**（todo_mode，什么都不定），
+        #     学生点"我自己定" → 候选卡（勾 / 其他自填）；
+        #     点"你帮我挑" → 系统真去规划一段（`plan_todo_slot`，卡片上写清为什么排这儿）。
         #
-        # 不变的那条铁律：这里**只出提案，一个字节都不写库**；挑不出来的照样如实说，
-        # 绝不硬凑一个时间。反问学生"几点到几点"依然禁止——他去查空档是他的正事。
-        slots_card = todo_slots_proposal(blob)
-        if slots_card is not None:
+        # 不变的两条铁律：
+        #   ① 这里**只出提案，一个字节都不写库**；挑不出来的照样如实说，绝不硬凑一个时间。
+        #   ② 反问学生"几点到几点"依然禁止——他去查空档是他的正事。
+        #
+        # ⚠️ 还有第三件必须做的事：**先确认他真说了"要做什么事"**。
+        #    学生原话：「**要识别啥才是真的事情，不是随便拿那一句话就去当代办加入日程了**」。
+        #    实测「大概一个小时帮我安排时间」被 `_pick_title` 抠成「大概小时帮我时间」，
+        #    还照样挂出了一张候选卡让他勾时间——可连要做什么都还不知道，挑时间往哪写？
+        #    `todo_mode_proposal` 里已经过了 `_pick_title` 的判真关，判不出事名返回 None，
+        #    就落到下面的追问分支去问"要安排什么事"。
+        mode_card = todo_mode_proposal(blob)
+        if mode_card is not None:
             return _offer_response(
-                session_id, slots_card, message, _slots_answer(slots_card),
-                "🗓️ 学生没给准点 → 系统列出几个空档候选（让打勾）")
+                session_id, mode_card, message, _mode_answer(mode_card),
+                "🗓️ 学生要加一件事但没定时间 → 先问「你自己定 / 我帮你挑」")
 
-        # 候选都列不出来。两类情况，话术不能混为一谈（todo_missing_advice 分得清）：
-        #   ① 学生根本没说要加什么事 / 没说哪一天 → 正常追问；
-        #   ② 学生说了哪天、可**那天真排不进**（上面已经查过空档了）
+        # 出不了卡。两类情况，话术不能混为一谈（todo_missing_advice 分得清）：
+        #   ① 学生根本没说要加什么事（只有时长、或只有"帮我安排"）→ 问他要加什么；
+        #   ② 学生说了哪天、可**那天真排不进**（候选/规划都试过了）
         #      → 要如实说"这天满了"，别让他一遍遍补"几点几点"。
         #
         # 也**不能**把话交给模型——实测它会回"搞定！已经正式写进你的待办啦"，
         # 日程里其实什么都没有（schedule 模块连一个写入工具都没有，纯属嘴甜）。
         # 照删课的规矩：缺什么就追问什么，标记"加待办缺细节"写进历史，
         # 学生下一句补充由上面的合并逻辑接着算。
+        #
+        # ⚠️ 这个标记只用于**内部接续**（下一轮把上一句原话拼回来一起解析），
+        #    它本身**绝不能出现在学生看到的回答里**。学生截屏投诉过一句光秃秃的
+        #    「加待办缺细节」——那是内部状态码漏到了对话框里，他完全不知道要干嘛。
+        #    学生看到的永远是 `todo_missing_advice` 拼出来的人话。
         clear_pending(session_id)
         missing = pick_todo_missing(blob)
         append_conversation(session_id, "user", message)
@@ -1660,6 +1799,49 @@ async def todo_add(req: Request):
         append_conversation(sid, "assistant", f"已加入日程：{item.get('title', title)}"
                             f"｜{date}（{_weekday_of(date)}）{start}-{end}")
     return {"ok": True, "todo": item}
+
+
+@app.post("/api/todos/mode")
+async def todo_pick_mode(req: Request):
+    """学生在二选一卡上点了"我自己定"或"你帮我挑"（人话：时间由谁定，先问清）。
+
+    学生原话：「**要区分两种，一种是我有时间规划了，一种是我没有时间规划
+    让他帮我安排，不要一上来就询问详细时间，先给弹窗，（有时间规划）
+    （还没有，你帮我定），用户选择后……**」
+
+    · mode="self" → 出**候选时段卡**（几段空档摊开，他自己勾 / 在「其他时间」里自己写）；
+    · mode="ai"   → **系统真去规划**（`plan_todo_slot`：按他说的时长、避开课和已排的事，
+      挑一段并写清"为什么排在这儿"），出单条确认条。
+
+    这个接口**一个字节都不写库**：它只把"接下来那张卡"换掉。
+    真正落库还是老路子——学生勾完点【加入日程】走 /api/todos/batch，
+    或者点【确认加入】走 /api/todos。
+    """
+    body = await req.json()
+    sid = (body.get("session_id") or "").strip()
+    mode = (body.get("mode") or "").strip()
+    if mode not in ("self", "ai"):
+        return JSONResponse({"error": "mode 只能是 self 或 ai"}, status_code=400)
+    if not sid:
+        return JSONResponse({"error": "缺少会话标识"}, status_code=400)
+    card = _pending_todo_mode(sid)
+    if card is None:
+        # 暂存里没有这张卡（刷新过、或者上一轮已经选过了）→ 如实说，别凭空造一张
+        return JSONResponse(
+            {"error": "这张卡已经过期了——你再跟管家说一句「帮我加个 XX」就行"},
+            status_code=404)
+    new_card = mode_to_card(card, mode)
+    if new_card is None:
+        title = card.get("title") or "待办"
+        return JSONResponse(
+            {"error": f"「{title}」这几天实在插不进去——课和已排好的事把空档都占了。"
+                      f"换个日子，或者你说个具体钟点。"},
+            status_code=409)
+    # 换卡：暂存里把新那张挂上（旧的二选一卡就此作废——它的问题已经答完了）
+    save_pending(sid, [new_card])
+    label = "系统替你规划的时间" if mode == "ai" else "你自己挑时间"
+    append_conversation(sid, "assistant", f"〔{label}〕{new_card.get('summary', '')}")
+    return {"ok": True, "mode": mode, "pending": new_card}
 
 
 def _weekday_of(date: str) -> str:

@@ -532,6 +532,206 @@ def todo_slots_proposal(text: str, max_slots: int = 3) -> dict | None:
     return build_todo_slots(title, slots, hint=hint)
 
 
+def build_todo_mode(title: str, when: str = "", date: str = "",
+                    minutes: int | None = None, hint: str = "") -> dict:
+    """包一张「这件事怎么定时间」的提案（人话：弹框上那两颗按钮）。
+
+    学生规格原话：
+    「**要区分两种，一种是我有时间规划了，一种是我没有时间规划让他帮我安排，
+      不要一上来就询问详细时间，先给弹窗，（有时间规划）（还没有，你帮我定），
+      用户选择后，针对没时间……**」
+
+    所以这张卡不装时间，只装一个问题 + 两条路：
+      · self → 时间他自己定（出候选时段让他勾，或者他直接在「其他时间」里写）；
+      · ai   → 他还没想好，由系统去把时间规划出来（`plan_todo_slot`）。
+    它跟别的提案一样**一个字节都不写库**，只是把"接下来走哪条路"问清楚。
+    """
+    return {
+        "kind": "todo_mode",
+        "title": title or "待办",
+        "date": date or "",
+        "minutes": minutes,
+        "when": when or "",          # 学生的原话：后面出候选卡/替他规划时还要用
+        "hint": hint,
+        "summary": f"{title or '待办'}｜还没定时间",
+    }
+
+
+def format_minutes(m: int | None) -> str:
+    """60 → "1 小时"，90 → "1 小时 30 分钟"（人话：卡片上写给人看，别写"90 分钟"）。"""
+    try:
+        m = int(m or 0)
+    except Exception:
+        return ""
+    if m <= 0:
+        return ""
+    if m % 60 == 0:
+        return f"{m // 60} 小时"
+    if m > 60:
+        return f"{m // 60} 小时 {m % 60} 分钟"
+    return f"{m} 分钟"
+
+
+def todo_mode_proposal(text: str) -> dict | None:
+    """要加一件事、但没定时间 → 先问「你自己定，还是我帮你挑」。
+
+    为什么要多这一步，而不是像上一轮那样直接把候选摊出来：
+    学生原话是「**不要一上来就询问详细时间，先给弹窗**」。
+    他要的是**先分清**这件事属于哪种：
+      · 他心里已经有数（"我想周六上午去"）→ 让他自己说，别塞给他一堆候选；
+      · 他压根没主意（"你帮我安排"）→ 由系统真的去规划，而不是反过来问他。
+    上一版不分这两种，一律先摊候选卡 —— 对一个"我随便，你看着办"的学生，
+    摊三个时间段等于又把决定权推回给他了。
+
+    凑不出"要做什么事"（`_pick_title` 判空）→ 返回 None，交给追问分支问他是要加什么事，
+    **绝不拿半句话当这件事**（实测「大概一个小时帮我安排时间」被抠成
+    「大概小时帮我时间」还挂出了候选卡，就是没有这一关的结果）。
+    """
+    t = (text or "").strip()
+    if not t:
+        return None
+    title = _pick_title(t)
+    if not title or title == "待办":
+        return None
+    day = _pick_date(t) or ""
+    mins = wanted_minutes(t)
+    bits = [title]
+    if mins:
+        bits.append(f"约 {format_minutes(mins)}")
+    if day:
+        bits.append(f"{day}（{_weekday_name(day)}）")
+    hint = ("　· ".join(bits) + "。\n时间你想自己定，还是要我从空档里替你挑一段？")
+    return build_todo_mode(title, when=t, date=day, minutes=mins, hint=hint)
+
+
+def plan_todo_slot(title: str, text: str = "",
+                   minutes: int | None = None) -> dict | None:
+    """**AI 帮他把时间规划出来**（人话：他说"你帮我挑"，那就真去挑一段排上）。
+
+    学生原话：「**核心是 ai 帮我安排时间，ai 去规划时间，然后这个加入代办**」。
+    这是"没时间规划"那条路的正解 —— 不是反问他"你想几点"，而是：
+
+      1. 时长：学生说了就按他说的（「大概一个小时」→ 60 分钟，不多占他的时间）；
+         没说才回落到默认 90 分钟。
+      2. 哪天：说了哪天就只在那天找；没说就从今天起往后几天找**第一个排得下的**。
+         （今天是"此刻+30 分钟"之后才算空，午休和深夜都不排。）
+      3. 哪一段：学生提了"上午/下午/晚上"就优先那一档；没说按下→上午→晚上，
+         也就是"排件事通常排在下午"。
+      4. 一定避开**课程**和**已排的待办**（走 find_free_slots，两边都避）。
+
+    返回一张 `auto=True` 的单条提案，`reason` 里写清**为什么排在这儿**——
+    学生看到一个自己没指定的时间，第一反应就是"凭什么"，得让他一眼看懂。
+
+    挑不出来（那天满课、空档都装不下这个时长）返回 None，
+    由调用方如实说"这天排不下"，**绝不硬凑一个时间写进日程**。
+    """
+    t = (text or "").strip()
+    name = (title or "").strip() or _pick_title(t)
+    if not name or name == "待办":
+        return None
+    want = minutes or wanted_minutes(t) or AUTO_SLOT_LENGTH
+    want = max(5, min(int(want), 8 * 60))
+    today = datetime.date.today()
+    day = _pick_date(t)
+    if day:
+        days = [day]
+    else:
+        days = [(today + datetime.timedelta(days=i)).isoformat() for i in range(6)]
+    for d in days:
+        # 今天要留出缓冲（"此刻+30 分"之后才算空），不然会给他排一段已经开始的时段
+        nb = (_now_minutes() + 30) if d == today.isoformat() else None
+        slot = pick_free_slot(d, prefer=t, minutes=min(want, AUTO_SLOT_MINUTES),
+                              length=want, not_before=nb)
+        if not slot:
+            continue
+        part = next((n for n, plo, phi in DAY_PARTS
+                     if plo <= to_minutes(slot["start"]) < phi), "")
+        wd = slot["weekday"]
+        # 说清"为什么排在这儿"：学生看到一个自己没指定的时间，第一反应就是"凭什么"。
+        # 日期一律写成 9/25（周五）这种短样子——卡片上写 2026-09-25 太长了。
+        #
+        # ⚠️ 这句话会**原样进确认条**（那是纯文本渲染，不认 markdown），
+        #    所以这里一个星号都不能加——加了卡片上就会看到「**1 小时**」这种字面量。
+        head = f"{_mmdd(d)}（{wd}）"
+        why = (f"{head}{part}这一段是空的（你的课和已经排好的事都避开了）。")
+        if minutes or wanted_minutes(t):
+            why = f"按你说的 {format_minutes(want)} 排的，{why}"
+        return {
+            "kind": "todo_add",
+            "title": name,
+            "date": d,
+            "start": slot["start"],
+            "end": slot["end"],
+            "weekday": wd,
+            "minutes": slot["minutes"],
+            "auto": True,      # 时间不是学生给的，是系统规划的 —— 卡片上要说清楚
+            "reason": why,
+            "summary": f"{name}｜{d}（{wd}）{slot['start']}-{slot['end']}",
+        }
+    return None
+
+
+# 「这件事怎么定时间」的两条路，学生可能**不点按钮、直接在聊天里回一句**。
+# 接不住的后果跟前面那些坑一模一样：掉回模型，模型说"好的已经帮你排啦"，日程里空的。
+_MODE_SELF_WORDS = (
+    "我自己定", "我自己来", "我自己说", "我有时间", "我有空", "时间我有",
+    "我知道时间", "我来定", "我自己挑", "我自己选", "我说个时间",
+)
+_MODE_AI_WORDS = (
+    "你帮我", "帮我定", "帮我挑", "帮我选", "帮我安排", "你定", "你挑", "你选",
+    "你决定", "你看着办", "看着办", "随你", "听你的", "你安排", "交给", "都行",
+    "随便", "没想好", "还没想好", "想不到", "不知道", "不确定", "没主意",
+)
+
+
+def is_mode_answer(text: str) -> bool:
+    """这句是在回答「你自己定 / 我帮你挑」吗（人话：二分卡下面那句补充）。
+
+    判据是**两条路的说法**都认，而且都要够短——长句多半是在说别的事，
+    不该被这张卡吃掉（跟 `is_slot_answer` 同一个思路）。
+    """
+    t = (text or "").strip()
+    if not t or len(t) > 24:
+        return False
+    if any(k in t for k in ("吗", "？", "?")):
+        return False
+    return any(w in t for w in _MODE_SELF_WORDS + _MODE_AI_WORDS)
+
+
+def parse_mode_answer(text: str) -> str | None:
+    """学生回的那句话选的是哪条路（人话：返回 "self" 或 "ai"）。
+
+    先看 self：他说"我自己有时间"的时候，"有时间"里也含着"我"，
+    但反过来把"帮我"当 self 就错了 —— 所以 self 的判据更具体，排在前面。
+    """
+    t = (text or "").strip()
+    if not t:
+        return None
+    if any(w in t for w in _MODE_SELF_WORDS):
+        # "我自己定" 里也可能出现"我自己"+"你帮我"混着说，以更具体的 self 为准
+        return "self"
+    if any(w in t for w in _MODE_AI_WORDS):
+        return "ai"
+    return None
+
+
+def mode_to_card(card: dict, mode: str) -> dict | None:
+    """学生在二分卡上选了哪条路 → 出对应的卡片（人话：接下来那张卡长什么样）。
+
+      · "self"（我有时间了）→ **候选时段卡**：几段摊开让他勾，
+        几段都不合意在「其他时间」里自己写一句（学生明确要的"自行补充"）。
+      · "ai"（还没定，你帮我挑）→ **AI 规划的单条**：系统直接挑一段并说明为什么。
+
+    两条路都凑不出东西（那天真排不下）→ 返回 None，由调用方如实说，
+    **绝不硬凑一个时间**。
+    """
+    title = card.get("title") or "待办"
+    text = card.get("when") or title
+    if mode == "ai":
+        return plan_todo_slot(title, text, card.get("minutes"))
+    return todo_slots_proposal(text)
+
+
 def slot_is_free(date: str, start: str, end: str) -> bool:
     """这段时间现在还是空的吗（人话：落库前再核一次，别把两件事排到同一个点）。
 
@@ -1003,6 +1203,33 @@ _EMPTY_TITLES = (
 _QUOTE_RE = re.compile(r"[『「\"“]([^」』\"”]{1,40})[」』\"”]")
 _WEEKDAY_RE = re.compile(r"周([一二三四五六日天])")
 
+# ---------- 「这句话里到底有没有一件事」 ----------
+# 学生原话：「**要识别啥才是真的事情，不是随便拿那一句话就去当代办加入日程了**」。
+# 实测两个翻车现场（把截图里那两句原样喂进去跑出来的）：
+#   · 「大概一个小时帮我安排时间」→ 标题被抠成「大概小时帮我时间」，还挂出一张
+#     候选卡让他勾时间——可连"要做什么事"都还不知道，挑时间是要往日程里写什么？
+#   · 「周三12点到2点我要去吃自助餐，帮我添加」→ 标题变成「去吃自助餐帮我」。
+# 病根：旧抠法只会**擦掉**时间词和意图词，擦完剩下什么就当名字用。
+# 可剩下的常常是残渣（"大概小时""帮我"），不是一件事。
+# 所以擦完还要**判真**：像不像一件事？不像就当作"他还没说清"，去追问，
+# 绝不把残渣当成待办名写进日程。
+#
+# 时长（"大概一个小时"）：既是判真的依据（"小时"不该出现在名字里），
+# 也是 AI 规划时间时唯一该尊重的约束——学生说他只要一小时，就别排 90 分钟。
+_DURATION_RE = re.compile(
+    r"(\d{1,3}(?:\.\d{1,2})?|[一二两三四五六七八九十半]{1,3})\s*(?:个)?\s*"
+    r"(小时|钟头|分钟|分|h|min)"
+)
+# 出现在"名字"里就说明抠到的不是事情，是时间/类别/动作残渣
+_TITLE_NOISE = (
+    # 时间与时长残渣
+    "小时", "钟头", "分钟", "时长", "时间", "几点", "大概", "大约", "左右",
+    # 类别词：学生嘴里的"待办/代办/日程"是**类别**，不是事情本身
+    "待办", "代办", "日程", "事项", "事情",
+    # 只剩动作词：说了"帮我安排"却没说安排什么
+    "帮我", "帮忙", "安排", "添加", "加入", "加进", "排一下", "记一下",
+)
+
 
 def _cn_num(s: str) -> int | None:
     """中文数字转阿拉伯数字（人话：'两'→2、'十二'→12、'十'=10、'二十三'=23）。"""
@@ -1110,13 +1337,73 @@ def _pick_date(text: str):
     return None
 
 
+def wanted_minutes(text: str) -> int | None:
+    """学生说了这件事大概要多久吗（人话：「大概一个小时」→ 60，「半小时」→ 30）。
+
+    为什么必须认：学生原话「**大概一个小时帮我安排时间**」，时长是他给出来的
+    **全部**信息，也是 AI 规划时间时唯一该尊重的约束。不认的话系统会按默认
+    90 分钟去排，卡片上写着"约 90 分钟"——学生只会觉得它压根没听自己说话。
+
+    认不出来返回 None（由调用方回落到默认时长），**不瞎猜一个数字**。
+    """
+    t = _normalize_clock(text or "")
+    m = _DURATION_RE.search(t)
+    if not m:
+        return None
+    raw, unit = m.group(1), m.group(2)
+    if raw == "半":
+        val = 0.5
+    elif re.fullmatch(r"\d+(?:\.\d+)?", raw):
+        # 小数也要认（"1.5小时"=90 分钟）。写成 int(raw) 的话正则会去匹配后半截，
+        # "1.5小时" 会被读成"5小时"=300 分钟 —— 差着一倍多。
+        val = float(raw)
+    else:
+        n = _cn_num(raw)
+        if n is None:
+            return None
+        val = float(n)
+    mins = int(round(val * 60)) if unit in ("小时", "钟头", "h") else int(round(val))
+    # 太小（"1分钟"多半是在说别的事）或太大（"300小时"不是一件事的时长）都不认
+    if mins < 5 or mins > 600:
+        return None
+    return mins
+
+
+def looks_like_thing(name: str) -> bool:
+    """这个名字像不像"一件真的事"（人话：能不能当待办名写进日程）。
+
+    学生原话：「**不是随便拿那一句话就去当代办加入日程了**」。
+    判据很朴素，但每一条都是实测出来的坑：
+      · 太短（1 个字）→ 多半是擦剩下的渣；
+      · 里面还有"小时/时间/大概" → 抠到的是时间，不是事；
+      · 里面还有"待办/日程/事项" → 抠到的是类别词；
+      · 整串就是"帮我/安排/添加"这种动作 → 他说了要加，但没说加什么；
+      · 太长（>24 字）→ 那是在说一整句话，不是在说一件事的名字。
+    不像就当"没说清"，交给追问分支去问，绝不写进日程。
+    """
+    t = (name or "").strip()
+    if len(t) < 2 or len(t) > 24:
+        return False
+    if t in _EMPTY_TITLES:
+        return False
+    return not any(w in t for w in _TITLE_NOISE)
+
+
 def _pick_title(text: str) -> str:
-    """从一句话里剩下那部分抠出待办标题（人话：把时间、日期、安排这类废话都扔掉）。"""
+    """从一句话里剩下那部分抠出待办标题（人话：把时间、日期、安排这类废话都扔掉）。
+
+    抠完还要过一道 `looks_like_thing`：不像一件事就返回 "待办"（=他没说清），
+    由调用方去追问——这是本轮补上的关键一环，见 `_TITLE_NOISE` 上面的说明。
+    """
     t = text or ""
     m = _QUOTE_RE.search(t)          # 优先拿『』「」框着的那段，最准
     if m and 1 <= len(m.group(1)) <= 30:
         return m.group(1).strip()
     t = _normalize_clock(t)          # 先把「两点到三点」换成 2:00-3:00，下面的正则才擦得掉
+    # 时长整块擦掉（"大概一个小时"）：它既是判真的依据，也不该粘进名字里。
+    # 必须在抠日期/钟点之前擦——"一个小时"里的"一"会被后面的中文数字逻辑当成别的。
+    t = _DURATION_RE.sub(" ", t)
+    t = re.sub(r"(大概|大约|差不多|约|预计|估计|有个|差不多要)(?=\s|$)", " ", t)
     # 「改成周六」「换到晚上七点」这类话里，"改成/换到"是**动作**不是事情的名字。
     # 不擦的话，学生在候选卡下面回一句「改成周六」，标题就会变成「改成健身」。
     t = re.sub(r"(改成|改到|换成|换到|换个时间|换个点|挪到|调整到|调到|重排|改一下|重来)", " ", t)
@@ -1164,12 +1451,31 @@ def _pick_title(text: str) -> str:
     _trimmed = re.sub(r"^[加添记]?(?:个|条|件|次|项|一下|一)?", "", t)
     if len(_trimmed) >= 2:
         t = _trimmed
+    # 「我要**去**吃自助餐，帮我添加」——擦掉"我要"之后留下一个"去"，
+    # 而"去"是趋向动词、不是事情的一部分（留着就成了「去吃自助餐」，
+    # 跟最后那句"帮我"叠在一起就是实测的「去吃自助餐帮我」）。
+    # 只在开头擦：这样"去健身房"里的"去"没了、但"打卡去"不会被动。
+    t = re.sub(r"^(去|来)\s*", "", t)
+    # 「帮我」在这类话里首尾都会出现（"**帮我**安排游泳**帮我**"），
+    # 旧代码只擦了开头那一个，尾巴上就挂着一个"帮我"（实测标题「去吃自助餐帮我」）。
+    # 循环擦：擦一轮开头可能又露出新的收尾。
+    for _ in range(3):
+        before = t
+        t = re.sub(r"^(帮我|帮忙|帮|给我|替我|帮我把|帮我把那个)\s*", "", t)
+        t = re.sub(r"(帮我|帮忙|谢谢|谢谢啦|多谢|吧|呗|呢|啊|哦|呀|唉)+$", "", t)
+        t = t.strip(" 的了")
+        if t == before:
+            break
     # 「加入健身**代办**」——"代办/待办"是学生嘴里的类别词（还常写成"代办"），
     # 不是事情本身；留在标题里就会看到「健身代办」这种卡片名。
     t = re.sub(r"(待办|代办|事项|日程)$", "", t).strip("的")[:30]
     # 削到什么都不剩（"周四加一个"）→ 当作没标题，交给追问分支问"要加什么事"，
     # 别拿"加个"本身当待办名字写进日程。
     if not t or t in _EMPTY_TITLES:
+        return "待办"
+    # 最后一关：像不像一件事。不像（"大概小时""帮我安排"这种残渣）就当没说清，
+    # 让调用方去追问——**绝不拿半句话当代办名写进日程**。
+    if not looks_like_thing(t):
         return "待办"
     return t
 
@@ -1260,6 +1566,11 @@ def todo_missing_advice(text: str) -> str:
     如果那天真排不下，就得如实说"这天满了，换个日子"——
     否则学生会一遍遍补"几点几点"，而问题根本不在时间上，他只会觉得系统在绕他。
     反过来，学生啥都没说清时也别吓唬他"这天满了"。
+
+    ⚠️ 这一档现在只剩**两种情况**会走到（见 main.py 3c）：
+      · 学生根本没说要做什么事（连"健身"都没给）→ 问他要加什么；
+      · 学生说了哪天、可那天真排不下 → 如实说这天满了。
+    "缺时间"已经不再是追问的理由了 —— 那是他自己挑、或者系统替他规划的事。
     """
     t = (text or "").strip()
     date = _pick_date(t)
@@ -1278,7 +1589,19 @@ def todo_missing_advice(text: str) -> str:
     if name and name != "待办":
         return (f"**{name}**记下了，就差**哪一天**——"
                 f"说「周二」「明天」这样的一天，我就去把空档挑出来。")
-    return "还差**哪一天**和**要做什么事**——比如「周四加个健身」，我就去把空档挑出来。"
+    # 到这儿说明他**连要做什么事都没说**（比如「大概一个小时帮我安排时间」——
+    # 时长给了、事情没给）。旧版会把抠出来的残渣当成名字念回去
+    # （实测念的是「大概小时帮我时间」），或者直接漏出内部标记「加待办缺细节」，
+    # 学生看了完全不知道该干嘛。所以这里**只说人话**：把他已经给的信息认下来，
+    # 再问那件真正缺的事。
+    mins = wanted_minutes(t)
+    if mins:
+        return (f"好——时长 **{format_minutes(mins)}** 我记下了，"
+                f"就是还不知道要**安排什么事**。\n"
+                f"说个名字就行，比如「游泳」「健身」「交电费」，我接着去帮你挑时间。")
+    return ("好——**要安排的是什么事**？\n"
+            "说个名字就行，比如「游泳」「健身」「交电费」。"
+            "时间你还没定的话，我也可以替你挑一段。")
 
 
 def auto_todo_proposal(text: str) -> dict | None:
@@ -2254,20 +2577,35 @@ def build_system_prompt() -> str:
    才调用 add_todo_tool 真正写进日程。学生没确认前，**绝对不要写入**。
 5. 学生提出调整（"太晚了""换个时间"），就重新查空档、再调用 propose_slots 提议，继续等。
 
-【学生只说了"哪天"、没说"几点" —— 时间由你算，而且要**列几个**给他挑，不许反问他】
-学生说「周四加个健身」「我想在周六自习」时，他要的就是"哪天哪会儿空着"这件事本身。
-你反问他"你想几点到几点"，等于把活儿原封不动退回给他——
-他正是因为不知道哪天哪会儿有空才来问你（学生投诉原话：
-「**没有帮我想时间，是我问了才说的**」）。正确做法：
-· 先 find_free_slots(那天) 看真实空档；
-· **一次列 2~4 段候选**：他说了"上午/下午/晚上"就只在那一段里挑，
-  没说就上午/下午/晚上各给一段（用 propose_todo_slots_tool，它会把这几段摊成能打勾的卡片）；
-· 文字里也把这几段列一遍，并说清"**在卡片上打勾**，勾完点【加入日程】我就写进去，
-  都不合适就在「其他时间」自己写一个"。
-⛔ 不要只给一个点就替他定下来——学生明确要求过「由 ai 帮我去挑选合适时间，**进行列举**……
-  由我打勾」（只给一个点，他要么全盘接受、要么再让你换一次，来回两轮）。
-⛔ 也不要为了凑时间反问学生——真要问，只问"要加什么事"。
-   他说了哪天、那天真排不进 → 如实说"这天满了，换个日子"。
+【学生要加一件事、但还没定时间 —— 先问"你自己定 / 我帮你挑"，别一上来就问他几点】
+学生说「帮我加个游泳」「周四加个健身」时，**第一步不是列时间、也不是问他几点**，
+而是分清他是哪一种（学生原话：「**要区分两种，一种是我有时间规划了，
+一种是我没有时间规划让他帮我安排，不要一上来就询问详细时间，先给弹窗，
+（有时间规划）（还没有，你帮我定）**」）：
+· **用 propose_todo_mode_tool(title, when) 出那张二选一卡片**，然后停下来等他点。
+  - 他点「我有时间了」→ 之后才摊候选时段（propose_todo_slots_tool），让他自己勾；
+  - 他点「还没定，你帮我挑」→ 之后由系统把时间规划出来（挑一段、说清为什么）。
+· 文字里说清这两条路就行，**不要先甩一堆时间段**——对"我随便、你看着办"的学生，
+  先摊三个点等于把决定权又推回给他。
+⛔ 不要为了凑时间反问学生"你想几点"——他不知道哪会儿空着才来问你（学生投诉原话：
+  「**没有帮我想时间，是我问了才说的**」）。真要问，只问"要加什么事"。
+⛔ **不许拿他那半句话当代办名挂出去**。学生原话：「**要识别啥才是真的事情，
+  不是随便拿那一句话就去当代办加入日程了**」。实测「大概一个小时帮我安排时间」
+  被抠成「大概小时帮我时间」还挂出了候选卡——那是残渣，不是一件事。
+  判不出事名（只有时长、只有"帮我安排"）→ **只问"要安排什么事"**，别出卡。
+
+【学生选了"你帮我挑"之后 —— 真去规划，而不是再问他】
+时长按他说的来（「大概一个小时」就是 60 分钟，别一律排 90 分钟）；
+没说的那天从今天往后找**第一个排得下的**；避开课和已排的待办。
+出**单条**确认条，并且**在卡片上写清为什么排在这儿**（他看到自己没指定的时间，
+第一反应就是"凭什么"）。⛔ 那天真排不下就如实说"这天满了"，别硬凑一个时间。
+
+【学生选了"我自己定"之后 —— 列 2~4 段让他打勾】
+说了"上午/下午/晚上"就只在那一段里挑，没说就三档各给一段
+（用 propose_todo_slots_tool，它会把这几段摊成能打勾的卡片）；
+文字里也把这几段列一遍，并说清"**在卡片上打勾**，勾完点【加入日程】我就写进去，
+都不合适就在「其他时间」自己写一个"。
+⛔ 不要只给一个点就替他定下来（「由 ai 帮我去挑选合适时间，**进行列举**……由我打勾」）。
    （学生已经自己报了准点的情况另说：那样用 propose_todo_tool 出**单条**确认条就够。）
 
 【硬性约束】
@@ -2328,13 +2666,16 @@ def build_system_prompt() -> str:
 - get_weekly_timetable：看整周课程
 - find_free_slots(date, min_minutes)：查某天空档
 - list_day_todos(date)：看某天已排了什么
-- **propose_todo_slots_tool(title, when)：学生要加一件事、还没定哪个点时用它**——
-  它查出那天的几段空档（when 留空就跨天各给一段），摊成一张**能打勾**的卡片，
-  学生自己勾一个或几个，勾完点【加入日程】才写库。**这是默认用法。**
+- **propose_todo_mode_tool(title, when)：学生要加一件事、还没定时间时，先用它**——
+  出"时间你自己定 / 我帮你挑"这张二选一卡片。**这是第一站，别跳过它直接列时间。**
+- **propose_todo_slots_tool(title, when)：学生选了"我自己定"之后**，用它把几段空档
+  （when 留空就跨天各给一段）摊成一张**能打勾**的卡片，学生自己勾一个或几个，
+  勾完点【加入日程】才写库。⛔ 别拿它当第一站。
 - **propose_slots(options_json)：把候选结构化地交给前端渲染成可勾选卡片。
   提完候选后必须调用它**（options_json 是 JSON 数组，每条含 title/date/start/end）。**
-- **propose_todo_tool(title, date/when...)：学生已经报了准点时**，出**单条**"要不要排在这儿"
-  的确认条。（只给 date 也行，时间它会自己挑，但那样只有一段——能列几段就别用它。）
+- **propose_todo_tool(title, date/when...)：学生已经报了准点、或者他点了"你帮我挑"
+  之后需要出单条**时用它，出**单条**"要不要排在这儿"的确认条。
+  （只给 date 也行，时间它会自己挑，并且会在卡片上写清"为什么排在这儿"。）
 - add_todo_tool(title, date, start, end, note)：**确认后**才写入
 - **propose_clear_timetable()：清空整张课表**——只出确认弹窗，纯只读，写完就停手
 - **propose_course_change(op, day, ...)：删课/加课/改单节课的首选**——服务端算好新课表出确认卡
@@ -2406,11 +2747,14 @@ def build_tools() -> dict[str, Tool]:
             },
             func=list_day_todos,
         ),
-        # 出确认条的两件（都是**只读**：真写入永远在系统那侧）：
+        # 出确认条的三件（都是**只读**：真写入永远在系统那侧）：
+        #   · propose_todo_mode_tool → 还没定时间，先问「你自己定 / 我帮你挑」  ← 首选
         #   · propose_todo_tool      → 已经定好一个点，出单条"要不要排在这儿"
-        #   · propose_todo_slots_tool→ 还没定哪个点，摊开几段**让学生自己打勾**
-        # 学生明确要求过第二种（原话：「由 ai 帮我去挑选合适时间，进行列举……由我打勾」），
-        # 所以它在本模块的工具箱里是**首选**，propose_todo_tool 退成"学生报了准点"时才用。
+        #   · propose_todo_slots_tool→ 摊开几段**让学生自己打勾**（学生点了"我自己定"之后）
+        # 学生明确要求过"先给弹窗、别一上来就问详细时间"（原话：「**要区分两种，
+        # 一种是我有时间规划了，一种是我没有时间规划让他帮我安排，不要一上来就
+        # 询问详细时间，先给弹窗**」），所以 mode 卡是这三件里的第一站。
+        "propose_todo_mode_tool": propose_todo_mode_tool_tool(),
         "propose_todo_tool": propose_todo_tool_tool(),
         "propose_todo_slots_tool": propose_todo_slots_tool_tool(),
         "add_todo_tool": Tool(
@@ -2561,6 +2905,7 @@ def build_scheduling_tools() -> dict[str, Tool]:
     all_tools = build_tools()
     names = ("get_weekly_timetable", "find_free_slots", "list_day_todos", "propose_slots")
     picked = {n: all_tools[n] for n in names if n in all_tools}
+    picked["propose_todo_mode_tool"] = propose_todo_mode_tool_tool()
     picked["propose_todo_tool"] = propose_todo_tool_tool()
     picked["propose_todo_slots_tool"] = propose_todo_slots_tool_tool()
     return picked
@@ -2606,6 +2951,66 @@ def propose_todo_tool_tool() -> Tool:
             "required": ["title"],
         },
         func=propose_todo_tool,
+    )
+
+
+def propose_todo_mode_tool(title: str, when: str = "") -> str:
+    """出「你自己定时间 / 我帮你挑」这张二分卡（只读，不写库）。
+
+    为什么模型也需要它：确定性分支（main.py 3c）已经会在"有事情名、没定时间"时
+    自动出这张卡，但路由/措辞总有落进模型手里的漏网之句。要是模型这时候
+    直接摊候选卡（或者更糟——反问"你想几点"），同一件事的体验就分成两套，
+    而"体验分裂"正是这个项目反复踩的那类坑。所以给它同一件工具。
+
+    :param title: 要加的那件事（"游泳"）
+    :param when: 学生那句时间描述，可以是空的
+    :return: `__proposal__` 包着的二分卡；凑不出来（连事名都没有）返回 error + hint。
+    """
+    blob = " ".join(x for x in ((when or "").strip(), (title or "").strip()) if x).strip()
+    if not blob:
+        return json.dumps({
+            "error": "至少给个任务名",
+            "hint": "title 传「游泳」这样的事名。⛔ 别拿学生整句话当名字。",
+        }, ensure_ascii=False)
+    card = todo_mode_proposal(blob)
+    if card is None:
+        return json.dumps({
+            "error": "还不知道要安排什么事",
+            "hint": ("`_pick_title` 判不出这件事是什么（学生可能只说了时长、或者整句都是废话）→ "
+                     "**问学生要安排什么事**，比如'说个名字就行，比如「游泳」「健身」'；"
+                     "⛔ 不要问'你想几点'，也不要把那半句话当待办名挂出去。"),
+            "got": blob,
+        }, ensure_ascii=False)
+    return json.dumps({
+        "__proposal__": card,
+        "human": (f"二分卡已经挂在下面了：《{card['title']}》。"
+                  f"文字里请告诉学生：**时间你自己定**、或者**我替你挑一段**，"
+                  f"让他在这张卡上点一下。⛔ 严禁说已经排好了、也别反问他几点。"),
+    }, ensure_ascii=False)
+
+
+def propose_todo_mode_tool_tool() -> Tool:
+    """把 propose_todo_mode_tool 包成 Agent 工具（跟别的只读工具共用一份）。"""
+    return Tool(
+        name="propose_todo_mode_tool",
+        description=(
+            "出一张**二选一**的卡片：'时间你自己定' / '还没定，你帮我挑'（只出提案，不写库）。"
+            "**学生说了要加一件事、但没说定时间时，先用它**——"
+            "先分清他是已经有主意、还是想让系统替他安排，别一上来就问他几点。"
+            "title 任务名（'游泳'），when 写学生那句时间描述（可空）。"
+            "⛔ 学生已经报了准点时改用 propose_todo_tool。"
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "description": "任务名称，如 游泳"},
+                "when": {"type": "string",
+                         "description": "学生那句时间描述，如 '周二'；可空",
+                         "default": ""},
+            },
+            "required": ["title"],
+        },
+        func=propose_todo_mode_tool,
     )
 
 

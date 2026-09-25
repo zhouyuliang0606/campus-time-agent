@@ -55,19 +55,30 @@ def main():
             page.evaluate("showView && showView('view-schedule')")
             page.wait_for_timeout(500)
 
-            # ① 只说"哪天" → 该列几段候选出来，而不是替他定死一个点
+            # ① 只说"哪天" → **先出二选一卡**（本轮规格的第一站）；
+            #    他选「时间我自己定」→ 才摊出那天的几段空档让他挑。
             ask(page, "那你帮我加一个健身在周四")
             page.wait_for_selector(".cf-inline .cf-frame", state="visible", timeout=20000)
             page.wait_for_timeout(1800)
             page.locator(".cf-inline").first.scroll_into_view_if_needed()
             page.wait_for_timeout(400)
-            shot(page, "17_slots_ask")
 
             fr = page.frame_locator(".cf-inline .cf-frame").last
+            print("  第一站（二选一卡）：",
+                  fr.locator("#cfBody").inner_text().replace("\n", " / ")[:160])
+            n_modes = fr.locator(".mode-btn").count()
+            print("  两条路按钮：", n_modes)
+            fr.locator('.mode-btn[data-mode="self"]').click()
+            page.wait_for_timeout(1800)
+            page.locator(".cf-inline").first.scroll_into_view_if_needed()
+            page.wait_for_timeout(400)
+            shot(page, "17_slots_ask")
+            print("  选了『我自己定』之后：",
+                  fr.locator("#cfBody").inner_text().replace("\n", " / ")[:160])
+
             body = fr.locator("#cfBody").inner_text().replace("\n", " / ")
             n_slots = fr.locator(".slot-cb").count()
             has_other = fr.locator("#cfOther").count()
-            print("  弹框内容：", body[:200])
             print(f"  勾选框 {n_slots} 个 / 「其他时间」输入框 {has_other} 个 / "
                   f"按钮：{fr.locator('#cfOk').inner_text()}")
             listed = "✅ 列了几段" if n_slots >= 2 else "❌ 只给了一个点"

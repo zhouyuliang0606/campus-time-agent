@@ -429,23 +429,48 @@ def test_add_todo_chinese_clock():
                 "已加入日程" in (r2.json().get("answer") or ""),
                 (r2.json().get("answer") or "")[:50])
 
-        # —— ③ 只说了"哪天"、没说"几点"：**系统摊出那天的几段空档让他打勾** ——
-        #     这一档的规格改过一次，两版都记在这儿（免得以后又翻回去）：
-        #       · 旧版：系统替他**挑一个**时间、出一张单条确认条。方向对（被截屏投诉的
+        # —— ③ 只说了"哪天"、没说"几点"：**先问"时间怎么定"，再摊空档** ——
+        #     这一档的规格改过两次，三版都记在这儿（免得以后又翻回去）：
+        #       · 第一版：系统替他**挑一个**时间、出一张单条确认条。方向对（被截屏投诉的
         #         原话是「没有帮我想时间，是我问了才说的」），但做法太死——学生原话
         #         「我定的太严了……由 ai 帮我去挑选合适时间，**进行列举**……由我打勾」。
-        #       · 新版（这一批盯的）：**列几个候选**，勾哪个算哪个，还能在「其他」里自填。
-        #     两版共有的铁律：不反问他"几点到几点"，也不硬凑一个时间。
+        #       · 第二版：**列几个候选**，勾哪个算哪个，还能在「其他」里自填。
+        #       · 第三版（这一批盯的）：**先出二选一卡**——学生原话
+        #         「要区分两种，一种是我有时间规划了，一种是我没有时间规划让他帮我安排，
+        #          不要一上来就询问详细时间，先给弹窗，（有时间规划）（还没有，你帮我定）」。
+        #         他选"我自己定"才摊候选；选"你帮我挑"就由系统规划一段。
+        #     三版共有的铁律：不反问他"几点到几点"，也不硬凑一个时间。
         sid2 = "oral-todo-2"
         r3 = client.post("/api/chat", json={
             "message": "帮我安排周二的游泳", "module": "schedule", "session_id": sid2,
         })
         d3 = r3.json()
         o3 = d3.get("options") or []
-        _slots = (o3[0].get("slots") if o3 else None) or []
-        c.check("只说了那天也要出提案（时间由系统算，不推回给学生）",
-                any(o.get("kind") == "todo_slots" for o in o3),
+        c.check("只说了哪天 → 先出『时间怎么定』的二选一卡（不问他几点）",
+                any(o.get("kind") == "todo_mode" for o in o3),
                 _json.dumps(o3[:1], ensure_ascii=False)[:120])
+        c.check("二选一卡上把标题记下了（游泳）",
+                bool(o3) and o3[0].get("title") == "游泳",
+                (o3[0].get("title") if o3 else ""))
+        c.check("话里把两条路都摊明白了（我自己定 / 你帮我挑）",
+                "我自己定" in (d3.get("answer") or "")
+                and "帮我挑" in (d3.get("answer") or ""),
+                (d3.get("answer") or "")[:90])
+        c.check("绝不把问题退回去问『几点到几点』",
+                "几点到几点" not in (d3.get("answer") or ""),
+                (d3.get("answer") or "")[:80])
+        c.check("出二选一卡这一轮没写库（要学生点头）",
+                not any(t["title"] == "游泳" for t in list_todos("2026-09-29")),
+                [t["title"] for t in list_todos("2026-09-29")])
+
+        # 他选「时间我自己定」→ 这才摊出那天的几段空档让他打勾
+        r3c = client.post("/api/chat", json={"message": "我自己定", "session_id": sid2})
+        d3c = r3c.json()
+        o3c = d3c.get("options") or []
+        _slots = (o3c[0].get("slots") if o3c else None) or []
+        c.check("选了『我自己定』→ 才摊出候选时段卡",
+                any(o.get("kind") == "todo_slots" for o in o3c),
+                _json.dumps(o3c[:1], ensure_ascii=False)[:120])
         c.check("候选摊开好几段（不再是替他定死一个点）",
                 len(_slots) >= 2, [s.get("label") for s in _slots])
         c.check("每一段都在周二、而且都是真实空档",
@@ -456,14 +481,13 @@ def test_add_todo_chinese_clock():
                     for s in _slots),
                 [f"{s.get('date')} {s.get('start')}-{s.get('end')}" for s in _slots])
         c.check("话里说明白『这几段都空着，你自己勾』",
-                "空着" in (d3.get("answer") or "")
-                and "勾" in (d3.get("answer") or ""),
-                (d3.get("answer") or "")[:60])
+                "空着" in (d3c.get("answer") or "")
+                and "勾" in (d3c.get("answer") or ""),
+                (d3c.get("answer") or "")[:60])
         c.check("并且留了『其他时间』自己写的活口（不是把问题退回去）",
-                "其他" in (d3.get("answer") or "")
-                and "几点到几点" not in (d3.get("answer") or ""),
-                (d3.get("answer") or "")[:80])
-        c.check("这一轮仍然没写库（要学生点头）",
+                "其他" in (d3c.get("answer") or ""),
+                (d3c.get("answer") or "")[:80])
+        c.check("摊候选这一轮仍然没写库（要学生点头）",
                 not any(t["title"] == "游泳" for t in list_todos("2026-09-29")),
                 [t["title"] for t in list_todos("2026-09-29")])
 
@@ -475,7 +499,7 @@ def test_add_todo_chinese_clock():
         c.check("学生报了点就换成他说的（系统的推荐只是起步）",
                 any(o.get("kind") == "todo_add" for o in o4),
                 _json.dumps(o4[:1], ensure_ascii=False)[:120])
-        c.check("标题仍是上一句的「游泳」（补充句没有标题，要合并原话）",
+        c.check("标题仍是上一句的「游泳」（补充句没有标题，要沿用卡片上的）",
                 bool(o4) and o4[0].get("title") == "游泳",
                 (o4[0].get("title") if o4 else ""))
         c.check("时间换算成 14:00-15:00",
@@ -483,22 +507,18 @@ def test_add_todo_chinese_clock():
         c.check("学生自己点的时间不带 auto 标记",
                 bool(o4) and not o4[0].get("auto"))
 
-        # 连"哪天"都没说 → 也不反问他，**跨天摊几段空档让他挑**（本轮规格）。
-        # 为什么不问日期：学生正是不知道哪天哪会儿空着才来问管家；
-        # 摊三段（今天往后逐天一段）他扫一眼就能挑，比来回一轮"哪天？"快得多。
+        # 连"哪天"都没说 → **也不反问哪天**，照样先出二选一卡；
+        # 他选「你帮我挑」→ 由**系统把时间规划出来**（本轮的核心诉求：
+        # 「核心是 ai 帮我安排时间，ai 去规划时间，然后这个加入代办」）。
         sid2b = "oral-todo-2b"
         r3b = client.post("/api/chat", json={
             "message": "帮我安排游泳", "module": "schedule", "session_id": sid2b,
         })
         d3b = r3b.json()
         o3b = d3b.get("options") or []
-        _slotsb = (o3b[0].get("slots") if o3b else None) or []
-        c.check("连哪天都没说 → 也不反问，照样摊出候选",
-                any(o.get("kind") == "todo_slots" for o in o3b),
+        c.check("连哪天都没说 → 也不反问，照样先给二选一卡",
+                any(o.get("kind") == "todo_mode" for o in o3b),
                 _json.dumps(o3b[:1], ensure_ascii=False)[:90])
-        c.check("候选跨天（逐天一段，不是同一天复制三遍）",
-                len({s.get("date") for s in _slotsb}) >= 2,
-                [s.get("label") for s in _slotsb])
         c.check("绝不把问题退回去问『几点到几点』或『哪一天』",
                 "几点到几点" not in (d3b.get("answer") or "")
                 and "哪一天" not in (d3b.get("answer") or ""),
@@ -506,6 +526,30 @@ def test_add_todo_chinese_clock():
         c.check("话里已经把标题记住了（游泳），不是笼统地问",
                 "游泳" in (d3b.get("answer") or ""),
                 (d3b.get("answer") or "")[:70])
+
+        r3b2 = client.post("/api/chat", json={"message": "你帮我挑", "session_id": sid2b})
+        d3b2 = r3b2.json()
+        o3b2 = d3b2.get("options") or []
+        c.check("选『你帮我挑』→ 出**单条**（时间由系统规划好了，不再摊一堆让他挑）",
+                bool(o3b2) and o3b2[0].get("kind") == "todo_add",
+                _json.dumps(o3b2[:1], ensure_ascii=False)[:110])
+        c.check("标了 auto（话术和卡片都要说清『这个点是我挑的』）",
+                bool(o3b2) and o3b2[0].get("auto") is True)
+        c.check("规划出来的那一段**真的空着**",
+                bool(o3b2) and any(
+                    f["start"] <= o3b2[0]["start"] and f["end"] >= o3b2[0]["end"]
+                    for f in find_free_slots(o3b2[0]["date"], min_minutes=1)),
+                f"{o3b2[0].get('date')} {o3b2[0].get('start')}-{o3b2[0].get('end')}"
+                if o3b2 else "")
+        c.check("并且说清『为什么排在这儿』（他看到自己没指定的时间会问凭什么）",
+                bool(o3b2) and "空" in (o3b2[0].get("reason") or ""),
+                (o3b2[0].get("reason") if o3b2 else "")[:80])
+        c.check("回答里也把理由说了一遍",
+                "空" in (d3b2.get("answer") or ""),
+                (d3b2.get("answer") or "")[:90])
+        c.check("规划完也还没写库", not any(
+            t["title"] == "游泳" and t["date"] == (o3b2[0].get("date") if o3b2 else "")
+            for t in list_todos()))
 
         # —— ④ 确认落空兜底：上一轮已经掉给模型撒过谎，学生照样回「确认」——
         #     把学生截图里的那段真实历史摆出来：学生原话 + 模型那句「搞定！已经正式写进」，
@@ -1004,27 +1048,42 @@ def test_proactive_time_and_confirm():
             delete_todo(t["id"])
         c.check("清完占位，空档又回来了", pick_free_slot(thu) is not None)
 
-        # —— ④ 端到端：学生只说了"哪天"，系统摊出那天的几段空档让他挑 ——
+        # —— ④ 端到端：学生只说了"哪天" → **先给二选一卡**，选完才摊 / 才规划 ——
+        #     （本轮规格：不许一上来就问他几点，也不许替他定死一个点）
         sid = "proactive-1"
         d = client.post("/api/chat", json={
             "message": "那你帮我加一个健身在周四", "session_id": sid}).json()
         o = d.get("options") or []
-        c.check("学生只给『哪天』也出确认条（不再反问他几点）",
-                any(x.get("kind") == "todo_slots" for x in o),
+        c.check("学生只给『哪天』先出二选一卡（不再反问他几点）",
+                any(x.get("kind") == "todo_mode" for x in o),
                 _json.dumps(o[:1], ensure_ascii=False)[:120])
         c.check("标题干净（不是『那你帮我健身』这种）",
                 bool(o) and o[0].get("title") == "健身",
                 (o[0].get("title") if o else ""))
-        _os = (o[0].get("slots") if o else None) or []
+        c.check("卡片上带上了他说过的那天（后面摊候选/规划就只在这天找）",
+                bool(o) and o[0].get("date") == thu, (o[0].get("date") if o else ""))
+        c.check("话里把两条路都摊明白了",
+                "我自己定" in (d.get("answer") or "") and "帮我挑" in (d.get("answer") or ""),
+                (d.get("answer") or "")[:90])
+        c.check("出条没写库（学生还没点头）",
+                not any(t["title"] == "健身" for t in list_todos(thu)))
+
+        # 他点/回「我自己定」→ 这才摊出那天的几段空档让他打勾
+        d1b = client.post("/api/chat", json={"message": "我自己定", "session_id": sid}).json()
+        o1b = d1b.get("options") or []
+        c.check("选了『我自己定』→ 摊出候选时段卡",
+                any(x.get("kind") == "todo_slots" for x in o1b),
+                _json.dumps(o1b[:1], ensure_ascii=False)[:120])
+        _os = (o1b[0].get("slots") if o1b else None) or []
         c.check("候选全在周四那天、而且不止一段",
                 len(_os) >= 2 and all(s.get("date") == thu for s in _os),
                 [s.get("label") for s in _os])
         c.check("话里说清『这几段都空着，你自己勾』",
-                "空着" in (d.get("answer") or "") and "勾" in (d.get("answer") or ""),
-                (d.get("answer") or "")[:80])
+                "空着" in (d1b.get("answer") or "") and "勾" in (d1b.get("answer") or ""),
+                (d1b.get("answer") or "")[:80])
         c.check("并留了活口：都不合适就在「其他时间」自己写一个",
-                "其他" in (d.get("answer") or ""), (d.get("answer") or "")[:80])
-        c.check("出条没写库（学生还没点头）",
+                "其他" in (d1b.get("answer") or ""), (d1b.get("answer") or "")[:80])
+        c.check("摊候选这一轮也没写库",
                 not any(t["title"] == "健身" for t in list_todos(thu)))
 
         # 他真报了个点 → 沿用原卡换时间，重新出条
@@ -1078,10 +1137,16 @@ def test_proactive_time_and_confirm():
         # —— ⑥ 换一天也接得住：学生说"改成下周六"——
         uid = "proactive-3"
         client.post("/api/chat", json={"message": "周三加个健身", "session_id": uid})
-        c.check("周三那条先挂出来了（候选卡，等他勾）",
-                any(x.get("kind") == "todo_slots"
+        c.check("周三那条先挂出二选一卡（等他先选时间怎么定）",
+                any(x.get("kind") == "todo_mode"
                     for x in (peek_pending(uid) or {}).get("options") or []),
                 _json.dumps((peek_pending(uid) or {}).get("options") or [], ensure_ascii=False)[:90])
+        # 选「你帮我挑」→ 系统规划出单条（而不是摊一堆让他再挑一遍）
+        client.post("/api/chat", json={"message": "你帮我挑", "session_id": uid})
+        c.check("选了『你帮我挑』→ 出系统规划的单条确认条",
+                any(x.get("kind") == "todo_add"
+                    for x in (peek_pending(uid) or {}).get("options") or []),
+                _json.dumps((peek_pending(uid) or {}).get("options") or [], ensure_ascii=False)[:110])
         d6 = client.post("/api/chat", json={"message": "改成周六", "session_id": uid}).json()
         o6 = d6.get("options") or []
         sat = (_dt.date.today() + _dt.timedelta(
@@ -1219,13 +1284,17 @@ def test_todo_slots_pick_and_batch():
                 parse_slot_text("随便啦", "健身", thu) is None)
 
         # —— ⑤ 批量落库接口：勾两段 → 两条一起写 ——
+        #     注意：这一批测的是 **todo_slots 卡 + 批量接口**，
+        #     所以先走一步「我自己定」把候选卡换出来（本轮规格：第一站是二选一卡）。
         sid = "slots-batch-1"
-        d = client.post("/api/chat", json={
-            "message": "那你帮我加一个健身在周四", "session_id": sid}).json()
-        o = d.get("options") or []
+        client.post("/api/chat", json={
+            "message": "那你帮我加一个健身在周四", "session_id": sid})
+        ds = client.post("/api/chat", json={
+            "message": "我自己定", "session_id": sid}).json()
+        o = ds.get("options") or []
         got = o[0] if o else {}
         ss = got.get("slots") or []
-        c.check("接口这一侧出的也是候选卡（不是替他定死一条）",
+        c.check("选了『我自己定』之后出的是候选卡（不是替他定死一条）",
                 got.get("kind") == "todo_slots" and len(ss) >= 2,
                 f"{got.get('kind')} / {len(ss)} 段")
         picked = ss[:2]
@@ -1282,18 +1351,36 @@ def test_todo_slots_pick_and_batch():
         c.check("一段没勾、也没自填 → 明确报错（不静默地什么都不做）",
                 r5.status_code == 400, r5.status_code)
 
-        # —— ⑥ 只回「确认」但没勾时间 → 不替他挑，把候选条再挂一遍 ——
+        # —— ⑥ 只回「确认」但还没选时间怎么定 → 不替他挑，把卡再挂一遍 ——
+        #     本轮规格下这一档有两种卡都会遇到：
+        #       · 暂存是**二选一卡**（时间由谁定都还没选）→ 一个字都不许写；
+        #       · 暂存是**候选卡**（他选了自己定、但还没勾）→ 也不许写。
+        #     所以这里两条都测。
         sid2 = "slots-confirm-only"
         client.post("/api/chat", json={"message": "加个健身", "session_id": sid2})
         n_before = len(list_todos())
         d6 = client.post("/api/chat", json={"message": "确认", "session_id": sid2}).json()
-        c.check("只回「确认」不勾选 → 一条都不写（他根本不知道你会写哪一个）",
+        c.check("只回「确认」还没选方式 → 一条都不写",
                 len(list_todos()) == n_before
                 and "一条都没写进去" in (d6.get("answer") or ""),
                 (d6.get("answer") or "")[:80])
-        c.check("而且把候选条再挂出来，请他勾一个",
-                any(x.get("kind") == "todo_slots" for x in (d6.get("options") or [])),
+        c.check("而且把二选一卡再挂出来，请他先选一种",
+                any(x.get("kind") == "todo_mode" for x in (d6.get("options") or [])),
                 _json.dumps((d6.get("options") or [])[:1], ensure_ascii=False)[:100])
+
+        # 换成候选卡之后（他说了"我自己定"）再回「确认」→ 同样不许写、把候选条再挂一遍
+        sid2b = "slots-confirm-only-2"
+        client.post("/api/chat", json={"message": "加个健身", "session_id": sid2b})
+        client.post("/api/chat", json={"message": "我自己定", "session_id": sid2b})
+        n_before2 = len(list_todos())
+        d6b = client.post("/api/chat", json={"message": "确认", "session_id": sid2b}).json()
+        c.check("候选卡上只回「确认」没打勾 → 也不替他挑、一条都不写",
+                len(list_todos()) == n_before2
+                and "一条都没写进去" in (d6b.get("answer") or ""),
+                (d6b.get("answer") or "")[:80])
+        c.check("而且把候选条再挂出来，请他勾一个",
+                any(x.get("kind") == "todo_slots" for x in (d6b.get("options") or [])),
+                _json.dumps((d6b.get("options") or [])[:1], ensure_ascii=False)[:100])
 
         # —— ⑥-bis 模型那条路（引擎收 __proposal__）也要把候选卡存进暂存 ——
         # 不存的话：学生看着候选卡回一句「确认」，系统手里什么都没有，
@@ -1336,6 +1423,294 @@ def test_todo_slots_pick_and_batch():
     return c.summary("第九批（候选时段：列举 / 打勾 / 批量落库 / 其他自填）")
 
 
+def test_todo_mode_and_ai_plan():
+    """第十批：先问"时间怎么定" + AI 去规划 + **识别啥才是真的事情**。
+
+    这一批盯的是学生第三轮驳回（七张截图 + 一段话）：
+      「**要区分两种，一种是我有时间规划了，一种是我没有时间规划让他帮我安排，
+        不要一上来就询问详细时间，先给弹窗，（有时间规划）（还没有，你帮我定），
+        用户选择后，针对没时间……**」
+      「**核心是 ai 帮我安排时间，ai 去规划时间，然后这个加入代办，
+        要识别啥才是真的事情，不是随便拿那一句话就去当代办加入日程了**」
+
+    所以四件事一起钉：
+      ① 标题要**判真**：不像一件事就当"没说清"，去追问，绝不拿半句话当待办名；
+      ② 时长要认："大概一个小时"→60 分钟，AI 规划时按它排，不一律 90 分钟；
+      ③ 第一站是**二选一卡**（不是我列你挑、就是我替你排），学完才往下走；
+      ④ 选了"你帮我挑" → **系统真去规划**，并说清"为什么排在这儿"。
+
+    ⚠️ 形态改过两次，都记在这儿：
+      · 第一版：系统替他挑一个点（被驳回："我定的太严了"）；
+      · 第二版：一律先摊候选卡（又被驳回："要区分两种……先给弹窗"）；
+      · 这一版（第三版）：先问"时间怎么定"，再分两条路走。
+    """
+    import datetime as _dt
+
+    title("10. 先问「时间怎么定」/ AI 规划 / 识别真的事情")
+    c = Checker()
+    from app.agent.pending import peek_pending
+    from app.modules import planner as pl
+    from app.modules.planner import (
+        build_scheduling_tools, format_minutes, is_mode_answer, looks_like_thing,
+        mode_to_card, parse_mode_answer, plan_todo_slot, todo_mode_proposal,
+        todo_title_of, wanted_minutes,
+    )
+    from app.store import list_todos
+
+    with sandbox():
+        client = make_client()
+        seed_timetable()
+
+        # —— ① 标题判真：两个实测到的垃圾标题必须修掉 ——
+        #    「大概一个小时帮我安排时间」→ 旧版抠成「大概小时帮我时间」还挂出了候选卡；
+        #    「周三12点到2点我要去吃自助餐，帮我添加」→ 旧版抠成「去吃自助餐帮我」。
+        c.check("只有时长、没说做什么 → **判为没有事情名**（不拿残渣当代办）",
+                todo_title_of("大概一个小时帮我安排时间") == "待办",
+                todo_title_of("大概一个小时帮我安排时间"))
+        c.check("一句话里全是要加的事 → 抠出「吃自助餐」（不是整句也不是残渣）",
+                todo_title_of("周三12点到2点我要去吃自助餐，帮我添加") == "吃自助餐",
+                todo_title_of("周三12点到2点我要去吃自助餐，帮我添加"))
+        c.check("「我要去跑步」→「跑步」（「我要去」整块擦掉）",
+                todo_title_of("我要去跑步") == "跑步", todo_title_of("我要去跑步"))
+        for raw, want in (("帮我加个游泳", "游泳"), ("周四加个健身", "健身"),
+                          ("记一下交电费", "交电费"), ("周三加个健身", "健身"),
+                          ("周六加个游泳，大概一个小时", "游泳")):
+            c.check(f"正常下单还是抠得准：{raw} → {want}",
+                    todo_title_of(raw) == want, todo_title_of(raw))
+        c.check("判真函数认得「这不是一件事」",
+                not looks_like_thing("大概小时")
+                and not looks_like_thing("帮我")
+                and not looks_like_thing("时间")
+                and not looks_like_thing("待办"))
+        c.check("判真函数也认得「这就是一件事」",
+                looks_like_thing("游泳") and looks_like_thing("吃自助餐")
+                and looks_like_thing("复习线性代数"))
+        c.check("判真把「时间/小时」这类残渣挡掉（它们不该出现在名字里）",
+                not looks_like_thing("大概小时") and not looks_like_thing("1 小时"))
+
+        # —— ② 时长：学生给了就是唯一该尊重的约束 ——
+        for raw, want in (("大概一个小时帮我安排时间", 60), ("半小时", 30),
+                          ("两个小时", 120), ("四十分钟", 40), ("1.5小时", 90)):
+            c.check(f"时长认得出来：{raw} → {want} 分钟",
+                    wanted_minutes(raw) == want, wanted_minutes(raw))
+        c.check("没提时长 → None（回落到默认，不瞎猜一个数字）",
+                wanted_minutes("周三12点到2点") is None and wanted_minutes("2点") is None)
+        c.check("「90 分钟」写成人话是「1 小时 30 分钟」",
+                format_minutes(90) == "1 小时 30 分钟" and format_minutes(60) == "1 小时",
+                format_minutes(90))
+
+        # —— ③ 二选一卡：只有问题、没有时间；说不出事名就出不出来 ——
+        mc = todo_mode_proposal("帮我加个游泳，大概一个小时")
+        c.check("有事情名 + 没定时间 → 出二选一卡",
+                bool(mc) and mc.get("kind") == "todo_mode", _json.dumps(mc, ensure_ascii=False)[:90])
+        c.check("卡上记下了标题和时长（后面两条路都要用）",
+                bool(mc) and mc.get("title") == "游泳" and mc.get("minutes") == 60)
+        c.check("**卡里没有任何时间**（它只问「怎么定」，不是「排在这儿」）",
+                bool(mc) and not mc.get("start") and not mc.get("end"))
+        c.check("说不出事名 → 出不了卡（交给追问问「要做什么事」）",
+                todo_mode_proposal("大概一个小时帮我安排时间") is None)
+        c.check("只说了哪一天、没说做什么 → 也出不了卡",
+                todo_mode_proposal("周四帮我安排一下") is None)
+
+        # —— ④ 两条路：mode_to_card ——
+        c.check("选 'self' → 候选卡（几段摊开让他勾）",
+                (mode_to_card(mc, "self") or {}).get("kind") == "todo_slots")
+        ai_card = mode_to_card(mc, "ai")
+        c.check("选 'ai' → 系统规划好的单条（不是又摊一堆让他挑）",
+                bool(ai_card) and ai_card.get("kind") == "todo_add"
+                and ai_card.get("auto") is True,
+                _json.dumps(ai_card, ensure_ascii=False)[:110])
+        c.check("规划出来的那段**真的空着**（课和已排的待办都避开了）",
+                bool(ai_card) and any(
+                    f["start"] <= ai_card["start"] and f["end"] >= ai_card["end"]
+                    for f in pl.find_free_slots(ai_card["date"], min_minutes=1)),
+                f"{ai_card.get('date')} {ai_card.get('start')}-{ai_card.get('end')}"
+                if ai_card else "")
+        c.check("**按学生说的时长排**（「大概一个小时」就是 60 分钟，不是默认 90）",
+                bool(ai_card) and ai_card.get("minutes") == 60,
+                (ai_card or {}).get("minutes"))
+        c.check("并且写清「为什么排在这儿」",
+                bool(ai_card) and "空" in (ai_card.get("reason") or ""),
+                (ai_card or {}).get("reason", "")[:70])
+        c.check("理由里提了他的时长（让他知道系统听进去了）",
+                bool(ai_card) and "1 小时" in (ai_card.get("reason") or ""))
+
+        no_mins = plan_todo_slot("健身", "周四加个健身")
+        c.check("没说时长 → 回落到默认（而且照样是真的空档）",
+                bool(no_mins) and no_mins.get("auto") is True
+                and no_mins.get("minutes") == 90,
+                (no_mins or {}).get("minutes"))
+
+        # —— ⑤ 聊天里回"你帮我挑 / 我自己定"也接得住 ——
+        for raw, want in (("你帮我挑", "ai"), ("你帮我定", "ai"), ("随便", "ai"),
+                          ("你看着办", "ai"), ("我自己定", "self"), ("我有时间", "self")):
+            c.check(f"认得出这是选哪条路：{raw} → {want}",
+                    parse_mode_answer(raw) == want, parse_mode_answer(raw))
+        c.check("只是回答「哪条路」，别把长句也吃进来",
+                not is_mode_answer("帮我加个游泳，大概一个小时")
+                and is_mode_answer("你帮我挑"))
+
+        # —— ⑥ 端到端：先问 → 选"你帮我挑" → 系统规划 → 落库 ——
+        sid = "mode-ai"
+        d1 = client.post("/api/chat", json={
+            "message": "帮我加个游泳，大概一个小时", "session_id": sid}).json()
+        o1 = d1.get("options") or []
+        c.check("第一轮先给二选一卡（没有一上来就问他几点）",
+                any(x.get("kind") == "todo_mode" for x in o1),
+                _json.dumps(o1[:1], ensure_ascii=False)[:110])
+        c.check("回答里说清了两条路，且没有反问「几点到几点」",
+                "我自己定" in (d1.get("answer") or "")
+                and "帮我挑" in (d1.get("answer") or "")
+                and "几点到几点" not in (d1.get("answer") or ""),
+                (d1.get("answer") or "")[:80])
+        c.check("第一轮一个字都没写库", not any(t["title"] == "游泳" for t in list_todos()))
+
+        d2 = client.post("/api/chat", json={"message": "你帮我挑", "session_id": sid}).json()
+        o2 = d2.get("options") or []
+        c.check("选『你帮我挑』→ 出系统规划的单条确认条",
+                bool(o2) and o2[0].get("kind") == "todo_add" and o2[0].get("auto") is True,
+                _json.dumps(o2[:1], ensure_ascii=False)[:110])
+        c.check("回答里把「为什么排在这儿」也说了一遍",
+                "空" in (d2.get("answer") or ""), (d2.get("answer") or "")[:90])
+        c.check("规划完还没写库（要学生点头）",
+                not any(t["title"] == "游泳" for t in list_todos()))
+
+        day = o2[0]["date"] if o2 else ""
+        d3 = client.post("/api/chat", json={"message": "确认", "session_id": sid}).json()
+        c.check("回「确认」才真写进日程",
+                any(t["title"] == "游泳" and t["date"] == day for t in list_todos(day)),
+                [f"{t['title']}@{t['date']}" for t in list_todos(day)])
+        c.check("回答说的是「已加入日程」", "已加入日程" in (d3.get("answer") or ""))
+
+        # —— ⑦ 端到端：选"我自己定" → 候选卡 → 打勾落库 ——
+        sid2 = "mode-self"
+        client.post("/api/chat", json={"message": "周四加个健身", "session_id": sid2})
+        d4 = client.post("/api/chat", json={"message": "我自己定", "session_id": sid2}).json()
+        o4 = d4.get("options") or []
+        ss = (o4[0].get("slots") if o4 else None) or []
+        c.check("选『我自己定』→ 出候选卡（几段摊开、留「其他」口子）",
+                bool(o4) and o4[0].get("kind") == "todo_slots" and len(ss) >= 2,
+                f"{len(ss)} 段")
+        c.check("候选全落在真实空档里", all(
+            any(f["start"] <= s["start"] and f["end"] >= s["end"]
+                for f in pl.find_free_slots(s["date"], min_minutes=1)) for s in ss),
+            [s.get("label") for s in ss])
+        picked = ss[:1]
+        r = client.post("/api/todos/batch", json={
+            "session_id": sid2, "title": o4[0].get("title"),
+            "slots": [{"date": s["date"], "start": s["start"], "end": s["end"]}
+                      for s in picked]}).json()
+        c.check("打了勾 → 真落库",
+                r.get("count") == 1
+                and any(t["title"] == "健身" and t["start"] == picked[0]["start"]
+                        for t in list_todos(picked[0]["date"])),
+                _json.dumps(r, ensure_ascii=False)[:110])
+
+        # —— ⑧ 只回「确认」而卡是二选一卡 → 一条都不许写 ——
+        sid3 = "mode-confirm-only"
+        client.post("/api/chat", json={"message": "加个跑步", "session_id": sid3})
+        n0 = len(list_todos())
+        d5 = client.post("/api/chat", json={"message": "确认", "session_id": sid3}).json()
+        c.check("还没选「时间怎么定」就回确认 → 一条都不写",
+                len(list_todos()) == n0 and "一条都没写进去" in (d5.get("answer") or ""),
+                (d5.get("answer") or "")[:70])
+        c.check("而且把二选一卡再挂出来，请他先选一种",
+                any(x.get("kind") == "todo_mode" for x in (d5.get("options") or [])))
+
+        # —— ⑨ 接口那条路（前端两颗按钮按的就是它）——
+        sid4 = "mode-api"
+        client.post("/api/chat", json={"message": "加个背单词，大概40分钟", "session_id": sid4})
+        ra = client.post("/api/todos/mode",
+                         json={"session_id": sid4, "mode": "ai"}).json()
+        pa = ra.get("pending") or {}
+        c.check("/api/todos/mode mode=ai → 返回规划好的单条",
+                ra.get("ok") and pa.get("kind") == "todo_add"
+                and pa.get("minutes") == 40 and pa.get("auto") is True,
+                _json.dumps(pa, ensure_ascii=False)[:110])
+        c.check("换出来的新卡**进了暂存**（这样学生回「确认」才找得到）",
+                any(x.get("kind") == "todo_add"
+                    for x in (peek_pending(sid4) or {}).get("options") or []))
+        c.check("换卡这一步本身不写库",
+                not any(t["title"] == "背单词" for t in list_todos()))
+
+        sid5 = "mode-api-2"
+        client.post("/api/chat", json={"message": "加个背单词", "session_id": sid5})
+        rs = client.post("/api/todos/mode",
+                         json={"session_id": sid5, "mode": "self"}).json()
+        ps = rs.get("pending") or {}
+        c.check("/api/todos/mode mode=self → 返回候选卡",
+                rs.get("ok") and ps.get("kind") == "todo_slots"
+                and len(ps.get("slots") or []) >= 2,
+                f"{ps.get('kind')} / {len(ps.get('slots') or [])} 段")
+        bad = client.post("/api/todos/mode", json={"session_id": sid5, "mode": "???"})
+        c.check("mode 传别的值 → 400（不猜）", bad.status_code == 400, bad.status_code)
+        gone = client.post("/api/todos/mode",
+                           json={"session_id": "no-such-session", "mode": "ai"})
+        c.check("卡已经过期/没有卡 → 404 并让人重说一句",
+                gone.status_code == 404 and "过期" in (gone.json().get("error") or ""),
+                gone.json().get("error"))
+
+        # —— ⑩ 暂存必须**原样**保住二选一卡 ——
+        #     它是"没有时间"的那一类，很容易被完整性检查（要求 date/start/end）整张丢掉；
+        #     丢掉的后果就是学生回「确认」时系统手里什么都没有，
+        #     掉进"确认落空"兜底、话术变成"刚才那次可能没接上"。这是 todo_slots 刚踩过的坑。
+        from app.main import _remember_todo_options, _pending_todo_mode
+        _remember_todo_options("mode-remember",
+                               [todo_mode_proposal("周六加个健身")])
+        c.check("二选一卡进暂存时**保持原样**（kind 不改、问题还在）",
+                (_pending_todo_mode("mode-remember") or {}).get("title") == "健身",
+                _json.dumps((peek_pending("mode-remember") or {}).get("options") or [],
+                            ensure_ascii=False)[:110])
+
+        # —— ⑪ 没说什么事 → 追问，而且**不许把内部标记漏给学生看** ——
+        #     学生截屏投诉过一句光秃秃的「加待办缺细节」——那是内部接续用的标记，
+        #     漏到对话框里他完全不知道要干嘛。
+        sid6 = "no-thing-name"
+        d7 = client.post("/api/chat", json={
+            "message": "大概一个小时帮我安排时间", "session_id": sid6}).json()
+        c.check("只有时长、没说做什么 → **不出卡**（连要做什么都不知道，排什么时间）",
+                not (d7.get("options") or []),
+                _json.dumps(d7.get("options"), ensure_ascii=False)[:80])
+        c.check("追问的是「要安排什么事」，不是「哪一天/几点」",
+                "什么事" in (d7.get("answer") or "")
+                and "几点" not in (d7.get("answer") or ""),
+                (d7.get("answer") or "")[:80])
+        c.check("把他给过的时长认下来（别让他重复说一遍）",
+                "1 小时" in (d7.get("answer") or ""), (d7.get("answer") or "")[:70])
+        c.check("**内部标记不许出现在回答里**（「加待办缺细节」这种）",
+                "加待办缺细节" not in (d7.get("answer") or ""),
+                (d7.get("answer") or "")[:70])
+        c.check("这一轮也没写库", not any(t["title"] in ("待办", "") for t in list_todos()))
+
+        # —— ⑫ 前端契约 & 提示层 ——
+        proj = pathlib.Path(__file__).resolve().parent.parent
+        cf = (proj / "app" / "static" / "confirm.html").read_text(encoding="utf-8")
+        page = (proj / "app" / "static" / "student.html").read_text(encoding="utf-8")
+        for needle, why in (
+            ("todo_mode:", "确认页上多了 todo_mode 这一类（二选一的弹框）"),
+            ('data-mode="self"', "卡上有「时间我自己定」那颗按钮"),
+            ('data-mode="ai"', "卡上有「你帮我挑」那颗按钮"),
+            ("/api/todos/mode", "点按钮打的是换卡接口"),
+            ("noOk: true", "这一类不走页脚确认键（它的选择本身就是动作）"),
+            ("p.reason", "AI 规划的单条会把「为什么排在这儿」显示出来"),
+        ):
+            c.check(why, needle in cf)
+        for needle, why in (
+            ('o.kind === "todo_mode"', "学生端认得二选一卡"),
+            ("/api/todos/mode", "兜底路径也直接打换卡接口"),
+        ):
+            c.check(why, needle in page)
+        c.check("这组只读工具多了一件 propose_todo_mode_tool（模型也出得了这张卡）",
+                "propose_todo_mode_tool" in build_scheduling_tools(),
+                sorted(build_scheduling_tools()))
+        pl_src = (proj / "app" / "modules" / "planner.py").read_text(encoding="utf-8")
+        c.check("提示层改成「先问时间怎么定」，不再写「一上来就列几段」",
+                "先给弹窗" in pl_src and "你帮我定" in pl_src)
+        c.check("提示层写明了「不许拿那半句话当代办名」",
+                "不是随便拿那一句话就去当代办加入日程了" in pl_src)
+    return c.summary("第十批（先问时间怎么定 / AI 规划 / 识别真的事情）")
+
+
 def main():
     global code
     print("\n" + "=" * 60)
@@ -1350,6 +1725,7 @@ def main():
     code |= test_remove_todo_pipeline()
     code |= test_proactive_time_and_confirm()
     code |= test_todo_slots_pick_and_batch()
+    code |= test_todo_mode_and_ai_plan()
     return code
 
 

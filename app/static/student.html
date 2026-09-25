@@ -616,6 +616,68 @@
         return;
       }
 
+      // ---- ①-ter 二选一卡：这件事的时间**由谁定**（本轮规格的第一站） ----
+      //
+      // 学生原话：「**要区分两种，一种是我有时间规划了，一种是我没有时间规划
+      // 让他帮我安排，不要一上来就询问详细时间，先给弹窗，（有时间规划）
+      // （还没有，你帮我定），用户选择后……**」
+      // 所以只要是"要加一件事、但时间还没着落"，第一张卡就是这一张。
+      // 待遇跟清空课表/候选卡一样：走同一条内嵌确认条（/confirm 那个独立页面）。
+      // 学生点哪条路，那条页面自己打 /api/todos/mode 换出下一张卡，**就地变**——
+      // 不用重发一轮聊天、也不会关窗重开。
+      const modeCards = options.filter(o => o.kind === "todo_mode");
+      if (modeCards.length) {
+        const card = modeCards[modeCards.length - 1];
+        if (confirmPageOk) {
+          const hint = document.createElement("div");
+          hint.className = "opt-hint";
+          hint.textContent = "🗓️ 先定个方式：时间你自己定，还是我替你挑——在下面这条条上点一下就行。";
+          wrap.appendChild(hint);
+          container.appendChild(wrap);
+          openConfirm(card, container);
+          return;
+        }
+        // 兜底：确认页载不进来时，就地给两颗按钮，直接打 /api/todos/mode。
+        // 学生永远有路可走，不会因为一个 iframe 挂了就加不进日程。
+        const hint = document.createElement("div");
+        hint.className = "opt-hint";
+        hint.textContent = "🗓️ 这件事的时间怎么定？";
+        wrap.appendChild(hint);
+        const box = document.createElement("div");
+        box.className = "opt-card";
+        box.innerHTML = `<div class="info"><b>${escapeHtml(card.title || "待办")}</b>
+          <div style="margin-top:6px;color:#6b7593;">先选一种，我再往下排。</div></div>`;
+        wrap.appendChild(box);
+        [["self", "🙋 时间我自己定（我列几段给你挑）"],
+         ["ai", "🤖 还没定，你帮我挑（我按花多久排一段）"]].forEach(([mode, label]) => {
+          const b = document.createElement("button");
+          b.className = "confirm-btn";
+          b.style.marginTop = "6px";
+          b.textContent = label;
+          b.addEventListener("click", async () => {
+            b.disabled = true;
+            b.textContent = "⏳ 正在准备…";
+            try {
+              const r = await fetch("/api/todos/mode", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ session_id: sessionId(), mode }),
+              });
+              const d = await r.json();
+              if (!r.ok || !d.pending) throw new Error(d.error || "没接上");
+              renderOptions(container, [d.pending]);   // 就地换出下一张卡
+            } catch (e) {
+              b.disabled = false;
+              b.textContent = label;
+              addMsg(botName(), "⚠️ " + (e.message || "没接上"));
+            }
+          });
+          wrap.appendChild(b);
+        });
+        container.appendChild(wrap);
+        return;
+      }
+
       // ---- ①-quater 候选时段卡：几个空档摊开、学生自己打勾（本轮规格） ----
       //
       // 学生原话（截图）：「由 ai 帮我去挑选合适时间，**进行列举**，采用和删除课表时

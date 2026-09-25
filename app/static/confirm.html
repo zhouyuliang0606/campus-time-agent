@@ -85,6 +85,28 @@
   }
   .other input:focus { outline: none; border-color: #3a6ff0; box-shadow: 0 0 0 3px #e8efff; }
   .other-h { font-size: 11.5px; color: #8a93ab; margin-top: 5px; line-height: 1.6; }
+
+  /* 二选一（时间由谁定）：两颗**整块可点**的按钮，各自带一句说明。
+     做成大按钮而不是两个小圆点，是因为这两个选项不是"参数"，是两条不同的路——
+     学生得看懂选了之后会发生什么（一个是我列你挑、一个是我替你排）。 */
+  .mode-btn {
+    display: block; width: 100%; text-align: left; cursor: pointer;
+    margin-top: 8px; padding: 11px 13px; border-radius: 11px;
+    background: #f7f9ff; border: 1.5px solid #e6ecfb; font-family: inherit;
+    transition: background .12s, border-color .12s;
+  }
+  .mode-btn:hover:not(:disabled) { background: #eef3ff; border-color: #9fbcff; }
+  .mode-btn:disabled { cursor: default; opacity: .6; }
+  .mode-t { display: block; font-size: 13.5px; font-weight: 600; color: #24304f; }
+  .mode-s { display: block; font-size: 11.5px; color: #7b86a3; margin-top: 3px; line-height: 1.6; }
+
+  /* 「为什么排在这儿」：学生选了"你帮我挑"之后，看到的是一个**自己没指定**的时间，
+     第一反应就是"凭什么"。这句话就是答案，不能省。 */
+  .why {
+    margin-top: 9px; padding: 9px 11px; border-radius: 9px;
+    background: #f2f7ff; border: 1px solid #e0eafd;
+    font-size: 12px; color: #3d5a94; line-height: 1.7;
+  }
 </style>
 </head>
 <body>
@@ -196,9 +218,13 @@ const KIND = {
   todo_add: {
     icon: "📝", title: "加入日程（待办）", confirm: "确认加入", danger: false,
     render(p) {
+      // 时间是**系统替他挑的**（他选了"还没定，你帮我挑"）→ 必须说清"为什么排在这儿"。
+      // 不说的话，他看到的是一个自己从没提过的时间点，第一反应就是"凭什么"。
+      const why = p.reason ? `<div class="why">🤖 ${esc(p.reason)}</div>` : "";
       return `<p class="summary">${esc(p.title || "待办")}</p>
         <div class="meta">${esc(p.date)}（${esc(p.weekday || "")}）
-          ${esc(p.start)}-${esc(p.end)}${p.minutes ? " · 约 " + Number(p.minutes) + " 分钟" : ""}</div>`;
+          ${esc(p.start)}-${esc(p.end)}${p.minutes ? " · 约 " + Number(p.minutes) + " 分钟" : ""}</div>
+        ${why}`;
     },
     async apply(p) {
       return api("POST", "/api/todos", {
@@ -246,6 +272,67 @@ const KIND = {
     doneText(p) {
       return `已删除：<b>${esc(p.title)}</b>（${esc(p.date)} ${esc(p.start)}-${esc(p.end)}），日程里已经没有它了。`;
     },
+  },
+  // 二选一：这件事的时间**由谁定**（本轮规格的第一站）。
+  //
+  // 学生原话：「**要区分两种，一种是我有时间规划了，一种是我没有时间规划
+  //   让他帮我安排，不要一上来就询问详细时间，先给弹窗，（有时间规划）
+  //   （还没有，你帮我定），用户选择后……**」
+  //
+  // 这张卡跟别的都不一样：它**不装时间**，只装一个问题。
+  // 所以它不走页脚那颗【确认】按钮（noOk），而是把两条路做成两颗按钮；
+  // 学生点哪颗，就去换出对应的卡（候选时段卡 / AI 规划好的单条），
+  // **在同一张卡里就地变**——不关窗、不刷新，学生不会觉得"点了一下怎么什么都没了"。
+  todo_mode: {
+    icon: "🗓️", title: "这件事怎么定时间", confirm: "确认", danger: false,
+    noOk: true,
+    render(p) {
+      return `<p class="summary">${esc(p.title || "待办")}</p>
+        <div class="meta">${esc(p.hint || "先说清时间怎么定，我再去排。")}</div>
+        <button type="button" class="mode-btn" data-mode="self">
+          <span class="mode-t">🙋 时间我自己定</span>
+          <span class="mode-s">我列出几段空着的时间，你来挑；都不合意，也可以在「其他时间」里自己写一个。</span>
+        </button>
+        <button type="button" class="mode-btn" data-mode="ai">
+          <span class="mode-t">🤖 还没定，你帮我挑</span>
+          <span class="mode-s">按这件事该花多久，我直接挑一段排上，并告诉你为什么排在这儿。</span>
+        </button>
+        <div class="other-h" style="margin-top:8px;">
+          点一下就行——在你选之前，我一条都不会写进日程。</div>`;
+    },
+    after() {
+      bodyEl.querySelectorAll(".mode-btn").forEach(btn => {
+        btn.addEventListener("click", async () => {
+          if (busy) return;
+          busy = true;
+          bodyEl.querySelectorAll(".mode-btn").forEach(b => { b.disabled = true; });
+          const lab = btn.querySelector(".mode-t");
+          const old = lab.textContent;
+          lab.textContent = "⏳ 正在准备…";
+          try {
+            const r = await api("POST", "/api/todos/mode",
+              { session_id: sid(), mode: btn.dataset.mode });
+            if (!r.pending) throw new Error("后端没给出下一步");
+            // 就地换卡：同一张确认条里变成候选卡 / AI 规划条。
+            // fromParent 置真，免得载入时那次 /api/pending 反过来把新卡盖掉。
+            fromParent = true;
+            render(r.pending);
+            tellParent("chose", { mode: btn.dataset.mode, kind: r.pending.kind });
+          } catch (e) {
+            lab.textContent = old;
+            bodyEl.querySelectorAll(".mode-btn").forEach(b => { b.disabled = false; });
+            showError(e.message || "没接上");
+          } finally {
+            busy = false;
+          }
+        });
+      });
+    },
+    async apply() {
+      // 走不到这儿：这张卡没有页脚确认键（noOk），两条路都在上面的按钮里。
+      throw new Error("请先在卡片上选一种：时间你自己定，还是我帮你挑");
+    },
+    doneText() { return ""; },
   },
   // 候选时段：**学生自己挑**（本轮规格的核心）。
   //
@@ -386,7 +473,7 @@ function render(p) {
     reportHeight();
     return;
   }
-  okBtn.style.display = "";
+  okBtn.style.display = k.noOk ? "none" : "";
   current = p;
   headEl.textContent = k.icon + " " + k.title;
   headEl.classList.toggle("danger", !!k.danger);
