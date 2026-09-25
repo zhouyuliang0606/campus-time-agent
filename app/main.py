@@ -16,6 +16,11 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.agent.engine import AgentEngine
+from app.agent.intent import (
+    INTENT_ADD_TODO, INTENT_CLEAR_TIMETABLE, INTENT_FIND_CARD,
+    INTENT_LIST_TODO, INTENT_REMOVE_TODO, INTENT_RETIME,
+    remember, to_canonical, understand,
+)
 from app.agent.pending import (
     clear_pending, is_confirmation, peek_pending, save_pending, take_pending,
 )
@@ -461,6 +466,27 @@ def _slots_answer(card: dict, lead: str = "") -> str:
         f"这几段都不合适？在确认条的「其他时间」里自己写一个也行"
         f"（比如「周六下午三点到四点」）。"
     )
+
+
+def _rule_intent(message: str) -> str | None:
+    """把所有确定性分支的开关**预检**一遍（人话：先问"规则接不接得住"）。
+
+    为什么单独列一份：语义兜底（app/agent/intent.py）**只在规则全落空时**才该跑，
+    不然每句话都多一次 LLM 调用，"零成本"就成了空话。
+
+    ⚠️ 它只用于判断"要不要升级到语义层"——**真正的分支还在下面各判各的**。
+    这里漏判/多判都不会改变最终结果，最坏只是"该省的没省下"或"多问了一次"。
+    所以它不需要跟下面完全一致，也不该被当成第二份判定逻辑去维护。
+    """
+    if wants_clear_timetable(message):
+        return INTENT_CLEAR_TIMETABLE
+    if wants_add_todo(message):
+        return INTENT_ADD_TODO
+    if wants_list_todo(message):
+        return INTENT_LIST_TODO
+    if wants_remove_todo(message) or wants_remove_todo_loose(message):
+        return INTENT_REMOVE_TODO
+    return None
 
 
 def _slots_lead(persona_key: str | None) -> str:
@@ -1279,6 +1305,36 @@ async def chat(req: Request):
                 _slots_answer(slots, lead="🙋 好，那时间你自己挑——"),
                 "🙋 他要自己挑 → 摊出候选时段（让打勾）")
 
+    # 3c-pre5) **语义兜底**：上面那些规则一条都没接住 → 先查样本库、再问一次意图。
+    #     学生原话：「**很多的字都是接不住的，你现在能接住的都是我测试给的**」。
+    #     词表是穷举不完的（planner.py 30 多张表、router 50 多个词，全是子串匹配），
+    #     所以规则落空时**不再直接掉给模型自由发挥**，而是先问 app/agent/intent.py：
+    #       ③ 样本库里有没有"以前成功办过的近似说法"（零成本、离线可用）；
+    #       ② 没有再问一次 LLM，**只读意图**（它拿不到写库接口，排期/出卡/写库
+    #          仍在系统这侧，见那个文件的分层图）。
+    #     只有规则真接不住才走到这儿，常规说法零 API 调用、零延迟。
+    #     两道都没定 → `_sem` 留空，照旧掉给模型（现状行为，不倒退）。
+    _sem = None
+    _sem_intent = None
+    if not _rule_intent(message) and not is_confirmation(message):
+        try:
+            _sem = await understand(message, get_conversation(session_id))
+        except Exception:
+            _sem = None          # 语义层挂了也不能让对话崩，掉回老路
+        _sem_intent = (_sem or {}).get("intent") or None
+
+    def _sem_done(resp: dict | None) -> dict | None:
+        """语义层命中、并且真的出了卡 → 把这句原话学进样本库（越用越懂）。
+
+        只在**办成了**的时候记。模型自由发挥那一句不算——那会把错误意图学进去。
+        """
+        if resp is not None and _sem_intent:
+            try:
+                remember(message, _sem_intent, _sem or {})
+            except Exception:
+                pass
+        return resp
+
     # 3d) **读我已有待办（纯读，不写库、不弹窗）**
     #     学生说「我的代办呢」「看看我的代办」「待办列表」「代办显示不出来」这类话，
     #     没有任何"加/删"意图，就是想看一眼现在有哪些待办。
@@ -1287,7 +1343,7 @@ async def chat(req: Request):
     #     查到什么说什么；一条都没有也如实讲。
     #     ⚠️ 位置必须在 3c-ter 之前：「代办显示不出来」既像"看不见 X"、又该走"读列表"，
     #     但学生真正要的是"你把我的待办念给我听"——读出来比一句"确实还没有"更有用。
-    if wants_list_todo(message):
+    if wants_list_todo(message) or _sem_intent == INTENT_LIST_TODO:
         todos = list_todos()
         if not todos:
             answer = ("📋 你目前还没有任何待办。\n"
@@ -1305,7 +1361,7 @@ async def chat(req: Request):
             answer = "\n".join(lines)
         append_conversation(session_id, "user", message)
         append_conversation(session_id, "assistant", f"已列出待办：{len(todos)} 条")
-        return {
+        return _sem_done({
             "module": "planner",
             "session_id": session_id,
             "answer": answer,
@@ -1313,7 +1369,7 @@ async def chat(req: Request):
                        "answer": f"{len(todos)} 条"}],
             "options": [],
             "awaiting_choice": False,
-        }
+        })
 
     # 3c-ter) **「看不见 X」的报障**——学生不是要加新事，是**问在不在**。
     #     实测那一幕（截图）：学生说「我现在没有看见日程显示周二游泳代办项目啊」，
@@ -1471,14 +1527,15 @@ async def chat(req: Request):
     # 报障那一幕就又白修了（第十一批测试钉的就是它）。
     _CARD_NEVER_ARRIVED = ("没有收到", "没收到", "收不到", "没弹出来", "没出来",
                            "没有出现", "没出现", "看不见", "没看见")
-    if (len(message) <= 12 and any(w in message for w in _FIND_CARD_WORDS)
-            and "吗" not in message
-            and not any(w in message for w in _CARD_NEVER_ARRIVED)):
+    if (_sem_intent == INTENT_FIND_CARD
+            or (len(message) <= 12 and any(w in message for w in _FIND_CARD_WORDS)
+                and "吗" not in message
+                and not any(w in message for w in _CARD_NEVER_ARRIVED))):
         _held = peek_pending(session_id) or {}
         _held_opts = [o for o in (_held.get("options") or []) if isinstance(o, dict)]
         append_conversation(session_id, "user", message)
         if _held_opts:
-            return {
+            return _sem_done({
                 "module": "planner",
                 "session_id": session_id,
                 "answer": "📑 卡还在呢——就是下面这条，勾好/点【确认】就办。",
@@ -1486,8 +1543,8 @@ async def chat(req: Request):
                            "answer": _held.get("summary") or "已重挂"}],
                 "options": _held_opts,
                 "awaiting_choice": True,
-            }
-        return {
+            })
+        return _sem_done({
             "module": "planner",
             "session_id": session_id,
             "answer": ("📑 现在手上没有挂着的卡。说一句「加个什么什么」"
@@ -1496,28 +1553,35 @@ async def chat(req: Request):
                        "answer": "暂存里没有提案"}],
             "options": [],
             "awaiting_choice": False,
-        }
+        })
 
-    if wants_add_todo(message) or (asking_add and is_add_todo_answer(message)):
+    if (wants_add_todo(message) or (asking_add and is_add_todo_answer(message))
+            or _sem_intent == INTENT_ADD_TODO):
         # 追问后的补充回答（学生先说"帮我安排周二的游泳"，再补"下午两点到三点"）：
         # 补充那句里没有标题、也没有日期，单独解析会把标题弄丢——
         # 把上一句原话拼回来一起算。识别标记就是下面追问分支写进会话历史的那句"加待办缺细节"。
-        blob = (prev_user + "，" + message) if (asking_add and prev_user) else message
+        # 语义层那一路（`_sem_intent`）：它把口语翻成了"加个吃火锅，76分钟，工作日"
+        # 这种**解析器认得的规范话**（`to_canonical`），所以照旧喂给同一套老解析，
+        # 不用再抄一份"从 JSON 造卡片"的逻辑。
+        if _sem_intent == INTENT_ADD_TODO and _sem:
+            blob = to_canonical(message, _sem)
+        else:
+            blob = (prev_user + "，" + message) if (asking_add and prev_user) else message
         proposal = None
         if asking_add and prev_user:
             proposal = parse_add_todo(prev_user + "，" + message)
         if proposal is None:
-            proposal = parse_add_todo(message)
+            proposal = parse_add_todo(blob)
         if proposal is not None:
             # 学生**自己报了准点** → 就着他给的这个点出条，一条就够。
             # 不必再摊候选：他已经说清要哪个点了，再摊三个等于让他重挑一遍。
-            return _offer_response(
+            return _sem_done(_offer_response(
                 session_id, proposal, message,
                 (f"📝 要不要把 **{proposal['title']}** 排进日程？"
                  f"{proposal['date']}（{proposal['weekday']}）"
                  f"{proposal['start']}-{proposal['end']}。\n"
                  f"下面点一下【确认加入】我就写进去，回一句「确认」也一样。"),
-                "📝 生成待办提案（系统判定）")
+                "📝 生成待办提案（系统判定）"))
 
         # 学生没说时间（「那你帮我加一个健身在周四」「加个健身」「帮我加个游泳」）。
         #
@@ -1602,14 +1666,14 @@ async def chat(req: Request):
                 # 开场那句带上学生自己选的性格腔调（没选就退回下面这句默认引导语）
                 _lead = _slots_lead(persona_key) or (
                     "⏰ 给你找了几个空着的时间段，挑方便的勾上（可勾多个）：\n\n")
-                return _offer_response(
+                return _sem_done(_offer_response(
                     session_id, slots, message,
                     _slots_answer(slots, lead=_lead),
-                    "🙋 学生没定时间 → 摊出多个候选时段（让他打勾挑选，本轮规格）")
+                    "🙋 学生没定时间 → 摊出多个候选时段（让他打勾挑选，本轮规格）"))
             # 连一个空档都排不出来（那几天全满）→ 退回系统单条 AI 敲定兜底
             picked = mode_to_card(mode_card, "ai")
             if picked is not None:
-                return _offer_response(
+                return _sem_done(_offer_response(
                     session_id, picked, message,
                     (f"⏰ 直接帮你定好了：**{picked['title']}** 排在 "
                      f"**{picked['date']}（{picked['weekday']}）"
@@ -1617,7 +1681,7 @@ async def chat(req: Request):
                      f"{picked.get('reason') or ''}\n"
                      "点【确认加入】就写进日程。这个点不合适，说一句"
                      "「改成周四晚上七点到八点」这样的话，我按新的重出一张。"),
-                    "⚡ 候选空档都排不出 → 系统单条 AI 敲定兜底")
+                    "⚡ 候选空档都排不出 → 系统单条 AI 敲定兜底"))
 
         # 出不了卡。两类情况，话术不能混为一谈（todo_missing_advice 分得清）：
         #   ① 学生根本没说要加什么事（只有时长、或只有"帮我安排"）→ 问他要加什么；
@@ -1707,7 +1771,8 @@ async def chat(req: Request):
     _last_bot = next((m.get("content") or "" for m in reversed(get_conversation(session_id))
                       if m.get("role") == "assistant"), "").strip()
     asking_rm_todo = _last_bot == "删待办缺细节"
-    rm_intent = wants_remove_todo(message) or wants_remove_todo_loose(message)
+    rm_intent = (wants_remove_todo(message) or wants_remove_todo_loose(message)
+                 or _sem_intent == INTENT_REMOVE_TODO)
     if rm_intent or asking_rm_todo:
         # 学生是不是在回答"是哪一条"（回一句"第二条"或"游泳那条"）
         followup = asking_rm_todo and not rm_intent
