@@ -826,7 +826,7 @@ def mode_to_card(card: dict, mode: str) -> dict | None:
     text = card.get("when") or title
     if mode == "ai":
         return plan_todo_slot(title, text, card.get("minutes"))
-    return todo_slots_proposal(text)
+    return todo_slots_proposal(text, max_slots=4)
 
 
 def slot_is_free(date: str, start: str, end: str) -> bool:
