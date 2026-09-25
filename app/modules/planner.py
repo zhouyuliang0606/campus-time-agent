@@ -352,7 +352,11 @@ def candidate_slots(text: str = "", max_slots: int = 3, days_ahead: int = 5) -> 
     t = (text or "").strip()
     prefer = t
     today = datetime.date.today()
-    picked_day = _pick_date(t)
+    # 「平时 / 工作日」= 周一到周五哪天都行 → 不锁死单日，跨工作日摊开列。
+    # 实测「我要平时去吃火锅」若照常 _pick_date，抠不出日期就按"从今天起逐天"，
+    # 学生观感是"怎么给我排周六"；他说的是"平时"，周末就不该出现在候选里。
+    workday_mode = any(w in t for w in ("平时", "工作日"))
+    picked_day = None if workday_mode else _pick_date(t)
     # 学生说了时长（"大概三小时"）→ 候选段就按 3 小时找；没说才回落 90 分钟。
     # 这里必须认，不然候选卡上全是 90 分钟，学生会拿到「不是我想要的 3 小时」。
     want = wanted_minutes(t) or AUTO_SLOT_LENGTH
@@ -390,6 +394,8 @@ def candidate_slots(text: str = "", max_slots: int = 3, days_ahead: int = 5) -> 
         if len(out) >= max_slots:
             break
         day = (today + datetime.timedelta(days=off)).isoformat()
+        if workday_mode and _iso_weekday(day) >= 6:
+            continue          # 「平时 / 工作日」不排周末，周六周日直接跳过
         for s in _day_slots(day, prefer, limit=1, rotate=off, length=want):
             _push(s)
     return out[:max_slots]
@@ -738,8 +744,14 @@ def plan_todo_slot(title: str, text: str = "",
     want = max(5, min(int(want), 8 * 60))
     today = datetime.date.today()
     day = _pick_date(t)
+    # 「平时 / 工作日」→ 单条兜底那条路同样只在工作日里找（跟候选卡同一条规矩）。
+    _workday_mode = any(w in (t or "") for w in ("平时", "工作日"))
     if day:
         days = [day]
+    elif _workday_mode:
+        days = [(today + datetime.timedelta(days=i)).isoformat()
+                for i in range(7)
+                if (today + datetime.timedelta(days=i)).isoweekday() <= 5]
     else:
         days = [(today + datetime.timedelta(days=i)).isoformat() for i in range(6)]
     for d in days:
