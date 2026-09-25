@@ -468,6 +468,13 @@ def _slots_answer(card: dict, lead: str = "") -> str:
     )
 
 
+# 明显的**查询**词。规则判了 add_todo 却带这些词 → 多半是规则被多义词骗了
+# （「我都有啥安排」里的"安排"是名词，不是"帮我安排"那个动词），
+# 交给语义层复核一次。这里刻意**不列"呢/吗"**：「帮我安排个健身吗」是下单不是查询。
+_ASKING_RE = re.compile(
+    r"(有\s*啥|有\s*什么|都有啥|啥安排|什么安排|哪些|看看|查查|有没有|在\s*哪)")
+
+
 def _rule_intent(message: str) -> str | None:
     """把所有确定性分支的开关**预检**一遍（人话：先问"规则接不接得住"）。
 
@@ -1316,12 +1323,25 @@ async def chat(req: Request):
     #     两道都没定 → `_sem` 留空，照旧掉给模型（现状行为，不倒退）。
     _sem = None
     _sem_intent = None
-    if not _rule_intent(message) and not is_confirmation(message):
+    # 「规则判了 add_todo，可这句话里带着明显的查询词」→ 让语义层**复核**一次。
+    #     实测那一幕：学生说「我现在都有啥安排」，`_ADD_INTENT` 里有"安排"两个字，
+    #     子串匹配分不清这里的"安排"是**名词**（日程安排）还是动词（帮我安排），
+    #     于是判成下单，卡片上会写着「我现都有啥」——他想查待办，系统却要给他加一条。
+    #     这不是"再补一条规则"能解决的（多义词是关键词表的天生盲区），
+    #     所以交给语义层复核：**只有当它跟规则结论不一致时**才否决规则，
+    #     判得一样就照旧走，不额外改变任何行为。
+    _rule_hit = _rule_intent(message)
+    _rule_add_veto = False
+    _need_review = (_rule_hit == INTENT_ADD_TODO
+                    and _ASKING_RE.search(message or ""))
+    if (_rule_hit is None or _need_review) and not is_confirmation(message):
         try:
             _sem = await understand(message, get_conversation(session_id))
         except Exception:
             _sem = None          # 语义层挂了也不能让对话崩，掉回老路
         _sem_intent = (_sem or {}).get("intent") or None
+        if _need_review and _sem_intent and _sem_intent != INTENT_ADD_TODO:
+            _rule_add_veto = True
 
     def _sem_done(resp: dict | None) -> dict | None:
         """语义层命中、并且真的出了卡 → 把这句原话学进样本库（越用越懂）。
@@ -1555,7 +1575,8 @@ async def chat(req: Request):
             "awaiting_choice": False,
         })
 
-    if (wants_add_todo(message) or (asking_add and is_add_todo_answer(message))
+    if (not _rule_add_veto
+            and (wants_add_todo(message) or (asking_add and is_add_todo_answer(message)))
             or _sem_intent == INTENT_ADD_TODO):
         # 追问后的补充回答（学生先说"帮我安排周二的游泳"，再补"下午两点到三点"）：
         # 补充那句里没有标题、也没有日期，单独解析会把标题弄丢——
