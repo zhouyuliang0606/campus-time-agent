@@ -2501,6 +2501,155 @@ def test_name_field_and_comma_sentence():
     return c.summary("第十四批（「名称：」/ 逗号两侧分开认 / 旧提案不许再挂）")
 
 
+def test_context_inherit_and_half_sentence():
+    """第十五批：刚说过的事名要**继承** / 半句话不许冒充事件名。
+
+    报障也是两张截图 + 一份规则总览：
+
+      · 图 2：学生说「我想去游泳，帮我安排时间」，管家客气一句
+            「你想安排在哪天？还是我直接帮你按本周的空闲时间找找？」，
+            学生回「这周安排一个时间」——**系统只看这一句**就反问
+            「要安排的是什么事」，刚刚才说过的"游泳"没被继承下来。
+      · 规则总览第 1 条：自主日程场景默认「禁止反复追问、不要多余客套啰嗦，
+            直接给推荐方案」；而且要「识别啥才是真的事情」。
+
+    两个断点，一个在"记不住"，一个在"太敢认"：
+      ① 3c 分支只抠**当前这一句**的事名。学生回的这句只是"什么时候"
+        （「这周安排一个时间」），抠出来必然是"待办"，于是掉进
+        「要安排的是什么事」的追问 —— 明明上一句刚说过。
+        → 当前这句判不出事名时，从上下文把最近那句带"安排/加"意图的
+          原话**继承**过来（源码用 `_recent_add_request`，它要求那句原话
+          本身带意图、不是确认词、且最近没真写过库，不会抓闲聊里的词）。
+      ② 离线 Mock（没配密钥时那一段）会把整句话当代办名印在卡上：
+        「你帮我找一个合适的时间」→ 卡上写着「找合适」。
+        → 两道闸：先擦掉形容词"合适"，再在摊候选之前加一道门
+        （纯应答 / 判不出事名 → 只问"要安排的是什么事"，不出卡）。
+    """
+    title("15. 刚说过的事名要继承 / 半句话不许冒充事件名")
+    c = Checker()
+    from app.modules.planner import _pick_title, mock_planner, todo_title_of
+    from app.store import append_conversation, list_todos
+
+    # —— ①「识别啥才是真的事情」：只有时长、只有客气的半句话，一律不当事 ——
+    c.check("『你帮我找一个合适的时间』→ 擦掉形容词后判不出事名（不是『找合适』）",
+            todo_title_of("你帮我找一个合适的时间") == "待办",
+            todo_title_of("你帮我找一个合适的时间"))
+    c.check("『这周安排一个时间』→ 只说了什么时候，没说做什么",
+            todo_title_of("这周安排一个时间") == "待办",
+            todo_title_of("这周安排一个时间"))
+    c.check("回归：带了事名的半句照样认得出（『帮我安排出去吃饭的时间』）",
+            _pick_title("帮我安排出去吃饭的时间") == "出去吃饭",
+            _pick_title("帮我安排出去吃饭的时间"))
+    c.check("回归：正经事名不受影响（『我想去游泳，帮我安排时间』）",
+            _pick_title("我想去游泳，帮我安排时间") == "游泳",
+            _pick_title("我想去游泳，帮我安排时间"))
+
+    # —— ② 离线 Mock 的闸门：半句话不许摊候选卡 ——
+    for half in ("好的", "嗯", "你帮我安排", "你帮我找一个合适的时间"):
+        r = mock_planner(half, [], "gentle")
+        kinds = [(o.get("kind"), o.get("title")) for o in (r.get("options") or [])]
+        c.check(f"没配密钥时：『{half}』只问要安排什么事，不许摊卡",
+                not kinds and "要安排的是什么事" in (r.get("answer") or ""),
+                f"{kinds} / {(r.get('answer') or '')[:36]}")
+
+    # —— ③ 走接口：图 2 那一幕（说了事名 → 回一句只带时间的话） ——
+    with sandbox():
+        client = make_client()
+        seed_timetable()
+        import app.main as _m
+        _real = _m.AgentEngine
+
+        class _SentinelEngine:
+            """假引擎：回答里出现哨兵 = 请求掉给了模型（确定性分支整条没接住）。"""
+
+            calls = 0
+
+            def __init__(self, *a, **kw):
+                pass
+
+            async def run(self, message, history=None):
+                type(self).calls += 1
+                txt = "【模型被调用了】 要安排的是什么事？"
+                return {"answer": txt,
+                        "trace": [{"step": 1, "phase": "💡 最终回答", "answer": txt}],
+                        "options": []}
+
+        _m.AgentEngine = _SentinelEngine
+        try:
+            sid = "inherit-swim"
+            append_conversation(sid, "user", "我想去游泳，帮我安排时间")
+            append_conversation(sid, "assistant",
+                                "你想安排在哪天？还是我直接帮你按本周的空闲时间找找？")
+            _SentinelEngine.calls = 0
+            r = client.post("/api/chat", json={"message": "这周安排一个时间",
+                                               "module": "planner", "session_id": sid})
+            d = r.json()
+            first = (d.get("options") or [{}])[0]
+            c.check("刚说过「游泳」→ 回一句只带时间的话，事名从上下文继承下来",
+                    first.get("kind") == "todo_add" and first.get("title") == "游泳",
+                    f"{first.get('kind')} / {first.get('title')} / "
+                    f"{(d.get('answer') or '')[:40]}")
+            c.check("继承来的这条也是直接敲定的（单条确认条，不再追问）",
+                    first.get("auto") is True, first.get("auto"))
+            c.check("一步都没交给模型（系统自己算得出来）",
+                    _SentinelEngine.calls == 0, f"调了 {_SentinelEngine.calls} 次")
+            c.check("学生还没点头 → 一个字都不写库",
+                    not any(t.get("title") == "游泳" for t in list_todos()),
+                    [t.get("title") for t in list_todos()])
+
+            # 反向：干净会话里说同样的话（前面从没提过任何事名）→ 不许凭空造一个
+            sid2 = "inherit-none"
+            _SentinelEngine.calls = 0
+            r2 = client.post("/api/chat", json={"message": "这周安排一个时间",
+                                                "module": "planner", "session_id": sid2})
+            d2 = r2.json()
+            kinds2 = [o.get("kind") for o in (d2.get("options") or [])]
+            c.check("反向：前面没说过要做什么 → 不许凭空造一条待办确认条",
+                    "todo_add" not in kinds2,
+                    f"{kinds2} / {(d2.get('answer') or '')[:40]}")
+        finally:
+            _m.AgentEngine = _real
+
+    # —— ④ 反向：继承不许"糊名字"，也不许翻旧账 ——
+    #     「帮我安排一下健身」+「再安排一个」合并后抠出来的是「健身再」——
+    #     两句话被揉成一个谁也没说过的怪名字。合并完必须还是同一个事名才认。
+    with sandbox():
+        client = make_client()
+        seed_timetable()
+        sid3 = "inherit-stale"
+        r0 = client.post("/api/chat", json={"message": "帮我安排一下健身",
+                                            "module": "planner", "session_id": sid3})
+        c.check("前情：第一轮敲定出卡（auto 单条）",
+                ((r0.json().get("options") or [{}])[0].get("auto")) is True,
+                [(o.get("title")) for o in (r0.json().get("options") or [])])
+        r1 = client.post("/api/chat", json={"message": "确认", "module": "planner",
+                                            "session_id": sid3})
+        c.check("前情：点【确认】后真写进日程了",
+                any(t.get("title") == "健身" for t in list_todos()),
+                [t.get("title") for t in list_todos()])
+        r2 = client.post("/api/chat", json={"message": "再安排一个", "module": "planner",
+                                            "session_id": sid3})
+        titles2 = [o.get("title") for o in (r2.json().get("options") or [])]
+        c.check("已经写进日程的旧事名不许被继承出来（要问清楚是哪件事）",
+                not any(t == "健身" for t in titles2),
+                f"{titles2} / {(r2.json().get('answer') or '')[:40]}")
+
+    with sandbox():
+        client = make_client()
+        seed_timetable()
+        sid4 = "inherit-blend"
+        client.post("/api/chat", json={"message": "帮我安排一下健身",
+                                       "module": "planner", "session_id": sid4})
+        r = client.post("/api/chat", json={"message": "再安排一个", "module": "planner",
+                                           "session_id": sid4})
+        titles = [o.get("title") for o in (r.json().get("options") or [])]
+        c.check("卡还挂着时说「再安排一个」→ 不许把两句糊成『健身再』这种怪名字",
+                not any(t and "健身再" in t for t in titles),
+                f"{titles} / {(r.json().get('answer') or '')[:40]}")
+
+    return c.summary("第十五批（事名继承 / 半句话不许冒充事件名）")
+
+
 def main():
     global code
     print("\n" + "=" * 60)
@@ -2520,6 +2669,7 @@ def main():
     code |= test_prose_proposal_and_lie()
     code |= test_span_first_title_and_claim_words()
     code |= test_name_field_and_comma_sentence()
+    code |= test_context_inherit_and_half_sentence()
     return code
 
 

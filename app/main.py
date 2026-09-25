@@ -1297,6 +1297,29 @@ async def chat(req: Request):
         #    效率提上去，一步都不越权。
         #    直接挑不出（那几天都排满）→ 退回候选卡让他勾；连事名都判不出
         #    → 才落到下面的追问。每一级都比上一级多问一句，能不问就不问。
+        # 这一句里没说清要做什么，但学生最近说过 → 从上下文把事名**继承**过来。
+        # 实测那一幕（截图）：学生说「我想去游泳，帮我安排时间」，管家客气了一轮
+        # 「你想安排在哪天？还是我直接帮你按本周的空闲时间找找？」，学生回
+        # 「这周安排一个时间」——这句话本身没有"游泳"，系统却反问他
+        # 「要安排的是什么事」。他刚刚才说过！规则（学生原话）：
+        # 「**禁止反复追问、不要多余客套啰嗦**」「人性化自动检索，直接给方案」。
+        # 继承源用 `_recent_add_request`：它要求那句原话本身带着"安排/加"的意图、
+        # 不是确认词、且最近没真的写过库——不会把闲聊里随便一个词抓来当事名
+        # （「要识别啥才是真的事情」这条红线不破）。
+        if todo_title_of(blob) == "待办":
+            inherited = _recent_add_request(session_id)
+            if inherited:
+                inh_title = todo_title_of(inherited)
+                if inh_title != "待办":
+                    merged = f"{inherited}，{message}"
+                    # ⚠️ 合并完还得核对一次：抠出来的必须**还是这一个事名**。
+                    # 不核对的话，「帮我安排一下健身」+「再安排一个」会糊成
+                    # 「健身再」——两句话被揉成一个谁也没说过的怪名字挂出去。
+                    # 对不上就说明这一句不是在接着上一句说（可能是另一件事），
+                    # 那就别硬凑，照旧问清楚。
+                    if todo_title_of(merged) == inh_title:
+                        blob = merged
+
         mode_card = todo_mode_proposal(blob)
         if mode_card is not None:
             picked = mode_to_card(mode_card, "ai")
