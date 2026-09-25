@@ -3,7 +3,7 @@
 覆盖四件事：
 1. /api/student-personas 返回三套学生可选性格，字段齐全；
 2. 规划模块在无密钥时走 Mock 助手：提议候选 → options 非空、awaiting_choice=True；
-3. 学生点卡片确认（消息带「日期 起-止」）→ Mock 真的把待办写进日程；
+3. 学生在候选卡上勾一段、点【加入日程】→ 系统真的把待办写进日程；
 4. 性格确实注入到回答：pal 的回答带「宝」、pro 的回答带「空档如下」；
 5. 引擎能捕获 propose_slots 工具的参数，作为 options 带回前端（不依赖真实大模型）。
 
@@ -68,25 +68,44 @@ def test_mock_propose_and_confirm():
         c.check("等待学生勾选 awaiting_choice=True", d1.get("awaiting_choice") is True)
         opts = d1.get("options") or []
         first = opts[0] if opts else {}
-        for f in ("date", "start", "end", "title"):
-            c.check(f"候选含字段 {f}", bool(first.get(f)), str(first.get(f)))
+        # 第七轮规格（学生原话：「将多种合理时间提出让我挑选，也是弹窗里进行选择」）：
+        # 没说几点时出的是 **todo_slots 候选卡**——一张卡里装着好几段，
+        # date/start/end 在 `slots[]` 里，不在卡的顶层（顶层只有 title 和说明）。
+        # 所以这里按新形状核对，别再用老的单条（todo_add）形状去取字段。
+        c.check("出的是「挑时间」候选卡 todo_slots", first.get("kind") == "todo_slots",
+                first.get("kind"))
+        c.check("候选卡上带着事名（不是谁也没说过的半句话）",
+                first.get("title") == "复习线代", first.get("title"))
+        slots = first.get("slots") or []
+        c.check("候选卡里摊出了时间段", len(slots) >= 1, f"段数 {len(slots)}")
+        slot = slots[0] if slots else {}
+        for f in ("date", "start", "end"):
+            c.check(f"候选时段含字段 {f}", bool(slot.get(f)), str(slot.get(f)))
 
-        # 模拟学生点卡片确认：把「日期 起-止 标题」发回
-        if first:
-            confirm = f"确认：{first['date']} {first['start']}-{first['end']} {first['title']}"
-            r2 = client.post("/api/chat", json={
-                "message": confirm, "module": "planner", "session_id": "pf1",
+        # 模拟学生在弹框里勾一段、点【加入日程】（前端直连 /api/todos/batch）
+        # —— 不再走"回一句「确认：日期 起-止 标题」"那条老路：候选卡上还没勾，
+        # 系统不会替他挑一个写进去（写进去的是真安排，不能替他做主）。
+        if slot:
+            r2 = client.post("/api/todos/batch", json={
+                "session_id": "pf1", "title": first.get("title") or "复习线代",
+                "slots": [{"date": slot["date"], "start": slot["start"],
+                           "end": slot["end"]}],
             })
             d2 = r2.json()
-            c.check("确认后不再有待选", not d2.get("options") and d2.get("awaiting_choice") is False)
-            c.check("确认回话提到已写入", "已加入日程" in d2.get("answer", "") or "已写入" in d2.get("answer", ""),
-                    d2.get("answer", "")[:30])
+            c.check("勾选的这一段真的写进去了",
+                    len(d2.get("added") or []) == 1,
+                    json.dumps(d2, ensure_ascii=False)[:90])
+            c.check("回执里报了这一条（学生看得见加了什么）",
+                    "已加入日程" in (d2.get("message") or "")
+                    and "复习线代" in (d2.get("message") or ""),
+                    (d2.get("message") or "")[:40])
 
             # 真去待办列表里看，确认落库了
             todos = (client.get("/api/todos").json() or {}).get("todos", [])
             titles = [t.get("title") for t in todos]
-            c.check("待办列表里出现了这条", any(first["title"] in (t or "") for t in titles), str(titles[:3]))
-    return c.summary("第二批（提议→确认→写入）")
+            c.check("待办列表里出现了这条",
+                    any("复习线代" in (t or "") for t in titles), str(titles[:3]))
+    return c.summary("第二批（提议→勾选→写入）")
 
 
 def test_persona_injection():
