@@ -7,6 +7,7 @@
 import datetime
 import json
 import os
+import re
 import uuid
 from typing import Any
 
@@ -282,6 +283,26 @@ def _already_written_recently(session_id: str) -> bool:
     return any(any(k in (m.get("content") or "") for k in _WRITTEN_RECEIPTS)
                for m in get_conversation(session_id)[-6:]
                if m.get("role") == "assistant")
+
+
+# 系统自己写进会话的那些句子（挂卡标记 / 写库回执）。它们**不是**"管家给学生的方案"，
+# 从里头捞确认条等于把已经落地的再挂一次（学生再点一下就是重复写两条）。
+_SYSTEM_NOTE_PREFIXES = ("已生成待办确认", "已生成删待办提案",
+                         "已生成清空提案", "已生成加课提案")
+
+
+def _is_system_note(text: str) -> bool:
+    """这句话是不是系统自己写下的账（人话：回执和挂卡标记，别当方案读）。"""
+    t = (text or "").strip()
+    return (t.startswith(_SYSTEM_NOTE_PREFIXES)
+            or any(k in t for k in _WRITTEN_RECEIPTS))
+
+
+# "我自己定 / 我自己挑 / 列几个给我看 / 还有别的空档吗"——学生要**自己挑**时间。
+# 第六轮改版后（第一站直接敲定），这是"自己挑"那条路仅存的聊天入口，见 3c-pre4。
+_SELF_PICK_RE = re.compile(
+    r"我自己(?:定|挑|选)|自己挑|自己选|列(?:几个|出来)|换几个|"
+    r"还有别的(?:空档|时间)|其他空档|别的时间")
 
 
 def _recent_add_request(session_id: str, span: int = 8) -> str:
@@ -917,11 +938,35 @@ async def chat(req: Request):
         # 学生回"可以"，系统就替它把这张确认条挂出来（写库仍要学生点按钮）。
         # 只认固定格式（"任务/事项/标题：" 配 "时间/时段："），闲聊里捞不出东西就返回 None，
         # 宁可这条不挂，也不从闲聊里瞎猜一个待办出来。
-        if proposal is None and not already_written:
-            for m in reversed(recent_msgs):
+        # 判据要问的是"**这场商量是不是还没落地**"。
+        # 这句话看着绕，可问错了两版都出事，两版的病历都留在这儿：
+        #   · 第一版问"最近这几轮有没有写过库"（`already_written`，整段挡掉）——太粗。
+        #     只要附近出现过一次「已加入日程」，往后哪怕管家又给了一份干净方案、
+        #     学生老老实实回一句「确认添加」，也照样一个字都捞不回来 → 掉到 3c
+        #     反问他「好——**要安排的是什么事**？」。对着一份已经写好的提案问
+        #     "要做什么"，正是报障那一幕（截图里管家的提案白纸黑字挂在那儿）。
+        #   · 第二版问"这句话是不是系统自己写的账"（跳过回执句）——粒度对了，
+        #     可漏了后半截：**提案本身也会过期**。一条提案就算已经被学生点完、
+        #     库都写好了，它的文字照样留在历史里；只跳回执、不往前看的 starting
+        #     线，就会把这份**（早已落实过的）旧提案**重新捞出来挂一遍，
+        #     他再点一下就是重复写两条（第六批那条断言守的就是它）。
+        #
+        # 正解是划一条**起跑线**：找到最近一次写库回执的位置，只在它**之后**
+        # 的那些话里找方案。回执之前的提案，在这一幕之前已经执行过了，不许翻回去。
+        receipt_at = [i for i, m in enumerate(recent_msgs)
+                      if m.get("role") == "assistant"
+                      and any(k in (m.get("content") or "")
+                              for k in _WRITTEN_RECEIPTS)]
+        started = (receipt_at[-1] + 1) if receipt_at else 0
+        if proposal is None:
+            for m in reversed(recent_msgs[started:]):
                 if m.get("role") != "assistant":
                     continue
-                guessed = parse_todo_from_reply(m.get("content") or "")
+                text = m.get("content") or ""
+                # 挂卡标记（"已生成待办确认："）也不是方案，别从它里头抠。
+                if _is_system_note(text):
+                    continue
+                guessed = parse_todo_from_reply(text)
                 if guessed is not None:
                     proposal, from_butler = guessed, True
                     break
@@ -1174,6 +1219,24 @@ async def chat(req: Request):
                 phase = "🙋 学生选了「我自己定」→ 列出候选时段（让打勾）"
             return _offer_response(session_id, new_card, message, ans, phase)
 
+    # 3c-pre4) **单条确认条已经挂在那儿，可学生说"我自己挑"** → 换出候选卡让他勾。
+    #     为什么必须有这一支：第六轮改版把第一站改成了"直接敲定"，
+    #     于是"我自己定"那颗按钮从第一站消失了——可"**进行列举、由我打勾**"
+    #     是他明确要过的（学生原话，见第九批）。效率是默认，但不能把这条口子焊死：
+    #     默认我替你定，你要自己挑就说一声，摊开让你勾。
+    #     ⚠️ 只认"敲定出来的那条"（`auto` 标记）：学生自己报了钟点换出来的条
+    #     不该再被摊一堆候选盖掉——他已经说清楚要哪个点了。
+    held_auto = _pending_todo(session_id)
+    if held_auto and held_auto.get("auto") and not is_confirmation(message) \
+            and _SELF_PICK_RE.search(message or ""):
+        slots = todo_slots_proposal(
+            f"{held_auto.get('date') or ''} {held_auto.get('title') or ''}".strip())
+        if slots is not None:
+            return _offer_response(
+                session_id, slots, message,
+                _slots_answer(slots, lead="🙋 好，那时间你自己挑——"),
+                "🙋 他要自己挑 → 摊出候选时段（让打勾）")
+
     if wants_add_todo(message) or (asking_add and is_add_todo_answer(message)):
         # 追问后的补充回答（学生先说"帮我安排周二的游泳"，再补"下午两点到三点"）：
         # 补充那句里没有标题、也没有日期，单独解析会把标题弄丢——
@@ -1223,11 +1286,38 @@ async def chat(req: Request):
         #    还照样挂出了一张候选卡让他勾时间——可连要做什么都还不知道，挑时间往哪写？
         #    `todo_mode_proposal` 里已经过了 `_pick_title` 的判真关，判不出事名返回 None，
         #    就落到下面的追问分支去问"要安排什么事"。
+        # ⚡ 第六轮改版（学生原话：「**不需要先问，直接去安排，重复的确认太麻烦，
+        #    直接敲定结果，主打效率**」）：以前这里先出一张"你自己定 / 我帮你挑"的
+        #    二选一卡（"要区分两种"是第十批的规格），可真用起来，**这一轮问答本身
+        #    就是他嫌麻烦的东西**——他要的是结果。现在直接敲定：
+        #    `todo_mode_proposal` 照旧算（它里头有过标题判真和时长解析，丢不得），
+        #    但**不再把二选一卡递出去**，就地走"你帮我挑"那条路——
+        #    系统从真实空档里挑一段，出一张"就排在这儿"的单条确认条，
+        #    卡上写清为什么排这儿、想换怎么说。写库仍要他点【确认加入】——
+        #    效率提上去，一步都不越权。
+        #    直接挑不出（那几天都排满）→ 退回候选卡让他勾；连事名都判不出
+        #    → 才落到下面的追问。每一级都比上一级多问一句，能不问就不问。
         mode_card = todo_mode_proposal(blob)
         if mode_card is not None:
-            return _offer_response(
-                session_id, mode_card, message, _mode_answer(mode_card),
-                "🗓️ 学生要加一件事但没定时间 → 先问「你自己定 / 我帮你挑」")
+            picked = mode_to_card(mode_card, "ai")
+            if picked is not None:
+                return _offer_response(
+                    session_id, picked, message,
+                    (f"⏰ 直接帮你定好了：**{picked['title']}** 排在 "
+                     f"**{picked['date']}（{picked['weekday']}）"
+                     f"{picked['start']}-{picked['end']}**。\n"
+                     f"{picked.get('reason') or ''}\n"
+                     "点【确认加入】就写进日程。这个点不合适，说一句"
+                     "「改成周四晚上七点到八点」这样的话，我按新的重出一张。"),
+                    "⚡ 学生没定时间 → 系统直接敲定一段（单条确认条，不再先问怎么定）")
+            # 那几天都排满了 → 摊开空档让他自己勾（还是不多问那一轮"怎么定"）
+            slots = mode_to_card(mode_card, "self")
+            if slots is not None:
+                return _offer_response(
+                    session_id, slots, message,
+                    _slots_answer(slots, lead="😥 这几天想直接替你塞一段，可都排满了——"
+                                             "把空档列出来，你挑一个：\n\n"),
+                    "🙋 直接敲定失败（都排满）→ 摊出候选时段（让打勾）")
 
         # 出不了卡。两类情况，话术不能混为一谈（todo_missing_advice 分得清）：
         #   ① 学生根本没说要加什么事（只有时长、或只有"帮我安排"）→ 问他要加什么；

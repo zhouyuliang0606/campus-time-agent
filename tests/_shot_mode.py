@@ -1,18 +1,17 @@
-"""截图验收：先问"时间怎么定" + AI 去规划 + 识别真的事情。
+"""截图验收：直接敲定时间 + AI 规划 + 识别真的事情。
 
-复刻的就是学生第三轮那七张截图 + 一段话：
-    「**要区分两种，一种是我有时间规划了，一种是我没有时间规划让他帮我安排，
-      不要一上来就询问详细时间，先给弹窗，（有时间规划）（还没有，你帮我定），
-      用户选择后，针对没时间……**」
-    「**核心是 ai 帮我安排时间，ai 去规划时间，然后这个加入代办，
-      要识别啥才是真的事情，不是随便拿那一句话就去当代办加入日程了**」
+规格沿革（四版，学生每次表态都记着）：
+    · 第三版「要区分两种……先给弹窗」（二选一卡）→
+    · **第四版（现在）**：学生原话「**不需要先问，直接去安排，重复的确认太麻烦，
+      直接敲定结果，主打效率**」——第一站就是系统从真实空档里挑好的**单条**确认条，
+      卡上带"为什么排这儿"；嫌点不合适，报个新点就换（`retime` 那条路）。
+    · 「识别啥才是真的事情」不变：说不出事名照样追问，绝不拿半句话当代办名。
 
-五段截图：
-    21_mode_ask   —— 学生「帮我加个游泳，大概一个小时」→ 先给**二选一弹窗**
-    22_mode_ai    —— 点「还没定，你帮我挑」→ 系统**规划出一段**，并说清为什么排这儿
-    23_mode_done  —— 点【确认加入】→ 日程里真出现《游泳》，面板当场刷新
-    24_mode_self  —— 另一条路：点「时间我自己定」→ 换出候选卡（他自己挑）
-    25_bad_title  —— 「大概一个小时帮我安排时间」→ 该**追问"要安排什么事"**，不出卡
+四段截图：
+    21_mode_ask    —— 学生「帮我加个游泳，大概一个小时」→ **直接出单条确认条**（不再先问怎么定）
+    22_mode_done   —— 点【确认加入】→ 日程里真出现《游泳》，面板当场刷新
+    23_mode_direct —— 「周四加个健身」→ 只说了哪天，同样直接敲定周四那段
+    25_bad_title   —— 「大概一个小时帮我安排时间」→ 该**追问"要安排什么事"**，不出卡
 
 跑在临时数据副本上，演示数据一个字节都不动。
 """
@@ -57,7 +56,8 @@ def main():
             page.evaluate("showView && showView('view-schedule')")
             page.wait_for_timeout(500)
 
-            # ① 有事情名、只是还没定时间 → **第一站是二选一卡**，不是问他几点
+            # ① 有事情名、只是还没定时间 → **第一站就是敲定好的单条确认条**
+            #    （不再先问"你自己定 / 我帮你挑"那一轮）
             ask(page, "帮我加个游泳，大概一个小时")
             page.wait_for_selector(".cf-inline .cf-frame", state="visible", timeout=20000)
             page.wait_for_timeout(1800)
@@ -66,30 +66,21 @@ def main():
             shot(page, "21_mode_ask")
             fr = page.frame_locator(".cf-inline .cf-frame").last
             body1 = fr.locator("#cfBody").inner_text().replace("\n", " / ")
-            n_modes = fr.locator(".mode-btn").count()
-            print("  二选一卡：", body1[:180])
-            print("  两条路按钮数：", n_modes)
-
-            # ② 他点「还没定，你帮我挑」→ 系统真去规划一段，并写清为什么排这儿
-            fr.locator('.mode-btn[data-mode="ai"]').click()
-            page.wait_for_timeout(2000)
-            page.locator(".cf-inline").first.scroll_into_view_if_needed()
-            page.wait_for_timeout(500)
-            shot(page, "22_mode_ai")
-            body2 = fr.locator("#cfBody").inner_text().replace("\n", " / ")
             has_why = fr.locator(".why").count()
-            print("  规划结果：", body2[:200])
-            print("  「为什么排这儿」那一块：", has_why)
-            planned = "✅ 系统给出了一个点" if fr.locator("#cfOk").count() else "❌ 没出条"
+            n_modes = fr.locator(".mode-btn").count()
+            print("  直接敲定的确认条：", body1[:180])
+            print("  「为什么排这儿」块数：", has_why,
+                  "／二选一按钮数（应为 0）：", n_modes)
+            asked = "✅ 第一轮就出了单条" if fr.locator("#cfOk").count() else "❌ 没出条"
 
-            # ③ 点【确认加入】→ 真落库 + 日程面板当场刷新
+            # ② 点【确认加入】→ 真落库 + 日程面板当场刷新
             fr.locator("#cfOk").click()
             page.wait_for_timeout(2800)
             page.evaluate("showView && showView('view-schedule')")
             page.wait_for_timeout(600)
             page.evaluate("window.scrollTo(0, 0)")
             page.wait_for_timeout(400)
-            shot(page, "23_mode_done")
+            shot(page, "22_mode_done")
             todos = page.evaluate("""async () => {
                 const d = await (await fetch('/api/todos')).json();
                 return (d.todos || []).map(t => t.title + '@' + t.date + ' ' + t.start + '-' + t.end);
@@ -98,23 +89,19 @@ def main():
             done = "✅ 点确认后真写进去了" if any(t.startswith("游泳") for t in todos) \
                 else "❌ 点了没写进去"
 
-            # ④ 另一条路：他选「时间我自己定」→ 换成候选卡（同一张卡里就地变）
+            # ③ 只说了哪天 → 同样直接敲定（那天的那段空档）
             ask(page, "周四加个健身")
             page.wait_for_selector(".cf-inline .cf-frame", state="visible", timeout=20000)
             page.wait_for_timeout(1800)
-            fr2 = page.frame_locator(".cf-inline .cf-frame").last
-            print("  第二条路的二选一卡：", fr2.locator("#cfBody").count(), "（有卡）")
-            fr2.locator('.mode-btn[data-mode="self"]').click()
-            page.wait_for_timeout(2000)
             page.locator(".cf-inline").last.scroll_into_view_if_needed()
             page.wait_for_timeout(500)
-            shot(page, "24_mode_self")
-            n_slots = fr2.locator(".slot-cb").count()
-            print("  换成候选卡：勾选框", n_slots, "个 /",
-                  fr2.locator("#cfBody").inner_text().replace("\n", " / ")[:150])
-            self_ok = "✅ 他自己定就摊候选" if n_slots >= 2 else "❌ 没摊出候选"
+            shot(page, "23_mode_direct")
+            fr2 = page.frame_locator(".cf-inline .cf-frame").last
+            body3 = fr2.locator("#cfBody").inner_text().replace("\n", " / ")
+            print("  只说哪天的敲定结果：", body3[:160])
+            direct = "✅ 说了哪天也直接敲定" if fr2.locator("#cfOk").count() else "❌ 没出条"
 
-            # ⑤ 只说了时长、没说做什么事 → **追问"要安排什么事"**，一张卡都不出
+            # ④ 只说了时长、没说做什么事 → **追问"要安排什么事"**，一张卡都不出
             ask(page, "大概一个小时帮我安排时间")
             page.wait_for_timeout(2600)
             page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
@@ -131,12 +118,14 @@ def main():
                 "❌ 没问到点上"
             b.close()
 
-            ok = (n_modes >= 2 and has_why >= 1 and done and self_ok
+            ok = (asked.startswith("✅") and has_why >= 1 and n_modes == 0
+                  and done.startswith("✅") and direct.startswith("✅")
                   and no_card == "✅ 没拿半句话当代办" and asked_thing.startswith("✅"))
-            print(f"\n  {'✅ 先问方式' if n_modes >= 2 else '❌ 没给二选一'} / "
+            print(f"\n  {asked} / "
                   f"{'✅ 有规划理由' if has_why >= 1 else '❌ 没说为什么'} / "
-                  f"{done} / {self_ok} / {no_card} / {asked_thing}")
-            print("  " + ("✅ 二选一 → 两条路 → 规划/候选 → 落库即刷新，整条通了"
+                  f"{'✅ 不再多问一轮' if n_modes == 0 else '❌ 还有二选一'} / "
+                  f"{done} / {direct} / {no_card} / {asked_thing}")
+            print("  " + ("✅ 直接敲定 → 落库即刷新 → 只说哪天照样一步到位，整条通了"
                           if ok else "❌ 还有一环没通"))
             return 0 if ok else 1
 

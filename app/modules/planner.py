@@ -1397,17 +1397,13 @@ def looks_like_thing(name: str) -> bool:
     return not any(w in t for w in _TITLE_NOISE)
 
 
-def _pick_title(text: str) -> str:
-    """从一句话里剩下那部分抠出待办标题（人话：把时间、日期、安排这类废话都扔掉）。
+def _strip_title_noise(text: str) -> str:
+    """把一句人话里**不属于事情名字**的东西全擦掉（时间、日期、语气词、动作词…）。
 
-    抠完还要过一道 `looks_like_thing`：不像一件事就返回 "待办"（=他没说清），
-    由调用方去追问——这是本轮补上的关键一环，见 `_TITLE_NOISE` 上面的说明。
+    从 `_pick_title` 里抽出来的，为的是能**一句一句地**擦（见那边的"切段重试"）。
+    它只负责擦，**不管擦完像不像一件事**——判真是 `looks_like_thing` 的活。
     """
-    t = text or ""
-    m = _QUOTE_RE.search(t)          # 优先拿『』「」框着的那段，最准
-    if m and 1 <= len(m.group(1)) <= 30:
-        return m.group(1).strip()
-    t = _normalize_clock(t)          # 先把「两点到三点」换成 2:00-3:00，下面的正则才擦得掉
+    t = _normalize_clock(text or "")   # 先把「两点到三点」换成 2:00-3:00，下面的正则才擦得掉
     # 时长整块擦掉（"大概一个小时"）：它既是判真的依据，也不该粘进名字里。
     # 必须在抠日期/钟点之前擦——"一个小时"里的"一"会被后面的中文数字逻辑当成别的。
     t = _DURATION_RE.sub(" ", t)
@@ -1476,16 +1472,57 @@ def _pick_title(text: str) -> str:
             break
     # 「加入健身**代办**」——"代办/待办"是学生嘴里的类别词（还常写成"代办"），
     # 不是事情本身；留在标题里就会看到「健身代办」这种卡片名。
-    t = re.sub(r"(待办|代办|事项|日程)$", "", t).strip("的")[:30]
-    # 削到什么都不剩（"周四加一个"）→ 当作没标题，交给追问分支问"要加什么事"，
-    # 别拿"加个"本身当待办名字写进日程。
-    if not t or t in _EMPTY_TITLES:
-        return "待办"
-    # 最后一关：像不像一件事。不像（"大概小时""帮我安排"这种残渣）就当没说清，
-    # 让调用方去追问——**绝不拿半句话当代办名写进日程**。
-    if not looks_like_thing(t):
-        return "待办"
-    return t
+    # 结尾的"（的）时间"也要剥：管家爱说「帮我安排出去吃饭的时间」，
+    # 剥完才是「出去吃饭」。不剥的话 `_TITLE_NOISE` 里的"时间"会把整句否掉，
+    # 学生明明说了要干什么，系统却反问他"要安排的是什么事"。
+    # ⚠️ 只剥**结尾**：中间的"时间"（比如「时间管理」）不是后缀，留着。
+    t = re.sub(r"(的)?(待办|代办|事项|日程|时间)$", "", t).strip("的")[:30]
+    # Markdown 的排版符号不是名字的一部分。实测管家爱写
+    # 「跟你确认一下这条待办：- 名称：健身」，从粗体里抠出来就成了 `健身**`，
+    # 卡片上写着「要不要把 **健身\*\*** 排进日程？」——星号跟着名字一起进门了。
+    return t.strip("*`_~ \t")
+
+
+def _pick_title(text: str) -> str:
+    """从一句话里剩下那部分抠出待办标题（人话：把时间、日期、安排这类废话都扔掉）。
+
+    抠完还要过一道 `looks_like_thing`：不像一件事就返回 "待办"（=他没说清），
+    由调用方去追问——这是本轮补上的关键一环，见 `_TITLE_NOISE` 上面的说明。
+
+    ⚠️ 为什么要有"**切段重试**"这一档：擦噪声的最后一步是
+    `re.sub(r"[，,。！…]", " ", t)` 再 `re.sub(r"\\s+", "", t)`，
+    也就是**把逗号换成空格、紧接着又把空格全删掉** —— 两句话于是粘成一整串。
+    实测学生说「我要去健身，帮我安排个时间」：
+        「我要去健身」+「帮我安排个时间」 → 粘成「去健身帮我个时间」
+    判真一看里头有"帮我"（语气词，不是事名的一部分）→ 整句否掉 → 返回"待办"
+    → 系统回他「好——**要安排的是什么事**？」。他明明第一句就说了"健身"。
+    （截图报障：「我要去健身，帮我安排个时间」→ 管家问"要安排的是什么事"；
+      他补一句「你帮我安排」→ **还是同一句追问**，原地打转。）
+
+    所以：整句擦完判不过，就**按标点切回一句句**、逐句擦、逐句判真，取第一个过关的。
+    宁可这样，也别把两句话粘成一句、把学生已经说过的事情当成"没说"。
+    """
+    t = text or ""
+    m = _QUOTE_RE.search(t)          # 优先拿『』「」框着的那段，最准
+    if m and 1 <= len(m.group(1)) <= 30:
+        return m.group(1).strip()
+    whole = _strip_title_noise(t)
+    if _title_ok(whole):
+        return whole
+    # 整句不行 → 按标点切成一句句重试（一段脏，不该拖累整句话）
+    for piece in re.split(r"[，,。！!？?；;：:\n]+", t):
+        piece = (piece or "").strip()
+        if not piece:
+            continue
+        cand = _strip_title_noise(piece)
+        if _title_ok(cand):
+            return cand
+    return "待办"
+
+
+def _title_ok(t: str) -> bool:
+    """擦完的这串能不能当待办名用（没内容 / 只剩类别词 → 不行）。"""
+    return bool(t) and t not in _EMPTY_TITLES and looks_like_thing(t)
 
 
 def wants_add_todo(text: str) -> bool:
@@ -1750,7 +1787,10 @@ def propose_todo_tool(title: str, when: str = "", date: str = "",
 #   所以捕获组里必须把「-」「：」也当分隔符排掉，否则标题会变成
 #   「健身 - 时间：周四 15:40~17:10 - 范围：本周」——卡片上就是这一长串。
 #   注意"时间"那条**不能**排掉「~」：15:40~17:10 里的波浪号是时段本身的一部分。
-_REPLY_TASK_RE = re.compile(r"(?:任务|事项|标题|安排)\s*[：:]\s*([^\n，,。；;：:｜|\-—]{1,30})")
+_REPLY_TASK_RE = re.compile(
+    # 「名称」是实测漏掉的一个（管家爱写「- 名称：健身 - 时间：周一 07:00~08:00」，
+    # 就因为没有这个词，第一档整条对不上，只好退给散文抠法，标题还带了两个星号）。
+    r"(?:任务|事项|标题|名称|安排)\s*[：:]\s*([^\n，,。；;：:｜|\-—]{1,30})")
 _REPLY_TIME_RE = re.compile(r"(?:时间|时段|几点)\s*[：:]\s*([^\n。；;｜|\-—]{1,40})")
 
 # —— 散文式方案的抠法（它这次没按上面那个格式写）——
@@ -1776,8 +1816,12 @@ _TITLE_AFTER_VERB_RE = re.compile(
 # 原话是「…就会多出「游泳 16:00~17:30」这一条。」，时段后面紧跟的是右引号，
 # 不排掉它，标题就变成 `」这一条`，还一路通过了 `looks_like_thing`（长度够、不含噪声词）。
 _TITLE_AFTER_SPAN_RE = re.compile(
-    r"\d{1,2}:\d{2}\s*(?:到|至|-|~|～)\s*\d{1,2}:\d{2}\s*"
-    r"([^（）()「」『』《》“”\"'，,。；;：:｜|、\s\n]{2,12})")
+    r"\d{1,2}:\d{2}\s*(?:到|至|-|~|～)\s*\d{1,2}:\d{2}[\s*`_]*"
+    # 时段和名字之间可能夹着 Markdown 的粗体/代码符号，两种写法都得吃下：
+    #   「**周一 07:00~08:00 健身**」（星号包整段，时段后面是空格）
+    #   「07:00~08:00 **健身**」  （星号紧贴名字）
+    # 所以前面那截用 `[\s*`_]*` 先啃掉，而名字本身不许再含这些符号。
+    r"([^（）()「」『』《》“”\"'，,。；;：:｜|、*`_\s\n]{2,12})")
 
 # 引号里这些词**不是**任务名（"你回个「确认」"里的「确认」）。
 # 单独列一份，不并进 `_TITLE_NOISE`：那份是拿来判"学生说的这句话算不算一件事"的，
@@ -1812,7 +1856,11 @@ def _clean_prose_title(cand: str, extra_noise: tuple = ()) -> str:
     cand = _CONCRETE_SPAN_RE.sub(" ", cand or "")
     cand = re.sub(r"\d{1,2}\s*[:：]\s*\d{2}", " ", cand)
     for piece in re.split(r"[-—–－：:｜|、,，。;；\s]+", cand):
-        piece = piece.strip().strip("的了的")
+        # Markdown 的排版符号不是名字的一部分。管家爱写
+        # 「- 名称：**健身** - 时间：周一 07:00~08:00」，抠出来就成了 `健身**`，
+        # 卡片上印着「要不要把 **健身\*\*** 排进日程？」——星号跟着名字一起进门了。
+        # 所有散文路（引号 / 把X加到 / 时段后紧跟）都从这儿出，一处擦全线干净。
+        piece = piece.strip().strip("的了的").strip("*`_~ \t")
         if extra_noise and any(w in piece for w in extra_noise):
             continue
         if looks_like_thing(piece):
@@ -1864,6 +1912,16 @@ def _make_todo_card(name: str, day: str, begin: str, finish: str) -> dict:
     }
 
 
+def _clean_reply_name(raw: str) -> str:
+    """固定格式里「任务：xxx」后面那一串洗干净（去引号、去 Markdown 的排版符号）。
+
+    实测管家写「- 名称：**健身**」——照原样取值就带回来两个星号，
+    卡片上印着「要不要把 **健身\\*\\*** 排进日程？」。引号和星号可能交替嵌套
+    （`**「健身」**`），所以放一个集合里一起 strip，让它反复剥。
+    """
+    return (raw or "").strip().strip("\"'“”‘’『』「」*`_~ \t").strip()
+
+
 def parse_todo_from_reply(text: str) -> dict | None:
     """从**管家自己那句话**里把「任务 + 时间」捞出来（人话：它只说了没挂条，系统替它挂）。
 
@@ -1886,7 +1944,7 @@ def parse_todo_from_reply(text: str) -> dict | None:
     m_time = _REPLY_TIME_RE.search(t)
     if m_task and m_time:
         when = m_time.group(1)
-        name = m_task.group(1).strip().strip("\"'“”‘’『』「」") or "待办"
+        name = _clean_reply_name(m_task.group(1)) or "待办"
     else:
         if not claims_proposal_sent(t):
             return None

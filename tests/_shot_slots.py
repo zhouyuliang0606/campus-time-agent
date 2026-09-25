@@ -55,8 +55,8 @@ def main():
             page.evaluate("showView && showView('view-schedule')")
             page.wait_for_timeout(500)
 
-            # ① 只说"哪天" → **先出二选一卡**（本轮规格的第一站）；
-            #    他选「时间我自己定」→ 才摊出那天的几段空档让他挑。
+            # ① 只说"哪天" → **系统直接敲定一段**（第四版规格的第一站，见 ai-logs/22）；
+            #    他说一句「我自己挑」→ 摊出那天的几段空档让他勾（3c-pre4 那条路）。
             ask(page, "那你帮我加一个健身在周四")
             page.wait_for_selector(".cf-inline .cf-frame", state="visible", timeout=20000)
             page.wait_for_timeout(1800)
@@ -64,16 +64,20 @@ def main():
             page.wait_for_timeout(400)
 
             fr = page.frame_locator(".cf-inline .cf-frame").last
-            print("  第一站（二选一卡）：",
+            print("  第一站（直接敲定的单条）：",
                   fr.locator("#cfBody").inner_text().replace("\n", " / ")[:160])
             n_modes = fr.locator(".mode-btn").count()
-            print("  两条路按钮：", n_modes)
-            fr.locator('.mode-btn[data-mode="self"]').click()
+            print("  二选一按钮（应为 0）：", n_modes)
+
+            ask(page, "我自己挑")
+            page.wait_for_selector(".cf-inline .cf-frame >> nth=-1", state="visible",
+                                   timeout=20000)
             page.wait_for_timeout(1800)
             page.locator(".cf-inline").first.scroll_into_view_if_needed()
             page.wait_for_timeout(400)
             shot(page, "17_slots_ask")
-            print("  选了『我自己定』之后：",
+            fr = page.frame_locator(".cf-inline .cf-frame").last
+            print("  说『我自己挑』之后：",
                   fr.locator("#cfBody").inner_text().replace("\n", " / ")[:160])
 
             body = fr.locator("#cfBody").inner_text().replace("\n", " / ")
@@ -123,7 +127,9 @@ def main():
             receipt = [m for m in conv if "已加入日程" in m]
             print("  回执：", receipt[-1][:90] if receipt else "（没有回执）")
 
-            # ④ 只回「确认」但不勾 → 一条都不写，把候选条再挂一遍
+            # ④ 新规格的正常流：说一句新的事 → **直接敲定出单条** → 回「确认」→ 写库
+            #    （旧规格是"只回确认不勾 → 一条不写"；直接敲定之后，
+            #     单条确认条上的「确认」就是点头本身。候选卡的保护在第九批 ⑥ 测。）
             ask(page, "加个游泳")
             page.wait_for_timeout(2200)
             ask(page, "确认")
@@ -132,19 +138,19 @@ def main():
             page.wait_for_timeout(400)
             shot(page, "20_slots_again")
             fr2 = page.frame_locator(".cf-inline .cf-frame").last
-            print("  再挂一遍的内容：",
+            print("  确认之后：",
                   fr2.locator("#cfBody").inner_text().replace("\n", " / ")[:140])
             todos2 = page.evaluate("""async () => {
                 const d = await (await fetch('/api/todos')).json();
                 return (d.todos || []).map(t => t.title);
             }""")
-            guarded = "✅ 没瞎写" if "游泳" not in todos2 else "❌ 没勾也写了"
+            guarded = "✅ 确认一条就写一条" if "游泳" in todos2 else "❌ 确认了没写"
             b.close()
 
             ok = (n_slots >= 2 and has_other >= 1 and len(hit) >= 2
-                  and bool(receipt) and "游泳" not in todos2)
+                  and bool(receipt) and "游泳" in todos2)
             print(f"\n  {listed} / {other_ok} / {both} / {guarded}")
-            print("  " + ("✅ 候选列举 → 打勾 → 其他自填 → 落库即刷新，整条通了"
+            print("  " + ("✅ 直接敲定 → 我自己挑 → 打勾/自填 → 落库即刷新，整条通了"
                           if ok else "❌ 还有一环没通"))
             return 0 if ok else 1
 

@@ -57,7 +57,7 @@ def main():
             page.wait_for_timeout(500)
             shot(page, "13_pick_before")
 
-            # ① 只说"哪天" → **先给二选一卡**（本轮规格的第一站），不反问他几点
+            # ① 只说"哪天" → **系统直接敲定一段**（第四版规格，ai-logs/22），不反问他几点
             ask(page, "那你帮我加一个健身在周四")
             page.wait_for_selector(".cf-inline .cf-frame", state="visible", timeout=20000)
             page.wait_for_timeout(1500)
@@ -65,19 +65,13 @@ def main():
             page.wait_for_timeout(400)
             shot(page, "14_pick_confirm")
 
-            fr = page.frame_locator(".cf-inline .cf-frame")
+            fr = page.frame_locator(".cf-inline .cf-frame").last
             body = fr.locator("#cfBody").inner_text().replace("\n", " / ")
-            print("  第一站（二选一卡）：", body[:160])
-            print("  两条路按钮：", fr.locator(".mode-btn").count())
+            print("  第一站（直接敲定的单条）：", body[:160])
+            print("  二选一按钮（应为 0）：", fr.locator(".mode-btn").count())
             ok_first = "没问" if "几点到几点" not in body else "还在问几点"
 
-            # 他选「时间我自己定」→ 换成候选卡（这一步走的是系统确定性链路）
-            fr.locator('.mode-btn[data-mode="self"]').click()
-            page.wait_for_timeout(1800)
-            print("  选了『我自己定』之后：",
-                  fr.locator("#cfBody").inner_text().replace("\n", " / ")[:120])
-
-            # ② 学生嫌这些点不合适、自己报一个 → 换成他说的
+            # ② 学生嫌这个点不合适、自己报一个 → 换成他说的（这一步走系统确定性链路）
             ask(page, "下午两点到三点")
             page.wait_for_timeout(2500)
             bars = page.locator(".cf-inline").count()
