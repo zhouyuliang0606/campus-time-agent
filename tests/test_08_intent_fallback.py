@@ -19,6 +19,7 @@
 import asyncio
 import json as _json
 import os
+import time
 
 from _harness import Checker, sandbox, make_client, data_path, title
 
@@ -85,16 +86,20 @@ def test_sample_store():
         c.check("太短的话不乱配（「加个」）", it.match_sample("加个") is None)
 
         # —— 自增长：系统办成一句就学一句 ——
+        # ⚠️ 用一条**独一无二**的句子：样本库是运行时累积的（真机上早就学过别的），
+        #    拿"下礼拜得把论文交了"这种常见句子测"条数 +1"，第二次跑就会撞上已存在的
+        #    样本变成 +0（本机实测踩过）。长度断言必须用别人没说过的句子。
+        unseen = "帮我把自行车链条上点油安排一下"[:14] + str(time.time())[-6:]
         before = len(it.load_samples())
-        it.remember("下礼拜得把论文交了", "add_todo", {"title": "交论文"})
+        it.remember(unseen, "add_todo", {"title": "上链条油"})
         after = len(it.load_samples())
         c.check("记住一句之后样本库变长了", after == before + 1, f"{before} → {after}")
-        got = it.match_sample("下礼拜得把论文交")
+        got = it.match_sample(unseen[:-1])
         c.check("学过的那句换个说法还认得出来",
                 bool(got) and got.get("intent") == "add_todo",
                 _json.dumps(got, ensure_ascii=False)[:80] if got else "None")
 
-        it.remember("下礼拜得把论文交了", "add_todo", {"title": "交论文"})
+        it.remember(unseen, "add_todo", {"title": "上链条油"})
         c.check("同一句不重复记（只加命中次数）", len(it.load_samples()) == after)
         # chat 不该被记住：那是"没听懂"，学进去只会污染样本库
         it.remember("今天天气不错", "chat")
@@ -255,6 +260,57 @@ def test_router_sample_fallback():
     return c.summary("第五批（路由兜底）")
 
 
+# ── ⑥ 复核：规则被多义词骗了 → 语义层复核一次，以它为准 ───────────────────
+def test_rule_review():
+    title("6. 规则被多义词骗了 → 语义层复核（不是再补一条规则）")
+    c = Checker()
+    from app.main import _ASKING_RE, _rule_intent
+
+    with sandbox():
+        # 「安排」既是名词（日程安排）又是动词（帮我安排），而 _ADD_INTENT 里就有
+        # "安排" 两个字——子串匹配分不清，于是「我都有啥安排」被判成下单，
+        # 卡片上会写着「我现都有啥」。这是关键词表的天生盲区，补词补不好。
+        c.check("先确认规则确实判错了（否则测的就不是复核）",
+                _rule_intent("我现在都有啥安排") == "add_todo")
+        c.check("这句话带查询词 → 会被标记复核",
+                bool(_ASKING_RE.search("我现在都有啥安排")))
+        c.check("常规下单句不触发复核（不该白白多问一次 API）",
+                not _ASKING_RE.search("帮我安排个健身"))
+
+        client = make_client()
+        _seed_timetable()
+
+        # 语义层说：这是查列表 → 否决规则
+        restore = _patch_llm('{"intent":"list_todo","title":"","confidence":0.95}')
+        try:
+            r = client.post("/api/chat", json={
+                "message": "我现在都有啥安排", "module": "planner",
+                "session_id": "rev1"})
+        finally:
+            restore()
+        d = r.json()
+        c.check("复核后**不出**加待办的卡（不再写「我现都有啥」）",
+                not (d.get("options") or []),
+                _json.dumps(d.get("options"), ensure_ascii=False)[:70])
+        c.check("改成念待办列表（他本来就是想看一眼）",
+                "待办" in (d.get("answer") or ""), (d.get("answer") or "")[:40])
+
+        # 反过来：带查询词、但语义层**同意**是下单 → 不否决，照旧出卡
+        restore = _patch_llm('{"intent":"add_todo","title":"健身","minutes":60,'
+                             '"confidence":0.9}')
+        try:
+            r2 = client.post("/api/chat", json={
+                "message": "看看能不能安排个健身", "module": "planner",
+                "session_id": "rev2"})
+        finally:
+            restore()
+        o2 = r2.json().get("options") or []
+        c.check("语义层跟规则判得一样 → 不否决，照旧出卡",
+                any(x.get("kind") == "todo_slots" for x in o2),
+                [x.get("kind") for x in o2])
+    return c.summary("第六批（规则复核）")
+
+
 if __name__ == "__main__":
     fails = 0
     fails += test_sample_store()
@@ -262,5 +318,6 @@ if __name__ == "__main__":
     fails += test_llm_layer()
     fails += test_end_to_end()
     fails += test_router_sample_fallback()
+    fails += test_rule_review()
     import sys
     sys.exit(1 if fails else 0)

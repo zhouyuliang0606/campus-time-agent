@@ -36,6 +36,12 @@ app/data/student/
 # 落盘只为"服务重启/刷新不丢确认卡"，无需版本管理。
 app/data/pending.json
 
+# 意图样本库：app/agent/intent.py 运行时"每办成一句就学一句"攒下来的，
+# 跟 pending.json 同性质（ephemeral 状态）。种子那 7 条**内置在代码里**
+# （intent.py 的 _SEED_SAMPLES），所以这个文件删了也能从种子重新长起来。
+# 不入库的另一个理由：它会把本机调试时说的话记进去，那是私人语料。
+app/data/intent_samples.json
+
 # 注意：app/data/kb.json 是"入库的种子知识库"，有意保留版本管理，
 # 管理员在后台改条目后会出现 diff —— 这是知识内容本身，值得被记录。
 app/data/workorders.json
