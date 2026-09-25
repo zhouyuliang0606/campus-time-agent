@@ -22,7 +22,13 @@
     33_span_before —— 报障时的样子（只有文字、没有按钮，确认条数量 0）
     34_span_card   —— 回一句「确认」后，确认条挂出来了
     35_span_week   —— 点【确认加入】→ **周表**里周四那一栏多出「08:00-09:00 健身」
-    36_span_month  —— 切到**月表**，10/1 那格也能看到它
+    36_span_month  —— 切到**月表**，10/1 那一格里**直接**就能看到「08:00-09:00 健身」
+
+⚠️ 36 那张盯的是**月表格子里的顺序**（第四轮改的）：格子只放得下 2~3 条，
+以前是"课程在前、待办在后"，课多的那天刚加的待办会被折进「还有 N 项…」，
+学生看到就成了"我加完了、日程里却没有"。现在**待办在前、课程在后**，
+刚加的那条第一眼就在。所以这一版不再需要"点开那一天"才看得见 ——
+但仍然点一下，顺带把下面 `#schDayDetail` 的当天待办也念出来当第二处证据。
 
 ⚠️ 「周四早上吧」和管家那段方案是**种进历史**的（跟学生截图一致），
    学生那一句「确认」是真发出去的。这一步走系统确定性链路（从它的话里捞回方案
@@ -127,24 +133,30 @@ def main():
             # 不然 `[data-date="2026-10-01"]` 这个格子压根不在 DOM 里。
             page.locator("#schNext").click()
             page.wait_for_timeout(1200)
-            # 月表格子窄，每天只列前 2 项、多的折进「还有 N 项…」——
-            # 月表自己的做法是**点某一天**看当天待办（`renderSchDay`），
-            # 所以这里点开 10/1 再截。
             day_cell = page.locator(f'#schMonth .d[data-date="{DAY}"]')
             day_cell.wait_for(state="visible", timeout=15000)
+            # 这一格**里面**直接写了什么 —— 这就是"待办优先"改动的直接证据。
+            cell_text = day_cell.inner_text().replace("\n", " / ")
+            print("  月表 10/1 那一格直接显示的是：", cell_text)
             day_cell.click()
             page.wait_for_timeout(800)
-            # 点完这一天，待办会出现在月历**下面**那块 `#schDayDetail` 里。
-            # 这里必须滚到**它**身上，不能停在格子上 —— 上一步滚的是格子，
-            # 那块说明还在视口外，截出来就只有月历、看不到待办（实测踩过）。
-            page.locator("#schDayDetail").scroll_into_view_if_needed()
-            page.wait_for_timeout(500)
-            shot(page, "36_span_month")
             detail = page.evaluate("""() => {
                 const el = document.getElementById('schDayDetail');
                 return el ? el.innerText.replace(/\\n+/g, ' | ') : '';
             }""")
-            print("  月表里 10/1 那一格的当天待办：", detail[:120])
+            print("  点开那天后，月历下面的当天待办：", detail[:120])
+            # 截图要把**那一格**放在画面中间。
+            # `scroll_into_view_if_needed()` 在这儿不管用 —— 月历 5 行，格子在第一行，
+            # 它一进来就在"可见"范围内（哪怕只露一角），于是不滚，截出来格子在画面外
+            # （上一版就是这么拍到"从 5 号开始"的）。用 scrollIntoView({block:'center'})
+            # 强制居中，才保证这格真的在图上。
+            page.evaluate(
+                f"""() => {{
+                    const el = document.querySelector('#schMonth .d[data-date="{DAY}"]');
+                    if (el) el.scrollIntoView({{block: 'center'}});
+                }}""")
+            page.wait_for_timeout(500)
+            shot(page, "36_span_month")
 
             todos = page.evaluate("""async () => {
                 const d = await (await fetch('/api/todos')).json();
@@ -152,9 +164,11 @@ def main():
             }""")
             print("  日程里的待办：", todos)
             hit = [t for t in todos if t.startswith("健身") and DAY in t]
-            ok = bool(hit) and "健身" in week and "健身" in detail
-            print("  ✅ 卡片出来了、周表看得到、月表那天也查得到" if ok
-                  else "  ❌ 卡片没出来 / 或者周表月表里没显示")
+            # 三处都得对上：① 卡片真的挂出来了 ② 周表有 ③ **月表格子里直接就有**
+            #（③ 是第四轮改的"待办优先"，以前得点开那天才看得到）
+            ok = bool(hit) and "健身" in week and "健身" in cell_text and "健身" in detail
+            print("  ✅ 卡片出来了、周表不翻点击就看得见、月表格子里直接就有" if ok
+                  else "  ❌ 卡片没出来 / 周表月表里没显示（或月表格子里仍看不到待办）")
             b.close()
             return 0 if ok else 1
 

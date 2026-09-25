@@ -1185,10 +1185,18 @@
         const date = new Date(y, m, d);
         const dIso = isoD(date), wd = isoWd(date);
         const list = byDate[dIso] || [], isT = dIso === todayIso;
-        // 与 /plan 月表同规则：像系统日历一样，每天格子直接列出课程+待办（面板格子窄，最多 2 条）
+        // 与 /plan 月表同规则：像系统日历一样，每天格子直接列出**待办 + 课程**
+        // （面板格子窄，最多 2 条）。
+        //
+        // ⚠️ 顺序是**待办在前、课程在后**，别倒过来。学生刚点完【确认加入】，
+        // 第一件事就是回月表看"我刚加的那条在不在"——而格子只放得下 2 条。
+        // 课程是**按星期每周重复**的底噪（哪天有几门课他早就知道，看不见也不影响判断），
+        // 待办是刚刚发生的变化。所以要折的是课程，不是待办。
+        // （实测：9/28 有 3 门课，课程在前的写法会把待办折进「还有 N 项…」，
+        //   学生截图投诉「加完了日程里看不到」就是这么来的；必须点那一天才看得到。）
         const evts = [
-          ...schCourses.filter(c => Number(c.day) === wd).map(c => ({ cls: "course", txt: `${c.start} ${c.course}` })),
           ...list.map(t => ({ cls: t.status === "done" ? "todo done" : "todo", txt: `${t.start} ${t.title}` })),
+          ...schCourses.filter(c => Number(c.day) === wd).map(c => ({ cls: "course", txt: `${c.start} ${c.course}` })),
         ];
         let inner = `<div>${d}${isT ? ' <span class="tdy">今天</span>' : ""}</div>`;
         evts.slice(0, 2).forEach(e => { inner += `<div class="evt ${e.cls}" title="${escQ(e.txt)}">${escapeHtml(e.txt)}</div>`; });

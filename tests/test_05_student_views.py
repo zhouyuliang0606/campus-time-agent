@@ -127,8 +127,35 @@ def test_regression_existing_apis():
 
 
 def test_plan_month_calendar():
-    title("5. /plan 月表系统日历化（每天格子直接列课程+待办）")
+    title("5. /plan 月表系统日历化（每天格子直接列待办+课程）")
     c = Checker()
+
+    def _todo_first(src, scope_key, course_key, label):
+        """格子里的顺序必须是**待办在前、课程在后**。
+
+        判据：在**月表渲染函数体内**，`evts` 数组里"待办那段"要写在"课程那段"前面
+        —— 它是个数组字面量，谁写在前面谁先被渲染。
+
+        ⚠️ 必须先按函数名把范围裁出来再找：周表和月表**用的是同一句
+        `...schCourses.filter(c => Number(c.day) === wd)`**，直接全文件 `find`
+        会撞到周表那一段（第一版就是这么挂的：`待办@52273 课程@49858`）。
+
+        为什么要钉：格子只放得下 2~3 条，被折掉的是**排在后面的**那种。
+        课程是按星期**每周重复**的底噪（那天有几门课学生早清楚，看不见不影响判断），
+        待办是**刚刚发生的变化** —— 他点完【确认加入】就来月表确认"那条在不在"。
+        顺序倒过来的话，课多的那天刚加的待办会被折进「还有 N 项…」，
+        学生看到的就成了"我加完了、日程里却没有"。这个错**出过一次**，不是假想。
+        """
+        start = src.find(scope_key)
+        c.check(f"{label}：找得到渲染函数 {scope_key}", start >= 0)
+        scope = src[start:] if start >= 0 else ""
+        i_todo = scope.find("...list.map(t =>")
+        i_course = scope.find(course_key)
+        c.check(f"{label}：待办排在课程前面（格子放不下时该折的是课程）",
+                0 <= i_todo < i_course, f"待办@{i_todo} 课程@{i_course}")
+        c.check(f"{label}：源码里写明了这是有意的（不是随手排的）",
+                "待办在前、课程在后" in scope)
+
     with sandbox():
         client = make_client()
         r = client.get("/plan")
@@ -139,11 +166,14 @@ def test_plan_month_calendar():
                 "mevt.course" in html and "mevt.todo" in html)
         c.check("今天标注（tdy）", "tdy" in html)
         c.check("超出折叠提示（还有 N 项）", "还有" in html and "项…" in html)
+        _todo_first(html, "function renderMonth()", "...courses.filter(c =>", "/plan 月表")
         # 学生端面板的月表同步升级
         rs = client.get("/student")
         sh = rs.text
         c.check("学生面板月表也有今天标注", "tdy" in sh)
-        c.check("学生面板月表用 evt 小条列课程+待办", 'class="evt ' in sh and "还有" in sh)
+        c.check("学生面板月表用 evt 小条列待办+课程", 'class="evt ' in sh and "还有" in sh)
+        _todo_first(sh, "function renderSchMonth()", "...schCourses.filter(c =>",
+                    "学生面板月表")
     return c.summary("第五批（月表日历化）")
 
 

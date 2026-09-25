@@ -310,11 +310,15 @@
         const list = byDate[dIso] || [];
         const isToday = dIso === todayIso;
         const isSel = dIso === selectedDate;
-        // 像系统日历一样排：每天格子里直接列出 课程（按星期复现）+ 待办（按日期），
-        // 最多显示 3 条，超出的折叠成「还有 N 项」，点格子可在下方看当天全部待办
+        // 像系统日历一样排：每天格子里直接列出**待办（按日期）+ 课程（按星期复现）**，
+        // 最多显示 3 条，超出的折叠成「还有 N 项」，点格子可在下方看当天全部待办。
+        //
+        // ⚠️ 顺序是**待办在前、课程在后**，跟学生端面板月表保持同一套规则，别倒过来。
+        // 学生刚加完待办就来月表确认"那条在不在"，而格子只放得下 3 条；
+        // 课程是按星期每周重复的底噪，折进去不影响他的判断，待办才是他真正要看的东西。
         const evts = [
-          ...courses.filter(c => Number(c.day) === wd).map(c => ({ cls: "course", txt: `${c.start} ${c.course}` })),
           ...list.map(t => ({ cls: t.status === "done" ? "todo done" : "todo", txt: `${t.start} ${t.title}` })),
+          ...courses.filter(c => Number(c.day) === wd).map(c => ({ cls: "course", txt: `${c.start} ${c.course}` })),
         ];
         let inner = `<div class="num">${d}${isToday ? ' <span class="tdy">今天</span>' : ""}</div>`;
         evts.slice(0, 3).forEach(e => { inner += `<div class="mevt ${e.cls}" title="${esc(e.txt)}">${esc(e.txt)}</div>`; });

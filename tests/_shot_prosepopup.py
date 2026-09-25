@@ -20,7 +20,13 @@
     29_prose_before —— 报障时的样子（只有文字、没有按钮，确认条数量 0）
     30_prose_card   —— 回一句「确认」后，确认条挂出来了
     31_prose_week   —— 点【确认加入】→ **周表**里周一那一栏多出「16:00-17:30 游泳」
-    32_prose_month  —— 切到**月表**，9/28 那格也能看到它
+    32_prose_month  —— 切到**月表**，9/28 那一格里**直接**就能看到「16:00 游泳」
+
+⚠️ 32 那张盯的是**月表格子里的顺序**（第四轮改的）：格子只放得下 2 条，
+以前是"课程在前、待办在后"，而 9/28 有 3 门课 → 待办被折进「还有 N 项…」，
+必须点那一天才看得见。学生截图投诉「加完了日程里却没有」就有这一份。
+现在**待办在前、课程在后**，所以这一版不用再点开那天 —— 顺手点一下，
+把下面 `#schDayDetail` 的当天待办也念出来当第二处证据。
 
 ⚠️ 「加」和管家那段方案是**种进历史**的（跟学生截图一致），学生那一句「确认」
    是真发出去的。这一步走系统确定性链路（捞回方案补条），不依赖模型发挥。
@@ -109,27 +115,34 @@ def main():
 
             page.locator("#tabMonth").click()
             page.wait_for_timeout(1200)
-            # 月表格子窄，每天只列前 2 项、多的折进「还有 N 项…」——
-            # 9/28 那天有 3 门课，待办会被折进去。月表自己的做法是**点某一天**
-            # 看当天待办（`renderSchDay`），所以这里点开 9/28 再截。
             day_cell = page.locator('#schMonth .d[data-date="2026-09-28"]')
+            day_cell.wait_for(state="visible", timeout=15000)
+            # 这一格**里面**直接写了什么 —— "待办优先"改动的直接证据。
+            cell_text = day_cell.inner_text().replace("\n", " / ")
+            print("  月表 9/28 那一格直接显示的是：", cell_text)
             day_cell.click()
             page.wait_for_timeout(800)
-            day_cell.scroll_into_view_if_needed()
+            detail = page.evaluate("""() => {
+                const el = document.getElementById('schDayDetail');
+                return el ? el.innerText.replace(/\\n+/g, ' | ') : '';
+            }""")
+            print("  点开那天后，月历下面的当天待办：", detail[:120])
+            # 截图要把**那一格**放在画面中间。
+            # `scroll_into_view_if_needed()` 在这儿不管用：月历 5 行、格子在第一行，
+            # 它一进来就在"可见"范围内（哪怕只露一角），于是不滚。
+            page.evaluate("""() => {
+                const el = document.querySelector('#schMonth .d[data-date="2026-09-28"]');
+                if (el) el.scrollIntoView({block: 'center'});
+            }""")
             page.wait_for_timeout(500)
             shot(page, "32_prose_month")
             month = page.evaluate("""() => {
                 const el = document.querySelector('#schMonth, #monthGrid');
                 return el ? el.innerText.replace(/\\n+/g, ' | ') : '';
             }""")
-            detail = page.evaluate("""() => {
-                const el = document.getElementById('schDayDetail');
-                return el ? el.innerText.replace(/\\n+/g, ' | ') : '';
-            }""")
-            print("  月表里 9/28 那一格的当天待办：", detail[:120])
-            print("  月表当年那格显示的是（前 2 项 + 折叠）：",
+            print("  月表当年那格显示的是（待办在前）：",
                   month[month.find("28"):month.find("28") + 60] if "28" in month else "(没找到)")
-            month_ok = "游泳" in detail
+            month_ok = "游泳" in cell_text and "游泳" in detail
 
             todos = page.evaluate("""async () => {
                 const d = await (await fetch('/api/todos')).json();
@@ -138,7 +151,7 @@ def main():
             print("  日程里的待办：", todos)
             hit = [t for t in todos if t.startswith("游泳")]
             ok = bool(hit) and "游泳" in week and month_ok
-            print("  ✅ 卡片出来了、周表看得到、月表当天也查得到" if ok
+            print("  ✅ 卡片出来了、周表看得到、月表格子里直接就有" if ok
                   else "  ❌ 卡片没出来 / 或者周表月表里没显示")
             b.close()
             return 0 if ok else 1
