@@ -486,6 +486,12 @@ def test_add_todo_chinese_clock():
         # 连"哪天"都没说 → **也不反问哪天**，系统从近几天里直接敲定一段
         #（「核心是 ai 帮我安排时间，ai 去规划时间，然后这个加入代办」；
         #  第六轮改版后连"怎么定"那一问都省了——第一轮就是规划好的单条）。
+        # ⚠️ 这条断言早先写成"库里没有游泳@敲定的那天"——**看钟点吃饭**：
+        #    步骤 ② 确认写入的游泳就在"明天"，白天跑的时候规划多半落今天、没事；
+        #    一过晚上（今天排不下 90 分钟了），规划落到明天 → 和步骤 ② 撞同一天，
+        #    断言必挂（夜里实测复现，旧代码同样挂——是测试的锅，不是分支的）。
+        #    改成**前后快照对比**：这一轮除了多一张卡，库里一个字节都不该动。
+        before_plan = [(t["title"], t["date"], t["start"]) for t in list_todos()]
         sid2b = "oral-todo-2b"
         r3b = client.post("/api/chat", json={
             "message": "帮我安排游泳", "module": "schedule", "session_id": sid2b,
@@ -515,9 +521,11 @@ def test_add_todo_chinese_clock():
         c.check("回答里也把理由说了一遍",
                 "空" in (d3b.get("answer") or ""),
                 (d3b.get("answer") or "")[:90])
-        c.check("规划完也还没写库", not any(
-            t["title"] == "游泳" and t["date"] == (o3b[0].get("date") if o3b else "")
-            for t in list_todos()))
+        c.check("规划完也还没写库（库里前后一个字节没动）",
+                [(t["title"], t["date"], t["start"]) for t in list_todos()]
+                == before_plan,
+                [(t["title"], t["date"], t["start"]) for t in list_todos()
+                 if (t["title"], t["date"], t["start"]) not in before_plan])
 
         # —— ④ 确认落空兜底：上一轮已经掉给模型撒过谎，学生照样回「确认」——
         #     把学生截图里的那段真实历史摆出来：学生原话 + 模型那句「搞定！已经正式写进」，
@@ -2650,6 +2658,165 @@ def test_context_inherit_and_half_sentence():
     return c.summary("第十五批（事名继承 / 半句话不许冒充事件名）")
 
 
+def test_missing_todo_check():
+    """第十六批：「看不见 X」的报障——系统先核实，不许拿管理端/推送打发。
+
+    报障是一张截图：学生说「我现在没有看见日程显示周二游泳代办项目啊」，
+    这句话哪个确定性分支都不认，整句掉给模型，它回了一大段：
+
+        「我这边没法直接往你日程里写数据……刚才那条提案推过去没弹出确认条，
+          说明系统那一步没走通……你二选一：1. 再刷新一次……
+          2. 基本可以确定是系统推送出了问题……得让管理端那边看一下……
+          我帮你把这个问题反馈给管理端处理。」
+
+    三条红线全踩（对照学生规则总览）：
+      ① 学生日程操作默认自主 → **不提管理端**，它却要"反馈给管理端"；
+      ② 「不反复确认、直接给方案」→ 它让学生"二选一：刷新 / 上报"；
+      ③ 话术只承诺能兑现的事 → "我帮你反馈给管理端"根本没有分支接得住。
+    而系统明明能**真查库**：在就告诉他在哪儿，不在就把确认条补挂出来。
+
+    修法（`missing_thing_of` + main.py 3c-ter）：识别"看不见"类的话 → 真查库 →
+    ① 待办在 → 如实说哪天几点；② 是课 → 指到周表；
+    ③ 没写入但最近说过要加 → 补挂确认条（诚实地说"还没写进去"）；
+    ④ 真没有 → 如实说，要加说一声。全程不诊断推送、不提管理端。
+    """
+    title("16. 「看不见 X」→ 系统先核实，不甩锅不二选一")
+    c = Checker()
+    from app.modules.planner import missing_thing_of
+    from app.store import append_conversation, list_todos
+
+    # —— ① 抠名与扣日期：报障原话那一档 ——
+    m1 = missing_thing_of("我现在没有看见日程显示周二游泳代办项目啊")
+    c.check("报障原话抠得出事名和星期（游泳 / 周二）",
+            bool(m1) and m1.get("title") == "游泳"
+            and bool(m1.get("date")),
+            m1)
+    c.check("「怎么没有周二的游泳」也认得出",
+            (missing_thing_of("怎么没有周二的游泳") or {}).get("title") == "游泳",
+            missing_thing_of("怎么没有周二的游泳"))
+    c.check("「有氧运动」的『有』是名字的一半，不许削掉",
+            (missing_thing_of("为什么我的有氧运动没显示") or {}).get("title")
+            == "有氧运动",
+            missing_thing_of("为什么我的有氧运动没显示"))
+    c.check("正常加待办的话不许被当成报障",
+            missing_thing_of("帮我加个游泳") is None
+            and missing_thing_of("我想去游泳，帮我安排时间") is None,
+            missing_thing_of("帮我加个游泳"))
+    c.check("跟报障无关的话不接",
+            missing_thing_of("今天天气怎么样") is None)
+
+    # —— ② 走接口：四种查法，一步都不交给模型 ——
+    with sandbox():
+        client = make_client()
+        seed_timetable()
+        import app.main as _m
+        _real = _m.AgentEngine
+
+        class _SentinelEngine:
+            """假引擎：回答里出现哨兵 = 请求掉给了模型（确定性分支整条没接住）。"""
+
+            calls = 0
+
+            def __init__(self, *a, **kw):
+                pass
+
+            async def run(self, message, history=None):
+                type(self).calls += 1
+                txt = "【模型被调用了】基本可以确定是系统推送出了问题。"
+                return {"answer": txt,
+                        "trace": [{"step": 1, "phase": "💡 最终回答", "answer": txt}],
+                        "options": []}
+
+        _m.AgentEngine = _SentinelEngine
+        bad_words = ("管理端", "推送", "二选一", "再刷新一次")
+
+        try:
+            # A：说过要加、没确认 → 补挂确认条（诚实地承认"还没写进去"）
+            sa = "miss-a"
+            client.post("/api/chat", json={"message": "我想去游泳，帮我安排时间",
+                                           "module": "planner", "session_id": sa})
+            _SentinelEngine.calls = 0
+            r = client.post("/api/chat", json={
+                "message": "我现在没有看见日程显示周二游泳代办项目啊",
+                "module": "planner", "session_id": sa})
+            d = r.json()
+            first = (d.get("options") or [{}])[0]
+            ans = d.get("answer") or ""
+            c.check("说过要加、没写入 → 报障换来的是确认条（不是解释）",
+                    first.get("kind") == "todo_add" and first.get("title") == "游泳",
+                    f"{first.get('kind')} / {first.get('title')} / {ans[:50]}")
+            c.check("话术诚实：明说「还没写进去」，并补挂了确认条",
+                    "还没写进去" in ans, ans[:60])
+            c.check("不甩锅：整段话里没有管理端/推送/二选一/再刷新一次",
+                    not any(w in ans for w in bad_words), ans[:60])
+            c.check("一步都没交给模型（系统自己核实）",
+                    _SentinelEngine.calls == 0, f"调了 {_SentinelEngine.calls} 次")
+            c.check("补条也没写库（学生还没点头）",
+                    not any(t.get("title") == "游泳" for t in list_todos()),
+                    [t.get("title") for t in list_todos()])
+
+            # B：真写进去了 → 如实告诉他在哪儿
+            sb = "miss-b"
+            client.post("/api/chat", json={"message": "帮我安排一下健身",
+                                           "module": "planner", "session_id": sb})
+            client.post("/api/chat", json={"message": "确认",
+                                           "module": "planner", "session_id": sb})
+            wrote = [t for t in list_todos() if t.get("title") == "健身"]
+            day = wrote[0]["date"] if wrote else ""
+            r = client.post("/api/chat", json={
+                "message": f"我现在没有看见日程显示{day}健身待办项目啊",
+                "module": "planner", "session_id": sb})
+            d = r.json()
+            ans = d.get("answer") or ""
+            c.check("真写进去了 → 如实说「在的」+ 具体哪天几点",
+                    "在的" in ans and day in ans and "健身" in ans, ans[:70])
+            c.check("这一档不出卡、也不重复写一条",
+                    not (d.get("options") or [])
+                    and len([t for t in list_todos()
+                             if t.get("title") == "健身"]) == 1,
+                    [(t.get("title"), t.get("date")) for t in list_todos()])
+            c.check("不甩锅：没有管理端/推送那套话",
+                    not any(w in ans for w in bad_words), ans[:60])
+
+            # B2：说的那天没排、别处有一条同名的 → 也要讲清（他可能记错天了）
+            from app.store import add_todo
+            add_todo("游泳", day, "07:00", "08:00")
+            sc = "miss-c"
+            r = client.post("/api/chat", json={
+                "message": "我现在没有看见日程显示周二游泳代办项目啊",
+                "module": "planner", "session_id": sc})
+            ans = (r.json().get("answer") or "")
+            c.check("说的那天没排、别处有一条 → 指给他看（不许只说没有）",
+                    "没排" in ans and day in ans and "游泳" in ans, ans[:80])
+
+            # C：日程里真没有、最近也没说过 → 如实说，不编
+            # （换个名字：前面 B2 往库里写过「游泳」，那一条是**真的在**，
+            #   用它测"真没有"会撞上"别处有一条"的分支——行为对，场景不对。）
+            sd = "miss-d"
+            r = client.post("/api/chat", json={
+                "message": "我现在没有看见日程显示周三爬山代办项目啊",
+                "module": "planner", "session_id": sd})
+            d = r.json()
+            ans = d.get("answer") or ""
+            c.check("真没有 → 如实说「确实还没有」（绝不编一条说有）",
+                    "还没有" in ans and "爬山" in ans
+                    and not (d.get("options") or []), ans[:60])
+            c.check("这条也没甩锅",
+                    not any(w in ans for w in bad_words), ans[:60])
+
+            # D：找的其实是课 → 指到周表
+            se = "miss-e"
+            r = client.post("/api/chat", json={"message": "怎么没有周一的高数",
+                                               "module": "planner", "session_id": se})
+            ans = (r.json().get("answer") or "")
+            c.check("找的是课 → 指到周表（高等数学 / 周一）",
+                    "课" in ans and "高等数学" in ans and "周一" in ans, ans[:70])
+        finally:
+            _m.AgentEngine = _real
+
+    return c.summary("第十六批（看不见 X → 系统核实，不甩锅不二选一）")
+
+
 def main():
     global code
     print("\n" + "=" * 60)
@@ -2670,6 +2837,7 @@ def main():
     code |= test_span_first_title_and_claim_words()
     code |= test_name_field_and_comma_sentence()
     code |= test_context_inherit_and_half_sentence()
+    code |= test_missing_todo_check()
     return code
 
 

@@ -42,8 +42,29 @@ def say(page, text):
     box = page.locator("#text").first
     box.click()
     box.fill(text)
+    before = msg_count(page)
     box.press("Enter")
-    page.wait_for_timeout(6000)
+    # 2026-09-25：原来是死等 6 秒。并发跑两个脚本（一个浏览器 + 一个服务）
+    # 时机器忙，6 秒不够管家回话，这里量到的条数是"用户那条还没回"，
+    # 后面断言"条数没变"就莫名其妙地红。改成等条数涨上来再稳定一拍。
+    try:
+        page.wait_for_function(
+            f"() => document.querySelectorAll('#log .msg').length >= {before + 2}",
+            timeout=20000)
+    except Exception:
+        pass
+    _settle(page)
+
+
+def _settle(page, ms=900):
+    """等消息条数稳住一拍（新气泡渲染完、缩略动画不干扰计数）。"""
+    last = -1
+    for _ in range(12):
+        cur = msg_count(page)
+        if cur == last:
+            return cur
+        last = cur
+        page.wait_for_timeout(ms)
 
 
 def open_reset(page):

@@ -63,6 +63,9 @@ from app.modules.planner import (
     plan_todo_slot,
     mode_to_card,
     claims_proposal_sent,
+    missing_thing_of,
+    _name_match as _planner_name_match,
+    DAY_NAMES,
     has_concrete_span,
     render_todo_remove_list,
     rescue_proposal_from_reply,
@@ -272,6 +275,23 @@ def _pending_todo_remove(session_id: str) -> dict | None:
 
 
 _WRITTEN_RECEIPTS = ("已加入日程", "已按你的确认", "已删除待办")
+
+
+def _cn_day(date_str: str) -> str:
+    """'2026-09-29' → '周二'（人话：回话里要说学生听得懂的那一天）。"""
+    try:
+        return "周" + "一二三四五六日"[
+            datetime.date.fromisoformat(date_str).isoweekday() - 1]
+    except Exception:
+        return ""
+
+
+def _iso_wd(date_str: str):
+    """'2026-09-29' → 2（周表 course.day 用的就是 1=周一…7=周日）。"""
+    try:
+        return datetime.date.fromisoformat(date_str).isoweekday()
+    except Exception:
+        return None
 
 
 def _already_written_recently(session_id: str) -> bool:
@@ -1236,6 +1256,149 @@ async def chat(req: Request):
                 session_id, slots, message,
                 _slots_answer(slots, lead="🙋 好，那时间你自己挑——"),
                 "🙋 他要自己挑 → 摊出候选时段（让打勾）")
+
+    # 3c-ter) **「看不见 X」的报障**——学生不是要加新事，是**问在不在**。
+    #     实测那一幕（截图）：学生说「我现在没有看见日程显示周二游泳代办项目啊」，
+    #     这句话哪个确定性分支都不认，整句掉给模型，它就开始**编原因**：
+    #     「基本可以确定是系统推送出了问题……得让管理端那边看一下」，
+    #     还让学生"再刷新一次，二选一"——系统明明能真查库，学生日程操作
+    #     又默认自主（场景边界：不提管理端、不说权限不足），这一段全是反面教材。
+    #     规矩：系统先**核实**，真查库，然后按查到什么说什么：
+    #       ① 待办里有 → 如实告诉他哪天几点（他说的那天没有、别处有时也要讲清）；
+    #       ② 课表里有（他找的是课，不是待办）→ 指给他看；
+    #       ③ 都没有、但最近说过要加 → 那条**还没写进日程**，确认条补挂出来；
+    #       ④ 都没有、最近也没说过 → 如实说"还没有"，要加说一声。
+    #     全程不诊断"推送出了问题"、不提管理端、不让学生"二选一"。
+    missing = missing_thing_of(message)
+    if missing is not None:
+        title, day = missing["title"], missing["date"]
+        # 他没点名，就拿"最近要加的那件事"当默认答案——十有八九问的就是它
+        if not title:
+            req0 = _recent_add_request(session_id)
+            rt0 = todo_title_of(req0) if req0 else "待办"
+            title = rt0 if rt0 != "待办" else ""
+
+        if title:
+            todos = [t for t in list_todos()
+                     if _planner_name_match(title, t.get("title") or "")]
+            here = [t for t in todos if not day or t.get("date") == day]
+            # 他说的那天没排、可别处有一条同名的 → 也要讲清（人话：他可能记错天了）
+            if not here and todos and day:
+                ot = todos[0]
+                append_conversation(session_id, "user", message)
+                append_conversation(
+                    session_id, "assistant",
+                    f"已核实：你说的那天没排，别处有一条——{ot.get('summary') or ''}")
+                return {
+                    "module": "planner",
+                    "session_id": session_id,
+                    "answer": (
+                        f"👀 你说的{_cn_day(day)}没排这一条，倒是 **{ot.get('date')}"
+                        f"（{ot.get('weekday') or _cn_day(ot.get('date') or '')}）** "
+                        f"有一条：**{ot.get('title')}** "
+                        f"{ot.get('start')}-{ot.get('end')}。\n"
+                        "想在那天也排一条，说一句「帮我周二加个游泳」这样的，"
+                        "我按新的重排一张。"
+                    ),
+                    "trace": [{"step": 1, "phase": "👀 查日程（系统核实）",
+                               "answer": f"那天没排；{ot.get('summary') or ''} 有一条"}],
+                    "options": [],
+                    "awaiting_choice": False,
+                }
+            if here:
+                td = here[0]
+                wd_name = td.get("weekday") or _cn_day(td.get("date") or "")
+                elsewhere = ""
+                if day and len(todos) > len(here):
+                    ot = todos[len(here)]
+                    elsewhere = (f"\n（你说的那天没排，倒是 **{ot.get('date')}"
+                                 f"（{ot.get('weekday') or _cn_day(ot.get('date') or '')}"
+                                 f"）** 有一条同名的。）")
+                append_conversation(session_id, "user", message)
+                append_conversation(
+                    session_id, "assistant",
+                    f"已核实：待办在日程里——{td.get('summary') or ''}")
+                return {
+                    "module": "planner",
+                    "session_id": session_id,
+                    "answer": (
+                        f"👀 在的，日程里排着呢：**{td.get('title')}**｜"
+                        f"{td.get('date')}（{wd_name}）"
+                        f"{td.get('start')}-{td.get('end')}。{elsewhere}\n"
+                        "面板没刷出来的话，切一下周表/月表那一格就能看到。"
+                    ),
+                    "trace": [{"step": 1, "phase": "👀 查日程（系统核实）",
+                               "answer": f"待办在：{td.get('summary') or ''}"}],
+                    "options": [],
+                    "awaiting_choice": False,
+                }
+            # 不是待办，找的会不会是**课**？（「怎么没有周一的高数」）
+            wd = _iso_wd(day) if day else None
+            courses = [c for c in ((get_timetable_data() or {}).get("courses") or [])
+                       if _planner_name_match(title, c.get("course") or "")]
+            here_c = [c for c in courses if not day or c.get("day") == wd]
+            if here_c:
+                c0 = here_c[0]
+                append_conversation(session_id, "user", message)
+                append_conversation(
+                    session_id, "assistant",
+                    f"已核实：那是课表里的课——{DAY_NAMES.get(c0.get('day'), '')} "
+                    f"{c0.get('start')}-{c0.get('end')} {c0.get('course')}")
+                return {
+                    "module": "planner",
+                    "session_id": session_id,
+                    "answer": (
+                        f"👀 那是**课**，在周表里：{DAY_NAMES.get(c0.get('day'), '')}"
+                        f"{c0.get('start')}-{c0.get('end')} "
+                        f"{c0.get('course')}@{c0.get('location') or ''}。\n"
+                        "周表那一栏直接能看到；要往某天加一条相关的待办，说一声就行。"
+                    ),
+                    "trace": [{"step": 1, "phase": "👀 查课表（系统核实）",
+                               "answer": f"课在：{DAY_NAMES.get(c0.get('day'), '')} "
+                                         f"{c0.get('start')}-{c0.get('end')}"}],
+                    "options": [],
+                    "awaiting_choice": False,
+                }
+
+        # 日程里真没有 → 是不是那条提案压根没确认成？最近说过要加的话，补条出来
+        req = _recent_add_request(session_id)
+        if not req and asking_add and prev_user:
+            req = prev_user
+        prop = None
+        if req:
+            prop = parse_add_todo(req)
+            if prop is None:
+                mc = todo_mode_proposal(req)
+                prop = mode_to_card(mc, "ai") if mc else None
+        if prop is not None:
+            day_note = f"（你说的{_cn_day(day)}）" if day else ""
+            return _offer_response(
+                session_id, prop, message,
+                (f"👀 查了日程{day_note}，**这一条还没写进去**——"
+                 "刚才那次没确认成。确认条给你补上了：\n\n"
+                 f"要不要把 **{prop['title']}** 排进日程？"
+                 f"{prop['date']}（{prop['weekday']}）"
+                 f"{prop['start']}-{prop['end']}。\n"
+                 "点【确认加入】就写进去，回一句「确认」也一样。"),
+                "👀 他说看不见 → 核实确实没写入 → 补挂确认条")
+
+        append_conversation(session_id, "user", message)
+        append_conversation(
+            session_id, "assistant",
+            f"已核实：日程里没有这一条（{title or '没点名'}）")
+        return {
+            "module": "planner",
+            "session_id": session_id,
+            "answer": (
+                f"👀 查了日程，**确实还没有**"
+                f"「{title or '这条'}」{f'（{_cn_day(day)}）' if day else ''}。\n"
+                "要加的话说一句「帮我加个什么什么」，我马上排好给你确认。"
+            ),
+            "trace": [{"step": 1, "phase": "👀 查日程（系统核实）",
+                       "answer": "没有这一条，如实说"}],
+            "options": [],
+            "awaiting_choice": False,
+        }
 
     if wants_add_todo(message) or (asking_add and is_add_todo_answer(message)):
         # 追问后的补充回答（学生先说"帮我安排周二的游泳"，再补"下午两点到三点"）：
