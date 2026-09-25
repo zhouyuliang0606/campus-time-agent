@@ -1711,6 +1711,214 @@ def test_todo_mode_and_ai_plan():
     return c.summary("第十批（先问时间怎么定 / AI 规划 / 识别真的事情）")
 
 
+def test_rescue_when_model_forgot_tool():
+    """第十一批：模型没调工具、只在文字里念方案 → 系统替它补条（人话：别再"嘴上说发了"）。
+
+    报障原话就一句：「**没有收到弹窗**」（附一张截图）。
+
+    截图里管家那段文字前后是矛盾的：前半句"提案我这边还没生成出来…你现在点
+    【确认】是空确认"，后半句"**待办提案** - 事项：游泳 - 时间：周二 16:00~17:30
+    …提案已发出，请点确认条上的【确认】"——界面上一个按钮都没有。
+
+    根因不是"捞不出来"（那段原文 `parse_todo_from_reply` 捞得**分毫不差**），
+    而是**那一步压根没被调用**：它以前只挂在"学生回确认"那一支（3a-c）里，
+    而学生说的是"没有收到弹窗"，`is_confirmation` 为假 → 整条兜底被跳过 →
+    请求掉给模型 → 模型又没调工具 → 界面上什么都没有。
+
+    这一批钉两件事：
+      ① 补条兜底从"只在回确认时"扩到"模型这一路也算"；
+      ② 顺手修掉 propose_todo_tool 把 end 丢掉的老 bug（学生要 90 分钟、
+         卡片上只有 60，模型还照着卡片解释了一句"系统默认按 1 小时出的条"）。
+    """
+    title("11. 模型没调工具时的补条兜底 / propose_todo_tool 的 end")
+    c = Checker()
+    from app.modules.planner import (_pick_span, claims_proposal_sent,
+                                     propose_todo_tool, rescue_proposal_from_reply,
+                                     parse_todo_from_reply)
+    from app.modules import schedule as sched
+    from app.store import append_conversation, get_conversation, list_todos
+
+    # 截图里管家那段原文，逐字抄下来当输入。
+    shot_text = (
+        "我理解你想赶紧定下来，但得跟你说实话：**提案我这边还没生成出来**，"
+        "你现在点【确认】是空确认，不会入库。\n\n"
+        "咱们把节奏捋一下：\n\n"
+        "1. 我发提案 → 2. 你看到确认条 → 3. 你点【确认】→ 4. 系统入库\n\n"
+        "现在卡在第 1 步。我这就把提案发出来，你等我这条消息之后，再点确认条。\n\n"
+        "**待办提案**\n- 事项：游泳\n- 时间：周二 16:00~17:30\n\n"
+        "提案已发出，请点确认条上的【确认】。"
+    )
+
+    # —— ① propose_todo_tool 必须尊重 end ——
+    #     坑：`_pick_span("17:30")` 返回的是 ("17:30", None) —— 单个钟点算**起点**。
+    c.check("单个钟点在 _pick_span 里算起点（这是下面那个 bug 的根）",
+            _pick_span("17:30") == ("17:30", None), _pick_span("17:30"))
+    got = _json.loads(propose_todo_tool("游泳", date="周二",
+                                        start="16:00", end="17:30"))
+    prop = got.get("__proposal__") or {}
+    c.check("分着给 date+start+end 时，end 不许被丢掉（原来会变成 16:00-17:00）",
+            prop.get("start") == "16:00" and prop.get("end") == "17:30",
+            prop.get("summary", ""))
+    c.check("时长按学生说的算：90 分钟，不是默认的 60",
+            prop.get("minutes") == 90, str(prop.get("minutes")))
+    c.check("「周二」也算对了（不是今天，也不是空）",
+            bool(prop.get("date")) and prop.get("weekday") == "周二",
+            f"{prop.get('date')} {prop.get('weekday')}")
+    got2 = _json.loads(propose_todo_tool("游泳", when="周一 16:30~18:00"))
+    c.check("回归：when 里带波浪号的时段照旧解析得对",
+            (got2.get("__proposal__") or {}).get("start") == "16:30"
+            and (got2.get("__proposal__") or {}).get("end") == "18:00",
+            (got2.get("__proposal__") or {}).get("summary", ""))
+    got3 = _json.loads(propose_todo_tool("游泳", date="2026-09-28",
+                                         start="19:00", end="20:30"))
+    c.check("回归：日期给全 + 分着给起止，也照旧对",
+            (got3.get("__proposal__") or {}).get("end") == "20:30",
+            (got3.get("__proposal__") or {}).get("summary", ""))
+    # 「默认 1 小时」只能留给"真没给结束时间"的那一档，不能被 bug 顺手用掉。
+    got4 = _json.loads(propose_todo_tool("游泳", date="2026-09-28",
+                                         start="19:00"))
+    c.check("真没给结束时间时才补默认 1 小时（19:00-20:00）",
+            (got4.get("__proposal__") or {}).get("end") == "20:00",
+            (got4.get("__proposal__") or {}).get("summary", ""))
+
+    # —— ② 「自称发了提案」这一关 ——
+    c.check("认得出『提案已发出』", claims_proposal_sent("提案已发出，请点确认条上的【确认】。"))
+    c.check("认得出『确认条已经挂出来了』", claims_proposal_sent("确认条已经挂出来了，点一下就好。"))
+    c.check("认得出『点一下【确认】就入库了』", claims_proposal_sent("点一下【确认】就入库了！"))
+    c.check("认得出『我这就把提案发出来』", claims_proposal_sent("我这就把提案发出来。"))
+    c.check("闲聊里不认（不出手补条）",
+            not claims_proposal_sent("今天天气不错，要不要去操场跑两圈？"))
+    c.check("正经回答问题不认",
+            not claims_proposal_sent("高等数学在教三-201，周一 08:00 上课。"))
+
+    # —— ③ 补条这一关：能捞就用它的数字，捞不出才退"第一站" ——
+    c.check("截图那段原文本身是捞得出来的（所以问题不在「捞」，在「没被调用」）",
+            (parse_todo_from_reply(shot_text) or {}).get("start") == "16:00"
+            and (parse_todo_from_reply(shot_text) or {}).get("end") == "17:30",
+            _json.dumps(parse_todo_from_reply(shot_text), ensure_ascii=False))
+    r1 = rescue_proposal_from_reply(shot_text)
+    c.check("补出来的就是那张 todo_add，数字用它的（16:00-17:30）",
+            bool(r1) and r1.get("kind") == "todo_add" and r1.get("start") == "16:00"
+            and r1.get("end") == "17:30",
+            _json.dumps(r1, ensure_ascii=False)[:120] if r1 else "None")
+    c.check("标题没被抠残（是「游泳」，不是那半句话）",
+            bool(r1) and r1.get("title") == "游泳", (r1 or {}).get("title"))
+    c.check("从它文字里捞出来的不带 auto（那不是系统替学生挑的时间）",
+            bool(r1) and not r1.get("auto"))
+    # 它只说"发了"、正文里没有可捞的格式 → 回到第一站：先问时间怎么定。
+    r2 = rescue_proposal_from_reply("提案已发出，请点确认条上的【确认】。",
+                                    add_req="周四加个健身")
+    c.check("只自称发了、正文捞不出方案时，退到第一站出二选一卡",
+            bool(r2) and r2.get("kind") == "todo_mode",
+            _json.dumps(r2, ensure_ascii=False)[:110] if r2 else "None")
+    c.check("这张二选一卡上不出现任何时间（第一站只问「归谁定」）",
+            bool(r2) and not r2.get("start") and not r2.get("end"))
+    c.check("连学生要加什么都没说过 → 什么都不补（不硬凑）",
+            rescue_proposal_from_reply("提案已发出，请点确认条上的【确认】。",
+                                       add_req="") is None)
+    c.check("它没自称发提案 → 不补（闲聊里别硬挂一张卡）",
+            rescue_proposal_from_reply("今天天气不错，要不要去操场跑两圈？",
+                                       add_req="周四加个健身") is None)
+
+    # —— ④ 走接口：截图那一幕必须出卡 ——
+    class _FakeEngine:
+        """假引擎（人话：照着剧本回一句，专门模拟"模型没调工具"）。"""
+
+        def __init__(self, *a, **kw):
+            pass
+
+        async def run(self, message, history=None):
+            return {"answer": shot_text,
+                    "trace": [{"step": 1, "phase": "💡 最终回答", "answer": shot_text}],
+                    "options": []}
+
+    with sandbox():
+        seed_timetable()
+        import app.main as _m
+        _real_engine = _m.AgentEngine
+        _m.AgentEngine = _FakeEngine
+        try:
+            client = make_client()
+            sid = "rescue-popup"
+            append_conversation(sid, "user", "周二下午四点到五点半游泳")
+            append_conversation(sid, "assistant", "好的，我看看周二下午有没有空。")
+
+            r = client.post("/api/chat", json={"message": "没有收到弹窗",
+                                               "module": "schedule",
+                                               "session_id": sid})
+            d = r.json()
+            opts = d.get("options") or []
+            c.check("学生说「没有收到弹窗」→ 终于有卡了（这就是报障那一幕）",
+                    any(o.get("kind") == "todo_add" for o in opts),
+                    _json.dumps(opts, ensure_ascii=False)[:120])
+            card = next((o for o in opts if o.get("kind") == "todo_add"), {})
+            c.check("卡上是学生要的 16:00-17:30（不是被砍成 60 分钟的 16:00-17:00）",
+                    card.get("start") == "16:00" and card.get("end") == "17:30",
+                    card.get("summary", ""))
+            c.check("awaiting_choice 置上了（前端据此知道有东西要确认）",
+                    d.get("awaiting_choice") is True)
+            c.check("回答里说明了「卡片没跟上、我补一张」，不让学生去猜",
+                    "可卡片没跟上" in (d.get("answer") or "")
+                    and "点【确认加入】" in (d.get("answer") or ""),
+                    (d.get("answer") or "")[:70])
+            c.check("模型那段自相矛盾的话不再原样端给学生",
+                    "空确认，不会入库" not in (d.get("answer") or ""))
+            c.check("轨迹里留了痕迹（排查时看得出是系统补的条）",
+                    any("补出确认条" in (t.get("phase") or "")
+                        for t in (d.get("trace") or [])),
+                    [t.get("phase") for t in (d.get("trace") or [])])
+            hist = get_conversation(sid)
+            c.check("写进历史的是**学生看到的那一句**（刷新后不回到模型那段）",
+                    bool(hist) and "可卡片没跟上" in (hist[-1].get("content") or ""),
+                    (hist[-1].get("content") or "")[:60])
+
+            # 闭环：补出来的条得真能用——学生回一句「确认」就落库。
+            r2 = client.post("/api/chat", json={"message": "确认",
+                                                "module": "schedule",
+                                                "session_id": sid})
+            c.check("补出来的条回一句「确认」就真写进日程了",
+                    any(t["title"] == "游泳" and t["start"] == "16:00"
+                        and t["end"] == "17:30" for t in list_todos("2026-09-29")),
+                    [f"{t['title']}@{t['date']} {t['start']}-{t['end']}"
+                     for t in list_todos("2026-09-29")])
+            c.check("回答里报了回执（不是「我没办法」）",
+                    "已加入日程" in (r2.json().get("answer") or ""),
+                    (r2.json().get("answer") or "")[:60])
+
+            # 不误伤：模型正常答一句、且没自称发过提案 → 一张卡都不许补。
+            class _QuietEngine:
+                def __init__(self, *a, **kw):
+                    pass
+
+                async def run(self, message, history=None):
+                    return {"answer": "高等数学在教三-201，周一 08:00。",
+                            "trace": [], "options": []}
+
+            _m.AgentEngine = _QuietEngine
+            sid2 = "rescue-quiet"
+            append_conversation(sid2, "user", "周一第一节是什么课")
+            r3 = client.post("/api/chat", json={"message": "周一第一节是什么课",
+                                                "module": "schedule",
+                                                "session_id": sid2})
+            c.check("模型正常答一句 → 不许凭空补一张卡",
+                    not (r3.json().get("options") or []),
+                    _json.dumps(r3.json().get("options"), ensure_ascii=False))
+        finally:
+            _m.AgentEngine = _real_engine
+
+    # —— ⑤ 前端不用改：卡片还是走 options 那条老路 ——
+    proj = pathlib.Path(__file__).resolve().parent.parent
+    page = (proj / "app" / "static" / "student.html").read_text(encoding="utf-8")
+    c.check("补出来的卡走的是同一套 options 渲染（前端零改动）",
+            "renderOptions" in page and "todo_add" in page)
+    sched_src = (proj / "app" / "modules" / "schedule.py").read_text(encoding="utf-8")
+    c.check("提示层点名禁掉「待办提案 / - 事项：」这种排版替代工具调用",
+            "待办提案" in sched_src and "替代工具调用" in sched_src)
+    c.check("提示层禁掉「提案我这边还没生成出来」这类解释",
+            "提案我这边还没生成出来" in sched_src)
+    return c.summary("第十一批（模型没调工具 → 系统补条）")
+
+
 def main():
     global code
     print("\n" + "=" * 60)
@@ -1726,6 +1934,7 @@ def main():
     code |= test_proactive_time_and_confirm()
     code |= test_todo_slots_pick_and_batch()
     code |= test_todo_mode_and_ai_plan()
+    code |= test_rescue_when_model_forgot_tool()
     return code
 
 

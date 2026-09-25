@@ -1673,7 +1673,17 @@ def propose_todo_tool(title: str, when: str = "", date: str = "",
     if not begin and start:
         begin, _ = _pick_span(start)
     if not finish and end:
-        _, finish = _pick_span(end)
+        # ⚠️ 一个孤零零的钟点（"17:30"）在 `_pick_span` 里算**起点**，不是终点
+        # （它返回 `("17:30", None)`）。所以写成 `_, finish = _pick_span(end)`
+        # 会让 finish 拿到 None，然后被下面那行"没给结束时间"的兜底接手，
+        # 静默改成 begin + 60 —— **学生要的时长就这么被悄悄砍了**。
+        #
+        # 实测现场：模型调 propose_todo_tool(title="游泳", date="周二",
+        # start="16:00", end="17:30")，挂出来的卡片却是 16:00-17:00，
+        # 而模型照着卡片给学生解释了一句"系统这边默认按 1 小时出的条"——
+        # 把一个 bug 说成了设计。学生要的是 90 分钟，卡片上只有 60。
+        end_begin, end_finish = _pick_span(end)
+        finish = end_finish or end_begin
     name = (title or "").strip().strip("\"'“”‘’『』「」") or "待办"
     if not day:
         return json.dumps({
@@ -1769,6 +1779,54 @@ def parse_todo_from_reply(text: str) -> dict | None:
         "minutes": to_minutes(finish) - to_minutes(begin),
         "summary": f"{name}｜{day}（{_weekday_name(day)}）{begin}-{finish}",
     }
+
+
+# 「管家自称把提案发出去了」的说法（人话：它说挂出来了，可界面上一个按钮都没有）。
+#
+# 为什么需要这么一关：模型偶尔会**不调工具**，只在文字里念一段方案，
+# 甚至一本正经地说"提案已发出，请点确认条上的【确认】"——界面上什么都没有。
+# 学生看到的就变成"我说了要加、它说发了、可我没收到弹窗"（截屏投诉原话）。
+# 它自称发了 = 它本来打算给一张卡 → 系统就照它的意思把这张卡补出来。
+_CLAIM_PROPOSAL_RE = re.compile(
+    r"提案(?:已经|已)?(?:发|挂|生成|出)"
+    r"|确认条(?:已经|已)?(?:挂|放|出)"
+    r"|点(?:一下|击)?【?确认"
+    r"|就(?:能|会|可以)?入库")
+
+
+def claims_proposal_sent(text: str) -> bool:
+    """判断管家这句话是不是在"自称已经把提案挂出来了"（人话：它说发了）。"""
+    return bool(_CLAIM_PROPOSAL_RE.search(text or ""))
+
+
+def rescue_proposal_from_reply(text: str, add_req: str = "") -> dict | None:
+    """模型这轮没调工具 → 系统替它把该有的卡片补出来（人话：别让它"嘴上说发了"）。
+
+    跟 `parse_todo_from_reply` 的分工：
+      · 那个只干一件事——把**固定格式的方案**从文字里捞成提案，权限最小；
+      · 这个多两道判断，专给"模型那一路"用：
+        ① 它得**自称发过提案**（`claims_proposal_sent`）。没自称就多半在闲聊
+           或举例，硬挂一张卡反而吓人；
+        ② 正文里捞不出方案时，才往"第一站"退：先二选一卡 → 再候选卡 →
+           最后才"替它挑一段"（`auto_todo_proposal`）。
+
+    返回一张卡（`todo_add` / `todo_mode` / `todo_slots`）或 `None`。
+    分辨是不是"从它文字里捞的"：捞出来的 `todo_add` **不带 `auto`**，
+    系统自己挑的那张带 `auto: True`（`propose_todo_tool` 与 `plan_todo_slot` 同一个约定）。
+    """
+    t = (text or "").strip()
+    if not claims_proposal_sent(t):
+        return None
+    p = parse_todo_from_reply(t)
+    if p is not None:
+        return p
+    if not (add_req or "").strip():
+        return None
+    for maker in (todo_mode_proposal, todo_slots_proposal, auto_todo_proposal):
+        card = maker(add_req)
+        if card is not None:
+            return card
+    return None
 
 
 def is_add_todo_followup(text: str) -> bool:

@@ -62,6 +62,7 @@ from app.modules.planner import (
     plan_todo_slot,
     mode_to_card,
     render_todo_remove_list,
+    rescue_proposal_from_reply,
     resolve_todo_remove,
     resolve_todo_remove_reply,
     slot_is_free,
@@ -267,6 +268,70 @@ def _pending_todo_remove(session_id: str) -> dict | None:
     return None
 
 
+_WRITTEN_RECEIPTS = ("已加入日程", "已按你的确认", "已删除待办")
+
+
+def _already_written_recently(session_id: str) -> bool:
+    """最近几轮系统有没有真写过库（人话：认自己写下的那句回执）。
+
+    为什么需要它：学生加完待办、回一句"好的"，话里也带确认词；
+    此时若再挂一次确认条，他再点一下就是**重复写两条**。
+    """
+    return any(any(k in (m.get("content") or "") for k in _WRITTEN_RECEIPTS)
+               for m in get_conversation(session_id)[-6:]
+               if m.get("role") == "assistant")
+
+
+def _recent_add_request(session_id: str, span: int = 8) -> str:
+    """学生最近那句"要加一件事"的原话（人话：找不到就替他补不出条来）。
+
+    两个地方共用：
+      · 3a-c「确认落空」——学生回了"确认"可暂存是空的，得把他的原话捞回来重算；
+      · 模型那一路——它没调工具、只在文字里念了方案，同样得靠这句话兜底。
+    以前这段是内联在 3a-c 里的，抽出来是为了让两边**同一套判据**
+    （改一处漏一处的话，症状会是"回确认能补条、说别的补不出来"）。
+
+    span 只往前看这么多条消息——学生是真加待办，原话一定在最近几轮里；
+    翻太远会把很久以前那句捞出来，学生早改主意了。
+    """
+    msgs = get_conversation(session_id)
+    # 前提：最近几轮**没真的写进去过**，否则他再点一下就是重复写两条。
+    if _already_written_recently(session_id):
+        return ""
+    return next(
+        (m.get("content") or "" for m in reversed(msgs[-span:])
+         if m.get("role") == "user"
+         and not is_confirmation(m.get("content") or "")
+         and wants_add_todo(m.get("content") or "")),
+        "")
+
+
+def _rescue_answer(card: dict) -> str:
+    """系统替模型补出卡片时那句回话。
+
+    为什么不能沿用模型自己那段文字：它那段在这一刻**是自相矛盾的**——
+    实测原文里前半句是"提案我这边还没生成出来…你现在点【确认】是空确认"，
+    后半句又是"提案已发出，请点确认条上的【确认】"。现在条真的挂出来了，
+    这两句一句假一句更假，留着只会让学生更懵。所以整段换成系统话术。
+    """
+    kind = card.get("kind")
+    if kind == "todo_mode":
+        return _mode_answer(
+            card, lead="📝 刚才那条消息里说要发提案，可卡片没跟上——我补一张，"
+                       "先把时间怎么定说清：\n\n")
+    if kind == "todo_slots":
+        return _slots_answer(
+            card, lead="📝 刚才那条消息里说要发提案，可卡片没跟上——"
+                       "我把空着的时间段列出来，你勾一个：\n\n")
+    return (
+        "📝 刚才那条消息里写了方案，可卡片没跟上——我替你把确认条挂出来了：\n\n"
+        f"要不要把 **{card.get('title')}** 排进日程？"
+        f"{card.get('date')}（{card.get('weekday')}）"
+        f"{card.get('start')}-{card.get('end')}。\n"
+        "点【确认加入】执行；直接回一句「确认」也一样。"
+    )
+
+
 def _pending_todo_mode(session_id: str) -> dict | None:
     """暂存里那张**二选一卡**（人话：上一轮问学生"时间你自己定还是我帮你挑"）。
 
@@ -407,6 +472,33 @@ def _remember_todo_options(session_id: str, options: list) -> list:
     return options
 
 
+def _lone_todo_pick(session_id: str, message: str) -> dict | None:
+    """暂存里只有**一张**已定好时间的卡、学生又只回了一句「确认」→ 那就是它。
+
+    为什么需要它（这是一条"点了没用"的投诉）：
+    **模型那一路**挂出来的条（它自己调 `propose_todo_tool`，或系统替它补的那张）
+    存进暂存时是 `todo_pick` 形状 —— 那是 `_remember_todo_options` 转的，
+    本意是给"学生点候选卡片"用的。麻烦在于：
+      · `_pending_todo` 只认 `todo_add`；
+      · `_match_todo_pick`（3a-bis）又要求消息里**带日期+时间**。
+    两头都不认，于是学生裸回一句「确认」时既不写库，也不会报错，
+    而是掉进 3a-c 换来一句"刚才那次可能没接上，我把确认条又挂了出来"——
+    条挂出来了、按钮也是好的，可他再回一句"确认"还是这句。原地打转。
+
+    两道闸门，差一道就会写错：
+      · 消息里**不能**带日期+时间 —— 带了说明他是在点某一张候选卡，
+        那张该由 3a-bis 的 `_match_todo_pick` 按日期/时间**精确匹配**，别抢；
+      · 暂存里**只能有一张** —— 多张时不知道他要哪张，宁可不写（交回兜底去问）。
+    """
+    if parse_add_todo(message):
+        return None
+    entry = peek_pending(session_id) or {}
+    lone = [o for o in entry.get("options") or []
+            if isinstance(o, dict) and o.get("kind") == "todo_pick"
+            and not o.get("applied")]
+    return lone[0] if len(lone) == 1 else None
+
+
 def _match_todo_pick(session_id: str, message: str) -> dict | None:
     """学生已经点了候选卡上的【确认所选】：从暂存里找出他选的那一张，直接写入。
 
@@ -518,7 +610,9 @@ async def chat(req: Request):
         # 为什么不能等路由决定：实测学生回一句"确认"，路由把它甩到 admin 模块，
         # 收到的是"你回「确认」了，但我这边还没生成待办提案"——话都说到这份上了还写不进去，
         # 学生只会觉得系统在耍他。这里把执行权收归系统，点头就是写入。
-        picked = _pending_todo(session_id)
+        # 第二种"待办确认"：暂存里那张是 `todo_pick`（模型那一路存的形状）——
+        # 见 `_lone_todo_pick` 的说明，不接这一档的话学生回「确认」会原地打转。
+        picked = _pending_todo(session_id) or _lone_todo_pick(session_id, message)
         if picked:
             take_pending(session_id)
             _write_todo(picked)
@@ -787,18 +881,13 @@ async def chat(req: Request):
         # 但有个前提：最近几轮**没真的写进去过**。学生加完待办、回一句"好的"，
         # 话里也带确认词，这时再挂一次确认条、他再点一下就是重复写两条。
         # 判据就是系统自己写进会话的那句回执（"已加入日程"）。
+        #
+        # 这一段跟"模型那一路"的兜底**共用 `_recent_add_request`**：
+        # 两边要问的是同一个问题（学生最近想加的是哪件事），
+        # 各写一份迟早会走样，症状还特别像"回确认能补条、说别的补不出来"。
         recent_msgs = get_conversation(session_id)[-6:]
-        already_written = any(
-            ("已加入日程" in (m.get("content") or "")
-             or "已按你的确认" in (m.get("content") or "")
-             or "已删除待办" in (m.get("content") or ""))
-            for m in recent_msgs if m.get("role") == "assistant")
-        add_req = "" if already_written else next(
-            (m.get("content") or "" for m in reversed(get_conversation(session_id)[-8:])
-             if m.get("role") == "user"
-             and not is_confirmation(m.get("content") or "")
-             and wants_add_todo(m.get("content") or "")),
-            "")
+        already_written = _already_written_recently(session_id)
+        add_req = _recent_add_request(session_id)
         proposal = parse_add_todo(add_req) if add_req else None
         from_butler = False
         auto_filled = False      # 时间是不是系统替学生挑的（话术要区分，见下）
@@ -1386,18 +1475,48 @@ async def chat(req: Request):
             "trace": [{"step": 1, "phase": "❌ 内部错误", "answer": f"{type(e).__name__}: {e}"}],
         }
 
-    # 把本轮对话记进会话历史，下一轮才能接着聊
+    # 模型这轮**没调工具**、只在文字里念了方案（甚至自称"提案已发出"）→ 系统替它补条。
+    #
+    # 这就是"没有收到弹窗"那一幕（学生截屏投诉）：
+    #   学生说的不是"确认"（"没有收到弹窗"），所以 3a-c 那一支**根本不会跑**；
+    #   模型这轮又忘了调 propose_todo_tool，只在文字里写了
+    #   「**待办提案** - 事项：游泳 - 时间：周二 16:00~17:30 … 提案已发出，请点确认条上的【确认】」
+    #   界面上于是连一个按钮都没有 —— 学生看到的是"它说发了，可我没收到弹窗"。
+    #
+    # 3a-c 那条兜底（捞方案补条）以前**只挂在"学生回确认"那一支里**，
+    # 于是同一件事从别的入口进来就没人接。这里把它接到模型这一路上：
+    # 只要它自称发过提案，系统就照它的意思把卡补出来（写库仍要学生点按钮）。
+    model_opts = list(result.get("options") or [])
+    final_answer = result["answer"]
+    final_trace = result["trace"]
+    if not model_opts:
+        rescued = rescue_proposal_from_reply(result["answer"],
+                                            _recent_add_request(session_id))
+        if rescued is not None:
+            model_opts = [rescued]
+            # 它那段文字在这一刻是自相矛盾的（前面说"还没生成出来"、后面说"已发出"），
+            # 整段换成系统话术，别让学生去猜哪句是真的。
+            final_answer = _rescue_answer(rescued)
+            final_trace = list(result["trace"] or []) + [{
+                "step": 1,
+                "phase": "🛟 模型没调工具 → 系统从它的话里补出确认条",
+                "answer": rescued.get("summary", ""),
+            }]
+
+    # 写进会话历史的是**学生最终看到的那一句**（补条之后的话术）。
+    # 以前这一步在补条之前，结果刷新页面看到的是模型那句"提案已发出"（底下没按钮），
+    # 而本次会话里看到的是系统补出来的条——两边对不上。
     append_conversation(session_id, "user", message)
-    append_conversation(session_id, "assistant", result["answer"])
+    append_conversation(session_id, "assistant", final_answer)
 
     # 4) 返回最终回答 + 思考轨迹（学生端不展示轨迹，但规划模块的候选选项要带回前端）
     return {
         "module": module_key,
         "session_id": session_id,
-        "answer": result["answer"],
-        "trace": result["trace"],
-        "options": _remember_todo_options(session_id, result.get("options", [])),
-        "awaiting_choice": result.get("awaiting_choice", False),
+        "answer": final_answer,
+        "trace": final_trace,
+        "options": _remember_todo_options(session_id, model_opts),
+        "awaiting_choice": result.get("awaiting_choice", False) or bool(model_opts),
     }
 
 
