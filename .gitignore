@@ -32,6 +32,9 @@ app/data/uploads/
 
 # ===== 学生个人库（周表/待办/会话历史，全是个人隐私到校资料） =====
 app/data/student/
+# 待确认提案暂存：app/agent/pending.py 运行时自动生成的 ephemeral 状态，
+# 落盘只为"服务重启/刷新不丢确认卡"，无需版本管理。
+app/data/pending.json
 
 # 注意：app/data/kb.json 是"入库的种子知识库"，有意保留版本管理，
 # 管理员在后台改条目后会出现 diff —— 这是知识内容本身，值得被记录。
