@@ -92,6 +92,8 @@ from app.modules.planner import (
     todo_title_of,
     wants_add_course,
     wants_add_todo,
+    _pick_day,
+    _pick_part,
     wants_clear_timetable,
     wants_list_todo,
     wants_remove_course,
@@ -1704,9 +1706,14 @@ async def chat(req: Request):
             "awaiting_choice": False,
         })
 
-    if (not _rule_add_veto
-            and (wants_add_todo(message) or (asking_add and is_add_todo_answer(message)))
-            or _sem_intent == INTENT_ADD_TODO):
+    # ⚠️ 末尾的 `and not wants_add_course(message)` 是「加课优先于加待办」的硬闸门：
+    # 学生说"周一早上加一节高数课"时，语义层（样本库/大模型）很可能把它判成 add_todo，
+    # 于是这句话会先进到上面的加待办分支、被当成待办塞进日程——正是报障那一幕。
+    # 加课没有独立的语义意图（白名单里没有 add_course），纯靠 wants_add_course 这条
+    # 确定性分支接管；所以只要它认得，加待办这边就必须让路，绝不抢。
+    if ((not _rule_add_veto
+            and (wants_add_todo(message) or (asking_add and is_add_todo_answer(message))))
+            or _sem_intent == INTENT_ADD_TODO) and not wants_add_course(message):
         # 追问后的补充回答（学生先说"帮我安排周二的游泳"，再补"下午两点到三点"）：
         # 补充那句里没有标题、也没有日期，单独解析会把标题弄丢——
         # 把上一句原话拼回来一起算。识别标记就是下面追问分支写进会话历史的那句"加待办缺细节"。
@@ -1883,20 +1890,34 @@ async def chat(req: Request):
                 "options": [proposal],
                 "awaiting_choice": True,
             }
-        # 算不出是哪一天（比如学生只说"加一节毛概，10:00 到 11:40"）。
+        # 算不出提案只有两种可能：缺星期，或说了星期却连"上午/下午/晚上"都没给。
         # 这种情况下**不能**把话交给模型——它多半回一句"已经加上了"，学生再去周表里找。
+        # 缺哪样就追哪样，别一股脑只问星期（说了星期、只差时间的会被问蒙）。
         clear_pending(session_id)
         append_conversation(session_id, "user", message)
-        append_conversation(session_id, "assistant", "加课缺星期")
-        return {
-            "module": "planner",
-            "session_id": session_id,
+        append_conversation(session_id, "assistant", "加课缺细节")
+        if _pick_day(message) is None:
+            return {
+                "module": "planner",
+                "session_id": session_id,
                 "answer": (
                     "这门课要加在**星期几**？把星期说一下（比如「周三加一节《毛概》，"
                     "10:00-11:40」），我算出新课表给你确认，你点头我才写进周表。"
                 ),
-            "trace": [{"step": 1, "phase": "🤔 加课缺星期（系统追问）",
-                       "answer": "学生没说星期，先问清楚再出提案"}],
+                "trace": [{"step": 1, "phase": "🤔 加课缺星期（系统追问）",
+                           "answer": "学生没说星期，先问清楚再出提案"}],
+                "options": [],
+                "awaiting_choice": False,
+            }
+        return {
+            "module": "planner",
+            "session_id": session_id,
+            "answer": (
+                "星期我记下了，这门课想排在**几点**？说个钟点（「10:00 到 11:40」），"
+                "或者说「上午/下午/晚上」也行，我算出新课表给你确认，你点头我才写进周表。"
+            ),
+            "trace": [{"step": 1, "phase": "🤔 加课缺时间（系统追问）",
+                       "answer": "学生说了星期却没给时间，先问清楚再出提案"}],
             "options": [],
             "awaiting_choice": False,
         }
