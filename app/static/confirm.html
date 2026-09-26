@@ -229,7 +229,7 @@ const KIND = {
     async apply(p) {
       return api("POST", "/api/todos", {
         session_id: sid(), title: p.title, date: p.date,
-        start: p.start, end: p.end,
+        start: p.start, end: p.end, old_todo_id: p.old_todo_id || "",
       });
     },
     doneText(p) {
@@ -246,7 +246,7 @@ const KIND = {
     async apply(p) {
       return api("POST", "/api/todos", {
         session_id: sid(), title: p.title, date: p.date,
-        start: p.start, end: p.end,
+        start: p.start, end: p.end, old_todo_id: p.old_todo_id || "",
       });
     },
     doneText(p) {

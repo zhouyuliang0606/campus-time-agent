@@ -808,6 +808,7 @@
                 body: JSON.stringify({
                   title: card.title, date: card.date,
                   start: card.start, end: card.end, note: card.note || "",
+                  old_todo_id: card.old_todo_id || "",
                   session_id: sessionId(),   // 好让"已加入日程"这句话进历史，刷新后还在
                 }),
               });
