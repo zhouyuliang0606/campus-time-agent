@@ -107,6 +107,65 @@ def test_student_panel_markup():
     return c.summary("第三批（页面标记）")
 
 
+def test_grid_no_overlap():
+    """第十三批：七列日历网格不许横向溢出（学生截图报「重叠了」）。
+
+    根因：`repeat(7, 1fr)` 的 1fr 隐式下限是 auto=min-content，卡片里
+    "14:00-15:40 · 机房-A" 这种长串（还配了 white-space:nowrap）比列宽还宽，
+    七列总宽 > 面板宽 → 每列向右溢出、压到相邻列，视觉上就是「重叠」。
+    修法：`repeat(7, minmax(0, 1fr))`（列可缩到 0）+ 卡片允许折行 + 网格项 min-width:0。
+
+    这里断言的是**结构性护栏**：那几个关键声明必须在，防止日后被改回去。
+    """
+    title("13. 周/月七列网格不许溢出（重叠回归）")
+    c = Checker()
+    with sandbox():
+        client = make_client()
+
+        # —— 学生端 student.html ——
+        r = client.get("/student")
+        c.check("/student 返回 200", r.status_code == 200)
+        html = r.text
+        c.check("周表 .wk 用 minmax(0,1fr)（不得退回 1fr）",
+                "grid-template-columns: repeat(7, minmax(0, 1fr))" in html
+                and ".wk { display: grid" in html)
+        c.check("月表 .mcal 用 minmax(0,1fr)",
+                ".mcal { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr))"
+                in html)
+        c.check("网格项 .wk > div 有 min-width:0",
+                ".wk > div { min-width: 0; }" in html)
+        c.check("卡片 .evt 允许折行（不再 nowrap 撑爆列）",
+                "white-space: normal" in html and "overflow-wrap: anywhere" in html)
+        # 反向：明确断言旧的致命写法不在页面上
+        c.check("页面上不再有 repeat(7, 1fr) 这种会溢出的写法",
+                "repeat(7, 1fr)" not in html)
+        # 移动端那条也得是 minmax
+        c.check("窄屏 .wk 也是 minmax(0,1fr)",
+                ".wk { grid-template-columns: repeat(2, minmax(0, 1fr)); }" in html)
+
+        # —— 完整日程页 plan.html 同一处坑 ——
+        p = client.get("/plan")
+        c.check("/plan 返回 200", p.status_code == 200)
+        phtml = p.text
+        c.check("plan 周表 .week 用 minmax(0,1fr)",
+                "grid-template-columns: 56px repeat(7, minmax(0, 1fr))" in phtml)
+        c.check("plan 月表 .month 用 minmax(0,1fr)",
+                ".month { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr))"
+                in phtml)
+        c.check("plan 月表小条 .mevt 允许折行",
+                "white-space: normal" in phtml and "overflow-wrap: anywhere" in phtml)
+        c.check("plan 页面也没有 repeat(7, 1fr)",
+                "repeat(7, 1fr)" not in phtml)
+
+        # —— 溢出量算给自己看：修好后七列总宽必须恰好等于容器内容宽 ——
+        PANEL, GAP, LANES = 836.0, 6.0, 7
+        col = (PANEL - GAP * (LANES - 1)) / LANES
+        total = col * LANES + GAP * (LANES - 1)
+        c.check("七列总宽 = 容器宽（无横向溢出）",
+                abs(total - PANEL) < 0.01, f"{total:.1f} vs {PANEL:.1f}")
+    return c.summary("第十三批（网格溢出/重叠回归）")
+
+
 def test_regression_existing_apis():
     title("4. 回归护栏：既有接口没有被这次改动破坏")
     c = Checker()
@@ -970,4 +1029,5 @@ if __name__ == "__main__":
     code |= test_clear_timetable_flow()
     code |= test_clear_intent_and_gate()
     code |= test_confirm_ui_page_and_alt_confirm()
+    code |= test_grid_no_overlap()
     sys.exit(code)
