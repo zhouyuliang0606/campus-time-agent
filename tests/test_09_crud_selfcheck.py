@@ -55,6 +55,11 @@ class _LLMPatch:
 def _run():
     c = Checker()
     client = make_client()
+    # 自测从干净日程起步：演示数据里偶尔会被手测/真机跑过的会话污染
+    # （比如 live 真机验证往真实 todos.json 写过一条 瑜伽），清掉才不会因为
+    # "同名好几条"把断言从「唯一命中」误判成「many」。
+    from app.store import _swrite
+    _swrite("todos.json", {"todos": []})
 
     def chat(sid, msg, module="planner"):
         r = client.post("/api/chat", json={"message": msg, "session_id": sid, "module": module})
@@ -215,6 +220,34 @@ def _run():
         todos = write_state()
         c.check("RT-S3 确认后旧(周三)移除", find(todos, "吉他练习", date=_wed()) is None)
         c.check("RT-S3 确认后新(周日)落库", find(todos, "吉他练习", date=_sun()) is not None)
+
+    # RT-S4 回归：live 真实踩坑那一句「把周四那个瑜伽挪到周五」。
+    # 这条话会被样本库种子「把周四那个健身挪到周五」撞上（Dice≈0.7），
+    # 把缓存的"健身"盖掉真名字"瑜伽"；改期提案按"健身"找库会落空 → 旧代码回「没找到」。
+    # 修复后：语义/样本给的名字没命中，就退回从学生原句里抠名字（瑜伽）再试。
+    sid = "rt-collide"
+    from app.store import _swrite
+    _swrite("todos.json", {"todos": []})   # 清掉演示数据自带的 瑜伽，免得 many
+    chat(sid, "加个瑜伽，周四 19:00-20:00")
+    chat(sid, "确认")  # 真写进：瑜伽/周四
+    # LLM 不帮（回 chat），逼出"样本碰撞 → 退回原句抠名"这条真实路径
+    with _LLMPatch('{"intent":"chat","confidence":0.9}'):
+        code, resp = chat(sid, "把周四那个瑜伽挪到周五")
+    opts = resp.get("options") or []
+    kinds = {o.get("kind") for o in opts}
+    c.check("RT-S4 碰撞句也出改期卡", resp.get("awaiting_choice") is True, str(resp.get("awaiting_choice")))
+    c.check("RT-S4 仍是待办卡", kinds & {"todo_add", "todo_slots"}, str(kinds))
+    fri_opts = [o for o in opts if o.get("kind") in ("todo_add", "todo_slots") and _is_fri(o.get("date") or "")]
+    c.check("RT-S4 新日期是周五(非误判健身)", bool(fri_opts), str([o.get("date") for o in opts]))
+    has_old4 = any(o.get("old_todo_id") for o in fri_opts)
+    c.check("RT-S4 提案带 old_todo_id", has_old4)
+    if has_old4:
+        code, resp = chat(sid, "确认")
+        todos = write_state()
+        old_gone4 = find(todos, "瑜伽", date=_thu()) is None
+        new_there4 = find(todos, "瑜伽", date=_fri()) is not None
+        c.check("RT-S4 确认后旧(周四)移除", old_gone4)
+        c.check("RT-S4 确认后新(周五)落库", new_there4)
 
     rc = c.summary("增删查改自测")
     return rc
