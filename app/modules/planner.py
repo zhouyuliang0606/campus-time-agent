@@ -2499,6 +2499,103 @@ def parse_remove_todo(text: str) -> dict | None:
     return res.get("proposal") if res.get("status") == "ok" else None
 
 
+def build_retime_existing_proposal(text: str, sem: dict | None = None) -> dict:
+    """把"把周四那个健身挪到周五"解析成一张**改期提案**（人话：已排进日程的待办想换时间）。
+
+    跟 `retime_todo_proposal` 的区别：那条是"学生嫌**待确认卡**的点不合适、
+    在原来的待确认卡上换时间"；这条是"**已经写进日程**的待办想换个时间"——
+    所以得先把目标待办从库里找出来，再基于它生成新时间的提案，并在提案里记下
+    `old_todo_id`，确认时由系统走"删旧 + 加新"（不是就地改字段，方便追溯）。
+
+    返回：
+      {"status":"ok","proposal":{...},"old_label":""}  恰好一条，可出确认条
+      {"status":"many","todos":[...]}                  好几条同名，得让学生挑
+      {"status":"empty","todos":[]}                    没找到那条待办
+      {"status":"unclear","todos":[]}                  新时间认不出来（换天却挑不出空档等）
+
+    只读，一个字节都不写库——执行权永远在"学生点头"之后。
+    """
+    t = (text or "").strip()
+    # 先把"改成/挪到/换到"这类换时间的词擦掉，免得粘在名字里
+    #（"把瑜伽挪到周五"不擦会变成"瑜伽挪到"，对不上库里的"瑜伽"）。
+    t_clean = re.sub(r"(改成|改到|换成|换到|换个时间|换个点|挪到|调整到|调到|重排|改一下|重来)", " ", t)
+    # 目标名字：优先用语义层读出来的（模型偶尔回怪名字），不像话就退回从话里抠
+    name = (sem or {}).get("title") or ""
+    if name:
+        try:
+            if not looks_like_thing(_pick_title(name)):
+                name = _pick_todo_name(t_clean)
+        except Exception:
+            name = _pick_todo_name(t_clean)
+    else:
+        name = _pick_todo_name(t_clean)
+
+    # 候选池：按名字在**全部**待办里找（话里既可能有旧日期也可能有新日期，
+    # 不能拿 _pick_date 去缩池，否则容易把"周五"当成定位条件反而不匹配）。
+    pool = list_todos()
+    if name and name not in ("", "待办", "日程", "事项"):
+        hits = [x for x in pool if _todo_name_match(name, x.get("title", ""))]
+        if not hits:
+            return {"status": "empty", "todos": []}
+        pool = hits
+    if not pool:
+        return {"status": "empty", "todos": []}
+    if len(pool) > 1:
+        return {"status": "many", "todos": pool}
+
+    old = pool[0]
+    old_id = old.get("id", "")
+    old_date = old.get("date", "")
+    old_label = (f"{old_date}（{_weekday_name(old_date)}）"
+                 f"{old.get('start', '')}-{old.get('end', '')}")
+
+    # 新日期：语义层给的 > 话里抠出来的 > 没说就沿用旧日期（只改时刻）
+    new_date = (sem or {}).get("date") or ""
+    if not new_date:
+        dh = (sem or {}).get("day_hint") or ""
+        new_date = _pick_date(dh) if dh else _pick_date(t)
+    if not new_date:
+        new_date = old_date
+
+    # 新时刻：语义层给的 > 话里抠出来的 > 换了个日子就挑空档 > 否则沿用旧时刻
+    sem_start = (sem or {}).get("start") or ""
+    sem_end = (sem or {}).get("end") or ""
+    begin, finish = (None, None)
+    if sem_start and sem_end:
+        begin, finish = sem_start, sem_end
+    else:
+        sp = _pick_span(t)
+        begin, finish = (sp[0], sp[1]) if sp else (None, None)
+    if begin and not finish:
+        finish = to_hhmm(to_minutes(begin) + 60)
+    if not begin:
+        if new_date != old_date:
+            slot = pick_free_slot(new_date, prefer=t)
+            if not slot:
+                return {"status": "unclear", "todos": []}
+            begin, finish = slot["start"], slot["end"]
+        else:
+            begin, finish = old.get("start", ""), old.get("end", "")
+    if not (begin and finish) or to_minutes(finish) <= to_minutes(begin):
+        return {"status": "unclear", "todos": []}
+
+    title = old.get("title") or "待办"
+    wd = _weekday_name(new_date)
+    proposal = {
+        "kind": "todo_add",
+        "title": title,
+        "date": new_date,
+        "start": begin,
+        "end": finish,
+        "weekday": wd,
+        "minutes": to_minutes(finish) - to_minutes(begin),
+        "retimed": True,
+        "old_todo_id": old_id,
+        "summary": f"{title}｜{new_date}（{wd}）{begin}-{finish}",
+    }
+    return {"status": "ok", "proposal": proposal, "old_label": old_label}
+
+
 def _todo_line(item: dict, idx: int | None = None) -> str:
     """清单里的一行（人话：原样念给学生听——标题 + 日期 + 时段）。"""
     date = item.get("date", "")
