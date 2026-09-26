@@ -2960,6 +2960,95 @@ def test_missing_todo_boundary():
     return c.summary("第十七批（看不见 X 分支的反向边界）")
 
 
+def test_add_course_time_of_day():
+    """第十八批回归：报障"我说加一节课，把课当代办加进日程了"。
+
+    根因：学生说"周一早上加一节高数课"，"早上"是时段词不是具体钟点，wants_add_course
+    认不出，话被语义层判成 add_todo、进了加待办分支、写进待办——课没进周表。
+    另外样本库里把这句话记成了 intent=add_todo（脏数据，从 bug 那次来的），
+    让 match_sample 一命中就回 add_todo，雪上加霜。
+
+    修复三处：① wants_add_course 认"上午/下午/晚上"作时间信号；② main.py 加「加课优先」
+    硬闸门——只要 wants_add_course 认得，加待办分支必须让路；③ 清掉样本库里那条脏数据；
+    ④ 解析层在没有具体钟点时，按"上午/下午/晚上"在那一半天里挑一段**空着的**时段塞进去
+    （不是盲塞 08:00，否则会跟已有课撞、被拦下反而变成"缺时间"追问）。
+    """
+    title("18. 加课漏接时段词 → 课被当待办（回归）")
+    c = Checker()
+    from app.store import get_timetable, list_todos
+    from app.modules.planner import (wants_add_course, wants_add_todo,
+                                     parse_add_course)
+
+    # —— ① 判定开关层面：加课认得，加待办认不得（这是 bug 的核心）——
+    c.check("「周一早上加一节高数课」判定为加课",
+            wants_add_course("周一早上加一节高数课"))
+    c.check("「周一早上加一节高数课」不算加待办",
+            not wants_add_todo("周一早上加一节高数课"))
+
+    # —— ② 解析层：没给钟点也能算出提案，且课程名/时段/星期都抠对 ——
+    #     用"周四早上"测：演示周表周四上午 08:00 是空的，应能直接给卡。
+    p = parse_add_course("周四早上加一节高数课")
+    c.check("没给钟点也能解析出加课提案", p is not None)
+    if p is not None:
+        act = p.get("action") or {}
+        c.check("提案课程名从原话抠出（高数）", "高数" in (act.get("course") or ""),
+                act.get("course"))
+        c.check("上午没给钟点 → 自动塞到上午空段 08:00",
+                (act.get("new_start") or "") == "08:00", act.get("new_start"))
+        c.check("提案带星期（周四=4）", act.get("day") == 4, str(act.get("day")))
+
+    # —— ③ 端到端：路由真的走加课分支，绝不当待办写 ——
+    with sandbox():
+        client = make_client()
+        seed_timetable()
+        base_courses = len(get_timetable())
+        today = datetime.date.today().isoformat()
+
+        # ③a 周四早上（有空段）→ 直接给加课确认卡
+        r = client.post("/api/chat", json={
+            "message": "周四早上加一节高数课", "module": "planner",
+            "session_id": "add-course-tod",
+        })
+        d = r.json()
+        opts = d.get("options") or []
+        card = next((o for o in opts if o.get("kind") == "timetable_change"), {})
+        c.check("回的是加课确认卡（timetable_change）", bool(card),
+                _json.dumps(opts, ensure_ascii=False)[:120])
+        c.check("卡上是学生说的课（高数）",
+                "高数" in ((card.get("action") or {}).get("course") or ""))
+        c.check("绝不能是待办确认卡（todo_add）",
+                not any(o.get("kind") == "todo_add" for o in opts))
+        c.check("这轮没往待办里塞高数课",
+                not any(t["title"] == "高数课" for t in list_todos(today)),
+                [t["title"] for t in list_todos(today)])
+        c.check("周表这门课还没落库（等学生点确认）",
+                not any(x.get("course") == "高数" for x in get_timetable()))
+        c.check("这轮周表条数不变", len(get_timetable()) == base_courses,
+                f"{base_courses} → {len(get_timetable())}")
+
+        # ③b 周一早上（演示周表周一上午排满了）→ 仍归加课分支、追问具体时间，
+        #     但**绝不**把它当待办写进日程（这正是报障那一幕）
+        r2 = client.post("/api/chat", json={
+            "message": "周一早上加一节高数课", "module": "planner",
+            "session_id": "add-course-tod2",
+        })
+        d2 = r2.json()
+        c.check("周一早上（上午排满）也不许变成待办卡",
+                not any(o.get("kind") == "todo_add" for o in (d2.get("options") or [])),
+                _json.dumps(d2.get("options"), ensure_ascii=False)[:100])
+        c.check("周一早上那句没往待办里塞高数课",
+                not any(t["title"] == "高数课" for t in list_todos(today)))
+
+    # —— ④ 反向护栏：没"课"字的健身活动仍归待办，别被误塞进周表 ——
+    c.check("「加一节瑜伽」（无课字）不算加课",
+            not wants_add_course("加一节瑜伽"))
+    c.check("「周一早上加一节瑜伽」（无课字）不算加课",
+            not wants_add_course("周一早上加一节瑜伽"))
+    c.check("「周六下午加一节瑜伽」（无课字）不算加课",
+            not wants_add_course("周六下午加一节瑜伽"))
+    return c.summary("第十八批（加课漏接时段词回归）")
+
+
 def main():
     global code
     print("\n" + "=" * 60)
@@ -2982,6 +3071,7 @@ def main():
     code |= test_context_inherit_and_half_sentence()
     code |= test_missing_todo_check()
     code |= test_missing_todo_boundary()
+    code |= test_add_course_time_of_day()
     return code
 
 
