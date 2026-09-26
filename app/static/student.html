@@ -223,28 +223,37 @@
       border-radius: 8px; cursor: pointer; font-size: 13px;
     }
     .tab.active { background: #4f7cff; color: #fff; border-color: #4f7cff; }
-    .wk { display: grid; grid-template-columns: repeat(7, 1fr); gap: 6px; }
+    .wk { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 6px; }
+    /* ⚠️ `minmax(0, 1fr)` 不能写回 `1fr`：
+       1fr 的隐式 min-width 是 auto，列宽会被卡片的 min-content 撑爆——
+       卡片里 "14:00-15:40 · 机房-A" 这种长串（还带 nowrap）比列宽还宽，
+       七列就会横向溢出、彼此压在一起（学生截图报的"重叠"就是这么来的）。
+       minmax(0, 1fr) 允许列缩到 0，列宽才真正均分。
+       同理，网格项（每天那个外层 <div>）也要 min-width:0，否则它继承的 auto 下限照样撑着。 */
+    .wk > div { min-width: 0; }
     .wk .wd { text-align: center; font-size: 12px; color: #8a93a6; padding: 2px 0; }
     .wk .wd.today { color: #4f7cff; font-weight: 700; }
     .wk .day {
       background: #fafbff; border: 1px solid #eef0f6; border-radius: 8px;
-      min-height: 110px; padding: 4px;
+      min-height: 110px; padding: 4px; overflow: hidden;
     }
     .wk .day.today { border-color: #4f7cff; background: #f7faff; }
     .evt {
       font-size: 11px; border-left: 3px solid; border-radius: 4px;
       padding: 2px 5px; margin-top: 3px; overflow: hidden;
-      white-space: nowrap; text-overflow: ellipsis;
+      /* 允许折行：窄列里长课名/地点宁可换行，也不撑破格子（原来是 nowrap，撑爆列宽） */
+      white-space: normal; overflow-wrap: anywhere; line-height: 1.35;
     }
     .evt.course { background: #eaf1ff; border-color: #4f7cff; color: #24406e; }
     .evt.todo   { background: #fff5e6; border-color: #f0a03c; color: #7a5212; }
     .evt.todo.done { background: #eef7ef; border-color: #7dc48a; color: #3f6b48; text-decoration: line-through; }
     .evt .tm { opacity: .75; font-size: 10px; }
-    .mcal { display: grid; grid-template-columns: repeat(7, 1fr); gap: 5px; }
+    .mcal { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 5px; }
     .mcal .wd { text-align: center; font-size: 12px; color: #8a93a6; }
     .mcal .d {
       min-height: 64px; border: 1px solid #eef0f6; border-radius: 8px;
       padding: 3px 5px; font-size: 12px; cursor: pointer; position: relative; background: #fff;
+      overflow: hidden;
     }
     .mcal .d:hover { border-color: #4f7cff; }
     .mcal .d.out { opacity: .35; }
@@ -301,7 +310,7 @@
     @media (max-width: 600px) {
       .modules { grid-template-columns: repeat(2, 1fr); }
       .faq-grid { grid-template-columns: 1fr; }
-      .wk { grid-template-columns: repeat(2, 1fr); }
+      .wk { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     }
   </style>
 </head>
