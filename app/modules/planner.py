@@ -2536,6 +2536,18 @@ def build_retime_existing_proposal(text: str, sem: dict | None = None) -> dict:
     if name and name not in ("", "待办", "日程", "事项"):
         hits = [x for x in pool if _todo_name_match(name, x.get("title", ""))]
         if not hits:
+            # 语义层/样本库给的名字没命中（典型：样本库把"瑜伽"误记成"健身"——
+            # "把周四那个健身挪到周五"和"把周四那个瑜伽挪到周五"长得几乎一样，
+            # Dice 一撞就把缓存的旧名字盖过来）。退回从**学生原句**里抠名字再试一次，
+            # 他这句话里通常就带着真名字（"瑜伽"），抠出来就能对上库里的那条。
+            fallback = _pick_todo_name(t_clean)
+            if (fallback and fallback not in ("", "待办", "日程", "事项")
+                    and fallback != name):
+                fb_hits = [x for x in pool
+                           if _todo_name_match(fallback, x.get("title", ""))]
+                if fb_hits:
+                    name, hits = fallback, fb_hits
+        if not hits:
             return {"status": "empty", "todos": []}
         pool = hits
     if not pool:
@@ -2553,7 +2565,21 @@ def build_retime_existing_proposal(text: str, sem: dict | None = None) -> dict:
     new_date = (sem or {}).get("date") or ""
     if not new_date:
         dh = (sem or {}).get("day_hint") or ""
-        new_date = _pick_date(dh) if dh else _pick_date(t)
+        if dh:
+            new_date = _pick_date(dh)
+        if not new_date:
+            # 换时间词（"挪到/改到"）后面的那个日期才是目标日。
+            # 学生常说"把**周四**那个瑜伽挪到**周五**"——前面的"周四"是旧日，
+            # 只按第一个日期抠会把目标误判成周四（等于原地没动）。
+            # 取换词之后的片段来认日期，避开旧日干扰。
+            tail = t
+            for w in ("改成", "改到", "换成", "换到", "换个时间", "换个点", "挪到",
+                      "调整到", "调到", "重排", "改一下", "重来"):
+                idx = t.find(w)
+                if idx >= 0:
+                    tail = t[idx + len(w):]
+                    break
+            new_date = _pick_date(tail) or _pick_date(t)
     if not new_date:
         new_date = old_date
 
