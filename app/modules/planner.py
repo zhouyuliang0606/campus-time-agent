@@ -2725,6 +2725,53 @@ def propose_todo_remove_tool(title: str = "", date: str = "", when: str = "") ->
     }, ensure_ascii=False)
 
 
+def _pick_part(text: str) -> str:
+    """抠出"上午/下午/晚上"这类时段词（人话：学生说"周一早上加一节高数"，没给准点只给了半天的范围）。
+
+    `_pick_span` 只认具体钟点（"8:00"），认不出"早上"；而学生口语里大量用
+    "周一早上加一节高数课"这种——没给钟点，只给了个半天的范围。这一段早被
+    `pick_free_slot` / `_part_order` 用上了，加课这里却漏接了，导致"加一节"被
+    语义层当成加待办塞进日程。
+    """
+    t = text or ""
+    if any(w in t for w in ("上午", "早上", "早晨", "一早")):
+        return "上午"
+    if "中午" in t:
+        return "中午"
+    if "下午" in t:
+        return "下午"
+    if any(w in t for w in ("晚上", "傍晚", "夜里", "今晚", "今夜")):
+        return "晚上"
+    return ""
+
+
+# 每个时段词对应的"标准两节课段"候选（人话：学生说"早上"就是这两段里挑一段）。
+# 排在前面的优先；下面选段时会跳过被现有课占了的那个，绝不硬塞进撞课的位置。
+_PART_PERIODS = {
+    "上午": [("08:00", "09:40"), ("10:00", "11:40")],   # 第1-2节 / 第3-4节
+    "中午": [("12:00", "13:40")],
+    "下午": [("14:00", "15:40"), ("16:00", "17:40")],   # 第5-6节 / 第7-8节
+    "晚上": [("19:00", "20:40")],
+}
+
+
+def _slot_free(day: int, s: str, e: str) -> bool:
+    """那天那个时段有没有被现有课占着（人话：想塞的整段跟已有课任何一处重叠都不行）。
+
+    跟 propose_course_change 用的是同一套重叠判定（s<ce 且 e>cs），两边别写岔了。
+    """
+    s0, e0 = to_minutes(s), to_minutes(e)
+    if s0 < 0 or e0 <= s0:
+        return False
+    for c in get_timetable():
+        if int(c.get("day", 0)) != day:
+            continue
+        cs, ce = to_minutes(c.get("start", "")), to_minutes(c.get("end", ""))
+        if cs >= 0 and ce > cs and s0 < ce and e0 > cs:
+            return False
+    return True
+
+
 def wants_add_course(text: str) -> bool:
     """判断一句话算不算「往周表里加一门课」（人话：确定性分支用的开关）。
 
@@ -2742,11 +2789,24 @@ def wants_add_course(text: str) -> bool:
     if not has_intent and not ("加" in t and ("课表" in t or "课程" in t)):
         return False
     day, begin = _pick_day(t), _pick_span(t)[0]
+    part = _pick_part(t)
+    course = _pick_course_name(t)
+    # 1) 说清了星期 + 具体钟点（"周一 19:00 加一节高数"）→ 直接算
     if day is not None and begin:
         return True
-    # 有课名、有时钟、就是没说星期。这种情况也算"想加课"，
-    # 但要让**系统**去问清楚——交给模型的话，它多半回一句"已经加上了"。
-    return bool(begin) and bool(_pick_course_name(t))
+    # 2) 星期 + 上午/下午/晚上（"周一早上加一节高数课"）——
+    #    学生把"哪天、哪一半天"都说清了，具体钟点由系统先给个默认时段，
+    #    卡片上他看一眼就能改，比丢给模型编"已经加上了"稳得多。
+    #    只认带"课"字的（"高数课""体育课"），"加一节瑜伽"这类仍归待办。
+    if day is not None and part and "课" in t:
+        return True
+    # 3) 有时钟、有课名、就是没说星期 → "想加课"成立，但让系统去问清楚星期
+    if begin and course:
+        return True
+    # 4) 说了星期、也点名了课、就差个时间（"周六加一节高数课"）→ 想加课，问时间
+    if day is not None and course and "课" in t:
+        return True
+    return False
 
 
 def parse_add_course(text: str) -> dict | None:
@@ -2758,6 +2818,15 @@ def parse_add_course(text: str) -> dict | None:
     t = (text or "").strip()
     day = _pick_day(t)
     start, end = _pick_span(t)
+    part = _pick_part(t)
+    # 学生说了"上午/下午/晚上"但没给具体钟点 → 在那个半天内挑一段**空着的**塞进去。
+    # 不能盲塞第一个（会跟现有课撞、被 propose_course_change 打回，反而变成"缺时间"追问），
+    # 要跳过被占的段；整段都排满了就老老实实返回 None，由上层问清具体钟点。
+    if day is not None and not start and part:
+        for dspan in _PART_PERIODS.get(part, []):
+            if _slot_free(day, dspan[0], dspan[1]):
+                start, end = dspan
+                break
     if day is None or not start:
         # 没说星期就只能算到一半——与其让模型自作主张（它最爱说"已经加上了"），
         # 不如让解析函数如实返回 None，由上层问清楚学生到底是哪天。
@@ -2918,7 +2987,11 @@ def _pick_course_name(text: str) -> str:
     head = re.sub(r"周[一二三四五六日天]", "", head)
     head = re.sub(r"\d{1,2}\s*[:：]\s*\d{2}.*$", "", head)
     head = re.sub(r"[^\w一-龥]+", " ", head)
-    for w in _ADD_INTENT + ("加一节", "加一门", "加门", "课表", "课程", "课", "的"):
+    for w in _ADD_INTENT + ("加一节", "加一门", "加门", "课表", "课程", "课", "的",
+                            # 时段词也要剥掉：学生说"周一早上加一节高数课"，
+                            # 不剥的话课名会被抠成"早上高数"，整句话还会被误当成上课地点。
+                            "早上", "上午", "下午", "晚上", "中午", "傍晚",
+                            "早晨", "一早", "夜里", "今晚", "今夜"):
         head = head.replace(w, " ")
     head = re.sub(r"\s+", "", head).strip()
     # 兜底：剩下的片段里挑最长的一截（"到 数据结构" 会挑中"数据结构"这种）
@@ -2936,6 +3009,12 @@ def _looks_like_location(seg: str) -> bool:
     if not seg or len(seg) > 14:
         return False
     if any(w in seg for w in _ADD_INTENT):
+        return False
+    # 整句"加课"指令漏进来时（没给地点、只说了"周一早上加一节高数课"），
+    # 这一截里带着"加/课/周/时段词"，显然不是地点——直接否掉，别让它顶替地点。
+    if any(w in seg for w in ("加", "课", "周", "早上", "上午", "下午",
+                              "晚上", "中午", "傍晚", "早晨", "一早",
+                              "夜里", "今晚", "今夜")):
         return False
     # "晚上 19 点到 20 点" 这种时段，丢掉
     if any(w in seg for w in ("点", "时", "分")):
