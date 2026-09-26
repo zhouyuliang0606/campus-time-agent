@@ -248,6 +248,14 @@
     .evt.todo   { background: #fff5e6; border-color: #f0a03c; color: #7a5212; }
     .evt.todo.done { background: #eef7ef; border-color: #7dc48a; color: #3f6b48; text-decoration: line-through; }
     .evt .tm { opacity: .75; font-size: 10px; }
+    /* 时间撞车：面板是列表式排版（无时间轴），同一时段的两条只能上下排，
+       看着像"界面重叠/画错了"。给撞上的条目加红边 + 右上角「撞」角标，
+       明确告诉学生这是**时间冲突**而不是渲染 bug。 */
+    .evt.clash { border-color: #e24b4a !important; box-shadow: inset 0 0 0 1px rgba(226,75,74,.35); }
+    .evt .clash-tag {
+      float: right; background: #e24b4a; color: #fff; font-size: 9px;
+      border-radius: 6px; padding: 0 4px; margin-left: 2px; line-height: 1.5;
+    }
     .mcal { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 5px; }
     .mcal .wd { text-align: center; font-size: 12px; color: #8a93a6; }
     .mcal .d {
@@ -1170,9 +1178,19 @@
           ...schTodos.filter(t => t.date === dIso).map(t =>
             ({ s: minsOf(t.start), e: minsOf(t.end), cls: t.status === "done" ? "todo done" : "todo", name: t.title, tm: t.start + "-" + t.end, loc: "" })),
         ].filter(x => x.e > x.s).sort((a, b) => a.s - b.s);
+
+        // 面板是**列表式**排版（没有时间轴），同一时段的两条只能上下排。
+        // 但"课和待办撞在同一时段"是真冲突，必须让学生一眼看出来，
+        // 否则两条长得一样地叠着，他会以为界面"重合/画错了"。
+        // 给每条标一个 clash 记号：和它前面任何一条时间有交叠就算撞了。
+        evts.forEach((x, i) => {
+          x.clash = evts.slice(0, i).some(p => x.s < p.e && x.e > p.s);
+        });
+
         const inner = evts.map(x =>
-          `<div class="evt ${x.cls}" title="${escQ(x.name)} ${x.tm}">` +
-          `<span class="tm">${x.tm}</span> ${escapeHtml(x.name)}${x.loc ? " · " + escapeHtml(x.loc) : ""}</div>`).join("");
+          `<div class="evt ${x.cls}${x.clash ? " clash" : ""}" title="${escQ(x.name)} ${x.tm}">` +
+          `<span class="tm">${x.tm}</span> ${escapeHtml(x.name)}${x.loc ? " · " + escapeHtml(x.loc) : ""}` +
+          `${x.clash ? '<span class="clash-tag" title="和其他安排时间重叠">撞</span>' : ""}</div>`).join("");
         html += `<div>
           <div class="wd ${dIso === todayIso ? "today" : ""}">${WD[wd - 1]}<br><span class="small">${d.getMonth() + 1}/${d.getDate()}</span></div>
           <div class="day ${dIso === todayIso ? "today" : ""}">${inner || '<div class="empty" style="padding:10px 2px;">无安排</div>'}</div>
