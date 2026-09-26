@@ -780,20 +780,36 @@ async def chat(req: Request):
         if picked:
             take_pending(session_id)
             _write_todo(picked)
+            # 改期：旧的那条要挪走（删旧 + 加新，不是就地改字段，方便追溯）。
+            # 旧 id 只在改期提案里带着，普通加待办没有这一项，所以不影响别的路径。
+            _old_id = picked.get("old_todo_id")
+            if _old_id:
+                try:
+                    delete_todo(_old_id)
+                except Exception:
+                    pass
             # 用 .get() 而不是 picked['summary']：提案里的字段少一个就 500 了，
             # 学生只会看到一句"网络开小差了"。摘要本来就是可选的，自己拼一句就行。
             summary = (picked.get("summary")
                        or f"{picked.get('title', '待办')}｜{picked.get('date', '')}"
                           f"{picked.get('start', '')}-{picked.get('end', '')}")
+            _retimed = bool(_old_id)
             append_conversation(session_id, "user", message)
-            append_conversation(session_id, "assistant", f"已加入日程：{summary}")
+            append_conversation(session_id, "assistant",
+                                f"{'已改期' if _retimed else '已加入日程'}：{summary}")
             return {
                 "module": "planner",
                 "session_id": session_id,
                 "answer": (
-                    f"✅ 已加入日程：**{picked.get('title', '待办')}**｜{picked.get('date', '')}"
-                    f"（{picked.get('weekday', '')}）"
-                    f"{picked.get('start', '')}-{picked.get('end', '')}。"
+                    (f"✅ 已改期：**{picked.get('title', '待办')}**｜{picked.get('date', '')}"
+                     f"（{picked.get('weekday', '')}）"
+                     f"{picked.get('start', '')}-{picked.get('end', '')}，"
+                     f"旧的那段已经挪走了。"
+                     if _retimed else
+                     f"✅ 已加入日程：**{picked.get('title', '待办')}**｜{picked.get('date', '')}"
+                     f"（{picked.get('weekday', '')}）"
+                     f"{picked.get('start', '')}-{picked.get('end', '')}。"
+                     )
                 ),
                 "trace": [{"step": 1, "phase": "✅ 学生确认（系统写入）",
                            "answer": summary}],
@@ -1440,6 +1456,64 @@ async def chat(req: Request):
             "options": [],
             "awaiting_choice": False,
         })
+
+    # 3d-ret) **改期（已经排进日程的待办想换个时间）**——"把周四那个健身挪到周五"。
+    #     跟删待办同一套规矩：只出提案、学生点头才动；而且是"删旧 + 加新"，
+    #     不是就地改字段，这样一旦新时间不合适还能追溯旧的那条。
+    #     规则认得（含"改成/挪到"等词）或语义层兜回来的 retime_todo 都走这儿；
+    #     前提：手上没有挂着的待确认卡（那种是 3c-pre 那一档，已在前面处理过了）。
+    if (wants_retime_todo(message) or _sem_intent == INTENT_RETIME) and not held_add:
+        from app.modules.planner import build_retime_existing_proposal, _weekday_name as _wd2
+        _rt = build_retime_existing_proposal(
+            message, _sem if _sem_intent == INTENT_RETIME else None)
+        _rt_status = _rt.get("status")
+        if _rt_status == "ok":
+            _rt_prop = _rt["proposal"]
+            save_pending(session_id, [_rt_prop])
+            _sem_done(_rt_prop)
+            return _offer_response(
+                session_id, _rt_prop, message,
+                (f"📝 好，把 **{_rt_prop['title']}** 从 "
+                 f"{_rt.get('old_label', '原时间')} 改到 "
+                 f"**{_rt_prop['date']}（{_rt_prop['weekday']}）"
+                 f"{_rt_prop['start']}-{_rt_prop['end']}**——\n"
+                 f"下面点【确认加入】我就改好（旧的那段会挪走）。"
+                 f"回一句「确认」也一样。"),
+                "🕘 改期提案（系统判定）")
+        if _rt_status == "many":
+            _rt_lines = "\n".join(
+                f"· **{x.get('title', '')}**｜{x.get('date', '')}"
+                f"（{_wd2(x.get('date', ''))}）"
+                f"{x.get('start', '')}-{x.get('end', '')}"
+                for x in _rt.get("todos", [])[:6])
+            append_conversation(session_id, "user", message)
+            append_conversation(session_id, "assistant", "改期缺细节")
+            return {
+                "module": "planner", "session_id": session_id,
+                "answer": ("🕘 你想改的是哪一条？我找到好几条同名的：\n\n"
+                           f"{_rt_lines}\n\n回我一个（比如「周四那条」），我帮你改。"),
+                "trace": [{"step": 1, "phase": "🕘 改期遇到多条同名（不猜）",
+                           "answer": "等学生点名"}],
+                "options": [], "awaiting_choice": False,
+            }
+        if _rt_status == "empty":
+            append_conversation(session_id, "user", message)
+            append_conversation(session_id, "assistant", "没找到要改的待办")
+            return {
+                "module": "planner", "session_id": session_id,
+                "answer": "📋 没找到那条待办——你先加进日程，或者告诉我它叫什么、在哪天？",
+                "trace": [{"step": 1, "phase": "🕘 改期未找到目标", "answer": "请学生确认名字"}],
+                "options": [], "awaiting_choice": False,
+            }
+        # unclear：新时间认不出来
+        append_conversation(session_id, "user", message)
+        append_conversation(session_id, "assistant", "改期时间没说清")
+        return {
+            "module": "planner", "session_id": session_id,
+            "answer": "🕘 新时间我没听清——说清楚要改到哪天几点？比如「改到周五 15:00-16:00」。",
+            "trace": [{"step": 1, "phase": "🕘 改期新时间缺失", "answer": "请学生补时间"}],
+            "options": [], "awaiting_choice": False,
+        }
 
     # 3c-ter) **「看不见 X」的报障**——学生不是要加新事，是**问在不在**。
     #     实测那一幕（截图）：学生说「我现在没有看见日程显示周二游泳代办项目啊」，
@@ -2528,6 +2602,14 @@ async def todo_add(req: Request):
     item = add_todo(title, date, start, end,
                     note=(body.get("note") or "").strip(),
                     category=(body.get("category") or "").strip())
+    # 改期经按钮确认：写新之前先把旧的那条挪走（删旧 + 加新）。
+    # old_todo_id 只在改期提案里带着，普通加待办不会传，不影响别的路径。
+    _old_id = (body.get("old_todo_id") or "").strip()
+    if _old_id:
+        try:
+            delete_todo(_old_id)
+        except Exception:
+            pass
     # 学生是点卡片上的【确认加入】才走到这里的，这话得进会话历史——
     # 否则一刷新页面，那两条"✅ 已加入日程"就消失了，学生又会以为刚才没加上。
     sid = (body.get("session_id") or "").strip()
