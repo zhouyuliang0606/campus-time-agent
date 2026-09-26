@@ -68,7 +68,9 @@
     }
     .col.today { background: #f7faff; }
     .blk {
-      position: absolute; left: 3px; right: 3px; border-radius: 6px;
+      /* 默认占满整列宽；发生时间冲突时由 JS 设 --lane/--lanes 改成并排分成几栏，
+         这样"同一时段的课和待办"两边都能看见，不再互相盖住。 */
+      position: absolute; left: var(--bl, 3px); right: var(--br, 3px); border-radius: 6px;
       padding: 3px 6px; font-size: 12px; line-height: 1.35; overflow: hidden;
       border-left: 3px solid; cursor: default;
     }
@@ -259,24 +261,47 @@
       days.forEach(d => {
         const dIso = iso(d);
         const wd = isoWd(d);
-        html += `<div class="col ${dIso === todayIso ? "today" : ""}" style="height:${height}px;">`;
-        // 课程（按周表 day 字段匹配星期）
+
+        // 把当天所有条目（课程 + 待办）先收集起来，按开始时间排，
+        // 然后算「时间冲突分组」：只要和同组前一条时间有交叠，就算同一组。
+        // 同一组的块并排成 N 栏（各占 1/N 宽），避免"课和待办同一时段"互相盖住。
+        const items = [];
         courses.filter(c => Number(c.day) === wd).forEach(c => {
           const s = mins(c.start), e = mins(c.end);
           if (e <= s) return;
-          const top = Math.max(0, s - DAY_START), hgt = Math.min(e, DAY_END) - Math.max(s, DAY_START);
-          if (hgt <= 0) return;
-          html += `<div class="blk course" style="top:${top}px;height:${hgt}px;" title="${esc(c.course)} ${c.start}-${c.end} ${esc(c.location || "")}">
-            <b>${esc(c.course)}</b><span class="tm">${c.start}-${c.end}${c.location ? " · " + esc(c.location) : ""}</span></div>`;
+          items.push({ s, e, cls: "course", title: c.course, tm: c.start + "-" + c.end,
+                       loc: c.location || "", lead: "" });
         });
-        // 待办（按日期精确匹配，所以能插在课程之间的空隙里）
         todos.filter(t => t.date === dIso).forEach(t => {
           const s = mins(t.start), e = mins(t.end);
-          const top = Math.max(0, s - DAY_START), hgt = Math.min(e, DAY_END) - Math.max(s, DAY_START);
-          if (hgt <= 0) return;
-          const cls = t.status === "done" ? "todo done" : "todo";
-          html += `<div class="blk ${cls}" style="top:${top}px;height:${hgt}px;" title="${esc(t.title)} ${t.start}-${t.end}">
-            <b>📌 ${esc(t.title)}</b><span class="tm">${t.start}-${t.end}</span></div>`;
+          if (e <= s) return;
+          items.push({ s, e, cls: t.status === "done" ? "todo done" : "todo",
+                       title: t.title, tm: t.start + "-" + t.end, loc: "", lead: "📌 " });
+        });
+        items.sort((a, b) => a.s - b.s);
+
+        // 冲突分组：逐条看它和「当前组的最大结束时间」有没有交叠
+        const groups = [];
+        items.forEach(it => {
+          const g = groups[groups.length - 1];
+          if (g && it.s < g.end) { g.items.push(it); g.end = Math.max(g.end, it.e); }
+          else groups.push({ end: it.e, items: [it] });
+        });
+
+        html += `<div class="col ${dIso === todayIso ? "today" : ""}" style="height:${height}px;">`;
+        groups.forEach(g => {
+          const lanes = g.items.length;
+          g.items.forEach((it, i) => {
+            const top = Math.max(0, it.s - DAY_START);
+            const hgt = Math.min(it.e, DAY_END) - Math.max(it.s, DAY_START);
+            if (hgt <= 0) return;
+            // 并排：第 i 栏占 [i/lanes, (i+1)/lanes]；lanes=1 时回到 3px/3px（与原样式一致）。
+            const l = (i === 0) ? "3px" : `calc(${(i * 100 / lanes).toFixed(2)}% + 3px)`;
+            const r = (i === lanes - 1) ? "3px" : `calc(${((lanes - 1 - i) * 100 / lanes).toFixed(2)}% + 3px)`;
+            const title = `${it.lead}${it.title} ${it.tm}${it.loc ? " " + it.loc : ""}`;
+            html += `<div class="blk ${it.cls}" style="top:${top}px;height:${hgt}px;--bl:${l};--br:${r};"
+                      title="${esc(title)}"><b>${it.lead}${esc(it.title)}</b><span class="tm">${it.tm}${it.loc ? " · " + esc(it.loc) : ""}</span></div>`;
+          });
         });
         html += `</div>`;
       });
