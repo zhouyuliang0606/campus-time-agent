@@ -166,6 +166,79 @@ def test_grid_no_overlap():
     return c.summary("第十三批（网格溢出/重叠回归）")
 
 
+def test_time_conflict_layout():
+    """第十四批：同一时段的两条（课 + 待办）不许互相盖住。
+
+    学生报障原话：「数据结构和小组会议时间一样重合了」。
+    真实数据里周五 9/25 是 `心理学选修 14:00-15:40`（课）与
+    `小组会议：项目分工 14:00-15:30`（待办）**真时间冲突**——
+    plan.html 的周表用绝对定位（1 分钟=1 像素）、块一律 left:3px/right:3px，
+    两条时间有交叠就直接叠在一起，后画的把先画的盖没了。
+
+    修法：按「时间冲突分组」把同组的块并排成 N 栏（各占 1/N 宽），
+    单条时回到占满整列。学生端面板是列表式（无时间轴），
+    改为给冲突条目加 `.clash` 红边 + 「撞」角标，明确提示是时间冲突而非渲染 bug。
+    """
+    title("14. 同一时段课/待办并排（时间冲突不许互相盖住）")
+    c = Checker()
+    with sandbox():
+        client = make_client()
+
+        # —— plan.html：冲突分组 + 并排分栏 ——
+        p = client.get("/plan")
+        c.check("/plan 返回 200", p.status_code == 200)
+        ph = p.text
+        c.check("plan 有「冲突分组」算法（按最大结束时间归组）",
+                "groups[groups.length - 1]" in ph and "g.end = Math.max(g.end, it.e)" in ph)
+        c.check("plan 的块用 --bl/--br 变量决定左右边界（默认 3px）",
+                "left: var(--bl, 3px)" in ph and "right: var(--br, 3px)" in ph)
+        c.check("plan 按 lane 算左右百分比并排",
+                "const l = (i === 0) ? \"3px\"" in ph and "(i * 100 / lanes).toFixed(2)" in ph)
+        # 同组两条时第 0 条应占左半（right=50%），不再整列占满
+        c.check("冲突时右侧留出另一半（并排两栏）",
+                "((lanes - 1 - i) * 100 / lanes).toFixed(2)" in ph)
+        c.check("plan 不再把块写死 left:3px; right:3px（改用变量）",
+                "position: absolute; left: 3px; right: 3px;" not in ph)
+
+        # —— student.html：列表式面板给冲突条目加记号 ——
+        r = client.get("/student")
+        c.check("/student 返回 200", r.status_code == 200)
+        sh = r.text
+        c.check("学生端周表算了 clash 记号",
+                "x.clash = evts.slice(0, i).some(p => x.s < p.e && x.e > p.s)" in sh)
+        c.check("冲突条目会挂 clash class",
+                '${x.clash ? " clash" : ""}' in sh)
+        c.check("冲突条目带「撞」角标",
+                'class="clash-tag"' in sh and "和其他安排时间重叠" in sh)
+        c.check("有 .evt.clash 样式（红边提示）",
+                ".evt.clash" in sh and "#e24b4a" in sh)
+
+        # —— 算法自证：用真冲突数据跑一遍分组，必须是 2 栏 ——
+        def _lane(lanes, i):
+            l = "3px" if i == 0 else f"calc({(i * 100 / lanes):.2f}% + 3px)"
+            r = "3px" if i == lanes - 1 else f"calc({((lanes - 1 - i) * 100 / lanes):.2f}% + 3px)"
+            return l, r
+        # 两条 14:00 起（一条到 15:30、一条到 15:40）→ 同组
+        g = [(14 * 60, 15 * 60 + 40), (14 * 60, 15 * 60 + 30)]
+        g.sort()
+        grouped = []
+        for s, e in g:
+            grp = grouped[-1] if grouped else None
+            if grp and s < grp["end"]:
+                grp["items"].append((s, e)); grp["end"] = max(grp["end"], e)
+            else:
+                grouped.append({"end": e, "items": [(s, e)]})
+        c.check("两条同时段被归进同一个冲突组", len(grouped) == 1 and len(grouped[0]["items"]) == 2,
+                str(grouped))
+        c.check("冲突组内拆成并排两栏（各占半宽）",
+                _lane(2, 0) == ("3px", "calc(50.00% + 3px)")
+                and _lane(2, 1) == ("calc(50.00% + 3px)", "3px"),
+                str([_lane(2, 0), _lane(2, 1)]))
+        c.check("独占（lanes=1）时回到整列 3px/3px",
+                _lane(1, 0) == ("3px", "3px"), str(_lane(1, 0)))
+    return c.summary("第十四批（时间冲突并排）")
+
+
 def test_regression_existing_apis():
     title("4. 回归护栏：既有接口没有被这次改动破坏")
     c = Checker()
@@ -1030,4 +1103,5 @@ if __name__ == "__main__":
     code |= test_clear_intent_and_gate()
     code |= test_confirm_ui_page_and_alt_confirm()
     code |= test_grid_no_overlap()
+    code |= test_time_conflict_layout()
     sys.exit(code)
