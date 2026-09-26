@@ -1470,6 +1470,11 @@ async def chat(req: Request):
         if _rt_status == "ok":
             _rt_prop = _rt["proposal"]
             save_pending(session_id, [_rt_prop])
+            # 提案纠正过名字（如样本库把"瑜伽"误记为"健身"）时，把纠正后的真名字
+            # 写回语义层字段——否则 remember() 会把错的"健身"学进样本库，越错越深。
+            if _sem is not None and _rt_prop.get("title"):
+                _sem = dict(_sem)
+                _sem["title"] = _rt_prop["title"]
             _sem_done(_rt_prop)
             return _offer_response(
                 session_id, _rt_prop, message,
