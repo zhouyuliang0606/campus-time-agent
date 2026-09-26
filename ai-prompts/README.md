@@ -24,6 +24,7 @@
 - `2026-09-26-retime-crud-selfcheck.md` — 用户要求"增删查改自行测试一遍"：自测暴露「已排待办改期」接不住的真实缺口并接通 INTENT_RETIME 执行分支（关联 e153f84 / 1e3639b / bf2a538 / 0905fa1）
 - `2026-09-26-retime-live-collision-fix.md` — 收尾：真机"把周四那个瑜伽挪到周五"漏进大模型兜底，定位样本碰撞把"瑜伽"误记"健身"+旧日误判，堵住并补 RT-S4 回归（关联本批 4 个 commit）
 - `2026-09-26-add-course-as-todo-fix.md` — **加课被当代办**双重根因：wants_add_course 漏接"上午/下午/晚上"时段词 + 一条把加课记成 add_todo 的污染样本，加课硬闸门堵漏 + 第十八批回归（关联本批 4 个 commit）
+- `2026-09-26-week-grid-overlap-fix.md` — 学生截图报「重叠了」：纯前端 CSS，`repeat(7, 1fr)` 的 1fr 下限是 min-content、又被 nowrap 长串撑到 121px，七列总宽超容器 47px 导致列互相压住；改 `minmax(0, 1fr)` + 折行 + 网格项 min-width:0，两页同步（关联本批 3 个 commit）
 - （后续每次开发会话追加新文件……）
 
 ## 评审怎么看
