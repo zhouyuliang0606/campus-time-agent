@@ -1408,42 +1408,78 @@ def _normalize_clock(t: str) -> str:
     return re.sub(r"(\d{1,2})\s*点\s*(\d{1,2})\s*分?", rep2, t)
 
 
-def _pm_fix(text: str, hour: int | None) -> int | None:
-    """按上下文把 12 小时制拨成 24 小时制（人话：'下午2点'→14，'早上8点'还是 8）。"""
+# 时段词表：决定一个 12 小时制的钟点该不该 +12（人话：下午/晚上 = 加，上午/早上 = 不加）。
+_PM_WORDS = ("下午", "午后", "傍晚", "晚上", "夜里", "晚间", "今晚", "今夜")
+_AM_WORDS = ("上午", "早上", "早晨", "一早", "凌晨", "清晨")
+_SPAN_PERIOD_WORDS = _AM_WORDS + ("中午",) + _PM_WORDS
+
+
+def _period_hour(ctx: str, whole: str, hour: int | None) -> int | None:
+    """把一个钟点拨成 24 小时制（人话：'下午2点'→14，'早上8点'还是 8）。
+
+    为什么拆成 ctx 和 whole 两层：一句「上午9点到下午5点」两头时段词**不一样**——
+    老写法只看整句，会被"下午"带偏，读成 21:00-17:00。所以每个钟点**先看它自己前面**
+    那段字里的时段词；自己前面没说，才拿整句兜底（「4点到晚上7点」这种只把"晚上"
+    说了一次的写法，前头的"4点"仍该按整句的"晚上"算下午）。
+    """
     if hour is None or hour > 12:
         return hour
-    if re.search(r"下午|午后|傍晚|晚上|夜里|晚间", text or ""):
+    if any(w in (ctx or "") for w in _PM_WORDS):
+        return hour + 12 if hour < 12 else hour
+    if any(w in (ctx or "") for w in _AM_WORDS):
+        return hour                     # 自己前面白纸黑字写了"上午/早上"，就是早上，不加
+    # 自己前面没说时段词 → 拿整句兜底；但整句里只要出现"上午/早上"，
+    # 说明这是一句"上午…到下午…"的话，这个没说清的钟点按早上算（宁可不动）。
+    if any(w in (whole or "") for w in _AM_WORDS):
+        return hour
+    if any(w in (whole or "") for w in _PM_WORDS):
         return hour + 12 if hour < 12 else hour
     return hour
 
 
-def _pick_span(text: str):
-    """从一句话里抠出「起-止」时间（人话：认得 19:00-20:30 / 19点到20点 /
-    两点到三点 / 下午2点到3点）。
+# 「起 到 止」：两头各自可以是 19:00 / 7点 / 下午四点（"四点"已被 _normalize_clock 归一）。
+# 中间允许夹一个时段词（"到**晚上**7点"）——少了这一档，「下午四点到晚上7点」的右边就
+# 认不出来，整句退化成"只有一个起始钟点"，再被按默认 1 小时补成 16:00-17:00
+# （学生截屏投诉的就是这一条）。
+_SPAN_RE = re.compile(
+    r"(\d{1,2})\s*(?::(\d{2})|点)\s*(?:到|至|-|~|～)\s*"
+    r"(?:" + "|".join(_SPAN_PERIOD_WORDS) + r")?\s*(\d{1,2})\s*(?::(\d{2})|点)"
+)
+_CLOCK_RE = re.compile(r"(\d{1,2})\s*(?::(\d{2})|点)")
 
-    返回 (start, end)，只给了一个时刻时 end 为 None。
+
+def _pick_span(text: str):
+    """从一句话里抠出「起-止」时间。
+
+    认这些写法（人话：学生怎么顺口怎么说）：
+      · 19:00-20:30 / 16:30~18:00（全阿拉伯，含波浪号）
+      · 晚上七点到八点（全中文）
+      · **下午四点到晚上7点**（中英混用，而且两头时段词还不一样）
+      · 19点到20点 / 下午2点到3点
+
+    返回 (start, end)：只给了一个时刻时 end 为 None（单个钟点算**起点**，不是终点）。
     """
     t = _normalize_clock(text or "")
-    m = re.search(r"(\d{1,2}):(\d{2})\s*(?:到|至|-|~|～)\s*(\d{1,2}):(\d{2})", t)
+
+    # ① 先找「起 … 到 … 止」一对钟点。两头的时段词各看各的（见 _period_hour）。
+    m = _SPAN_RE.search(t)
     if m:
-        sh = _pm_fix(t, int(m.group(1)))
-        eh = _pm_fix(t, int(m.group(3)))
+        sh = _period_hour(t[:m.start(1)], t, int(m.group(1)))
+        eh = _period_hour(t[:m.start(3)], t, int(m.group(3)))
+        sm = int(m.group(2)) if m.group(2) else 0
+        em = int(m.group(4)) if m.group(4) else 0
         # 止比起还早 = 跨过了中午（"12点到1点"其实是 12:00-13:00）。
         # 注意必须是严格小于：写成 <= 的话 "7:00-7:40" 会被拨成 19:40。
         if eh is not None and sh is not None and eh < sh and eh <= 11:
             eh += 12
-        return (f"{sh:02d}:{m.group(2)}", f"{eh:02d}:{m.group(4)}")
-    m = re.search(r"(\d{1,2})\s*点\s*(?:到|至|-|~|～)\s*(\d{1,2})\s*点?", t)
+        return (f"{sh:02d}:{sm:02d}", f"{eh:02d}:{em:02d}")
+
+    # ② 只给了一个钟点 → 当起点，终点留给调用方（"真没给结束时间"那一档才补默认值）
+    m = _CLOCK_RE.search(t)
     if m:
-        sh = _pm_fix(t, int(m.group(1)))
-        eh = _pm_fix(t, int(m.group(2)))
-        if eh < sh and eh <= 11:
-            eh += 12
-        return f"{sh:02d}:00", f"{eh:02d}:00"
-    m = re.search(r"(\d{1,2}):(\d{2})", t)
-    if m:
-        sh = _pm_fix(t, int(m.group(1)))
-        return f"{sh:02d}:{m.group(2)}", None
+        sh = _period_hour(t[:m.start(1)], t, int(m.group(1)))
+        sm = int(m.group(2)) if m.group(2) else 0
+        return (f"{sh:02d}:{sm:02d}", None)
     return None, None
 
 
@@ -1560,6 +1596,10 @@ def _strip_title_noise(text: str) -> str:
     t = _CN_MD_RE.sub(" ", t)
     t = re.sub(r"\d{1,2}\s*[:：]\s*\d{2}(?:\s*(?:到|至|-|~|～)\s*\d{1,2}\s*[:：]?\s*\d{2})?", " ", t)
     t = re.sub(r"\d{1,2}\s*点到\s*\d{1,2}\s*点?", " ", t)
+    # 中英混写的时间（"下午四点到晚上7点" 归一后 = "下午4:00到晚上7点"）右头只剩一个
+    # 孤零零的"N点"，上面两条都够不着，残留下来标题就成了「到7点」。把这种"数字+点"
+    # 整块擦掉。（要求前面有阿拉伯数字，"早点/重点/地点/三点水"这类词不受影响。）
+    t = re.sub(r"\d{1,2}\s*点(\s*\d{1,2}\s*分)?", " ", t)
     for w in ("大后天", "后天", "今天", "今晚", "今夜", "明天", "上午", "下午",
               "晚上", "中午", "早上", "夜里", "周末",
               # 「平时 / 工作日」跟「周末」是一类：说的是**哪天方便**，不是要做什么事。
@@ -1583,6 +1623,10 @@ def _strip_title_noise(text: str) -> str:
     for w in _ADD_INTENT + ("的安排", "一下", "一个", "里", "在"):
         t = t.replace(w, " ")
     t = re.sub(r"[，,。！!？?、；;：:~～\-—『』「」\"'“”‘’]", " ", t)
+    # 时间被擦掉后，连接词（"到/至"）会孤零零剩下（"下午四点到晚上7点"→只剩"到"）。
+    # 它只是个连接词、不是事情名的一部分，收掉。只擦**独立成词**的到/至（前后是空白），
+    # 所以"到家/到底/至少"里作为词素的字不会被误伤。
+    t = re.sub(r"(?:^|\s)[到至](?=\s|$)", " ", t)
     t = re.sub(r"\s+", "", t).strip()
     # ⚠️ 上面那些 replace() 会在开头留下空格，把原来那句 `^(帮我|我要…)` 顶掉
     #    （"周日帮我安排游泳" → " 帮我 游泳" → 首字符是空格，"^" 就匹配不上了），
