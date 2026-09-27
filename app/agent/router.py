@@ -57,8 +57,12 @@ class Router:
     def __init__(self, llm: DeepSeekClient | None = None) -> None:
         self.llm = llm or DeepSeekClient()
 
-    async def route(self, user_input: str) -> str:
-        """返回模块关键字（如 "schedule"）。拿不准时默认回 "faq"。"""
+    async def route(self, user_input: str, override: dict | None = None) -> str:
+        """返回模块关键字（如 "schedule"）。拿不准时默认回 "faq"。
+
+        override 是学生端自定义的 API 配置，透传给大模型分类那一档，
+        这样没服务器密钥但学生填了自己 Key 的环境，路由也能走真模型。
+        """
         text = user_input.lower()
 
         # 1) 先走关键词兜底（快、稳、零成本）
@@ -89,7 +93,8 @@ class Router:
                 [
                     {"role": "system", "content": _SYSTEM_PROMPT},
                     {"role": "user", "content": user_input},
-                ]
+                ],
+                override=override,
             )
             data = json.loads(msg.get("content", "{}"))
             module = data.get("module", "faq")

@@ -734,10 +734,16 @@ async def chat(req: Request):
     if not is_valid(persona_key):
         persona_key = None
 
+    # 学生端在对话框里自己填的 API（仅存本机浏览器）：{base_url, model, api_key}。
+    # 带了有效 key 就优先用它，连服务器没配密钥也能跑真模型；不带的走服务器默认配置。
+    model_config = body.get("model_config") or None
+    if not isinstance(model_config, dict) or not model_config.get("api_key"):
+        model_config = None
+
     # 1) 若前端显式指定了模块且合法，直接用；否则交给 router 自动分类意图
     module_key = body.get("module")
     if not (module_key and module_key in REGISTRY):
-        module_key = await router.route(message)
+        module_key = await router.route(message, override=model_config)
 
     # 2) 取该模块的系统提示和工具箱（提示可能是函数，按需调用以拼入最新人格）
     prompt_src, build_tools = REGISTRY.get(module_key, (DEFAULT_PROMPT, lambda: {}))
@@ -2131,7 +2137,10 @@ async def chat(req: Request):
         }
 
     # 4) 组装引擎并跑 ReAct 循环（会按需调用工具）
-    engine = AgentEngine(system_prompt=prompt, tools=tools, session_id=session_id)
+    engine = AgentEngine(
+        system_prompt=prompt, tools=tools, session_id=session_id,
+        llm_override=model_config,
+    )
 
     # 之前聊过的内容（让 Agent 记得住上一轮商量到哪了）
     history = get_conversation(session_id)
@@ -2139,7 +2148,8 @@ async def chat(req: Request):
     # 规划模块 + 没配密钥时，走确定性的离线 Mock 助手。
     # 这样「查空档 → 给候选 → 学生勾选 → 写入」这套交互不用大模型也能完整演示，
     # 评委没看到密钥也不影响看效果。
-    if module_key == "planner" and not get_llm_config()["api_key"]:
+    # 注意：若学生端自带了有效 API（model_config 有 key），就跳过 Mock，走真模型。
+    if module_key == "planner" and not get_llm_config(override=model_config)["api_key"]:
         result = mock_planner(message, history, persona_key)
         append_conversation(session_id, "user", message)
         append_conversation(session_id, "assistant", result["answer"])
