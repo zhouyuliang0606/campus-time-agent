@@ -356,7 +356,10 @@
   .panel-mode #panel { display: block; }
   .view { display: none; }
   .panel-mode #view-faq { display: none; }
-  .panel-mode #log, .panel-mode #chips, .panel-mode .thinking, .panel-mode .notices, .panel-mode #modules, .panel-mode #hint { display: none !important; }
+  /* 面板模式下：只隐藏首页级组件（通知/模块卡/提示），保留聊天区（#log/#chips/正在思考）。
+     这样"日程/快递/外卖"既能看面板，又能继续和管家对话并看到对话内容。
+     （代办/上传/设置本就是独立的 nav-view，chatStage 整体不激活，自然没有对话框。） */
+  .panel-mode .notices, .panel-mode #modules, .panel-mode #hint { display: none !important; }
   #modules { display: none !important; }
   #hint { display: none !important; }
   .composer { border-top: 1px solid #eef0f6; background: #fff; padding: 10px 16px 14px; }
@@ -645,6 +648,9 @@
       el.innerHTML = html;
       log.appendChild(el);
       log.scrollTop = log.scrollHeight;
+      // 面板模式下面板在聊天区上方，需把外层滚动容器也拉到底，新消息才看得见
+      const stage = log.closest(".stage");
+      if (stage) stage.scrollTop = stage.scrollHeight;
       return el;
     }
 
