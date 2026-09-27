@@ -30,6 +30,7 @@
 - `2026-09-27-per-module-history.md` — 底部发送不再拽回校园问答（固定左侧导航）+ 每个模块独立聊天历史 + 每个模块适配各自开场白（sessionId 按模块 key、chat 沿用全局以兼容 plan.html 与测试；关联本批 1 个代码 commit）
 - `2026-09-27-panel-chat-visible.md` — 回归修复：上一步让卡片走 switchNav 触发 panel-mode 把聊天区(display:none)藏掉；改为 panel-mode 只隐藏首页组件、保留聊天区，并在 addMsg 滚动外层 .stage（关联本批 1 个代码 commit）
 - `2026-09-27-chatbox-chat-schedule-only.md` — 对话框仅保留在「校园问答+日程」：快递/外卖/代办/上传/设置纯查看；no-chatbox 整体隐藏 composer+#log；校园问答欢迎词恢复最初原文（关联本批 1 个代码 commit）
+- `2026-09-27-time-span-mixed-format.md` — 截图报「下午四点到晚上7点」被截成 1 小时 + 标题残留「到7点」：`_pick_span` 两条旧正则接不住中英混写（归一成"下午4:00到晚上7点"后退化成单起点→默认补 1 小时）；改统一 `_SPAN_RE` + 新增 `_period_hour` 两端点各看各的时段词，`_strip_title_noise` 补擦「N点」残片与孤立连接词（关联本批 1 个代码 commit）
 - （后续每次开发会话追加新文件……）
 
 ## 评审怎么看
