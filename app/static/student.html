@@ -593,6 +593,8 @@
     };
 
     let currentModule = null; // 当前选中的模块；null 表示让后端自动识别
+    let currentView = "chat";  // 当前左侧导航模块（校园问答/日程/快递/外卖/…）；聊天历史与开场白按它区分，做到"每个模块一条历史"
+    let switchNavRef = null;   // 由下方三栏外壳(IIFE)赋值，供上方卡片点击复用同一套导航逻辑
 
     const log = document.getElementById("log");
     const text = document.getElementById("text");
@@ -627,8 +629,10 @@
         c.addEventListener("click", () => sendMsg(q));
         chipsBox.appendChild(c);
       });
-      // 切换主显示面板（不往聊天里塞"已切换"的系统消息——面板本身就是回应）
-      showView(VIEW_OF[key]);
+      // 卡片与左侧导航同源：点卡片 = 切到对应模块（含各自的开场白与聊天历史），
+      // faq 卡片对应左侧"校园问答"(chat)
+      if (typeof switchNavRef === "function") switchNavRef(key === "faq" ? "chat" : key);
+      else showView(VIEW_OF[key]);
     }
 
     function addMsg(who, content, kind, module) {
@@ -1185,12 +1189,39 @@
       return escapeHtml(s).replace(/\*\*([^*\n]{1,60})\*\*/g, "<b>$1</b>");
     }
 
-    // 会话 id：和日程页共用同一个，后端靠它把几轮对话串起来，
-    // 这样 AI 才记得住上一轮跟我们商量好的时间安排
-    function sessionId() {
-      let sid = localStorage.getItem("campustime_session");
-      if (!sid) { sid = "s" + Math.random().toString(16).slice(2, 12); localStorage.setItem("campustime_session", sid); }
+    // 会话 id：按"左侧导航模块"区分，每个模块一条独立历史。
+    // 校园问答(chat) 沿用全局 campustime_session —— 和日程/规划页、端到端测试共用，
+    // 保证跨页上下文与测试脚本兼容；其余带面板的模块各自独立 key，互不串味。
+    function sessionId(view) {
+      const v = view || currentView || "chat";
+      const key = (v === "chat") ? "campustime_session" : ("campustime_session_" + v);
+      let sid = localStorage.getItem(key);
+      if (!sid) { sid = "s" + Math.random().toString(16).slice(2, 12); localStorage.setItem(key, sid); }
       return sid;
+    }
+
+    // ---------- 模块化的开场白 + 切模块时换历史 ----------
+    // 每个左侧模块各自一套开场白与历史；切到哪个模块就显示哪一套。
+    const MODULE_GREETING = {
+      chat:     n => `你好，我是你的${n} 👋 选一个模块开始，或直接说需求（比如"我有哪些快递待取？"）。`,
+      schedule: n => `📅 这是你的日程面板。直接问我"今天有什么安排？"或"帮我加个周末爬山计划"都可以。`,
+      express:  n => `📦 这是你的快递面板。想知道"我有哪些快递待取？"直接问我即可。`,
+      takeout:  n => `🍱 这是你的外卖面板。想点餐或查订单，直接跟我说就行。`,
+      todos:    n => `✅ 代办事项面板。跟我说"提醒我周五交作业"就能加一条待办。`,
+      upload:   n => `📎 上传文件面板。把资料拖进来，或直接在对话框里发文件给我。`,
+      settings: n => `⚙ 设置面板。这里可以改助手名字、性格、模型与 API。`,
+    };
+    function applyGreeting(view) {
+      const bubble = document.getElementById("greetBubble");
+      if (bubble) bubble.textContent = (MODULE_GREETING[view] || MODULE_GREETING.chat)(botName());
+    }
+    function resetLogForModule(view) {
+      // 清掉上一段模块的消息，只留开场白那条，再换上本模块的开场白与历史
+      if (greetEl) {
+        Array.from(log.children).forEach(el => { if (el !== greetEl) el.remove(); });
+      }
+      applyGreeting(view);
+      restoreHistory();
     }
 
     // 底部「正在思考…」指示器
@@ -1631,11 +1662,8 @@
     setInterval(loadNotices, 30000);
     // 用本地保存的助手名字刷新开场白（名字在设置页里改）
     (function refreshGreeting() {
-      const n = botName();
-      const who = document.getElementById("greetWho");
-      const bubble = document.getElementById("greetBubble");
-      if (who) who.textContent = n;
-      if (bubble) bubble.textContent = `你好，我是你的${n} 👋 选一个模块开始，或直接说需求（比如"我有哪些快递待取？"）。`;
+      // 开场白随当前模块变化（greetWho 由 loadProfile 管，这里只管气泡文案）
+      applyGreeting(currentView);
     })();
     // ---------- 会话历史恢复（人话：刷新页面，聊过的话还得在） ----------
     // 之前这个页面只管往 sessions.json 里写、从来不读回来，学生一刷新就只剩开场白，
@@ -1699,8 +1727,10 @@
         // 最关键的一步：换一个新的 session id。
         // 不换的话，学生一按 F5，restoreHistory 又把旧记录一条条捞回来了，
         // 清了跟没清一个样——这正是"刷新后记录又冒出来"的老毛病。
-        localStorage.setItem("campustime_session",
+        localStorage.setItem(
+          (currentView === "chat") ? "campustime_session" : ("campustime_session_" + currentView),
           "s" + Math.random().toString(16).slice(2, 12));
+        applyGreeting(currentView); // 清完回到该模块的开场白
         addMsg(botName(), "好的，我们已经开始一段新的对话，之前那段记录我帮你清掉了。", "bot");
         await loadScheduleView();          // 课表/日程不受影响，顺手确认一下还在
       } catch (e) {
@@ -1721,20 +1751,22 @@
 
     // 初始化语音输入
     initVoice();
-    // 拉回上次的聊天记录（异步，不影响开场白先显示出来）
-    restoreHistory();
+    // 拉回上次的聊天记录交给初始化时按模块处理（resetLogForModule 内部会调 restoreHistory）
 
   // ================= 三栏外壳交互（新增） =================
   (function(){
     var NAV_TITLE = {chat:"校园问答", schedule:"日程", todos:"代办事项", upload:"上传文件", settings:"设置", express:"快递", takeout:"外卖"};
     function cap(x){ return x.charAt(0).toUpperCase()+x.slice(1); }
     function switchNav(view){
+      var oldView = currentView;
+      currentView = view;
       var chatStage = document.getElementById("chatStage");
       var isPanel = (view==="schedule"||view==="express"||view==="takeout");
       document.querySelectorAll(".nav-view").forEach(function(v){ v.classList.remove("active"); });
       if(isPanel){ chatStage.classList.add("active","panel-mode"); }
       else if(view==="chat"){ chatStage.classList.remove("panel-mode"); chatStage.classList.add("active"); }
       else { chatStage.classList.remove("active","panel-mode"); var nv=document.getElementById("nav"+cap(view)); if(nv) nv.classList.add("active"); }
+      // 左侧导航高亮始终跟着当前模块 —— 发送消息也不会被强行拽回"校园问答"
       document.querySelectorAll(".sb-item").forEach(function(b){ b.classList.toggle("active", b.dataset.nav===view); });
       var t=document.getElementById("navTitle"); if(t) t.textContent = NAV_TITLE[view]||"校园问答";
       if(view==="schedule") showView("view-schedule");
@@ -1744,7 +1776,11 @@
       else if(view==="todos") loadTodosView();
       else if(view==="upload") loadUploadView();
       else if(view==="settings") loadSettingsView();
+      // 进入"对话类"模块（校园问答/日程/快递/外卖）时，换上该模块的开场白与独立历史
+      var isChat = (view==="chat"||view==="schedule"||view==="express"||view==="takeout");
+      if (isChat && view !== oldView) resetLogForModule(view);
     }
+    switchNavRef = switchNav; // 暴露给上方卡片点击逻辑复用
     document.getElementById("sbNav").addEventListener("click", function(e){
       var item=e.target.closest(".sb-item"); if(!item) return; switchNav(item.dataset.nav);
     });
@@ -1923,7 +1959,7 @@
       showModal("粘贴大段文本",
         '<textarea id="pasteArea" rows="10" placeholder="把长文本粘到这里，发送给管家（它会先读再回答）" style="width:100%;padding:10px;border:1px solid #d8def0;border-radius:10px;font-size:13px;outline:none;resize:vertical;font-family:inherit;"></textarea>',
         [{label:"取消",ghost:true,on:function(){ closeModal(); }},
-         {label:"发送",on:function(){ var t=document.getElementById("pasteArea").value.trim(); if(!t) return; closeModal(); switchNav("chat"); sendMsg(t); }}]);
+         {label:"发送",on:function(){ var t=document.getElementById("pasteArea").value.trim(); if(!t) return; closeModal(); sendMsg(t); }}]);
     });
 
     function showModal(title, bodyHtml, buttons){
@@ -1942,12 +1978,14 @@
     function closeModal(){ var m=document.getElementById("modalMask"); if(m) m.classList.remove("show"); }
     document.getElementById("modalMask").addEventListener("click", function(e){ if(e.target===document.getElementById("modalMask")) closeModal(); });
 
-    document.getElementById("send").addEventListener("click", function(){ switchNav("chat"); });
-    document.getElementById("text").addEventListener("keydown", function(e){ if(e.key==="Enter") switchNav("chat"); });
+    // 注意：真正的"发送"由上方（send/Enter 监听）负责；这里不再强制切回校园问答，
+    // 左侧导航在发送时保持当前模块不动。
 
     loadProfile();
     loadModelSel();
-    switchNav("chat");
+    currentView = "chat";
+    resetLogForModule("chat"); // 应用校园问答开场白 + 拉回该模块历史
+    switchNav("chat");         // 设置高亮/面板（view 相同，不再重置）
   })();
 
   </script>
