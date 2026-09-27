@@ -5,7 +5,7 @@
 依赖：reportlab（managed python 已自带 5.0.1），中文用内置 Adobe CJK 字体 STSong-Light，无需外部字体文件。
 输出：docs/技术文档.pdf
 
-版本：2026-09-27（同步判定层/执行层分离、类型判定重做、189 提交 / 1052 项测试）
+版本：2026-09-27（同步判定层 / 执行层分离、类型判定重做、提交身份重写；200 提交 / 1052 项测试）
 """
 import os
 from reportlab.lib.pagesizes import A4
@@ -87,7 +87,7 @@ meta = [
     ["定位", "校园 AI 服务助手（学生活端 / 驿站商户侧 / 管理控制台）"],
     ["技术栈", "Python + FastAPI + 原生 HTML/JS + 自写轻量 ReAct Agent + DeepSeek"],
     ["仓库", "github.com/zhouyuliang0606/campus-time-agent（Public）"],
-    ["规模", "7 个页面 / 38 个 API / 189 个细粒度 commit / 20 份 Prompt 快照"],
+    ["规模", "7 个页面 / 38 个 API / 200 个细粒度 commit（截至 2026-09-27） / 21 份 Prompt 快照"],
     ["自检", "tests/run_all.py 全绿：通过 1052 项，失败 0 项（共 9 批）"],
     ["文档版本", "2026-09-27"],
 ]
@@ -112,11 +112,12 @@ story += [H1("摘要"),
     H2("提交清单对照"),
     table([
         ["比赛要求", "本项目落地情况"],
-        ["Public 仓库 + 细粒度提交历史", "GitHub Public，189 个独立 commit，禁止一次性打包"],
-        ["AI 对话历史 Prompt 快照", "ai-prompts/ 目录，20 份快照 + 索引，与代码分开提交"],
+        ["Public 仓库 + 细粒度提交历史", "GitHub Public，200 个独立 commit（截至 2026-09-27），禁止一次性打包"],
+        ["AI 对话历史 Prompt 快照", "ai-prompts/ 目录，21 份快照 + 索引，与代码分开提交"],
         ["README 复现指南", "仓库根 README.md（环境 / Key 两种配法 / 启动 / 自检 / 演示话术）"],
         ["5-8 分钟演示视频（含 AI 协同）", "docs/演示视频分镜.md（逐镜 + 解说词，本地录屏）"],
         ["技术文档 PDF ≤30 页", "本文件"],
+        ["开源协议", "MIT License（仓库根 LICENSE）"],
     ], [60*mm, 95*mm]),
     PageBreak()]
 
@@ -334,11 +335,11 @@ story += [H1("8. 测试策略"),
 story += [H1("9. AI 协同开发与交付流程"),
     P("本项目全程在人与 AI 协同下完成。为满足「细粒度提交 + Prompt 快照」要求，约定："),
     bullets([
-        "每做一步逻辑改动就<b>单独 commit</b>，绝不在最后一次性打包（当前 <b>189 个细粒度 commit</b>）。",
+        "每做一步逻辑改动就<b>单独 commit</b>，绝不在最后一次性打包（本文档版本日为 <b>200 个</b>，此后持续增加）。",
         "每次开发会话写一份 <b>Prompt 快照</b>（ai-prompts/YYYY-MM-DD-&lt;主题&gt;.md），"
         "记录「<b>用户 Prompt → AI 研判 → 改动 → 验证</b>」四段。",
         "快照文件<b>与代码分开提交</b>（单独 commit），评审把任意快照与其 commit 对照即可还原那一步协同过程。",
-        "当前共 <b>20 份快照</b>，索引见 ai-prompts/README.md。",
+        "当前共 <b>21 份快照</b>，索引见 ai-prompts/README.md。",
     ]),
     H2("9.1 交付链路本身也被记录"),
     P("仓库推送到 GitHub 的过程同样留了快照（ai-prompts/2026-09-27-github-push-and-contributor-identity.md）："
