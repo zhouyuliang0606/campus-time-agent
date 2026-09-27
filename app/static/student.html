@@ -360,6 +360,11 @@
      这样"日程/快递/外卖"既能看面板，又能继续和管家对话并看到对话内容。
      （代办/上传/设置本就是独立的 nav-view，chatStage 整体不激活，自然没有对话框。） */
   .panel-mode .notices, .panel-mode #modules, .panel-mode #hint { display: none !important; }
+  /* 仅"校园问答"和"日程"保留对话框（对话区+输入框）；快递/外卖/代办/上传/设置纯查看，整体隐藏对话框 */
+  body.no-chatbox .composer,
+  body.no-chatbox #log,
+  body.no-chatbox #chips,
+  body.no-chatbox .thinking { display: none !important; }
   #modules { display: none !important; }
   #hint { display: none !important; }
   .composer { border-top: 1px solid #eef0f6; background: #fff; padding: 10px 16px 14px; }
@@ -1209,7 +1214,8 @@
     // ---------- 模块化的开场白 + 切模块时换历史 ----------
     // 每个左侧模块各自一套开场白与历史；切到哪个模块就显示哪一套。
     const MODULE_GREETING = {
-      chat:     n => `你好，我是你的${n} 👋 选一个模块开始，或直接说需求（比如"我有哪些快递待取？"）。`,
+      // 校园问答沿用最初那句欢迎词，保持不变
+      chat:     "你好，我是你的校园时间管家 👋 选一个模块开始，或直接说需求（比如“我有哪些快递待取？”）。",
       schedule: n => `📅 这是你的日程面板。直接问我"今天有什么安排？"或"帮我加个周末爬山计划"都可以。`,
       express:  n => `📦 这是你的快递面板。想知道"我有哪些快递待取？"直接问我即可。`,
       takeout:  n => `🍱 这是你的外卖面板。想点餐或查订单，直接跟我说就行。`,
@@ -1219,7 +1225,9 @@
     };
     function applyGreeting(view) {
       const bubble = document.getElementById("greetBubble");
-      if (bubble) bubble.textContent = (MODULE_GREETING[view] || MODULE_GREETING.chat)(botName());
+      if (!bubble) return;
+      const g = MODULE_GREETING[view] || MODULE_GREETING.chat;
+      bubble.textContent = (typeof g === "function") ? g(botName()) : g;
     }
     function resetLogForModule(view) {
       // 清掉上一段模块的消息，只留开场白那条，再换上本模块的开场白与历史
@@ -1766,6 +1774,9 @@
     function switchNav(view){
       var oldView = currentView;
       currentView = view;
+      // 只有"校园问答"和"日程"需要对话框（对话区+输入框）；其余模块纯查看，整体隐藏对话框
+      var chatMod = (view==="chat" || view==="schedule");
+      document.body.classList.toggle("no-chatbox", !chatMod);
       var chatStage = document.getElementById("chatStage");
       var isPanel = (view==="schedule"||view==="express"||view==="takeout");
       document.querySelectorAll(".nav-view").forEach(function(v){ v.classList.remove("active"); });
@@ -1782,9 +1793,8 @@
       else if(view==="todos") loadTodosView();
       else if(view==="upload") loadUploadView();
       else if(view==="settings") loadSettingsView();
-      // 进入"对话类"模块（校园问答/日程/快递/外卖）时，换上该模块的开场白与独立历史
-      var isChat = (view==="chat"||view==="schedule"||view==="express"||view==="takeout");
-      if (isChat && view !== oldView) resetLogForModule(view);
+      // 仅"校园问答/日程"需要换各自的开场白与历史；其余纯查看模块不动聊天区
+      if (chatMod && view !== oldView) resetLogForModule(view);
     }
     switchNavRef = switchNav; // 暴露给上方卡片点击逻辑复用
     document.getElementById("sbNav").addEventListener("click", function(e){
