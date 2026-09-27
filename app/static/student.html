@@ -320,22 +320,125 @@
       .faq-grid { grid-template-columns: 1fr; }
       .wk { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     }
-  </style>
+  
+  /* ============ 三栏外壳 ============ */
+  .shell { display: flex; height: 100vh; overflow: hidden; }
+  .sidebar { width: 232px; flex: none; background: #fff; border-right: 1px solid #eef0f6; display: flex; flex-direction: column; padding: 12px 12px; gap: 4px; position: relative; height: 100vh; overflow-y: auto; }
+  .sb-profile { display: flex; align-items: center; gap: 10px; padding: 9px 10px; border-radius: 12px; cursor: pointer; background: #f7f9ff; border: 1px solid #e7ecf8; margin-bottom: 10px; }
+  .sb-profile:hover { border-color: #4f7cff; }
+  .sb-avatar { width: 40px; height: 40px; border-radius: 50%; object-fit: cover; background: #4f7cff; display: flex; align-items: center; justify-content: center; color: #fff; font-size: 18px; flex: none; }
+  .sb-name { font-size: 14px; font-weight: 600; color: #1f2733; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .sb-sub { font-size: 11px; color: #8a93a6; }
+  .sb-nav { display: flex; flex-direction: column; gap: 2px; }
+  .sb-item { display: flex; align-items: center; gap: 10px; padding: 11px 12px; border-radius: 10px; cursor: pointer; font-size: 14px; color: #4a5366; user-select: none; border: 1px solid transparent; }
+  .sb-item:hover { background: #f4f6fb; }
+  .sb-item.active { background: #eef2ff; color: #3457d5; font-weight: 600; border-color: #d8e0fb; }
+  .sb-item .ico { width: 18px; text-align: center; font-size: 16px; }
+  .sb-more { border-top: 1px solid #eef0f6; margin-top: 6px; padding-top: 6px; }
+  .sb-more-body { display: none; }
+  .sb-more.open .sb-more-body { display: block; }
+  .sb-pop { display: none; position: absolute; left: 12px; top: 66px; width: 208px; z-index: 50; background: #fff; border: 1px solid #e3e8f4; border-radius: 12px; box-shadow: 0 10px 30px rgba(20,26,45,.14); padding: 6px; }
+  .sb-pop.show { display: block; }
+  .sb-pop .pi { padding: 10px 12px; font-size: 13px; color: #1f2733; border-radius: 8px; cursor: pointer; }
+  .sb-pop .pi:hover { background: #f4f6fb; }
+  .sb-foot { margin-top: auto; font-size: 11px; color: #aab1c2; padding-left: 6px; }
+  .main { flex: 1; display: flex; flex-direction: column; min-width: 0; height: 100vh; }
+  .topbar { display: flex; align-items: center; gap: 10px; padding: 10px 16px; border-bottom: 1px solid #eef0f6; background: #fff; }
+  .topbar .t { font-size: 15px; font-weight: 600; color: #1f2733; }
+  .topbar .grow { flex: 1; }
+  .tb-link { font-size: 13px; color: #4f7cff; text-decoration: none; background: #eef2ff; padding: 5px 12px; border-radius: 8px; }
+  .tb-link:hover { background: #e2e9ff; }
+  .stage { flex: 1; overflow-y: auto; padding: 16px; }
+  .nav-view { display: none; }
+  .nav-view.active { display: block; }
+  #log { max-height: none; min-height: 240px; }
+  #panel { display: none; }
+  .panel-mode #panel { display: block; }
+  .view { display: none; }
+  .panel-mode #view-faq { display: none; }
+  .panel-mode #log, .panel-mode #chips, .panel-mode .thinking, .panel-mode .notices, .panel-mode #modules, .panel-mode #hint { display: none !important; }
+  #modules { display: none !important; }
+  #hint { display: none !important; }
+  .composer { border-top: 1px solid #eef0f6; background: #fff; padding: 10px 16px 14px; }
+  .composer-row { display: flex; gap: 8px; margin-bottom: 8px; }
+  .model-sel { padding: 8px 10px; border: 1px solid #d8def0; border-radius: 9px; font-size: 13px; background: #fff; color: #4a5366; max-width: 340px; }
+  .paste-btn { padding: 8px 12px; border: 1px solid #d8def0; border-radius: 9px; background: #fff; color: #4f7cff; font-size: 13px; cursor: pointer; }
+  .paste-btn:hover { background: #eef2ff; }
+  .inputbar { margin-top: 0; }
+  .card { background: #fff; border-radius: 14px; padding: 18px 18px 20px; margin-bottom: 16px; box-shadow: 0 4px 16px rgba(40,60,120,.08); }
+  .card h2 { margin: 0 0 4px; font-size: 16px; }
+  .card .desc { font-size: 13px; color: #6a7388; margin: 0 0 14px; }
+  .btn { padding: 0 20px; border: none; border-radius: 10px; cursor: pointer; background: #4f7cff; color: #fff; font-size: 14px; height: 40px; }
+  .btn.ghost { background: #eef2ff; color: #3457d5; }
+  .persona-list { display: flex; flex-wrap: wrap; gap: 8px; }
+  .todo-list { display: flex; flex-direction: column; gap: 8px; }
+  .todo-row { display: flex; align-items: center; gap: 10px; border: 1px solid #eef0f6; border-radius: 10px; padding: 10px 12px; }
+  .todo-row.done { opacity: .6; }
+  .todo-row.done .todo-title { text-decoration: line-through; }
+  .todo-row input[type=checkbox] { width: 16px; height: 16px; accent-color: #4f7cff; flex: none; }
+  .todo-main { flex: 1; min-width: 0; }
+  .todo-title { font-size: 14px; font-weight: 500; }
+  .todo-sub { font-size: 12px; color: #8a93a6; margin-top: 2px; }
+  .todo-del { padding: 5px 12px; border: 1px solid #f3c2c5; background: #fff; color: #e0414a; border-radius: 8px; font-size: 12px; cursor: pointer; flex: none; }
+  .todo-del:hover { background: #fff0f0; }
+  .up-drop { border: 2px dashed #d8def0; border-radius: 12px; padding: 22px; text-align: center; color: #6a7388; font-size: 13px; margin-bottom: 12px; }
+  .up-drop.over { border-color: #4f7cff; background: #f3f7ff; }
+  .up-list { display: flex; flex-direction: column; gap: 6px; }
+  .up-row { display: flex; align-items: center; gap: 10px; border: 1px solid #eef0f6; border-radius: 9px; padding: 8px 12px; font-size: 13px; }
+  .up-name { flex: 1; font-weight: 500; }
+  .up-sub { color: #8a93a6; font-size: 12px; }
+  .up-link { color: #4f7cff; cursor: pointer; text-decoration: none; }
+  .av-grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 8px; }
+  .av-opt { aspect-ratio: 1; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 20px; cursor: pointer; color: #fff; border: 2px solid transparent; }
+  .av-opt.sel { border-color: #1f2733; }
+  @media (max-width: 720px) {
+    .sidebar { width: 64px; padding: 10px 8px; }
+    .sb-name, .sb-sub, .sb-item span:not(.ico), .sb-more-toggle span:not(.ico), .sb-foot { display: none; }
+    .sb-item { justify-content: center; }
+  }
+</style>
 </head>
 <body>
-  <header>
-    <!-- 头部用 flex 排：标题居左，两个入口按钮居右。
-         之前用 float + 负 margin 让「完整日程」叠在标题行右侧，点击区域会被
-         右浮的「设置」压住——点上去没反应。flex 布局后互不遮挡。 -->
-    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
-      <h1 style="margin:0;font-size:20px;flex:1;">校园时间管家 · 学生端</h1>
-      <a href="/plan" style="color:#fff;font-size:13px;text-decoration:none;background:rgba(255,255,255,.18);padding:5px 12px;border-radius:8px;">📅 完整日程</a>
-      <a href="/settings" style="color:#fff;font-size:13px;text-decoration:none;background:rgba(255,255,255,.18);padding:5px 12px;border-radius:8px;" title="助手设置">⚙ 设置</a>
-    </div>
-    <p>一个入口办四件事：我的日程 · 校园问答 · 快递 · 外卖</p>
-  </header>
-
-  <div class="wrap">
+  <div class="shell">
+    <aside class="sidebar" id="sidebar">
+      <div class="sb-profile" id="sbProfile">
+        <img class="sb-avatar" id="sbAvatar" alt="头像" />
+        <div style="min-width:0;">
+          <div class="sb-name" id="sbName">同学</div>
+          <div class="sb-sub">点击查看账号 ▾</div>
+        </div>
+      </div>
+      <nav class="sb-nav" id="sbNav">
+        <div class="sb-item active" data-nav="chat"><span class="ico">💬</span>校园问答</div>
+        <div class="sb-item" data-nav="schedule"><span class="ico">🗓️</span>日程</div>
+        <div class="sb-item" data-nav="todos"><span class="ico">✅</span>代办事项</div>
+        <div class="sb-item" data-nav="upload"><span class="ico">📤</span>上传文件</div>
+        <div class="sb-item" data-nav="settings"><span class="ico">⚙️</span>设置</div>
+      </nav>
+      <div class="sb-more" id="sbMore">
+        <div class="sb-item sb-more-toggle" id="sbMoreToggle"><span class="ico">➕</span>更多服务 ▾</div>
+        <div class="sb-more-body" id="sbMoreBody">
+          <div class="sb-item" data-nav="express"><span class="ico">📦</span>快递</div>
+          <div class="sb-item" data-nav="takeout"><span class="ico">🍱</span>外卖</div>
+        </div>
+      </div>
+      <div class="sb-pop" id="sbPop">
+        <div class="pi" id="sbPiProfile">账号信息</div>
+        <div class="pi" id="sbPiSettings">设置</div>
+        <div class="pi" id="sbPiLogout">退出登录</div>
+      </div>
+      <div class="sb-foot">校园时间管家 · 学生端</div>
+    </aside>
+    <main class="main">
+      <div class="topbar">
+        <div class="t" id="navTitle">校园问答</div>
+        <span class="grow"></span>
+        <a class="tb-link" href="/plan" target="_blank">📅 完整日程</a>
+        <a class="tb-link" href="/admin" target="_blank">🛠 管理端</a>
+        <a class="tb-link" href="/station" target="_blank">🏪 驿站</a>
+      </div>
+      <div class="stage">
+        <div id="chatStage" class="nav-view active">
     <!-- 校园通知（管理员在控制台发布，含附件可直接下载） -->
     <div class="notices">
       <div class="notices-head" id="noticesHead">
@@ -430,33 +533,55 @@
       <span class="dots"><span></span><span></span><span></span></span>
     </div>
 
-    <div class="inputbar">
-      <input type="file" id="file" style="display:none;" />
-      <button class="attach" id="attach" title="上传资料给管家读">📎</button>
-      <button class="mic" id="mic" title="语音输入（中文）">🎤</button>
-      <button class="mic" id="clearChat" title="清空与管家的聊天记录">🧹</button>
-      <input id="text" placeholder="说点什么…（可点 🎤 语音输入）" />
-      <button id="send">发送</button>
-    </div>
+    <!-- inputbar 已移至 composer -->
 
-    <!-- 清空聊天记录确认弹窗：跟清空课表一个规矩，学生亲手点【清空】才会调后端 -->
-    <div id="chatResetMask" class="mask">
-      <div class="dlg" role="dialog" aria-modal="true" aria-labelledby="chatResetTitle">
-        <div class="dlg-head" id="chatResetTitle">🧹 清空与管家的聊天记录</div>
-        <div class="dlg-body">
-          <p id="chatResetSummary" style="margin:0 0 8px;line-height:1.6;"></p>
-          <div class="dlg-warn">
-            删掉的是<b>这段对话的记录</b>，清完就从新的一段对话开始。<br />
-            <b>课表和日程不受影响</b>，已排进去的课和可待办都还在。
+    <!-- chatResetMask 已移至 main -->
+        </div><!-- /chatStage -->
+        <div id="navTodos" class="nav-view">
+          <div class="card"><h2>代办事项</h2><div class="desc">勾选标记完成，或删除。改动即时同步到日程。</div><div id="todoList" class="todo-list"></div></div>
+        </div>
+        <div id="navUpload" class="nav-view">
+          <div class="card"><h2>上传文件</h2><div class="desc">上传资料给管家读取，或管理已上传的文件（也可点下方 📎 直接在对话框里传）。</div><div id="upDrop" class="up-drop">把文件拖到这里，或 <label class="up-link">选择文件<input type="file" id="upInput" multiple style="display:none" /></label></div><div id="upList" class="up-list"></div></div>
+        </div>
+        <div id="navSettings" class="nav-view">
+          <div class="card"><h2>设置</h2><div class="desc">助手名字、性格、模型与 API 都在这里调。</div><div id="settingsBody"></div></div>
+        </div>
+      </div><!-- /stage -->
+      <div class="composer">
+        <div class="composer-row">
+          <select id="modelSel" class="model-sel" title="模型与 API"><option value="">默认模型（管理端配置）</option></select>
+          <button class="paste-btn" id="pasteBtn" title="粘贴大段文本发给管家">📋 粘贴文本</button>
+        </div>
+        <div class="inputbar">
+          <input type="file" id="file" style="display:none;" />
+          <button class="attach" id="attach" title="上传资料给管家读">📎</button>
+          <button class="mic" id="mic" title="语音输入（中文）">🎤</button>
+          <button class="mic" id="clearChat" title="清空与管家的聊天记录">🧹</button>
+          <input id="text" placeholder="说点什么…（可点 🎤 语音输入，或 📋 粘贴大段文本）" />
+          <button id="send">发送</button>
+        </div>
+      </div><!-- /composer -->
+      <div id="chatResetMask" class="mask">
+        <div class="dlg" role="dialog" aria-modal="true" aria-labelledby="chatResetTitle">
+          <div class="dlg-head" id="chatResetTitle">🧹 清空与管家的聊天记录</div>
+          <div class="dlg-body">
+            <p id="chatResetSummary" style="margin:0 0 8px;line-height:1.6;"></p>
+            <div class="dlg-warn">
+              删掉的是<b>这段对话的记录</b>，清完就从新的一段对话开始。<br />
+              <b>课表和日程不受影响</b>，已排进去的课和可待办都还在。
+            </div>
+          </div>
+          <div class="dlg-foot">
+            <button class="dlg-btn ghost" id="chatResetCancel">取消</button>
+            <button class="dlg-btn danger" id="chatResetOk">清空记录</button>
           </div>
         </div>
-        <div class="dlg-foot">
-          <button class="dlg-btn ghost" id="chatResetCancel">取消</button>
-          <button class="dlg-btn danger" id="chatResetOk">清空记录</button>
-        </div>
       </div>
-    </div>
-  </div>
+      <div id="modalMask" class="mask">
+        <div class="dlg"><div class="dlg-head" id="modalTitle"></div><div class="dlg-body" id="modalBody"></div><div class="dlg-foot" id="modalFoot"></div></div>
+      </div>
+    </div><!-- /main -->
+  </div><!-- /shell -->
 
   <script>
     // 四个模块的配置：名字、图标、示例问题
@@ -1085,6 +1210,8 @@
         // 随对话带上学生自选的助手性格（本地记住的 key）
         const pk = localStorage.getItem("campustime_persona");
         if (pk) body.persona = pk;
+        const mc = (function(){ try { return JSON.parse(localStorage.getItem("ct_model_cfg") || "null"); } catch(e){ return null; } })();
+        if (mc && mc.api_key) body.model_config = mc;
         const resp = await fetch("/api/chat", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -1596,6 +1723,233 @@
     initVoice();
     // 拉回上次的聊天记录（异步，不影响开场白先显示出来）
     restoreHistory();
+
+  // ================= 三栏外壳交互（新增） =================
+  (function(){
+    var NAV_TITLE = {chat:"校园问答", schedule:"日程", todos:"代办事项", upload:"上传文件", settings:"设置", express:"快递", takeout:"外卖"};
+    function cap(x){ return x.charAt(0).toUpperCase()+x.slice(1); }
+    function switchNav(view){
+      var chatStage = document.getElementById("chatStage");
+      var isPanel = (view==="schedule"||view==="express"||view==="takeout");
+      document.querySelectorAll(".nav-view").forEach(function(v){ v.classList.remove("active"); });
+      if(isPanel){ chatStage.classList.add("active","panel-mode"); }
+      else if(view==="chat"){ chatStage.classList.remove("panel-mode"); chatStage.classList.add("active"); }
+      else { chatStage.classList.remove("active","panel-mode"); var nv=document.getElementById("nav"+cap(view)); if(nv) nv.classList.add("active"); }
+      document.querySelectorAll(".sb-item").forEach(function(b){ b.classList.toggle("active", b.dataset.nav===view); });
+      var t=document.getElementById("navTitle"); if(t) t.textContent = NAV_TITLE[view]||"校园问答";
+      if(view==="schedule") showView("view-schedule");
+      else if(view==="express") showView("view-express");
+      else if(view==="takeout") showView("view-takeout");
+      else if(view==="chat") showView("view-faq");
+      else if(view==="todos") loadTodosView();
+      else if(view==="upload") loadUploadView();
+      else if(view==="settings") loadSettingsView();
+    }
+    document.getElementById("sbNav").addEventListener("click", function(e){
+      var item=e.target.closest(".sb-item"); if(!item) return; switchNav(item.dataset.nav);
+    });
+    document.getElementById("sbMoreToggle").addEventListener("click", function(){
+      var m=document.getElementById("sbMore"); m.classList.toggle("open");
+      var ic=m.querySelector(".ico"); if(ic) ic.textContent = m.classList.contains("open")?"➖":"➕";
+    });
+    var sbPop=document.getElementById("sbPop");
+    document.getElementById("sbProfile").addEventListener("click", function(e){ e.stopPropagation(); sbPop.classList.toggle("show"); });
+    document.addEventListener("click", function(){ sbPop.classList.remove("show"); });
+    sbPop.addEventListener("click", function(e){ e.stopPropagation(); });
+    document.getElementById("sbPiProfile").addEventListener("click", function(){ sbPop.classList.remove("show"); openProfileModal(); });
+    document.getElementById("sbPiSettings").addEventListener("click", function(){ sbPop.classList.remove("show"); switchNav("settings"); });
+    document.getElementById("sbPiLogout").addEventListener("click", function(){ sbPop.classList.remove("show"); location.href="/"; });
+
+    var AVATARS=["🐱","🐶","🦊","🐼","🐯","🦁","🐸","🐵","🐧","🦄","🌟","🍀"];
+    var AV_BG=["#4f7cff","#17b8a6","#f0a03c","#e24b4a","#8a6fe8","#3b6d11","#ff5c8a","#185fa5","#7dc48a","#ba7517","#6a5cff","#0f6e56"];
+    function loadProfile(){
+      var name=localStorage.getItem("ct_profile_name")||"同学";
+      var av=localStorage.getItem("ct_profile_avatar")||"0";
+      var sbName=document.getElementById("sbName"); if(sbName) sbName.textContent=name;
+      var sbAvatar=document.getElementById("sbAvatar");
+      if(sbAvatar){
+        if(av.indexOf("data:")===0){ sbAvatar.removeAttribute("src"); sbAvatar.style.background="#4f7cff"; sbAvatar.textContent=""; sbAvatar.src=av; }
+        else { var i=parseInt(av,10)||0; sbAvatar.removeAttribute("src"); sbAvatar.style.background=AV_BG[i%AV_BG.length]; sbAvatar.textContent=AVATARS[i%AVATARS.length]; }
+      }
+      var gw=document.getElementById("greetWho"); if(gw) gw.textContent=name;
+    }
+    function saveProfile(name, av){
+      if(name!=null) localStorage.setItem("ct_profile_name", name);
+      if(av!=null) localStorage.setItem("ct_profile_avatar", av);
+      loadProfile();
+    }
+    function openProfileModal(){
+      var cur=localStorage.getItem("ct_profile_name")||"同学";
+      var curAv=localStorage.getItem("ct_profile_avatar")||"0";
+      var gal=AVATARS.map(function(e,i){ return '<div class="av-opt" data-av="'+i+'" style="background:'+AV_BG[i%AV_BG.length]+'">'+e+'</div>'; }).join("");
+      showModal("账号信息",
+        '<div style="font-size:13px;color:#6a7388;margin-bottom:6px;">昵称</div>'+
+        '<input id="pfName" value="'+escapeHtml(cur)+'" maxlength="12" style="width:100%;padding:10px 12px;border:1px solid #d8def0;border-radius:10px;font-size:14px;outline:none;" />'+
+        '<div style="font-size:13px;color:#6a7388;margin:14px 0 8px;">选个头像</div>'+
+        '<div class="av-grid">'+gal+'</div>'+
+        '<div style="font-size:13px;color:#6a7388;margin:14px 0 8px;">或上传一张</div>'+
+        '<label class="up-link" style="display:inline-block;">📤 上传头像<input type="file" id="pfUpload" accept="image/*" style="display:none" /></label>',
+        [{label:"取消",ghost:true,on:function(){ closeModal(); }},
+         {label:"保存",on:function(){
+           var nm=document.getElementById("pfName").value.trim()||"同学";
+           var av=document.getElementById("pfUpload").dataset.av || curAv;
+           saveProfile(nm, av); closeModal();
+         }}]);
+      document.querySelectorAll(".av-opt").forEach(function(o){ o.addEventListener("click", function(){
+        document.querySelectorAll(".av-opt").forEach(function(x){ x.classList.remove("sel"); }); o.classList.add("sel");
+        document.getElementById("pfUpload").dataset.av = o.dataset.av;
+      }); });
+      var f=document.getElementById("pfUpload");
+      f.addEventListener("change", function(){
+        var file=f.files[0]; if(!file) return;
+        var r=new FileReader();
+        r.onload=function(){ f.dataset.av="data:"+file.type+";base64,"+String(r.result).split(",")[1]; document.querySelectorAll(".av-opt").forEach(function(x){ x.classList.remove("sel"); }); };
+        r.readAsDataURL(file);
+      });
+    }
+
+    function loadModelSel(){
+      var sel=document.getElementById("modelSel"); if(!sel) return;
+      var cfg=null; try{ cfg=JSON.parse(localStorage.getItem("ct_model_cfg")||"null"); }catch(e){ cfg=null; }
+      var html='<option value="">默认模型（管理端配置）</option>';
+      if(cfg&&cfg.api_key) html+='<option value="__custom__" selected>我的 API：'+escapeHtml(cfg.model||"已配置")+'</option>';
+      html+='<option value="__add__">⚙ 添加 / 修改 API</option>';
+      sel.innerHTML=html;
+    }
+    function openModelModal(){
+      var cfg=null; try{ cfg=JSON.parse(localStorage.getItem("ct_model_cfg")||"null"); }catch(e){ cfg=null; }
+      showModal("添加 / 修改 API",
+        '<div style="font-size:13px;color:#6a7388;margin-bottom:6px;">接口地址（Base URL，兼容 OpenAI 格式）</div>'+
+        '<input id="mBase" placeholder="https://api.deepseek.com" value="'+escapeHtml((cfg&&cfg.base_url)||"")+'" style="width:100%;padding:9px 11px;border:1px solid #d8def0;border-radius:9px;font-size:13px;outline:none;margin-bottom:10px;" />'+
+        '<div style="font-size:13px;color:#6a7388;margin-bottom:6px;">模型名</div>'+
+        '<input id="mModel" placeholder="deepseek-chat" value="'+escapeHtml((cfg&&cfg.model)||"")+'" style="width:100%;padding:9px 11px;border:1px solid #d8def0;border-radius:9px;font-size:13px;outline:none;margin-bottom:10px;" />'+
+        '<div style="font-size:13px;color:#6a7388;margin-bottom:6px;">API Key</div>'+
+        '<input id="mKey" type="password" placeholder="sk-..." value="'+escapeHtml((cfg&&cfg.api_key)||"")+'" style="width:100%;padding:9px 11px;border:1px solid #d8def0;border-radius:9px;font-size:13px;outline:none;" />'+
+        '<div style="font-size:12px;color:#8a93a6;margin-top:8px;">密钥仅保存在本机浏览器，不会上传服务器。</div>',
+        [{label:"取消",ghost:true,on:function(){ closeModal(); }},
+         {label:"保存",on:function(){
+           var c={ base_url:document.getElementById("mBase").value.trim(), model:document.getElementById("mModel").value.trim(), api_key:document.getElementById("mKey").value.trim() };
+           if(!c.api_key){ alert("请填写 API Key"); return; }
+           localStorage.setItem("ct_model_cfg", JSON.stringify(c)); loadModelSel(); closeModal();
+         }}]);
+    }
+    document.getElementById("modelSel").addEventListener("change", function(){
+      var v=document.getElementById("modelSel").value;
+      if(v==="__add__") openModelModal();
+    });
+
+    async function loadTodosView(){
+      var box=document.getElementById("todoList"); if(!box) return;
+      try{
+        var d=await (await fetch("/api/todos")).json();
+        var list=d.todos||[];
+        if(!list.length){ box.innerHTML='<div class="empty">还没有待办。在「校园问答」里跟管家说“提醒我周五交作业”就能加上。</div>'; return; }
+        var WD=["周一","周二","周三","周四","周五","周六","周日"];
+        box.innerHTML=list.slice().sort(function(a,b){ return (a.date+a.start).localeCompare(b.date+b.start); }).map(function(t){
+          var done=t.status==="done";
+          var wd=""; try{ wd=WD[((new Date(t.date).getDay()+6)%7)]; }catch(e){}
+          return '<div class="todo-row '+(done?"done":"")+'">'+
+            '<input type="checkbox" '+(done?"checked":"")+' data-id="'+encodeURIComponent(t.todo_id)+'" class="todo-done" />'+
+            '<div class="todo-main"><div class="todo-title">'+escapeHtml(t.title)+'</div>'+
+            '<div class="todo-sub">'+escapeHtml(t.date)+'（'+wd+'） '+escapeHtml(t.start||"")+'-'+escapeHtml(t.end||"")+'</div></div>'+
+            '<button class="todo-del" data-id="'+encodeURIComponent(t.todo_id)+'">删除</button></div>';
+        }).join("");
+        box.querySelectorAll(".todo-done").forEach(function(cb){ cb.addEventListener("change", async function(){
+          var id=decodeURIComponent(cb.dataset.id);
+          try{ await fetch("/api/todos/"+id,{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({status:cb.checked?"done":"pending"})}); loadTodosView(); }catch(e){}
+        }); });
+        box.querySelectorAll(".todo-del").forEach(function(b){ b.addEventListener("click", async function(){
+          var id=decodeURIComponent(b.dataset.id);
+          if(!confirm("确定删除这条待办？删除后无法恢复。")) return;
+          try{ var r=await fetch("/api/todos/"+id,{method:"DELETE",headers:{"Content-Type":"application/json"},body:JSON.stringify({session_id:sessionId()})}); if(r.ok) loadTodosView(); }catch(e){}
+        }); });
+      }catch(e){ box.innerHTML='<div class="empty">待办加载失败</div>'; }
+    }
+
+    async function loadUploadView(){
+      var list=document.getElementById("upList"); if(!list) return;
+      try{
+        var d=await (await fetch("/api/uploads")).json();
+        var files=d.files||[];
+        list.innerHTML = files.length ? files.map(function(f){
+          return '<div class="up-row"><span class="up-name">'+escapeHtml(f.name)+'</span><span class="up-sub">'+(f.chars||0)+' 字</span><a class="up-link" href="/api/uploads/'+f.id+'/download" target="_blank">下载</a></div>';
+        }).join("") : '<div class="empty">还没有上传过文件。</div>';
+      }catch(e){ list.innerHTML='<div class="empty">文件列表加载失败</div>'; }
+    }
+    var upInput=document.getElementById("upInput");
+    if(upInput) upInput.addEventListener("change", async function(){
+      var files=upInput.files; if(!files||!files.length) return;
+      for(var i=0;i<files.length;i++){ var form=new FormData(); form.append("file", files[i]); try{ await fetch("/api/upload",{method:"POST",body:form}); }catch(e){} }
+      upInput.value=""; loadUploadView();
+    });
+    var upDrop=document.getElementById("upDrop");
+    if(upDrop){ upDrop.addEventListener("dragover", function(e){ e.preventDefault(); upDrop.classList.add("over"); });
+      upDrop.addEventListener("dragleave", function(){ upDrop.classList.remove("over"); });
+      upDrop.addEventListener("drop", function(e){ e.preventDefault(); upDrop.classList.remove("over");
+        if(e.dataTransfer&&e.dataTransfer.files){ var fl=e.dataTransfer.files;
+          for(var i=0;i<fl.length;i++){ (function(fi){ var form=new FormData(); form.append("file", fi); try{ fetch("/api/upload",{method:"POST",body:form}); }catch(e){} })(fl[i]); }
+          loadUploadView(); } }); }
+
+    function loadSettingsView(){
+      var box=document.getElementById("settingsBody"); if(!box) return;
+      var name=localStorage.getItem("campustime_name")||localStorage.getItem("ct_profile_name")||"管家";
+      var cfg=null; try{ cfg=JSON.parse(localStorage.getItem("ct_model_cfg")||"null"); }catch(e){ cfg=null; }
+      box.innerHTML=
+        '<div class="card"><h2>助手名字</h2><div class="desc">给管家起个称呼，会显示在对话里。</div>'+
+        '<div style="display:flex;gap:10px;"><input id="setName" value="'+escapeHtml(name)+'" maxlength="12" style="flex:1;padding:10px 12px;border:1px solid #d8def0;border-radius:10px;font-size:14px;outline:none;"/><button class="btn" id="setNameBtn">保存</button></div></div>'+
+        '<div class="card"><h2>助手性格</h2><div class="desc">挑一个聊天腔调。</div><div id="setPersona" class="persona-list"></div></div>'+
+        '<div class="card"><h2>模型与 API</h2><div class="desc">默认用管理端配置的模型；也可填自己的 API Key（仅存本机）。</div>'+
+        '<div id="setModelInfo" style="font-size:13px;margin-bottom:10px;"></div>'+
+        '<button class="btn" id="setModelBtn">'+(cfg&&cfg.api_key?"修改 API":"添加 API")+'</button> '+
+        (cfg&&cfg.api_key?'<button class="btn ghost" id="setModelClear">清除</button>':'')+'</div>';
+      document.getElementById("setNameBtn").addEventListener("click", function(){
+        var v=document.getElementById("setName").value.trim()||"管家";
+        localStorage.setItem("campustime_name", v); var gw=document.getElementById("greetWho"); if(gw) gw.textContent=v; loadProfile();
+      });
+      (async function(){
+        var personas=[]; try{ personas=(await (await fetch("/api/student-personas")).json()).personas||[]; }catch(e){}
+        var saved=localStorage.getItem("campustime_persona")||(personas[0]&&personas[0].key);
+        var pl=document.getElementById("setPersona");
+        pl.innerHTML=personas.map(function(p){ return '<div class="persona '+(p.key===saved?"active":"")+'" data-key="'+p.key+'"><span class="em">'+escapeHtml(p.emoji||"")+'</span><span>'+escapeHtml(p.name)+'</span></div>'; }).join("");
+        pl.querySelectorAll(".persona").forEach(function(el){ el.addEventListener("click", function(){ localStorage.setItem("campustime_persona", el.dataset.key); pl.querySelectorAll(".persona").forEach(function(x){ x.classList.toggle("active", x.dataset.key===el.dataset.key); }); }); });
+      })();
+      var mi=document.getElementById("setModelInfo");
+      mi.innerHTML = cfg&&cfg.api_key ? ("当前自定义："+escapeHtml(cfg.model||cfg.base_url||"")) : "当前：使用管理端默认模型";
+      document.getElementById("setModelBtn").addEventListener("click", function(){ openModelModal(); });
+      var clr=document.getElementById("setModelClear"); if(clr) clr.addEventListener("click", function(){ localStorage.removeItem("ct_model_cfg"); loadModelSel(); loadSettingsView(); });
+    }
+
+    document.getElementById("pasteBtn").addEventListener("click", function(){
+      showModal("粘贴大段文本",
+        '<textarea id="pasteArea" rows="10" placeholder="把长文本粘到这里，发送给管家（它会先读再回答）" style="width:100%;padding:10px;border:1px solid #d8def0;border-radius:10px;font-size:13px;outline:none;resize:vertical;font-family:inherit;"></textarea>',
+        [{label:"取消",ghost:true,on:function(){ closeModal(); }},
+         {label:"发送",on:function(){ var t=document.getElementById("pasteArea").value.trim(); if(!t) return; closeModal(); switchNav("chat"); sendMsg(t); }}]);
+    });
+
+    function showModal(title, bodyHtml, buttons){
+      var mask=document.getElementById("modalMask");
+      document.getElementById("modalTitle").textContent=title;
+      document.getElementById("modalBody").innerHTML=bodyHtml;
+      var foot=document.getElementById("modalFoot"); foot.innerHTML="";
+      (buttons||[]).forEach(function(b){
+        var btn=document.createElement("button");
+        btn.className="dlg-btn "+(b.ghost?"ghost":"");
+        btn.textContent=b.label; btn.addEventListener("click", b.on);
+        foot.appendChild(btn);
+      });
+      mask.classList.add("show");
+    }
+    function closeModal(){ var m=document.getElementById("modalMask"); if(m) m.classList.remove("show"); }
+    document.getElementById("modalMask").addEventListener("click", function(e){ if(e.target===document.getElementById("modalMask")) closeModal(); });
+
+    document.getElementById("send").addEventListener("click", function(){ switchNav("chat"); });
+    document.getElementById("text").addEventListener("keydown", function(e){ if(e.key==="Enter") switchNav("chat"); });
+
+    loadProfile();
+    loadModelSel();
+    switchNav("chat");
+  })();
+
   </script>
 </body>
 </html>
