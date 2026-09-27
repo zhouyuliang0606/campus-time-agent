@@ -474,6 +474,26 @@ def test_type_judgment_redo():
             restore()
         c.check("没指定栏目 → 由语义层定类型（faq），不再被关键词表拽去快递模块",
                 r3.json().get("module") == "faq", r3.json().get("module"))
+
+        # ⑦ 学生截图那两张残卡的字样，钉成"永远出不了卡"的样张。
+        #    「我要去哪里取凯迪」是他原话里的错别字（快递→凯迪）——旧代码正是把它
+        #    抠成了卡片名「哪取凯迪」/「哪取快递」挂出去，还写进了暂存，隔一轮
+        #    再打开页面那张确认条又回来了。所以两句都要钉住：**离线**就不许判成下单，
+        #    **在线**（语义层说 chat）也不许出卡。这就是「先区分，再选择」的底线。
+        from app.modules.planner import wants_add_todo
+        for bad in ("我要去哪里取凯迪", "我要去哪里取快递"):
+            c.check(f"「{bad}」离线就不该判成下单（连标题都别想抠出来）",
+                    not wants_add_todo(bad) and _rule_intent(bad) is None)
+        restore = _patch_llm('{"module":"faq","intent":"chat","confidence":0.95}')
+        try:
+            r4 = client.post("/api/chat", json={
+                "message": "我要去哪里取凯迪", "module": "faq", "session_id": "tj4"})
+        finally:
+            restore()
+        d4 = r4.json()
+        c.check("错别字那句也不出卡（问路的话，答它就行，别替他排日程）",
+                not (d4.get("options") or []),
+                _json.dumps(d4.get("options"), ensure_ascii=False)[:60])
     return c.summary("第八批（类型判定重做）")
 
 
