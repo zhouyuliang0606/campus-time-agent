@@ -17,9 +17,9 @@ from fastapi.staticfiles import StaticFiles
 
 from app.agent.engine import AgentEngine
 from app.agent.intent import (
-    INTENT_ADD_TODO, INTENT_CLEAR_TIMETABLE, INTENT_FIND_CARD,
-    INTENT_LIST_TODO, INTENT_REMOVE_TODO, INTENT_RETIME,
-    remember, to_canonical, understand,
+    DEFAULT_MODULE, INTENT_ADD_TODO, INTENT_CHAT, INTENT_CLEAR_TIMETABLE,
+    INTENT_FIND_CARD, INTENT_LIST_TODO, INTENT_REMOVE_TODO, INTENT_RETIME,
+    QUESTION_RE, classify, looks_like_question, remember, to_canonical,
 )
 from app.agent.pending import (
     clear_pending, is_confirmation, peek_pending, save_pending, take_pending,
@@ -520,11 +520,19 @@ def _slots_answer(card: dict, lead: str = "") -> str:
     )
 
 
-# 明显的**查询**词。规则判了 add_todo 却带这些词 → 多半是规则被多义词骗了
-# （「我都有啥安排」里的"安排"是名词，不是"帮我安排"那个动词），
-# 交给语义层复核一次。这里刻意**不列"呢/吗"**：「帮我安排个健身吗」是下单不是查询。
-_ASKING_RE = re.compile(
-    r"(有\s*啥|有\s*什么|都有啥|啥安排|什么安排|哪些|看看|查查|有没有|在\s*哪)")
+# 「这句话像是在问」的粗信号。**判定层的地基，不是又一张关键词表**——
+# 它只用来决定"要不要升级到语义层复核"，绝不用它下结论。多义词（"安排"既是名词
+# ——日程安排、又是动词——帮我安排）是子串匹配的天生盲区，词表补多长都收敛不了；
+# 真正拍板的是语义层（样本库 / LLM）。模式只有一份，定义在 app/agent/intent.py。
+# 刻意**不列"吗/呢"之外的单个语气字**：「帮我安排个健身吗」是下单不是查询。
+_ASKING_RE = QUESTION_RE
+
+# 「问答/查询型」栏目：学生在这几个栏目里说话，**就是在问事**——
+# 这时候规则要是还想"替他办件事"（加/删/改待办），先让语义层复核一次。
+# planner 不在里面：那本来就是"办日程"的栏目，规则想办事是理所当然。
+_QA_MODULES = frozenset({
+    "faq", "schedule", "express", "takeout", "lostfound", "repair", "notice",
+})
 
 
 def _rule_intent(message: str) -> str | None:
@@ -740,10 +748,60 @@ async def chat(req: Request):
     if not isinstance(model_config, dict) or not model_config.get("api_key"):
         model_config = None
 
-    # 1) 若前端显式指定了模块且合法，直接用；否则交给 router 自动分类意图
-    module_key = body.get("module")
+    # 会话 id：前端带上，服务端就能把几轮对话串起来。
+    # 没带就服务端生成一个并在响应里返回，前端存起来下次继续用。
+    # ⚠️ 位置在"判定层"之前：下面要按会话历史问一次语义层，得先有它。
+    session_id = (body.get("session_id") or "").strip() or uuid.uuid4().hex[:12]
+
+    # ── 0) 判定层：先把这句话**听懂**（归哪个类型 + 想干什么），再往下走 ──────
+    #  2026-09-27 重做。此前"归哪个模块"是 `router._QUICK_MAP` 那 50 多个
+    #  `if keyword in text` 说了算，"想干什么"另有一条 30 多张表的规则链，
+    #  两处各判各的、互不通气——于是学生在**校园问答**栏里问
+    #  「我要去哪里取快递」，关键词表看见"取快递"就把话分给了快递模块，
+    #  而加待办那条分支又是**不分模块**的，结果给他出了一张待办卡。
+    #  现在合成一件事：**先分"问"还是"办"，再定类型**（app/agent/intent.py）。
+    #    · 问（…在哪 / 几点 / 能不能 / 有没有 / 怎么走）→ 一律不判"要办事"；
+    #    · 想问就按问的**内容**归模块（问规定地点流程→faq，问自己的快递→express…）；
+    #    · 只有真想把它排进日程才算 add_todo，归 planner。
+    #  顺序是"语义优先、关键词兜底"：样本库（零成本、离线）→ 语义层（一次调用）
+    #  → 关键词表。三道都落空时**行为跟以前一模一样**（不倒退）。
+    #  代价说明：只在"规则没接住"或"规则想办事、可这话像是在问"时才多问一次，
+    #  常规下单句（"加个健身"）依旧零 API 调用。
+    _explicit_module = body.get("module")
+    if not (_explicit_module and _explicit_module in REGISTRY):
+        _explicit_module = None
+
+    _rule_hit = _rule_intent(message)
+    _asks = looks_like_question(message)
+    # 已经在"问答型栏目"里说话，本身就是一个强类型信号（比如「校园问答」那一栏）。
+    _qa_view = _explicit_module in _QA_MODULES
+    _need_review = bool(_rule_hit) and (_asks or _qa_view)
+    _sem = None
+    if (_rule_hit is None or _need_review) and not is_confirmation(message):
+        try:
+            _sem = await classify(message, get_conversation(session_id),
+                                  override=model_config)
+        except Exception:
+            _sem = None          # 语义层挂了也不能让对话崩，掉回老路
+    _sem_intent = (_sem or {}).get("intent") or None
+    _sem_module = (_sem or {}).get("module") or None
+    # 规则判了"要办事"、可这句话在问事（或者人就在问答栏里）→ **以语义层为准**。
+    # 只在两者结论**不一致**时才否决规则；判得一样就照旧走，不额外改变任何行为。
+    # 判据刻意收窄成两种**正面肯定**（宁可漏判、不可替学生办错事）：
+    #   · 这句话本身就带提问信号（`_asks`；「我要去哪里取快递」就是这类），或者
+    #   · 语义层明确说 `chat`——即"他什么都没想办，就是在问/在闲聊"。
+    # 不收"只要结论不同就否决"：样本库是模糊匹配，偶尔会认错一句近似的说法，
+    # 而否决一张**本来就该出**的卡（"帮我安排周二的游泳"）比漏判更让学生恼火。
+    _rule_veto = bool(_need_review and _sem_intent and _sem_intent != _rule_hit
+                      and (_asks or _sem_intent == INTENT_CHAT))
+
+    # 1) 归哪个模块管：**显式栏目 > 语义层 > 关键词兜底**。
+    #    学生在哪个栏目说话，本身就是最强的类型信号；他没指定时才轮到判定层。
+    module_key = _explicit_module or _sem_module
     if not (module_key and module_key in REGISTRY):
-        module_key = await router.route(message, override=model_config)
+        module_key = await router.route(message, override=model_config, sem=_sem)
+    if module_key not in REGISTRY:
+        module_key = DEFAULT_MODULE
 
     # 2) 取该模块的系统提示和工具箱（提示可能是函数，按需调用以拼入最新人格）
     prompt_src, build_tools = REGISTRY.get(module_key, (DEFAULT_PROMPT, lambda: {}))
@@ -766,10 +824,6 @@ async def chat(req: Request):
     # 界面上一个按钮都没有；学生回「确认」，系统也不知道他在确认什么。
     # 这几件工具都不写库（真写入永远是后端的确认条），所以发给谁都安全。
     tools.update(scheduling_tools())
-
-    # 会话 id：前端带上，服务端就能把几轮对话串起来。
-    # 没带就服务端生成一个并在响应里返回，前端存起来下次继续用。
-    session_id = (body.get("session_id") or "").strip() or uuid.uuid4().hex[:12]
 
     # 3) **确定性确认分支**（人话：学生回一句"确认"就当场执行，不劳模型判断）
     #    踩过的坑：学生明明打了"确认"，AI 却回"我没有权限删除"，还让学生自己去
@@ -1228,7 +1282,7 @@ async def chat(req: Request):
     #    实测同一句话，模型时而是调 propose_clear_timetable，时而是反问"你确定要全删吗"，
     #    学生被绕回来，链路当场断掉——清空意图本来就明明白白，该由系统接管。
     #    这里只负责"出提案 + 弹窗"，**一个字节都不写库**；真删要等学生点弹窗上的【确认】。
-    if wants_clear_timetable(message):
+    if wants_clear_timetable(message) and not _rule_veto:
         proposal = _parse_clear_proposal()
         if proposal is None:
             # 周表本来就是空的：一句话说清楚就完事。
@@ -1386,37 +1440,9 @@ async def chat(req: Request):
                 _slots_answer(slots, lead="🙋 好，那时间你自己挑——"),
                 "🙋 他要自己挑 → 摊出候选时段（让打勾）")
 
-    # 3c-pre5) **语义兜底**：上面那些规则一条都没接住 → 先查样本库、再问一次意图。
-    #     学生原话：「**很多的字都是接不住的，你现在能接住的都是我测试给的**」。
-    #     词表是穷举不完的（planner.py 30 多张表、router 50 多个词，全是子串匹配），
-    #     所以规则落空时**不再直接掉给模型自由发挥**，而是先问 app/agent/intent.py：
-    #       ③ 样本库里有没有"以前成功办过的近似说法"（零成本、离线可用）；
-    #       ② 没有再问一次 LLM，**只读意图**（它拿不到写库接口，排期/出卡/写库
-    #          仍在系统这侧，见那个文件的分层图）。
-    #     只有规则真接不住才走到这儿，常规说法零 API 调用、零延迟。
-    #     两道都没定 → `_sem` 留空，照旧掉给模型（现状行为，不倒退）。
-    _sem = None
-    _sem_intent = None
-    # 「规则判了 add_todo，可这句话里带着明显的查询词」→ 让语义层**复核**一次。
-    #     实测那一幕：学生说「我现在都有啥安排」，`_ADD_INTENT` 里有"安排"两个字，
-    #     子串匹配分不清这里的"安排"是**名词**（日程安排）还是动词（帮我安排），
-    #     于是判成下单，卡片上会写着「我现都有啥」——他想查待办，系统却要给他加一条。
-    #     这不是"再补一条规则"能解决的（多义词是关键词表的天生盲区），
-    #     所以交给语义层复核：**只有当它跟规则结论不一致时**才否决规则，
-    #     判得一样就照旧走，不额外改变任何行为。
-    _rule_hit = _rule_intent(message)
-    _rule_add_veto = False
-    _need_review = (_rule_hit == INTENT_ADD_TODO
-                    and _ASKING_RE.search(message or ""))
-    if (_rule_hit is None or _need_review) and not is_confirmation(message):
-        try:
-            _sem = await understand(message, get_conversation(session_id))
-        except Exception:
-            _sem = None          # 语义层挂了也不能让对话崩，掉回老路
-        _sem_intent = (_sem or {}).get("intent") or None
-        if _need_review and _sem_intent and _sem_intent != INTENT_ADD_TODO:
-            _rule_add_veto = True
-
+    # 3c-pre5) **语义兜底的收尾**（判定本身已经在 `0) 判定层` 做完了，这里只留回执）。
+    #     `_sem` / `_sem_intent` / `_sem_module` / `_rule_veto` 都在那一处算好，
+    #     所以下面每条确定性分支都能用上同一次判定——**同一句话只判一次**。
     def _sem_done(resp: dict | None) -> dict | None:
         """语义层命中、并且真的出了卡 → 把这句原话学进样本库（越用越懂）。
 
@@ -1437,7 +1463,7 @@ async def chat(req: Request):
     #     查到什么说什么；一条都没有也如实讲。
     #     ⚠️ 位置必须在 3c-ter 之前：「代办显示不出来」既像"看不见 X"、又该走"读列表"，
     #     但学生真正要的是"你把我的待办念给我听"——读出来比一句"确实还没有"更有用。
-    if wants_list_todo(message) or _sem_intent == INTENT_LIST_TODO:
+    if (wants_list_todo(message) and not _rule_veto) or _sem_intent == INTENT_LIST_TODO:
         todos = list_todos()
         if not todos:
             answer = ("📋 你目前还没有任何待办。\n"
@@ -1470,7 +1496,8 @@ async def chat(req: Request):
     #     不是就地改字段，这样一旦新时间不合适还能追溯旧的那条。
     #     规则认得（含"改成/挪到"等词）或语义层兜回来的 retime_todo 都走这儿；
     #     前提：手上没有挂着的待确认卡（那种是 3c-pre 那一档，已在前面处理过了）。
-    if (wants_retime_todo(message) or _sem_intent == INTENT_RETIME) and not held_add:
+    if ((wants_retime_todo(message) and not _rule_veto)
+            or _sem_intent == INTENT_RETIME) and not held_add:
         from app.modules.planner import build_retime_existing_proposal, _weekday_name as _wd2
         _rt = build_retime_existing_proposal(
             message, _sem if _sem_intent == INTENT_RETIME else None)
@@ -1717,7 +1744,11 @@ async def chat(req: Request):
     # 于是这句话会先进到上面的加待办分支、被当成待办塞进日程——正是报障那一幕。
     # 加课没有独立的语义意图（白名单里没有 add_course），纯靠 wants_add_course 这条
     # 确定性分支接管；所以只要它认得，加待办这边就必须让路，绝不抢。
-    if ((not _rule_add_veto
+    #
+    # 开头的 `not _rule_veto`：规则想"加一条"，可语义层判它**不是**要办事
+    # （多半在问事：在校园问答栏问「我要去哪里取快递」），就以语义层为准——
+    # 否则那张卡会写着「哪取快递」挂到学生眼前，而他只是想知道去哪儿取。
+    if ((not _rule_veto
             and (wants_add_todo(message) or (asking_add and is_add_todo_answer(message))))
             or _sem_intent == INTENT_ADD_TODO) and not wants_add_course(message):
         # 追问后的补充回答（学生先说"帮我安排周二的游泳"，再补"下午两点到三点"）：
@@ -1726,7 +1757,12 @@ async def chat(req: Request):
         # 语义层那一路（`_sem_intent`）：它把口语翻成了"加个吃火锅，76分钟，工作日"
         # 这种**解析器认得的规范话**（`to_canonical`），所以照旧喂给同一套老解析，
         # 不用再抄一份"从 JSON 造卡片"的逻辑。
-        if _sem_intent == INTENT_ADD_TODO and _sem:
+        # 语义层那一路：把口语翻成"加个吃火锅，76分钟，工作日"这种**解析器认得的规范话**
+        # （`to_canonical`），照旧喂给同一套老解析——不另抄一份"从 JSON 造卡片"的逻辑。
+        # ⚠️ 但**规则明明认得这句话时不能这么替**：规范话是拿语义字段拼的，字段里没有的
+        #    信息会整段丢掉——"帮我安排周二的游泳"里的"周二"就不在语义字段里，一替下去
+        #    候选时段会摊到一整周（实测踩过）。所以只在规则读不出来时才用规范话兜。
+        if _sem_intent == INTENT_ADD_TODO and _sem and not wants_add_todo(message):
             blob = to_canonical(message, _sem)
         else:
             blob = (prev_user + "，" + message) if (asking_add and prev_user) else message
@@ -1948,7 +1984,8 @@ async def chat(req: Request):
     _last_bot = next((m.get("content") or "" for m in reversed(get_conversation(session_id))
                       if m.get("role") == "assistant"), "").strip()
     asking_rm_todo = _last_bot == "删待办缺细节"
-    rm_intent = (wants_remove_todo(message) or wants_remove_todo_loose(message)
+    rm_intent = (((wants_remove_todo(message) or wants_remove_todo_loose(message))
+                  and not _rule_veto)
                  or _sem_intent == INTENT_REMOVE_TODO)
     if rm_intent or asking_rm_todo:
         # 学生是不是在回答"是哪一条"（回一句"第二条"或"游泳那条"）
