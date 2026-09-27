@@ -33,6 +33,7 @@
 - `2026-09-27-time-span-mixed-format.md` — 截图报「下午四点到晚上7点」被截成 1 小时 + 标题残留「到7点」：`_pick_span` 两条旧正则接不住中英混写（归一成"下午4:00到晚上7点"后退化成单起点→默认补 1 小时）；改统一 `_SPAN_RE` + 新增 `_period_hour` 两端点各看各的时段词，`_strip_title_noise` 补擦「N点」残片与孤立连接词（关联本批 1 个代码 commit）
 - `2026-09-27-campus-qa-kb-routing.md` — 「校园问答」问「我要去哪里取快递」却出了「哪取快递」候选卡：`wants_add_todo` 的 `_GO_INTENT_RE` 把"我要去…哪里/怎么"这类**不带问号的问句**当成下单（只挡了 吗/？/?）；且 3c 加待办分支**不按模块拦**，所以单靠前端锁模块拦不住。改：后端补疑问词闸门 `_GO_QUESTION_RE`（不列"什么/几点"以免误伤真下单）+ 前端校园问答栏默认锁 `module=faq`，问题直接进 `search_kb`（关联本批 2 个代码 commit）
 - `2026-09-27-type-judgment-redo.md` — **架构级**：学生反馈「你只是修了这一个，其他类型的区分没改」——上一轮只补了一句的闸门，类型的**判定方式**没动。"归哪个模块"仍由 `router._QUICK_MAP` 50 多个子串匹配说了算、"想干什么"另有 30 多张表，两处互不通气。这次把**类型也收进判定层**，与意图做同一次判定，顺序倒成「**语义优先、关键词兜底**」（样本库 → LLM 一次出 {module,intent} → `_QUICK_MAP` → faq）；`/api/chat` 的判定层前移到最前、五条确定性分支共用同一次判定，否决闸门 `_rule_add_veto` → `_rule_veto` 全分支让路；新增 `QUESTION_RE`/`looks_like_question`/`_QA_MODULES`（先分"问/办"，粗信号只决定要不要复核、不下结论）。含两处自踩自修：规范话替原话会把"周二"整段丢掉（候选摊满一整周）、`Router` 导入时建死客户端导致"语义优先"悄悄退回关键词表（关联本批 4 个代码 commit）
+- `2026-09-27-github-push-and-contributor-identity.md` — **交付链路**：把 188 个细粒度提交推上公开仓库。三重独立卡点（WorkBuddy 自带代理 `127.0.0.1:54437` 拦 GitHub → 改用自有 VPN 代理 `7890`；仓库尚未创建 → `POST /user/repos` 建库并把默认分支 main 改回 master；GCM 从没登录过会弹 GUI 卡死 → 用 `credential.helper=` 空值清空列表 + `store` 助手，PAT 不进仓库）。另查明「Contributors 显示 zhouto」的成因：**commit 里只有 name/email 两行纯文本，GitHub 只按 email 反查账号、完全忽略 name**，而 `zhouyig@163.com` 是 2017 年绑给 zhouto 的老邮箱；历史哈希一字不动，只把后续提交身份改为 `zhouyuliang0606` 的免回复邮箱（关联本批 1 个 docs commit）
 - （后续每次开发会话追加新文件……）
 
 ## 评审怎么看
