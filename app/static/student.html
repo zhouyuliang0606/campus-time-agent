@@ -1252,6 +1252,11 @@
         const body = { message: msg, session_id: sessionId() };
         // moduleOverride：个别动作（如导入课表）必须走 planner 模块，不受当前面板影响
         if (moduleOverride || currentModule) body.module = moduleOverride || currentModule;
+        // 「校园问答」这一栏 = 知识库问答（按钮墙写着"答案从知识库检索"）：默认锁 faq，
+        // 学生的问题直接进知识库检索。不锁的话会走通用路由——而通用路由/加待办的
+        // 确定性分支会把「我要去哪里取快递」这种问句当成"要加一件事"去排时间
+        // （实测截屏：出了张「哪取快递」的候选时段卡，学生要的是知识库答案）。
+        else if (currentView === "chat") body.module = "faq";
         // 随对话带上学生自选的助手性格（本地记住的 key）
         const pk = localStorage.getItem("campustime_persona");
         if (pk) body.persona = pk;
