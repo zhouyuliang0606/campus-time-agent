@@ -26,6 +26,7 @@
 - `2026-09-26-add-course-as-todo-fix.md` — **加课被当代办**双重根因：wants_add_course 漏接"上午/下午/晚上"时段词 + 一条把加课记成 add_todo 的污染样本，加课硬闸门堵漏 + 第十八批回归（关联本批 4 个 commit）
 - `2026-09-26-week-grid-overlap-fix.md` — 学生截图报「重叠了」：纯前端 CSS，`repeat(7, 1fr)` 的 1fr 下限是 min-content、又被 nowrap 长串撑到 121px，七列总宽超容器 47px 导致列互相压住；改 `minmax(0, 1fr)` + 折行 + 网格项 min-width:0，两页同步（关联本批 3 个 commit）
 - `2026-09-26-time-conflict-sidebyside.md` — 「数据结构和小组会议时间一样重合了」：真凶是周五 `心理学选修`(课) 与 `小组会议`(待办) 同时段真冲突，绝对定位无避让导致后画者盖住先画者；改「冲突分组 + 同组并排分栏」（lanes=1 退化成原样），列表式面板改加 clash 红边 + 「撞」角标（关联本批 3 个 commit）
+- `2026-09-27-student-three-column.md` — 学生端三栏外壳重构（侧边栏/主体/输入区）+ 学生端自定义模型 API 透传（config/client/engine/router/main 一路 override；关联 5b793fd / 705992e / c125753）
 - （后续每次开发会话追加新文件……）
 
 ## 评审怎么看
