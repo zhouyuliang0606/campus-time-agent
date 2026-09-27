@@ -219,10 +219,14 @@ python tests/run_all.py
 
 比赛要求「保留完整、细粒度的 Git 提交历史」和「提交 AI 对话历史 Prompt 快照」，本项目的做法：
 
-- **每个逻辑改动单独 commit**，绝不在最后一次性打包（当前 **189 个细粒度 commit**）；
+- **每个逻辑改动单独 commit**，绝不在最后一次性打包（当前 **197 个细粒度 commit**）；
 - 每次开发会话写一份 Prompt 快照到 `ai-prompts/YYYY-MM-DD-<主题>.md`，
   记录「**用户 Prompt → AI 研判 → 改动 → 验证**」四段，**单独提交**、不与代码混在一个 commit；
 - 快照文件与其 commit 一一对照，即可还原那一步的协同过程。
+- 全部 197 个提交的作者与提交者均为参赛者本人（`zhouyuliang0606 <3215477176@qq.com>`）。
+  历史上有过一次**提交身份重写**（早期提交误用了另一个邮箱，被 GitHub 反查成他人账号），
+  重写只改作者/提交者元数据、**文件内容零改动**（194 个提交的树对象与备份仓库逐个一致），
+  过程与验收见 [`ai-prompts/2026-09-27-commit-identity-rewrite.md`](ai-prompts/2026-09-27-commit-identity-rewrite.md)。
 
 索引与约定见 [`ai-prompts/README.md`](ai-prompts/README.md)。
 
