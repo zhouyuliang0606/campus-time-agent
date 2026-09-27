@@ -8,11 +8,13 @@
 判定层（规则 → 样本库 → LLM 只读意图）怎么换都行，
 执行层（查空档 / 排期 / 出卡 / 写库）**系统独占，模型永远碰不到**。
 
-这一批钉死四件事：
+这一批钉死五件事：
   ① 样本库：模糊匹配认得出同义改写、认不出无关句、太短的不乱配、能自增长；
   ② `to_canonical`：把语义层读出的字段翻成解析器认得的规范话；
   ③ 语义层：只认白名单意图、把握低的不要、没 key 不生效、**拿不到写库接口**；
   ④ 端到端：规则接不住的口语 → 出卡；提问句不许被误判成下单。
+  ⑤ 类型判定整体重做（Req G 第二段）：先分「问/办」，**语义优先、关键词兜底**，
+     问句在任何栏目里都出不了待办卡。
 
 全部跑在数据沙箱里，绝不碰你的真实演示数据。
 """
@@ -39,7 +41,7 @@ class _FakeLLM:
     def __init__(self, reply: str):
         self._reply = reply
 
-    async def chat(self, messages, tools=None, tool_choice="auto"):
+    async def chat(self, messages, tools=None, tool_choice="auto", override=None):
         return {"content": self._reply}
 
 
@@ -50,10 +52,11 @@ def _patch_llm(reply: str, with_key: bool = True):
     old_client, old_cfg = _client.DeepSeekClient, _cfg.get_llm_config
     _client.DeepSeekClient = lambda *a, **k: _FakeLLM(reply)
     if with_key:
-        _cfg.get_llm_config = lambda: {"api_key": "test-key", "base_url": "http://x",
-                                       "model": "m"}
+        _cfg.get_llm_config = lambda *a, **k: {"api_key": "test-key", "base_url": "http://x",
+                                               "model": "m"}
     else:
-        _cfg.get_llm_config = lambda: {"api_key": "", "base_url": "http://x", "model": "m"}
+        _cfg.get_llm_config = lambda *a, **k: {"api_key": "", "base_url": "http://x",
+                                               "model": "m"}
 
     def _restore():
         _client.DeepSeekClient = old_client
@@ -383,6 +386,97 @@ def test_blind_delete():
     return c.summary("第七批（没点名的删除）")
 
 
+# ── ⑧ 类型判定整体重做：语义优先、规则兜底（Req G 第二段）──────────────────
+def test_type_judgment_redo():
+    title("8. 类型判定重做：先分「问/办」，语义优先、关键词兜底")
+    c = Checker()
+    from app.agent import intent as it
+    from app.agent.router import Router, _QUICK_MAP
+    from app.main import _QA_MODULES, _rule_intent
+
+    # ① 地基：「这句话是在问，还是在让我办事」——只用来决定"要不要复核"，不下结论。
+    #    故意取宽：宁可疑一下、多问一次，也别漏判（漏判的代价是规则继续替学生办错事）。
+    c.check("问句认得出（疑问词 / 语气词 / 问号都能触发）",
+            all(it.looks_like_question(s) for s in (
+                "我要去哪里取快递", "图书馆几点开门", "校医院周末开门吗",
+                "奖学金怎么申请", "宿舍几点断电", "我的快递到哪了",
+                "安排个时间去快递站怎么走")))
+    c.check("下单句不误标成问句（不然每次下单都要白问一次语义层）",
+            not any(it.looks_like_question(s) for s in (
+                "加个游泳，周四19:00-20:30", "帮我安排个健身", "把课表整个清掉重来")))
+    c.check("问答型栏目里不含 planner（那本来就是「办日程」的栏目）",
+            "planner" not in _QA_MODULES
+            and {"faq", "express", "takeout", "schedule"} <= set(_QA_MODULES))
+
+    with sandbox():
+        # ② 语义优先：关键词表会把这句判给快递模块，语义层判 faq（它是在问流程）
+        c.check("先确认关键词表确实会判成 express（否则测的不是「语义优先」）",
+                next((m for k, m in _QUICK_MAP.items()
+                      if k in "我要去哪里取快递"), None) == "express")
+        restore = _patch_llm('{"module":"faq","intent":"chat","confidence":0.95}')
+        try:
+            got = asyncio.run(Router().route("我要去哪里取快递"))
+        finally:
+            restore()
+        c.check("语义层说 faq → 以语义层为准（关键词不再是第一判据）", got == "faq", got)
+
+        # ③ 规则兜底：没配 key（语义层不生效）→ 退回关键词表，**行为跟以前一样**
+        restore = _patch_llm('{"module":"faq","intent":"chat","confidence":0.95}', with_key=False)
+        try:
+            got2 = asyncio.run(Router().route("我要去哪里取快递"))
+        finally:
+            restore()
+        c.check("没 key → 安静退回关键词表，照旧 express（不断崖式降级、不倒退）",
+                got2 == "express", got2)
+
+        client = make_client()
+        _seed_timetable()
+
+        # ④ 旧代码的那一幕（一般化之后）：规则判成"要往下单走"，可学生是在问怎么走。
+        #    这句话**旧复核词认不出来**（没有"在哪/看看/有没有"），所以旧代码必出错卡。
+        probe = "安排个时间去快递站怎么走"
+        c.check("先确认规则确实会判成下单（否则测的不是这次重做）",
+                _rule_intent(probe) == "add_todo")
+        restore = _patch_llm('{"module":"faq","intent":"chat","confidence":0.95}')
+        try:
+            r = client.post("/api/chat", json={
+                "message": probe, "module": "faq", "session_id": "tj1"})
+        finally:
+            restore()
+        d = r.json()
+        c.check("问句 → 一张待办卡都不出（他没想排时间，他想知道怎么走）",
+                not [o for o in (d.get("options") or [])
+                     if str(o.get("kind") or "").startswith("todo")],
+                _json.dumps(d.get("options"), ensure_ascii=False)[:80])
+        c.check("这句话归 faq（交给知识库答，不是塞给别的模块）",
+                d.get("module") == "faq", d.get("module"))
+
+        # ⑤ 反过来：带疑问语气、可语义层**同意**是下单 → 不否决，照旧出卡。
+        #    （只跟语义层"结论不一致"时才否决；"人在问答栏里"不是否决理由。）
+        restore = _patch_llm('{"module":"planner","intent":"add_todo","title":"游泳",'
+                             '"minutes":60,"confidence":0.92}')
+        try:
+            r2 = client.post("/api/chat", json={
+                "message": "帮我安排个游泳可以吗", "module": "faq", "session_id": "tj2"})
+        finally:
+            restore()
+        o2 = r2.json().get("options") or []
+        c.check("语义层同意是下单 → 照旧出卡（不因为栏目不同就不给办）",
+                any(str(x.get("kind") or "").startswith("todo") for x in o2),
+                [x.get("kind") for x in o2])
+
+        # ⑥ 前端没指定栏目（走通用路由）→ 类型由语义层定，不用关键词表那一套
+        restore = _patch_llm('{"module":"faq","intent":"chat","confidence":0.9}')
+        try:
+            r3 = client.post("/api/chat", json={
+                "message": "我要去哪里取快递", "session_id": "tj3"})
+        finally:
+            restore()
+        c.check("没指定栏目 → 由语义层定类型（faq），不再被关键词表拽去快递模块",
+                r3.json().get("module") == "faq", r3.json().get("module"))
+    return c.summary("第八批（类型判定重做）")
+
+
 if __name__ == "__main__":
     fails = 0
     fails += test_sample_store()
@@ -392,5 +486,6 @@ if __name__ == "__main__":
     fails += test_router_sample_fallback()
     fails += test_rule_review()
     fails += test_blind_delete()
+    fails += test_type_judgment_redo()
     import sys
     sys.exit(1 if fails else 0)
