@@ -83,7 +83,7 @@
 
 ## Commit
 
-- `5b793fd` `app/config.py` `app/llm/client.py` `app/agent/engine.py` — 后端透传学生端自定义 API 覆盖
-- `705992e` `app/main.py` `app/agent/router.py` — /api/chat 与 router 接入 model_config 覆盖
-- `c125753` `app/static/student.html` — 学生端三栏外壳重构（侧边栏 / 主体 / 输入区）
+- `6b5a953` `app/config.py` `app/llm/client.py` `app/agent/engine.py` — 后端透传学生端自定义 API 覆盖
+- `3a1d24f` `app/main.py` `app/agent/router.py` — /api/chat 与 router 接入 model_config 覆盖
+- `d96eb29` `app/static/student.html` — 学生端三栏外壳重构（侧边栏 / 主体 / 输入区）
 - `ai-prompts/2026-09-27-student-three-column.md` — 本快照（与 README 索引同一 commit）

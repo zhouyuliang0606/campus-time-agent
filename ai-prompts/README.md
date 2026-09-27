@@ -15,18 +15,18 @@
 
 ## 文件清单
 
-- `2026-09-25-pending-persist-fix.md` — 根治「确认落空 / AI 失忆体感」：待确认提案从纯内存改为内存+磁盘持久化（关联 b57f99c）
+- `2026-09-25-pending-persist-fix.md` — 根治「确认落空 / AI 失忆体感」：待确认提案从纯内存改为内存+磁盘持久化（关联 2540843）
 - `2026-09-25-todo-gaps.md` — 待办三类口语缺口修复（回答"先分析再提交再弹窗" + 修「我要加代办/我的代办呢/代办显示不出来」）
-- `2026-09-25-todo-slots-pick.md` — 加待办「时间安排」改为多种合理时间弹窗挑选（关联 6deb74e）
-- `2026-09-26-todo-slot-duration.md` — 候选时段按学生说的时长排（说「三个小时」就给 3 小时，不再一律 90 分钟；关联 5c8d275）
-- `2026-09-26-todo-oral-and-findcard.md` — 口语下单识别 + 「平时」按工作日排 + 「卡片呢」找卡分支（关联 4755ebb / f8b7ed3 / 959c890 / 88685d7 / d453557 / 63c8a25）
-- `2026-09-26-intent-fallback-layer.md` — **架构级**：意图兜底层（样本库 + LLM 只读意图），把「听懂」和「执行」切开，根治"补不完的关键词表"（关联 896d6ff / 57c9c4a / e757b98 / 3bb7600）
-- `2026-09-26-retime-crud-selfcheck.md` — 用户要求"增删查改自行测试一遍"：自测暴露「已排待办改期」接不住的真实缺口并接通 INTENT_RETIME 执行分支（关联 e153f84 / 1e3639b / bf2a538 / 0905fa1）
+- `2026-09-25-todo-slots-pick.md` — 加待办「时间安排」改为多种合理时间弹窗挑选（关联 594952c）
+- `2026-09-26-todo-slot-duration.md` — 候选时段按学生说的时长排（说「三个小时」就给 3 小时，不再一律 90 分钟；关联 3752064）
+- `2026-09-26-todo-oral-and-findcard.md` — 口语下单识别 + 「平时」按工作日排 + 「卡片呢」找卡分支（关联 4dac426 / d2b3ea2 / 7164de7 / 30eeb8f / 0c56879 / 51174bb）
+- `2026-09-26-intent-fallback-layer.md` — **架构级**：意图兜底层（样本库 + LLM 只读意图），把「听懂」和「执行」切开，根治"补不完的关键词表"（关联 ba022ce / ef401d6 / 0b886f0 / 98003d8）
+- `2026-09-26-retime-crud-selfcheck.md` — 用户要求"增删查改自行测试一遍"：自测暴露「已排待办改期」接不住的真实缺口并接通 INTENT_RETIME 执行分支（关联 0dbbbea / e36a824 / 3d25bee / 0309b31）
 - `2026-09-26-retime-live-collision-fix.md` — 收尾：真机"把周四那个瑜伽挪到周五"漏进大模型兜底，定位样本碰撞把"瑜伽"误记"健身"+旧日误判，堵住并补 RT-S4 回归（关联本批 4 个 commit）
 - `2026-09-26-add-course-as-todo-fix.md` — **加课被当代办**双重根因：wants_add_course 漏接"上午/下午/晚上"时段词 + 一条把加课记成 add_todo 的污染样本，加课硬闸门堵漏 + 第十八批回归（关联本批 4 个 commit）
 - `2026-09-26-week-grid-overlap-fix.md` — 学生截图报「重叠了」：纯前端 CSS，`repeat(7, 1fr)` 的 1fr 下限是 min-content、又被 nowrap 长串撑到 121px，七列总宽超容器 47px 导致列互相压住；改 `minmax(0, 1fr)` + 折行 + 网格项 min-width:0，两页同步（关联本批 3 个 commit）
 - `2026-09-26-time-conflict-sidebyside.md` — 「数据结构和小组会议时间一样重合了」：真凶是周五 `心理学选修`(课) 与 `小组会议`(待办) 同时段真冲突，绝对定位无避让导致后画者盖住先画者；改「冲突分组 + 同组并排分栏」（lanes=1 退化成原样），列表式面板改加 clash 红边 + 「撞」角标（关联本批 3 个 commit）
-- `2026-09-27-student-three-column.md` — 学生端三栏外壳重构（侧边栏/主体/输入区）+ 学生端自定义模型 API 透传（config/client/engine/router/main 一路 override；关联 5b793fd / 705992e / c125753）
+- `2026-09-27-student-three-column.md` — 学生端三栏外壳重构（侧边栏/主体/输入区）+ 学生端自定义模型 API 透传（config/client/engine/router/main 一路 override；关联 6b5a953 / 3a1d24f / d96eb29）
 - `2026-09-27-per-module-history.md` — 底部发送不再拽回校园问答（固定左侧导航）+ 每个模块独立聊天历史 + 每个模块适配各自开场白（sessionId 按模块 key、chat 沿用全局以兼容 plan.html 与测试；关联本批 1 个代码 commit）
 - `2026-09-27-panel-chat-visible.md` — 回归修复：上一步让卡片走 switchNav 触发 panel-mode 把聊天区(display:none)藏掉；改为 panel-mode 只隐藏首页组件、保留聊天区，并在 addMsg 滚动外层 .stage（关联本批 1 个代码 commit）
 - `2026-09-27-chatbox-chat-schedule-only.md` — 对话框仅保留在「校园问答+日程」：快递/外卖/代办/上传/设置纯查看；no-chatbox 整体隐藏 composer+#log；校园问答欢迎词恢复最初原文（关联本批 1 个代码 commit）

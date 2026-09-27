@@ -127,9 +127,9 @@
 
 ## 关联 commit
 
-- `2accf99` refactor(intent): 判定层统一出「类型 + 意图」，语义优先、关键词兜底
-- `61bbc9c` refactor(chat): 类型判定整体重做，问句不再被任何栏目做成待办卡
-- `e710115` test: 打桩客户端补 override 形参 + 修正一条过期断言
-- `55669c0` test(intent): 补第八批「类型判定整体重做」回归（11 项）
-- `6a2fdd0` test(intent): 把截图那两张残卡的字样钉成永久回归（问路的话永不出卡）
+- `6c8cf53` refactor(intent): 判定层统一出「类型 + 意图」，语义优先、关键词兜底
+- `5cc5574` refactor(chat): 类型判定整体重做，问句不再被任何栏目做成待办卡
+- `ca509d5` test: 打桩客户端补 override 形参 + 修正一条过期断言
+- `5a9ec14` test(intent): 补第八批「类型判定整体重做」回归（11 项）
+- `cd8a1ab` test(intent): 把截图那两张残卡的字样钉成永久回归（问路的话永不出卡）
 - 1 个 Prompt 快照 commit（本文件 + README 追加条目）

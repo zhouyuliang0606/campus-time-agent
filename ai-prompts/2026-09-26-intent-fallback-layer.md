@@ -175,10 +175,10 @@ LLM 那一档留给 `/api/chat` 的意图层。
 
 | commit | 说明 |
 |---|---|
-| `896d6ff` | feat(intent)：新增 `app/agent/intent.py`（样本库 + 语义层） |
-| `57c9c4a` | feat(chat)：`/api/chat` 接入语义兜底 |
-| `e757b98` | feat(router)：关键词落空时先查样本库 |
-| `3bb7600` | test(intent)：第八批护栏 30 项 |
-| `4322be7` | fix(chat)：规则被多义词骗了 → 语义层复核一次，以它为准 |
-| `358a0d8` | test+chore：复核护栏 6 项；样本库列为运行时数据不入库 |
+| `ba022ce` | feat(intent)：新增 `app/agent/intent.py`（样本库 + 语义层） |
+| `ef401d6` | feat(chat)：`/api/chat` 接入语义兜底 |
+| `0b886f0` | feat(router)：关键词落空时先查样本库 |
+| `98003d8` | test(intent)：第八批护栏 30 项 |
+| `26c95ea` | fix(chat)：规则被多义词骗了 → 语义层复核一次，以它为准 |
+| `1cda42c` | test+chore：复核护栏 6 项；样本库列为运行时数据不入库 |
 | 本文件 | 快照单独提交，不与代码混在一个 commit |

@@ -113,7 +113,7 @@ evts.forEach((x, i) => {
 
 ## Commit
 
-- `1dfeeec` `app/static/plan.html` — 周表冲突并排（--bl/--br 分栏）
-- `24551d2` `app/static/student.html` — 冲突条目加 clash 红边 + 「撞」角标
-- `56ee452` `tests/test_05_student_views.py` — 第十四批时间冲突并排回归
+- `e744183` `app/static/plan.html` — 周表冲突并排（--bl/--br 分栏）
+- `1a30368` `app/static/student.html` — 冲突条目加 clash 红边 + 「撞」角标
+- `0ac5292` `tests/test_05_student_views.py` — 第十四批时间冲突并排回归
 - `ai-prompts/2026-09-26-time-conflict-sidebyside.md` — 本快照（与 README 索引同一 commit）

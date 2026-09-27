@@ -106,7 +106,7 @@ days.forEach(d => {
 
 ## Commit
 
-- `39bc851` `app/static/student.html` — 周/月七列网格溢出（学生端）
-- `cd5bdd1` `app/static/plan.html` — 完整日程页同一处网格溢出
-- `6713b67` `tests/test_05_student_views.py` — 第十三批网格溢出/重叠回归
+- `7eee912` `app/static/student.html` — 周/月七列网格溢出（学生端）
+- `3df377d` `app/static/plan.html` — 完整日程页同一处网格溢出
+- `dfeb346` `tests/test_05_student_views.py` — 第十三批网格溢出/重叠回归
 - `ai-prompts/2026-09-26-week-grid-overlap-fix.md` — 本快照（与 README 索引同一 commit）

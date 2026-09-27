@@ -43,7 +43,7 @@
 
 ## 关联 commit
 
-- `e153f84` feat(planner): 新增「已排待办改期」提案生成 build_retime_existing_proposal
-- `1e3639b` feat(chat): 接通 INTENT_RETIME 执行分支（已排待办改期）
-- `bf2a538` fix(frontend): 改期卡确认按钮转发 old_todo_id（删旧+加新）
-- `0905fa1` test(crud): 增删查改对话流程自测（覆盖规则+语义两层说法）
+- `0dbbbea` feat(planner): 新增「已排待办改期」提案生成 build_retime_existing_proposal
+- `e36a824` feat(chat): 接通 INTENT_RETIME 执行分支（已排待办改期）
+- `3d25bee` fix(frontend): 改期卡确认按钮转发 old_todo_id（删旧+加新）
+- `0309b31` test(crud): 增删查改对话流程自测（覆盖规则+语义两层说法）

@@ -57,7 +57,7 @@
 | ① 只改以后的提交 | 换 `user.email` 为目标账号邮箱 | 不变 | **采纳**：改动最小、不动历史、不碰账号设置 |
 | ② 换绑邮箱 | 把老邮箱挪到新账号 | 不变（实时反查） | 需先从 zhouto 移除该邮箱（它是主邮箱），且 zhouto 名下其他仓库提交会跟着改归属 |
 | ③ 转移仓库到 zhouto | 改 repo owner | 不变 | 仓库地址变更，与既定提交地址不符 |
-| ④ 重写历史 | `filter-repo` + force push | **全部变化** | **明确否决**：`ai-prompts/` 中大量引用 commit 短哈希（`0f4852a`、`896d6ff`、`1dfeeec` 等），而这些正是比赛要交的材料，重写会导致引用全部失准 |
+| ④ 重写历史 | `filter-repo` + force push | **全部变化** | **明确否决**：`ai-prompts/` 中大量引用 commit 短哈希（`2da7b7a`、`ba022ce`、`e744183` 等），而这些正是比赛要交的材料，重写会导致引用全部失准 |
 
 ---
 
@@ -110,7 +110,7 @@ git config --local user.email "312324985+zhouyuliang0606@users.noreply.github.co
 
 | 检查项 | 结果 |
 |---|---|
-| 本地 HEAD / 远程 master 哈希 | `47b205260d5db0f464f5c35a04dee12a18c8178c` **完全相同** |
+| 本地 HEAD / 远程 master 哈希 | `f8582e17ec936c513a1240370d0a203863168fda` **完全相同** |
 | 提交数 | 本地 **188** = 远程 **188** |
 | `git diff HEAD origin/master` | **为空** |
 | 线上根目录 | `README.md` `EXPLAIN.md` `.env.example` `.gitignore` `requirements.txt` + `app/ ai-logs/ ai-prompts/ docs/ samples/ tests/` 齐全 |
