@@ -31,6 +31,7 @@
 - `2026-09-27-panel-chat-visible.md` — 回归修复：上一步让卡片走 switchNav 触发 panel-mode 把聊天区(display:none)藏掉；改为 panel-mode 只隐藏首页组件、保留聊天区，并在 addMsg 滚动外层 .stage（关联本批 1 个代码 commit）
 - `2026-09-27-chatbox-chat-schedule-only.md` — 对话框仅保留在「校园问答+日程」：快递/外卖/代办/上传/设置纯查看；no-chatbox 整体隐藏 composer+#log；校园问答欢迎词恢复最初原文（关联本批 1 个代码 commit）
 - `2026-09-27-time-span-mixed-format.md` — 截图报「下午四点到晚上7点」被截成 1 小时 + 标题残留「到7点」：`_pick_span` 两条旧正则接不住中英混写（归一成"下午4:00到晚上7点"后退化成单起点→默认补 1 小时）；改统一 `_SPAN_RE` + 新增 `_period_hour` 两端点各看各的时段词，`_strip_title_noise` 补擦「N点」残片与孤立连接词（关联本批 1 个代码 commit）
+- `2026-09-27-campus-qa-kb-routing.md` — 「校园问答」问「我要去哪里取快递」却出了「哪取快递」候选卡：`wants_add_todo` 的 `_GO_INTENT_RE` 把"我要去…哪里/怎么"这类**不带问号的问句**当成下单（只挡了 吗/？/?）；且 3c 加待办分支**不按模块拦**，所以单靠前端锁模块拦不住。改：后端补疑问词闸门 `_GO_QUESTION_RE`（不列"什么/几点"以免误伤真下单）+ 前端校园问答栏默认锁 `module=faq`，问题直接进 `search_kb`（关联本批 2 个代码 commit）
 - （后续每次开发会话追加新文件……）
 
 ## 评审怎么看
