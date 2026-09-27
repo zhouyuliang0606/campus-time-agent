@@ -31,8 +31,11 @@ class AgentEngine:
         tools: dict[str, Tool] | None = None,
         system_prompt: str = "",
         session_id: str = "",
+        llm_override: dict | None = None,
     ) -> None:
         self.llm = llm or DeepSeekClient()
+        # 学生端自定义 API 配置（{base_url, model, api_key}），优先于服务器配置
+        self.llm_override = llm_override
         self.tools: dict[str, Tool] = tools or {}
         self.system_prompt = system_prompt
         # 会话 id：本轮生成的确认卡从这里传给"待确认暂存"，
@@ -84,7 +87,9 @@ class AgentEngine:
             self.trace.append({"step": step, "phase": "🤔 思考"})
 
             # 2) 让模型基于当前历史回一句（可能含 tool_calls）
-            msg = await self.llm.chat(messages, tools=self._schemas())
+            msg = await self.llm.chat(
+                messages, tools=self._schemas(), override=self.llm_override
+            )
 
             # 3) 如果模型想调用工具
             if msg.get("tool_calls"):

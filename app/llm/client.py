@@ -28,9 +28,12 @@ class DeepSeekClient:
         # 不能等到下一次重启。所以每次真正要发请求时才去问 config 要最新配置。
         pass
 
-    def _config(self) -> tuple[str, str, str]:
-        """取本次调用要用配置（人话：现用现取，保证后台改完即时生效）。"""
-        cfg = get_llm_config()
+    def _config(self, override: dict | None = None) -> tuple[str, str, str]:
+        """取本次调用要用配置（人话：现用现取，保证后台改完即时生效）。
+
+        override 是学生端自定义的 API 配置，传了就优先用。
+        """
+        cfg = get_llm_config(override=override)
         return cfg["api_key"], cfg["base_url"].rstrip("/"), cfg["model"]
 
     async def chat(
@@ -38,16 +41,18 @@ class DeepSeekClient:
         messages: list[dict],
         tools: list[dict] | None = None,
         tool_choice: str = "auto",
+        override: dict | None = None,
     ) -> dict:
         """发一次对话请求，返回模型的一条消息（人话：把上下文发给模型，模型回你一句）。
 
         :param messages: 对话历史，格式 [{"role": "system/user/assistant/tool", "content": "..."}]
         :param tools: 可选，告诉模型"你现在能调用哪些函数"（Agent 用得上）
         :param tool_choice: "auto" 表示模型自己决定要不要调用工具
+        :param override: 可选，学生端自定义的 API 配置 {base_url, model, api_key}，优先于服务器配置
         :return: 模型返回的消息字典，可能含 content（文字）或 tool_calls（要调工具）
         """
-        # 本次调用要用配置：现用现取，管理员在后台改完立刻生效
-        api_key, base_url, model = self._config()
+        # 本次调用要用配置：现用现取，管理员在后台改完立刻生效；学生端自定义 key 优先
+        api_key, base_url, model = self._config(override=override)
 
         # 组装请求体。temperature 越低，回答越稳重、越不容易胡说
         payload: dict[str, Any] = {

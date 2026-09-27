@@ -20,15 +20,28 @@ DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
 DEBUG = os.getenv("DEBUG", "false").lower() in ("true", "1", "yes")
 
 
-def get_llm_config() -> dict:
+def get_llm_config(override: dict | None = None) -> dict:
     """获取当前真正生效的大模型配置（人话：管理后台配了就听它的，没配就用 .env 的）。
 
-    优先级：管理控制台的 settings.json  >  .env 环境变量
+    优先级：学生端自定义 API（override）  >  管理控制台的 settings.json  >  .env 环境变量
+
+    override 是学生端在对话框里自己填的 {base_url, model, api_key}（仅存本机浏览器）。
+    一旦它带了有效 api_key，就直接用它，既不打扰管理后台配置，也不要求服务器配密钥——
+    这样没有服务器密钥的演示环境，学生也能用自己的 Key 把真模型跑起来。
 
     为什么做成一个函数而不是几个常量？
     因为管理员在后台改完配置希望立刻生效。每次调用重新读一次文件，
     开销可以忽略，但换来了"改完不用重启服务"这个很值钱的体验。
     """
+    # 学生端自定义 API 优先：只要带了有效 key 就直接用，不需要服务器配密钥
+    if override and override.get("api_key"):
+        return {
+            "api_key": override["api_key"],
+            "base_url": (override.get("base_url") or DEEPSEEK_BASE_URL).rstrip("/"),
+            "model": override.get("model") or DEEPSEEK_MODEL,
+            "source": "学生端自定义 API",
+        }
+
     # 放在函数内导入：避免 config 这个底层模块在启动时就依赖 store
     from app.store import get_settings
 
