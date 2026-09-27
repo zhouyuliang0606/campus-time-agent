@@ -601,7 +601,21 @@ def test_schedule_proposal_tool():
       ① 模块手里有 propose_todo_tool 了，调成功会回 __proposal__，引擎据此挂确认条；
       ② 模块设定里写死了"没调工具就不许说提案已发"；
       ③ 万一模型还是不调工具，学生回「可以」时系统能把它那句方案捞回来重新挂条。
+
+    ⚠️ **整段都必须套在沙箱里**。此前函数头到下面那个 `with sandbox():` 之间还夹着一小段
+    引擎级子批（直接 new 一个 `AgentEngine` 去调 `propose_todo_tool`），那段是**露在沙箱外**的：
+    每跑一次全量，就往**真实运行数据**里写一张暂存卡（`app/data/pending.json` 的
+    `sched-tool-1`）和一段会话——正是"测试污染演示数据"那类老毛病
+    （跟坑表里「探针写错环境变量 → 污染真实演示数据」同源）。
+    现在外面这层套沙箱、函数体一字不动地搬进 `_proposal_tool_body()`，两层 sandbox 嵌套无害
+    （内层是 HTTP 那半段，各管各的临时目录）。
     """
+    with sandbox():
+        return _proposal_tool_body()
+
+
+def _proposal_tool_body():
+    """第六批的函数体（由上面的 test_ 壳整段套进沙箱，见那段注释）。"""
     title("6. 日程面板提案：工具出条 / 提示层兜底 / 文字方案捞回来")
     c = Checker()
     from app.agent.engine import AgentEngine
