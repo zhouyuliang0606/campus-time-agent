@@ -18,7 +18,7 @@ class _FakeLLM:
     def __init__(self, reply):
         self._reply = reply
 
-    async def chat(self, messages, tools=None, tool_choice="auto"):
+    async def chat(self, messages, tools=None, tool_choice="auto", override=None):
         return {"content": self._reply}
 
 
@@ -41,7 +41,7 @@ class _LLMPatch:
         self._old_g = _cfg.get_llm_config
         _client.DeepSeekClient = lambda *a, **k: _FakeLLM(self.reply)
         key = "test-key" if self.with_key else ""
-        _cfg.get_llm_config = lambda: {"api_key": key, "base_url": "x", "model": "m"}
+        _cfg.get_llm_config = lambda *a, **k: {"api_key": key, "base_url": "x", "model": "m"}
         return self
 
     def __exit__(self, *exc):

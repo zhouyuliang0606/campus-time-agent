@@ -152,7 +152,7 @@ def test_engine_captures_propose_slots():
         engine = AgentEngine(system_prompt="测试", tools=planner_tools())
 
         # 不真连大模型：把 llm.chat 换成"只调一次 propose_slots 工具"的桩
-        async def fake_chat(messages, tools=None):
+        async def fake_chat(messages, tools=None, override=None):
             return {"tool_calls": [{
                 "id": "call_1",
                 "function": {
@@ -178,7 +178,15 @@ def test_student_page_markup():
         r = client.get("/student")
         c.check("学生端页面 200", r.status_code == 200)
         html = r.text or ""
-        c.check("学生端有「设置」入口指向 /settings", "/settings" in html)
+        # ⚠️ 这条早先断言的是 `"/settings" in html`（跳独立设置页的链接）——可
+        #    「学生端三栏外壳重构」那次就把设置做成了**页内面板**（侧栏 ⚙️ →
+        #    页内设置视图），独立页 /settings 还在、只是不再从学生页里跳过去。
+        #    而 test_04 的第四批当时就因为一个打桩签名不一致直接崩了，后面的批次
+        #    压根没跑到，这条红一直没露出来。现在按**当前的真实入口**判。
+        c.check("学生端有「设置」入口（侧栏 ⚙️ → 页内设置视图）",
+                'data-nav="settings"' in html)
+        c.check("页内设置视图在（名字/性格/模型与 API 都在这里调）",
+                'id="settingsBody"' in html)
         c.check("有语音按钮 id=mic", 'id="mic"' in html)
         c.check("有「正在思考…」提示", "正在思考" in html)
         c.check("接入了 Web Speech 语音识别", "webkitSpeechRecognition" in html or "SpeechRecognition" in html)
