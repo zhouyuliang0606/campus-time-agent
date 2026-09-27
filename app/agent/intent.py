@@ -53,12 +53,74 @@ KNOWN_INTENTS = (
     INTENT_FIND_CARD, INTENT_RETIME, INTENT_CLEAR_TIMETABLE, INTENT_CHAT,
 )
 
-# 意图 → 该交给哪个模块（router 关键词没命中时靠它，省一次 LLM 分类）
+# ── 类型（module）白名单 ─────────────────────────────────────────────────────
+# 「这句话归哪个类型/模块管」和「想干什么（intent）」现在是**同一次判定**一起给出的：
+# 主判定这一层（样本库 → LLM），`router._QUICK_MAP` 那 50 多个关键词只当**兜底**。
+# 放这里而不是 router.py，是为了让 router 反向复用（依赖方向 router → intent，单向、不成环）。
+MODULE_KEYS = ("schedule", "faq", "express", "takeout", "planner",
+               "lostfound", "repair", "notice", "station", "admin")
+
+# 每个类型（module）的人话说明。**只写一份**：语义层的提示词、router 的对照表、
+# 文档里的说明，都从这儿取——省得三处各写一份、改一处忘两处。
+MODULE_MEANING = {
+    "schedule": "课表/时间安排/复习计划/空闲时间",
+    "faq": "校园规定/地点/办事流程等问答（答案从知识库检索）",
+    "express": "学生查自己的快递/取件码/滞留",
+    "takeout": "学生查外卖订单/取餐点/待取",
+    "planner": "学生个人日程（给待办排时间、周表月表、加/删/改待办）",
+    "lostfound": "丢东西/捡到东西/失物招领",
+    "repair": "设施报修/东西坏了/维修",
+    "notice": "公告/通知",
+    "station": "驿站商户侧（监听台账/主动推送/客服人格）",
+    "admin": "管理知识库/配置客服人格",
+}
+
+# 拿不准时的默认类型。挑 faq 而不是 planner：**答一句，比替学生办错一件事安全**。
+DEFAULT_MODULE = "faq"
+
+# 意图 → 该交给哪个模块。语义层没给 module（或给了个不认得的）时靠它兜住，
+# 保证判定层永远吐得出一个合法类型，调用方不用再判空。
 INTENT_MODULE = {
     INTENT_ADD_TODO: "planner", INTENT_REMOVE_TODO: "planner",
     INTENT_LIST_TODO: "planner", INTENT_FIND_CARD: "planner",
     INTENT_RETIME: "planner", INTENT_CLEAR_TIMETABLE: "planner",
+    INTENT_CHAT: DEFAULT_MODULE,
 }
+
+
+def module_hint(intent: str | None, fallback: str = DEFAULT_MODULE) -> str:
+    """由意图推类型（人话：不知道归哪个模块管，就看它想干什么）。
+
+    加/删/改/看清单一律归 planner——"想动自己的日程"这件事，类型是确定的；
+    只有 chat（什么都没想干 / 只是在问）才需要看**问的内容**，那由语义层给 module。
+    """
+    got = INTENT_MODULE.get(intent or "")
+    return got if got in MODULE_KEYS else (
+        fallback if fallback in MODULE_KEYS else DEFAULT_MODULE)
+
+
+# ── 「这句话是在问，还是在让我办事」────────────────────────────────────────
+# 这是判定层的**地基**，不是又一张关键词表：多义词（"安排"既是名词又是动词）
+# 是子串匹配的天生盲区，词表补多长都收敛不了。所以这里只给一个**粗信号**，
+# 用它决定"要不要升级到语义层复核"，**绝不用它下结论**——真正拍板的是语义层。
+# 故意取宽：宁可疑一下、多问一次，也别漏判（漏判的代价是规则继续替学生办错事）。
+QUESTION_RE = re.compile(
+    r"吗|呢|谁|哪|是不是|能不能|可不可以|要不要|行不行|好不好|对不对|"
+    r"咋|怎么|如何|为什么|为啥|几点|多少|多久|多长时间|多远|"
+    r"有没有|啥|什么|干嘛|干啥|看看|查查")
+_QUESTION_TAIL_RE = re.compile(r"[？?]\s*$")
+
+
+def looks_like_question(text: str) -> bool:
+    """粗判"这像是在问"（人话：先分它是问我事、还是让我办事）。
+
+    它只决定"要不要复核"，所以宽一点是安全的（最坏多问一次语义层），
+    而窄一点会漏掉口语问句、让关键词表继续替学生办错事。
+    """
+    t = (text or "").strip()
+    if not t:
+        return False
+    return bool(_QUESTION_TAIL_RE.search(t) or QUESTION_RE.search(t))
 
 # ── 样本库（③ 离线兜底）────────────────────────────────────────────────────
 # 系统每成功处理一句学生的话，就把这句原话连同判定的意图存下来（自增长）。
@@ -170,7 +232,7 @@ def remember(text: str, intent: str, fields: dict | None = None) -> None:
             _save_samples(samples)
             return
     item = {"text": t, "intent": intent, "at": time.time(), "hits": 1}
-    for k in ("title", "minutes", "day_hint"):
+    for k in ("title", "minutes", "day_hint", "module"):
         v = (fields or {}).get(k)
         if v:
             item[k] = v
@@ -205,20 +267,36 @@ def match_sample(text: str) -> dict | None:
            "minutes": int(best.get("minutes") or 0),
            "day_hint": best.get("day_hint") or "", "date": "", "start": "",
            "end": "", "confidence": round(best_score, 2), "source": "sample",
-           "matched": best.get("text") or ""}
+           "matched": best.get("text") or "",
+           # 学的时候如果记下了 module 就用它，没记下就按意图推——
+           # 类型判定跟意图一样，都得从这一层出来，调用方不用自己猜。
+           "module": (best.get("module") or module_hint(best.get("intent")))}
     return out if out["intent"] in KNOWN_INTENTS else None
 
 
 # ── 语义层（② LLM 兜底）────────────────────────────────────────────────────
 # 给模型看的说明：**只让它读懂，不让它动手**。
-# 反复强调"只输出 JSON / 不许自己发明 intent"，是因为它一旦自由发挥，
+# 反复强调"只输出 JSON / 不许自己发明"是因为它一旦自由发挥，
 # 就会像以前那样回一句"已经帮你排好啦"——而日程里什么都没有。
-_INTENT_SYSTEM = """你是校园时间管家的**意图识别器**，只做一件事：判断学生这句话想干什么。
+#
+# 2026-09-27 重做：**类型（module）也归这一层判**。
+#   以前类型是 `router._QUICK_MAP` 那 50 多个 `if keyword in text` 说了算，
+#   而"归哪个模块"和"想干什么"本来是同一件事的两面——分开判就会互相打架：
+#   学生问「我要去哪里取快递」（在校园问答栏里），关键词表看见"取快递"就把话
+#   塞给快递模块，加待办那条分支又是**不分模块**的，于是给他出了一张待办卡。
+#   现在两件事一次问清：先分"这是问还是办"，再给 module 和 intent。
+_MODULE_LINES = "\n".join(f"- {k}：{v}" for k, v in MODULE_MEANING.items())
 
-重要：你**不负责安排时间、也不负责写日程**，那些由系统另做。你只输出意图和读出来的字段。
+_INTENT_SYSTEM = f"""你是校园时间管家的**类型与意图识别器**，只做一件事：把学生这句话归类。
+
+重要：你**不负责安排时间、不负责写日程、也不负责回答**，那些由系统另做。
+你只输出两样：这句话归哪个类型管（module）、他想干什么（intent）。
+
+可选 module（**只能**从这里挑一个，不许自造）：
+{_MODULE_LINES}
 
 可选 intent（**只能**从这里挑一个，不许自造）：
-- add_todo：想把一件事加进日程/待办（说没说时间都算，比如"我想去撸串""帮我记一下交电费"）
+- add_todo：想把一件事**排进日程/待办**（说没说时间都算，比如"我想去撸串""帮我记一下交电费"）
 - remove_todo：想删掉一条已有的待办
 - list_todo：想看看自己有哪些待办
 - find_card：在找刚才那张确认卡片/弹窗（"卡片呢""怎么没弹出来"）
@@ -226,22 +304,31 @@ _INTENT_SYSTEM = """你是校园时间管家的**意图识别器**，只做一�
 - clear_timetable：想清空课表
 - chat：以上都不是（闲聊、问校园规定、查课表、查快递、查外卖…）
 
-判断要领：
-- "我想问一下…""…几点关门""…在哪"这种**提问**是 chat，不是 add_todo。
-- 只有学生真的想把一件事**排进日程**才算 add_todo。
-- 拿不准就选 chat，系统会照常回答，不会办错事。
+判断要领（这几条是**闸门**，请当硬规则执行）：
+- **第一步先分"问"还是"办"**：学生在**问**（…在哪 / 几点 / 怎么走 / 有哪些 / 是不是 / 能不能 / 有没有）
+  → intent 一律 `chat`，module 按**问的内容**给（问规定地点流程→faq；问自己的快递→express；
+  问自己的外卖→takeout；问课表/什么时候没课→schedule）。
+  **问句绝不算 add_todo**——哪怕句子里出现了"取快递""安排""预约"这种词。
+- **只有学生真的想把一件事排进日程**（"帮我安排…""加个…""记一下我要…"）才算 add_todo，module 给 `planner`。
+- remove_todo / list_todo / retime_todo / clear_timetable 一律 module 给 `planner`。
+- 拿不准时：intent 选 `chat`、module 选 `faq`。系统会照常答他一句，**不会替他办错事**。
 
 只输出一个 JSON，不要任何解释文字：
-{"intent":"...","title":"要做的事，两到六个字，没有就空","minutes":0,"day_hint":"今天/明天/周一/工作日/周末/2026-09-30，没有就空","date":"YYYY-MM-DD，没有就空","start":"HH:MM，没有就空","end":"HH:MM，没有就空","confidence":0.0}
+{{"module":"...","intent":"...","title":"要做的事，两到六个字，没有就空","minutes":0,"day_hint":"今天/明天/周一/工作日/周末/2026-09-30，没有就空","date":"YYYY-MM-DD，没有就空","start":"HH:MM，没有就空","end":"HH:MM，没有就空","confidence":0.0}}
 
 confidence 是你对自己判断的把握（0~1）。"""
 
 
-async def classify_with_llm(text: str, history: list | None = None) -> dict | None:
-    """问一次大模型：这句话是什么意图？（人话：让模型替正则把话听懂）
+async def classify_with_llm(text: str, history: list | None = None,
+                            override: dict | None = None,
+                            client=None) -> dict | None:
+    """问一次大模型：这句话归哪个类型、想干什么？（人话：让模型替关键词表把话听懂）
 
     **它拿不到任何写库接口，也碰不到排期算法**——返回的只是一串字段，
     真正的查空档/出卡/写库在 planner.py 里，跟模型无关。
+
+    `override` 是学生端自己填的 API 配置（原样透传给客户端）；
+    `client` 允许调用方传一个现成的客户端（router 用，省得重复构造）。
 
     没配 key、调不通、吐的不是 JSON、intent 不在白名单、把握太低 → 一律返回 None，
     让调用方照旧往下走（宁可漏判，不可替学生办错事）。
@@ -252,8 +339,9 @@ async def classify_with_llm(text: str, history: list | None = None) -> dict | No
     try:
         from app.config import get_llm_config
         from app.llm.client import DeepSeekClient
-        if not (get_llm_config().get("api_key") or "").strip():
+        if not (get_llm_config(override=override).get("api_key") or "").strip():
             return None          # 没 key → 这一层不生效，样本库照旧兜
+        client = client or DeepSeekClient()
     except Exception:
         return None
 
@@ -270,7 +358,7 @@ async def classify_with_llm(text: str, history: list | None = None) -> dict | No
         msgs.append({"role": "user", "content": t})
 
     try:
-        reply = await DeepSeekClient().chat(msgs)
+        reply = await client.chat(msgs, override=override)
     except Exception:
         return None
 
@@ -299,6 +387,12 @@ async def classify_with_llm(text: str, history: list | None = None) -> dict | No
     except (TypeError, ValueError):
         minutes = 0
 
+    # 类型：白名单之外的一律不认（模型偶尔会顺着"卡"字想成校园卡、给出个野模块名），
+    # 这时**按意图推一个**——加待办必归 planner，纯 chat 才回落到 faq。
+    module = (data.get("module") or "").strip()
+    if module not in MODULE_KEYS:
+        module = module_hint(intent)
+
     title = (data.get("title") or "").strip()
     # 「我要去吃火锅」→ title 得真像一件事才行。模型偶尔会把"吃火锅"写成
     # "去吃火锅一顿"或者干脆把整句抄回来，这道闸门沿用 planner 的判真逻辑，
@@ -315,7 +409,7 @@ async def classify_with_llm(text: str, history: list | None = None) -> dict | No
             title = ""
 
     return {
-        "intent": intent, "title": title, "minutes": minutes,
+        "module": module, "intent": intent, "title": title, "minutes": minutes,
         "day_hint": (data.get("day_hint") or "").strip(),
         "date": (data.get("date") or "").strip(),
         "start": (data.get("start") or "").strip(),
@@ -324,17 +418,28 @@ async def classify_with_llm(text: str, history: list | None = None) -> dict | No
     }
 
 
-async def understand(text: str, history: list | None = None) -> dict | None:
-    """两道兜底的统一入口（人话：规则接不住时问它）。
+async def classify(text: str, history: list | None = None,
+                   override: dict | None = None) -> dict | None:
+    """判定层的**统一入口**（人话：这句话归哪个类型、想干什么，一趟问出来）。
 
-    顺序有讲究：**先查样本库（零成本、离线可用），再问 LLM（要花一次调用）**。
-    样本库命中就省下这次调用；没命中才升级到语义层。
-    两道都没有 → 返回 None，调用方照旧掉给模型自由发挥（现状行为，不倒退）。
+    顺序是"**语义优先、关键词兜底**"，这是 2026-09-27 那次重做的要点：
+      ① 样本库：历史真办成功过的说法做模糊匹配   ← 零成本、离线可跑，兼作 ② 的缓存
+      ② 语义层：问一次 LLM（只读分类）          ← 要花一次调用，没配 key 自动跳过
+    两道都没定 → None。调用方自己决定怎么兜（router 会退到关键词表，
+    main.py 会退回"原来那条确定性分支"，**行为不倒退**）。
+
+    返回的字典里 `module` 和 `intent` 都是**已经验过白名单**的，拿来即用。
     """
     hit = match_sample(text)
     if hit:
         return hit
-    return await classify_with_llm(text, history)
+    return await classify_with_llm(text, history, override=override)
+
+
+async def understand(text: str, history: list | None = None,
+                     override: dict | None = None) -> dict | None:
+    """`classify` 的别名（保留旧名字，老调用点不用改）。"""
+    return await classify(text, history, override=override)
 
 
 def to_canonical(text: str, sem: dict | None) -> str:
