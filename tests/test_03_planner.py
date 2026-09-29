@@ -86,7 +86,11 @@ with sandbox():
 
     title("6. 月表数据（月视图角标的数据源）")
     tmr = (datetime.date.today() + datetime.timedelta(days=1)).isoformat()
-    mon = datetime.date.today().strftime("%Y-%m")
+    # ⚠️ 月份要跟着**明天**取，不能跟着今天取：每到月末那天，
+    #    "今天所在月"和"明天所在月"就不是一个月了（09-30 的明天是 10-01），
+    #    拿 9 月的接口去查 10 月 1 号的数据，永远是空的 → 这条会在每月最后一天莫名其妙变红。
+    #    （2026-09-30 实测踩到：`明天多出 2 项（角标数据） 0 -> 0`。）
+    mon = tmr[:7]
 
     # 先量一次"加之前有多少项"，再加两条，最后比对增量。
     # 这样不管演示数据里本来有没有待办，结论都成立（测试用例要能独立复现）。
@@ -99,7 +103,13 @@ with sandbox():
     got = m["days"].get(tmr, [])
     c.check("明天多出 2 项（角标数据）", len(got) == base + 2, f"{base} -> {len(got)}")
     c.check("新加的两项都在里面", {"取快递", "开会"} <= {t["title"] for t in got})
-    c.check("今天至少 1 项", len(m["days"].get(TODAY, [])) >= 1)
+    # ⚠️ 别假设"演示数据里今天正好有安排"：演示待办是手加的，日期会过时
+    #    （2026-09-30 实测：库里最新一条停在 09-29，这条就红了，而产品是对的）。
+    #    自己种一条今天的、再断言它出现在月表里——同上面那句"测试用例要能独立复现"。
+    add_todo_tool("今天的事", TODAY, "08:00", "08:30")
+    m2 = client.get(f"/api/todos/month?month={TODAY[:7]}").json()
+    c.check("今天至少 1 项", len(m2["days"].get(TODAY, [])) >= 1,
+            f"{len(m2['days'].get(TODAY, []))} 项")
     c.check("查空月份返回空", client.get("/api/todos/month?month=2099-01").json()["days"] == {})
 
     title("7. 会话历史（多轮商量的前提）")

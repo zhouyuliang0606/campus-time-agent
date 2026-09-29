@@ -457,10 +457,15 @@ def test_add_todo_chinese_clock():
                 bool(o3) and o3[0].get("kind") == "todo_slots"
                 and len(o3[0].get("slots") or []) >= 1,
                 _json.dumps(o3[:1], ensure_ascii=False)[:120])
+        # ⚠️ 别把日期写死成某一天：程序是按**今天**算"周二"的（今天周三 → 下个周二；
+        #    今天正好是周二 → 就是今天）。早先这里钉着 "2026-09-29"，过了那天就永远红
+        #    （2026-09-30 实测：候选正确落在 10-06，断言却还在找 09-29）。
+        #    这里改成断言**意图**：所有候选同一天，且那天确实是周二。
+        _slot_dates = {s.get("date") for s in (o3[0].get("slots") or [])} if o3 else set()
         c.check("候选都落在他说的那天（周二）",
-                bool(o3) and all(s.get("date") == "2026-09-29"
-                                 for s in (o3[0].get("slots") or [])),
-                [s.get("date") for s in (o3[0].get("slots") or [])] if o3 else "")
+                len(_slot_dates) == 1
+                and datetime.date.fromisoformat(next(iter(_slot_dates))).isoweekday() == 2,
+                sorted(_slot_dates))
         c.check("卡上把标题记下了（游泳）",
                 bool(o3) and o3[0].get("title") == "游泳",
                 (o3[0].get("title") if o3 else ""))
@@ -1902,11 +1907,14 @@ def test_rescue_when_model_forgot_tool():
             r2 = client.post("/api/chat", json={"message": "确认",
                                                 "module": "schedule",
                                                 "session_id": sid})
+            # ⚠️ 落库要看**卡上那天**（程序按今天算"周二"），不能写死 2026-09-29——
+            #    过了 09-29 这条就永远红，而产品其实是对的（2026-09-30 实测：写入 10-06）。
             c.check("补出来的条回一句「确认」就真写进日程了",
                     any(t["title"] == "游泳" and t["start"] == "16:00"
-                        and t["end"] == "17:30" for t in list_todos("2026-09-29")),
+                        and t["end"] == "17:30"
+                        for t in list_todos(card.get("date") or "")),
                     [f"{t['title']}@{t['date']} {t['start']}-{t['end']}"
-                     for t in list_todos("2026-09-29")])
+                     for t in list_todos(card.get("date") or "")])
             c.check("回答里报了回执（不是「我没办法」）",
                     "已加入日程" in (r2.json().get("answer") or ""),
                     (r2.json().get("answer") or "")[:60])
@@ -2090,8 +2098,10 @@ def test_prose_proposal_and_lie():
                     any("捞回确认条" in (t.get("phase") or "")
                         for t in (d.get("trace") or [])),
                     [t.get("phase") for t in (d.get("trace") or [])])
+            # ⚠️ 同上：**跟着卡上的日期查**，别钉死 2026-09-28（那是写这条时的"周一"）。
             c.check("还没写库（学生没点【确认加入】之前一条都不许写）",
-                    not list_todos("2026-09-28"))
+                    not any(t["title"] == "游泳"
+                            for t in list_todos(card.get("date") or "")))
 
             # 点完【确认加入】/ 再回一句「确认」→ 真写进个人库（周表月表的数据源）
             r2 = client.post("/api/chat", json={"message": "确认",
@@ -2099,9 +2109,10 @@ def test_prose_proposal_and_lie():
                                                 "session_id": sid})
             c.check("再回一句「确认」→ 真写进日程",
                     any(t["title"] == "游泳" and t["start"] == "16:00"
-                        and t["end"] == "17:30" for t in list_todos("2026-09-28")),
+                        and t["end"] == "17:30"
+                        for t in list_todos(card.get("date") or "")),
                     [f"{t['title']} {t['start']}-{t['end']}"
-                     for t in list_todos("2026-09-28")])
+                     for t in list_todos(card.get("date") or "")])
             c.check("回执里报了「已加入日程」（前端据此刷新周表/月表）",
                     "已加入日程" in (r2.json().get("answer") or ""),
                     (r2.json().get("answer") or "")[:60])
