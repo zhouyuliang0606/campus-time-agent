@@ -2522,6 +2522,48 @@ def _pick_todo_index(text: str) -> int | None:
     return n if n and 1 <= n <= 20 else None
 
 
+def _pick_todo_indexes(text: str, cap: int | None = None) -> list:
+    """认出学生用小序号点名，可能一次点好几条（人话：「第二条」「2」「第2、3条」「23」）。
+
+    为什么光秃秃的数字也要认：系统上一句刚列了编号清单，学生顺手敲「2」、
+    甚至把想删的几条连写成「23」，都是极自然的答法。旧写法只认「第N条」，
+    学生回「23」就被当成一个叫"23"的待办名 → 报"没找到"（学生截图："记忆有问题"）。
+
+    :param cap: 当前清单有几条。给了才敢把「23」拆成 [2,3]（每一位都得是合法序号）；
+                没给就只认「第N条」这种明确写法。返回 1 起的序号，-1 = 最后一条。
+    """
+    t = (text or "").strip()
+    if not t:
+        return []
+    if "最后一条" in t or "最后一个" in t or "最后那条" in t:
+        return [-1]
+    # ① 明确的「第N条/个/项」，可能一次点了多个（"第2、3条" → [2,3]）
+    m = re.search(r"第\s*([0-9一二三四五六七八九十两\s、,，/和跟与]{1,20}?)\s*(?:条|个|项)", t)
+    if m:
+        out = []
+        for tok in re.findall(r"[0-9]{1,2}|[一二三四五六七八九十两]{1,3}", m.group(1)):
+            n = int(tok) if tok.isdigit() else _cn_num(tok)
+            if n and 1 <= n <= 20:
+                out.append(n)
+        if out:
+            return out
+    # ② 光秃秃的数字串（可带 、,/ 空格 等分隔）：只在"整句基本就是一个序号"时才算
+    if cap is None:
+        return []
+    digits = re.sub(r"[\s、,，.。/和跟与\-—]+", "", t)
+    if not digits.isdigit():
+        return []
+    whole = int(digits)
+    if 1 <= whole <= cap:
+        return [whole]
+    # 整体超出范围，但每位都合法 → 当"一次点了好几条"（"23" → [2,3]）
+    if len(digits) > 1:
+        parts = [int(c) for c in digits]
+        if all(1 <= p <= cap for p in parts):
+            return parts
+    return []
+
+
 def wants_remove_todo(text: str) -> bool:
     """判断一句话算不算「删掉一条待办」（确定性分支用的开关）。
 
@@ -2838,15 +2880,27 @@ def resolve_todo_remove_reply(text: str, candidates: list | None = None) -> dict
     :param candidates: 上一轮列给学生看的那几条（按显示顺序），没有就只按名字解析
     """
     t = (text or "").strip()
-    idx = _pick_todo_index(t)
-    if idx is not None and candidates:
-        i = len(candidates) - 1 if idx == -1 else idx - 1
-        if 0 <= i < len(candidates):
-            item = candidates[i]
-            return {"status": "ok", "proposal": _todo_remove_proposal(item),
-                    "todos": [item]}
+    cap = len(candidates) if candidates else None
+    idxs = _pick_todo_indexes(t, cap)
+    if idxs and candidates:
+        picked = []
+        for idx in idxs:
+            i = len(candidates) - 1 if idx == -1 else idx - 1
+            if 0 <= i < len(candidates):
+                picked.append(candidates[i])
+        if len(picked) == 1:
+            return {"status": "ok", "proposal": _todo_remove_proposal(picked[0]),
+                    "todos": [picked[0]]}
+        if len(picked) > 1:
+            # 学生一次点了好几条：一次只删一条（不猜、不批量），列出来请他挑一条
+            return {"status": "many", "todos": picked, "reason": "一次只能删一条"}
         return {"status": "unclear", "todos": list(candidates), "reason": "序号超出范围"}
-    return resolve_todo_remove(t)
+    res = resolve_todo_remove(t)
+    # 手上有清单、学生这句却既不是序号也没对上名字 → 回"没看明白是哪一条"（带上清单），
+    # 绝不报"没找到"——清单还在记忆里，报"没找到"就是学生说的"记忆有问题"。
+    if res.get("status") == "empty" and candidates:
+        return {"status": "unclear", "todos": list(candidates)}
+    return res
 
 
 def propose_todo_remove_tool(title: str = "", date: str = "", when: str = "") -> str:
@@ -2968,15 +3022,25 @@ def render_todo_done_list(todos: list, limit: int = _REMOVE_LIST_CAP) -> str:
 def resolve_todo_done_reply(text: str, candidates: list | None = None) -> dict:
     """学生回答"是下面哪一条"时用它（人话：先按序号点名，不然就按名字解析）。"""
     t = (text or "").strip()
-    idx = _pick_todo_index(t)
-    if idx is not None and candidates:
-        i = len(candidates) - 1 if idx == -1 else idx - 1
-        if 0 <= i < len(candidates):
-            item = candidates[i]
-            return {"status": "ok", "proposal": _todo_done_proposal(item),
-                    "todos": [item]}
+    cap = len(candidates) if candidates else None
+    idxs = _pick_todo_indexes(t, cap)
+    if idxs and candidates:
+        picked = []
+        for idx in idxs:
+            i = len(candidates) - 1 if idx == -1 else idx - 1
+            if 0 <= i < len(candidates):
+                picked.append(candidates[i])
+        if len(picked) == 1:
+            return {"status": "ok", "proposal": _todo_done_proposal(picked[0]),
+                    "todos": [picked[0]]}
+        if len(picked) > 1:
+            return {"status": "many", "todos": picked, "reason": "一次只能改一条"}
         return {"status": "unclear", "todos": list(candidates), "reason": "序号超出范围"}
-    return resolve_todo_done(t)
+    res = resolve_todo_done(t)
+    # 同删待办：有清单时绝不报"没找到"
+    if res.get("status") == "empty" and candidates:
+        return {"status": "unclear", "todos": list(candidates)}
+    return res
 
 
 def propose_todo_done_tool(title: str = "", date: str = "", when: str = "") -> str:
