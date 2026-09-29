@@ -2387,6 +2387,17 @@ _REMOVE_TODO_INTENT = (
     "删掉", "删除", "删了", "去掉", "移除", "取消", "撤销", "退掉", "不想做", "别安排了",
 )
 
+# 标记完成（把某条**已存在的待办**标成已完成）的触发词。
+# 注意：**不放**"完成"这种极泛的词当总开关——"帮我安排完成作业"是新增，不是标记完成，
+# 碰上就会被误判。只有显式的"标记/勾/划"指令，或"完成/做完/搞定"精准对上一条已有待办时才算。
+_DONE_TODO_INTENT = (
+    "标记为完成", "标记完成", "标为完成", "标成完成", "标记一下完成", "标记已",
+    "勾掉", "勾了", "划掉", "划了", "打勾", "打卡", "标记done", "标done",
+    "标记为已", "完成掉",
+)
+# 软动词：仅当精准对上一条已有待办名字时才算标记完成（避免跟"新增"意图撞车）
+_DONE_TODO_VERB = ("完成了", "做完", "搞定了", "搞定", "办完", "做掉了", "划掉", "勾掉")
+
 # 学生明说这几个词，就是在说待办（而不是课）——哪怕话里带了星期几。
 _TODO_WORDS = ("待办", "日程", "事项")
 
@@ -2414,9 +2425,10 @@ def _pick_todo_name(text: str) -> str:
               "上周", "下个", "这个", "那个", "那天", "这天", "当天", "那一天",
               "这一天", "当天的"):
         t = t.replace(w, " ")
-    for w in _REMOVE_TODO_INTENT + _REMOVE_INTENT + ("待办", "日程", "事项", "安排",
-                                                    "那条", "这条", "那一条", "这一条",
-                                                    "一条", "一下", "一下下", "的"):
+    for w in _REMOVE_TODO_INTENT + _REMOVE_INTENT + _DONE_TODO_INTENT + _DONE_TODO_VERB + (
+            "待办", "日程", "事项", "安排", "标记", "完成",
+            "那条", "这条", "那一条", "这一条",
+            "一条", "一下", "一下下", "的"):
         t = t.replace(w, " ")
     t = re.sub(r"^(我要|我想|帮我|请帮我|请|给我|把|别|我)\s*", "", t)
     t = re.sub(r"[，,。！!？?、；;：:~～\-—『』「」\"'“”‘’\s]", "", t)
@@ -2468,6 +2480,39 @@ def wants_remove_todo(text: str) -> bool:
     if wants_add_course(t) or wants_add_todo(t):
         return False
     return True
+
+
+def wants_done_todo(text: str) -> bool:
+    """判断一句话算不算「把某条待办标记为完成」（确定性分支用的开关）。
+
+    跟 wants_remove_todo 对称：删待办是"拿走一条"，标记完成是"把已有的一条置 done"。
+    同样的让路规则——清空、删课、加课/加待办都优先于它。
+    此外「完成」太泛不能当总开关，所以：
+      · 显式的"标记/勾/划"指令（"把游泳标记完成""勾掉交电费"）直接算；
+      · "完成/做完/搞定"这类软动词，只在**精准对上一条已有待办的名字**时才算
+        （"游泳做完了"对上《游泳》才算；"帮我安排完成作业"里"作业"不是待办 → 不算）。
+    """
+    t = (text or "").strip()
+    if not t or len(t) > 80:
+        return False
+    if wants_clear_timetable(t):
+        return False
+    # 删待办优先：学生说"删掉并标记完成"极少，按删处理更稳妥
+    if wants_remove_todo(t) or wants_remove_todo_loose(t):
+        return False
+    # 删课让路给课表那条路
+    if wants_remove_course(t) and not any(w in t for w in _TODO_WORDS):
+        return False
+    if wants_add_course(t) or wants_add_todo(t):
+        return False
+    # ① 显式"标记/勾/划"指令：本身就是标记完成
+    if any(w in t for w in _DONE_TODO_INTENT):
+        return True
+    # ② 软动词：只有精准对上一条已有待办才认（否则跟"新增"撞车）
+    if any(v in t for v in _DONE_TODO_VERB):
+        if any(_todo_name_match(x.get("title", ""), t) for x in list_todos()):
+            return True
+    return False
 
 
 def is_remove_todo_followup(text: str) -> bool:
@@ -2775,6 +2820,130 @@ def propose_todo_remove_tool(title: str = "", date: str = "", when: str = "") ->
         "hint": ("没找到符合条件的待办。如实告诉学生'没找到'，"
                  "可以用 list_day_todos 看一下那天到底排了什么，"
                  "或者问学生是哪一天哪一条。**不许编一条出来删**。"),
+    }, ensure_ascii=False)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 标记完成（把某条**已存在的待办**置为 done）——跟删待办同一套"系统接管"思路：
+#   只读解析 + 三档分支（ok / many / empty）+ 确认条，模型碰不到写库接口。
+#   模型手里只有一个**只读**的 propose_todo_done，真正落库（update_todo_status）
+#   只在学生点头之后由系统执行。这也是把原先那个"模型直调 update_todo_status"
+#   撤掉、改成系统接管的落点。
+# ─────────────────────────────────────────────────────────────────────────────
+def resolve_todo_done(text: str) -> dict:
+    """把"把游泳标记完成"解析成**具体哪一条待办**（只读，一个字节都不写）。
+
+    返回形态跟 resolve_todo_remove 完全一致：
+      {"status": "ok",        "proposal": {...}, "todos": [...]}  恰好一条，可以出确认条
+      {"status": "many",      "todos": [...]}                     好几条，得让学生挑
+      {"status": "empty",     "todos": []}                        没找到这条待办
+      {"status": "unclear",   "todos": [...]}                     没说清是哪条
+    """
+    t = (text or "").strip()
+    day = _pick_date(t)
+    name = _pick_todo_name(t)
+
+    pool = list_todos(day) if day else list_todos()
+    by_name = bool(name) and name not in ("", "待办", "日程", "事项")
+    if by_name:
+        hits = [x for x in pool if _todo_name_match(name, x.get("title", ""))]
+        if not hits:
+            hits = [x for x in list_todos() if _todo_name_match(name, x.get("title", ""))]
+        if not hits:
+            return {"status": "empty", "todos": [], "day": day, "name": name}
+        pool = hits
+
+    if not pool:
+        return {"status": "empty", "todos": [], "day": day, "name": name}
+    if len(pool) == 1:
+        return {"status": "ok", "proposal": _todo_done_proposal(pool[0]), "todos": pool}
+    return {"status": "many", "todos": pool, "day": day, "name": name}
+
+
+def _todo_done_proposal(item: dict) -> dict:
+    """把一条待办包成一张"标记完成"提案（人话：原样念一遍，等学生点头）。"""
+    date = item.get("date", "")
+    return {
+        "kind": "todo_done",
+        "todo_id": item.get("id", ""),
+        "title": item.get("title", "待办"),
+        "date": date,
+        "start": item.get("start", ""),
+        "end": item.get("end", ""),
+        "weekday": _weekday_name(date),
+        "minutes": to_minutes(item.get("end", "")) - to_minutes(item.get("start", "")),
+        "summary": (f"{item.get('title', '待办')}｜{date}（{_weekday_name(date)}）"
+                    f"{item.get('start', '')}-{item.get('end', '')}"),
+    }
+
+
+def parse_done_todo(text: str) -> dict | None:
+    """解析成一张标记完成确认卡；不是"恰好一条"就返回 None（交给上层列清单/如实说）。"""
+    res = resolve_todo_done(text)
+    return res.get("proposal") if res.get("status") == "ok" else None
+
+
+def render_todo_done_list(todos: list, limit: int = _REMOVE_LIST_CAP) -> str:
+    """把候选待办列成一段人话清单（人话：规格要的"把清单列出来"）。"""
+    shown = todos[:limit]
+    lines = [_todo_line(x, i + 1) for i, x in enumerate(shown)]
+    if len(todos) > limit:
+        lines.append(f"（还有 {len(todos) - limit} 条没列出来，你可以直接说名字。）")
+    return "\n".join(lines)
+
+
+def resolve_todo_done_reply(text: str, candidates: list | None = None) -> dict:
+    """学生回答"是下面哪一条"时用它（人话：先按序号点名，不然就按名字解析）。"""
+    t = (text or "").strip()
+    idx = _pick_todo_index(t)
+    if idx is not None and candidates:
+        i = len(candidates) - 1 if idx == -1 else idx - 1
+        if 0 <= i < len(candidates):
+            item = candidates[i]
+            return {"status": "ok", "proposal": _todo_done_proposal(item),
+                    "todos": [item]}
+        return {"status": "unclear", "todos": list(candidates), "reason": "序号超出范围"}
+    return resolve_todo_done(t)
+
+
+def propose_todo_done_tool(title: str = "", date: str = "", when: str = "") -> str:
+    """给模型用的标记完成工具——**只读**，最多产出一张确认条，写不了任何东西。
+
+    为什么要把写工具拿走：老版本工具箱里有个真能改状态的 update_todo_status，
+    规矩靠提示层"必须先确认"约束着——可规矩写在提示里，模型口语一变就可能绕过它。
+    所以照删待办的做法，把写入口收归系统：模型只能出提案，学生点确认条
+    （或回一句"确认"）之后才由系统执行 update_todo_status(done)。
+    """
+    blob = " ".join(x for x in (title, date, when) if x)
+    res = resolve_todo_done(blob)
+    status = res.get("status")
+
+    if status == "ok":
+        prop = res["proposal"]
+        return json.dumps({
+            "__proposal__": prop,
+            "human": (f"确认条已经挂在下面了：《{prop['title']}》{prop['date']}"
+                      f"（{prop['weekday']}）{prop['start']}-{prop['end']}。"
+                      f"你只要说『点下面的【确认完成】就标记完成，直接回「确认」也一样』，"
+                      f"**禁止说已经标记完成了**。"),
+        }, ensure_ascii=False)
+
+    if status == "many":
+        cand = [{"id": x.get("id"), "title": x.get("title"), "date": x.get("date"),
+                 "start": x.get("start"), "end": x.get("end")} for x in res["todos"]]
+        return json.dumps({
+            "status": "ambiguous",
+            "candidates": cand,
+            "hint": ("命中不止一条，**不许猜**：把上面这些待办**原样列出来**"
+                     "（标题 + 日期 + 时段），问学生'是下面哪一条'，然后停下来等。"
+                     "一条都不许动，也不许说已经标记完成。"),
+        }, ensure_ascii=False)
+
+    return json.dumps({
+        "status": "empty",
+        "hint": ("没找到符合条件的待办。如实告诉学生'没找到'，"
+                 "可以用 list_day_todos 看一下那天到底排了什么，"
+                 "或者问学生是哪一天哪一条。**不许编一条出来标记**。"),
     }, ensure_ascii=False)
 
 
@@ -3375,7 +3544,21 @@ def build_system_prompt() -> str:
    ② 命中好几条 → 用 propose_todo_remove 拿到的候选清单原样列出来问是哪一条，**列完就停**；
    ③ 学生说的是课（"去掉周二的高数"）→ 那归课表，调 propose_course_change，别拿待办去套。
    一句话记住：**删除不可逆，宁可多问一句，也别替学生做主。**
-4. **改待办状态**（update_todo_status）：先跟学生确认是哪条、改成什么，再调用。
+4. **标记完成（把某条待办置为已完成）**：跟删待办是同一个思路——**只读出提案，
+   写状态（update_todo_status）只在学生点头之后由系统执行**，你手里只有一个
+   只读的 `propose_todo_done`，既没有改状态的接口、也绝不允许自己宣称"已经标记完成"。
+   ⛔ 三条红线，跟删待办对称：
+      · **你没有任何写状态接口**：工具箱里能改待办状态的写入口一个都没有（这是刻意的）。
+        学生没点头就说"已经标记完成了"是骗人——状态还是 planned，刷新一看就露馅。
+      · **不许只说"我需要你确认一下"却不列清单**：学生不知道你在指哪一条，
+        这种确认等于瞎确认。要标记就必须把那条**原样念出来**（标题 + 日期 + 时段）。
+      · **不许猜**：学生只说"标记完成明天那条"而明天有好几条时，
+        必须把候选**原样列出来**问"是下面哪一条"，**列完就停**，一条都不许动。
+   三步走（跟删待办一一对应）：① 学生点名了唯一一条 → 调 propose_todo_done 出确认条，
+   然后停在"等你点确认完成"；② 命中好几条 → 用 propose_todo_done 拿到的候选清单
+   原样列出来问是哪一条，**列完就停**；③ 没找到那条待办 → 如实说"没找到"，
+   **不许编一条出来标记**。一句话记住：**标记完成也是不可逆的展示动作，
+   宁可多问一句，也别替学生做主。**
 5. 学生说"改一下课表"却没说怎么改时，先问清楚改哪里，别自作主张。
 
 【工具用法】
@@ -3400,7 +3583,8 @@ def build_system_prompt() -> str:
   **注意：写入不经过你**，所以卡片确认后不用（也不能）再调任何写入工具。
 - **propose_todo_remove(title, date)：删待办**——只出确认条，删不了任何东西；
   命中多条时返回候选清单，照着列出来问学生是哪一条。
-- update_todo_status：标记某条待办已完成/未完成
+- **propose_todo_done(title, date)：标记完成**——只出确认条，改不了任何状态；
+  命中多条时返回候选清单，照着列出来问学生是哪一条，**绝不许说已经标记完成**。
 """
 
 
@@ -3561,18 +3745,28 @@ def build_tools() -> dict[str, Tool]:
             },
             func=propose_course_change,
         ),
-        "update_todo_status": Tool(
-            name="update_todo_status",
-            description="把某条待办标记为已完成(done)或未完成(planned)。**先跟学生确认是哪条、改成什么，再调用**。",
+        "propose_todo_done": Tool(
+            name="propose_todo_done",
+            description=(
+                "**标记完成唯一能用的工具**（学生说'把周二那条游泳标记完成''勾掉交电费'时用）。"
+                "它只生成一张【确认完成】确认条，**一个字节都不改**——"
+                "你也没有任何写状态接口可用。title 传学生说的名字，date 传'2026-09-28'或'明天'，"
+                "两个都不确定就都留空（工具会告诉你命中了哪些）。"
+                "⚠️ 命中不止一条时它不会替你挑，会返回候选清单——"
+                "**照清单原样列给学生、问'是下面哪一条'，然后停下来等**，"
+                "⛔ 不许猜哪一条、更不许说'已经标记完成了'。"
+                "命中唯一时确认条自动挂出，你只需说'点【确认完成】才真的标记'。"
+            ),
             parameters={
                 "type": "object",
                 "properties": {
-                    "todo_id": {"type": "string", "description": "待办编号"},
-                    "status": {"type": "string", "description": "planned 或 done"},
+                    "title": {"type": "string", "description": "待办标题或学生说的名字，如 游泳"},
+                    "date": {"type": "string", "description": "日期，格式如 2026-09-25，或 明天/周一"},
+                    "when": {"type": "string", "description": "可选，补充时间描述"},
                 },
-                "required": ["todo_id", "status"],
+                "required": [],
             },
-            func=update_todo_status,
+            func=propose_todo_done_tool,
         ),
         "propose_todo_remove": Tool(
             name="propose_todo_remove",
