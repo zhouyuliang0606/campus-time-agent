@@ -102,7 +102,11 @@ from app.modules.planner import (
     _pick_day,
     _pick_part,
     _pick_date,
+    _pick_todo_indexes,
+    _pick_todo_name,
+    _todo_name_match,
     _wants_colliding,
+    _wants_rechoose,
     wants_clear_timetable,
     wants_list_todo,
     wants_remove_course,
@@ -2191,7 +2195,25 @@ async def chat(req: Request):
     asking_done = _last_bot == "标记完成缺细节"
     done_intent = ((wants_done_todo(message) and not _rule_veto)
                    or _sem_intent == INTENT_DONE)
-    if done_intent or asking_done:
+    # ★★ 先算"这句是不是在回答**删待办**那份候选清单"，再决定要不要让标记完成接。
+    #
+    # 真机踩到的坑（学生回「游泳」，系统却弹出一张"标记完成"卡）：上一句是删待办的
+    # 候选清单（"1. 游泳 2. 游泳"），学生回名字是在**点名**；可**语义层**把「游泳」
+    # 单独一句判成了 done_todo（光看这两个字，它确实更像"办完了"）。而标记完成分支
+    # 排在上面（3h 在 3g 前），于是这句被它抢走 —— 判定层再怎么按上下文解析都没机会跑。
+    #
+    # 判据分两层，只让**弱信号**（语义层猜的 done）让位：
+    #   · 规则层明说这是标记完成（"把游泳标记完成/勾掉…"，且没被 _rule_veto 否掉）
+    #     → 硬信号，还是标记完成接（别让一个"都"字/一份清单把它盖掉）；
+    #   · 只有语义层判 done（主语就俩字名字）→ 弱信号，让给删待办。
+    _rm_held_now = _pending_remove_candidates(session_id)
+    _rm_asking = _last_bot == "删待办缺细节"
+    _rm_answers_held = bool(_rm_held_now) and (
+        bool(_pick_todo_indexes(message, len(_rm_held_now)))
+        or (_pending_todo_remove(session_id) is not None and _wants_rechoose(message)))
+    _rm_reply_pending = _rm_asking or _rm_answers_held
+    _done_hard = wants_done_todo(message) and not _rule_veto
+    if (done_intent or asking_done) and not (_rm_reply_pending and not _done_hard):
         # 学生是不是在回答"是哪一条"（回一句"第二条"/"23"/"游泳那条"）。
         # 同删待办：不能再 and not done_intent——语义层会把「第二条」判成某类办事意图，
         # 关掉 followup 就会退化成"没找到"。resolve_todo_done_reply 自带名字兜底。
@@ -2312,21 +2334,36 @@ async def chat(req: Request):
     # 学生先删了一条待办、隔两轮又说「去掉周二的高数」，这句话还会被当成"在挑待办"，
     # 于是落到"没找到这条待办、一条都没删"——**课表那条路压根没机会接手**。
     # 判据收紧成"上一句就是我那句追问"，就不存在这个串味问题。
-    _last_bot = next((m.get("content") or "" for m in reversed(get_conversation(session_id))
-                      if m.get("role") == "assistant"), "").strip()
-    asking_rm_todo = _last_bot == "删待办缺细节"
+    # ⚠️ `_last_bot` / `asking_rm_todo` / `held_now` / `answers_held` 已在上面
+    #    （3h 标记完成分支之前）算好：那边要先知道"这句是不是在回答删候选清单"，
+    #    才能决定让不让标记完成接。这里直接复用，别再算第二遍——两处各算一遍，
+    #    将来改一处就会悄悄不一致（同一个判据两个说法是这类 bug 的老家）。
+    asking_rm_todo = _rm_asking
     rm_intent = (((wants_remove_todo(message) or wants_remove_todo_loose(message))
                   and not _rule_veto)
                  or _sem_intent == INTENT_REMOVE_TODO)
-    if rm_intent or asking_rm_todo:
+    # ★ 手里还攥着上一句那份候选清单时，"报个序号 / 说声换一条"就是在回答我们——
+    #   跟上一句是不是那句追问**无关**：清单指的是"我们刚列过"，而裸序号离开清单
+    #   根本没有别的主人。少了这一条，系统替他挑过一条之后他说"不对，换一条/第二条"
+    #   就没人接得住（卡上的出口是断的，他会觉得"它自己定了就不听我"）。
+    # ⚠️ 收紧两处，免得把别的意图串味进来：
+    #   · 报序号 —— 只认**整句基本就是个序号**（"2"/"第二条"/"23"），由 _pick_todo_indexes 把住；
+    #   · 说"不对" —— 只在**刚挂过一张删待办卡**时才算（说明他是在否掉那张卡）。
+    held_now = _rm_held_now
+    answers_held = _rm_answers_held
+    if rm_intent or asking_rm_todo or answers_held:
         # 学生是不是在回答"是哪一条"（回一句"第二条"/"23"/"游泳那条"）。
         # ⚠️ 只看"上一句是不是我那句追问"，**不能再 and not rm_intent**：
         #    真机上语义层会把「第二条」判成 remove_todo（实测 confidence 0.85），
         #    一旦因此把 followup 关掉，这句就被当成一次全新的删除指令 → 报"没找到"
         #    （学生截图吐槽"记忆有问题"就是这么来的）。resolve_todo_remove_reply
         #    内部已经"先按序号、再按名字"兜底，直接走它最稳。
-        followup = asking_rm_todo
-        held = _pending_remove_candidates(session_id)
+        #
+        # ⚠️ 再加一种：学生手里**有清单**、又**明确报了个序号**（"2"/"第二条"/"23"）、
+        #    或在刚挂过删待办卡时说"不对/换一条"——这两种都是在回答我们，
+        #    跟上一句是不是那句追问无关（见上面 answers_held 的注释）。
+        held = held_now if held_now else _pending_remove_candidates(session_id)
+        followup = asking_rm_todo or answers_held
         # 「不去了删了吧」这种**没点名**的删除 → 十有八九指的就是刚写入的那条。
         # 系统手里有这份账（自己写的写库回执），把名字补上再走同一条解析路，
         # 出卡、确认、落库全部沿用原有代码——不另抄一份"从回执造删卡"的逻辑。
@@ -2345,16 +2382,31 @@ async def chat(req: Request):
 
         if status == "ok":
             proposal = res["proposal"]
-            save_pending(session_id, [proposal])
+            # 手上有清单（不管是**系统替他挑的**那条，还是他**自己报序号**挑的那条）
+            # 就把这份清单一并留在暂存里 —— 他说"换一条"/"第二条"时还有人接。
+            # 只留提案的话，"不对"两个字就会掉回大模型瞎猜（**出口就断了**）。
+            # （早先只在 picked_by 时留。可"换一条"这个出口跟他怎么挑的没关系：
+            #   自己报了序号照样可能挑错，把他困在卡上只能取消，是同一类毛病。）
+            pending_out = [proposal]
+            if held:
+                pending_out = [proposal, {"kind": "todo_remove_candidates",
+                                          "todos": list(held), "summary": "待删候选"}]
+            save_pending(session_id, pending_out)
             append_conversation(session_id, "user", message)
             append_conversation(session_id, "assistant",
                                 f"已生成删待办提案：{proposal['summary']}")
+            # 挑的依据必须让学生**在卡外面也看得见**：不写出来，他会产生虚假确定感
+            # ——不看卡就点确认，那跟"直接删"没区别。
+            why = ""
+            if proposal.get("picked_by"):
+                why = f"\n（{proposal.get('note', '')}）"
             return {
                 "module": "planner",
                 "session_id": session_id,
                 "answer": (
                     f"🗑️ 要删的是这一条：**{proposal['title']}**｜{proposal['date']}"
-                    f"（{proposal['weekday']}）{proposal['start']}-{proposal['end']}。\n"
+                    f"（{proposal['weekday']}）{proposal['start']}-{proposal['end']}。"
+                    + why + "\n"
                     "确认条就在下面这条消息里，点【确认删除】我才删；"
                     "点【取消】日程原封不动。"
                     "（也可以直接在聊天框回一句「确认」，一样会执行。）"
