@@ -127,11 +127,88 @@ def batch_c_e2e():
     return c
 
 
+def batch_d_index_unit():
+    """D 单元：序号点名（第N条 / 光秃秃数字 / 连写 / 一堆数字）。"""
+    title("D. 序号点名：第N条 · 纯数字 · 连写 · 越界")
+    c = Checker()
+    from app.modules.planner import (_pick_todo_indexes,
+                                     resolve_todo_remove_reply, resolve_todo_done_reply)
+
+    cands = [{"id": str(i), "title": f"T{i}", "date": "2026-10-03",
+              "start": "14:00", "end": "15:00"} for i in range(1, 5)]
+    c.check("「第二条」→ [2]", _pick_todo_indexes("第二条", 4) == [2])
+    c.check("光秃秃「2」→ [2]", _pick_todo_indexes("2", 4) == [2])
+    c.check("连写「23」→ [2,3]（一次点两条）", _pick_todo_indexes("23", 4) == [2, 3])
+    c.check("「第2、3条」→ [2,3]", _pick_todo_indexes("第2、3条", 4) == [2, 3])
+    c.check("「最后一条」→ [-1]", _pick_todo_indexes("最后一条", 4) == [-1])
+    c.check("越界的「5」→ 空", _pick_todo_indexes("5", 4) == [])
+
+    r = resolve_todo_remove_reply("第二条", cands)
+    c.check("回「第二条」→ 出第 2 条确认条",
+            r["status"] == "ok" and r["proposal"]["title"] == "T2",
+            r.get("proposal", {}).get("title"))
+    r2 = resolve_todo_remove_reply("23", cands)
+    c.check("回「23」→ 不当名字乱找（列出 2 条、一次只能删一条）",
+            r2["status"] == "many" and len(r2["todos"]) == 2, r2.get("status"))
+    r3 = resolve_todo_remove_reply("随便说点啥", cands)
+    c.check("手里有清单时乱答也不报「没找到」（回 unclear 且带上清单）",
+            r3["status"] == "unclear" and len(r3["todos"]) == 4, r3.get("status"))
+    r4 = resolve_todo_done_reply("2", cands)
+    c.check("标记完成的序号回复同样接得住",
+            r4["status"] == "ok" and r4["proposal"]["title"] == "T2",
+            r4.get("proposal", {}).get("title"))
+    return c
+
+
+def batch_e_sem_guard():
+    """E 回归：语义层把「第二条」误判成 remove_todo 时，followup 也不能被关掉。
+
+    真机复现：模型对「第二条」返回 intent=remove_todo（confidence 0.85）。
+    旧代码 followup = asking_rm_todo and not rm_intent → 被 rm_intent 顶掉 →
+    这句当成"全新的删除指令"再解析一遍 → 报"没找到"（学生截图："记忆有问题"）。
+    """
+    title("E. 语义层误判「第二条」＝remove_todo 时，仍不丢候选清单")
+    c = Checker()
+    import app.main as M
+
+    async def fake_classify(msg, conv, override=None):
+        # 模拟真机：把"第二条 / 纯数字"判成 remove_todo
+        if "第" in msg or msg.strip().isdigit():
+            return {"module": "planner", "intent": "remove_todo",
+                    "confidence": 0.85, "source": "llm"}
+        return None
+
+    d = (_dt.date.today() + _dt.timedelta(days=4)).isoformat()
+    orig = M.classify
+    M.classify = fake_classify
+    try:
+        with sandbox():
+            client = make_client()
+            _seed(_dt.date.today().isoformat(), d, d)
+            sid = "sem-guard"
+            client.post("/api/chat", json={
+                "message": "把撞时间的待办删掉", "module": "planner", "session_id": sid})
+            r = client.post("/api/chat", json={
+                "message": "第二条", "module": "planner", "session_id": sid})
+            dj = r.json()
+            opts = dj.get("options") or []
+            c.check("语义层误判下回「第二条」仍出确认条（没被当成新指令）",
+                    any(o.get("kind") == "todo_remove" for o in opts), str(opts[:1])[:90])
+            c.check("没有掉进「没找到」",
+                    "没找到" not in (dj.get("answer") or ""),
+                    (dj.get("answer") or "")[:60])
+    finally:
+        M.classify = orig
+    return c
+
+
 def main():
     results = [
         batch_a_parse_unit(),
         batch_b_blind_guard(),
         batch_c_e2e(),
+        batch_d_index_unit(),
+        batch_e_sem_guard(),
     ]
     total_pass = sum(r.passed for r in results)
     total_fail = sum(r.failed for r in results)
