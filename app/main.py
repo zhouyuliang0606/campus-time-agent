@@ -18,7 +18,8 @@ from fastapi.staticfiles import StaticFiles
 from app.agent.engine import AgentEngine
 from app.agent.intent import (
     DEFAULT_MODULE, INTENT_ADD_TODO, INTENT_CHAT, INTENT_CLEAR_TIMETABLE,
-    INTENT_FIND_CARD, INTENT_LIST_TODO, INTENT_REMOVE_TODO, INTENT_RETIME,
+    INTENT_DONE, INTENT_FIND_CARD, INTENT_LIST_TODO, INTENT_REMOVE_TODO,
+    INTENT_RETIME,
     QUESTION_RE, classify, looks_like_question, remember, to_canonical,
 )
 from app.agent.pending import (
@@ -74,14 +75,18 @@ from app.modules.planner import (
     _weekday_name,
     has_concrete_span,
     render_todo_remove_list,
+    render_todo_done_list,
     rescue_proposal_from_reply,
     resolve_todo_remove,
+    resolve_todo_done,
     resolve_todo_remove_reply,
+    resolve_todo_done_reply,
     slot_is_free,
     todo_mode_proposal,
     todo_slots_proposal,
     wants_remove_todo,
     wants_remove_todo_loose,
+    wants_done_todo,
     is_add_todo_answer,
     is_add_todo_followup,
     is_mode_answer,
@@ -98,6 +103,8 @@ from app.modules.planner import (
     wants_list_todo,
     wants_remove_course,
     wants_retime_todo,
+    _todo_done_proposal,
+    update_todo_status,
 )
 from app.modules.student_persona import STUDENT_PERSONAS, persona_block, is_valid
 
@@ -281,6 +288,30 @@ def _pending_todo_remove(session_id: str) -> dict | None:
         if isinstance(o, dict) and o.get("kind") == "todo_remove" and not o.get("applied"):
             return o
     return None
+
+
+def _pending_todo_done(session_id: str) -> dict | None:
+    """暂存里那张待确认的**标记完成**确认条（跟 _pending_todo_remove 是一对）。"""
+    entry = peek_pending(session_id) or {}
+    for o in entry.get("options") or []:
+        if isinstance(o, dict) and o.get("kind") == "todo_done" and not o.get("applied"):
+            return o
+    return None
+
+
+def _pending_todo_done_candidates(session_id: str) -> list:
+    """暂存里那份"标记完成候选清单"（人话：上一轮列给学生看的那几条，按显示顺序）。
+
+    跟 _pending_remove_candidates 一对——学生回"第二条"时系统接得住，
+    用 resolve_todo_done_reply 把名字补上再出确认条，**绝不替他猜哪条**。
+    """
+    entry = peek_pending(session_id) or {}
+    for o in entry.get("options") or []:
+        if isinstance(o, dict) and o.get("kind") == "todo_done_candidates":
+            todos = o.get("todos")
+            if isinstance(todos, list):
+                return todos
+    return []
 
 
 _WRITTEN_RECEIPTS = ("已加入日程", "已按你的确认", "已删除待办")
@@ -795,6 +826,39 @@ async def chat(req: Request):
     _rule_veto = bool(_need_review and _sem_intent and _sem_intent != _rule_hit
                       and (_asks or _sem_intent == INTENT_CHAT))
 
+    # 1.5) **问答栏（校园问答）说"删 / 改 / 标记完成待办" → 给「前往我的日程」按钮**，
+    #      而不是静默失败。根因：学生在这个栏目说话，_explicit_module == "faq"，
+    #      路由把它交给 faq 模块去做知识库检索，可删/改/标记完成是**写日程**的操作，
+    #      faq 既不会办、也不会报错，学生只看到一句答非所问（就是"静默失败"）。
+    #      正确做法：识别出来就给一个跳转按钮，把他带到真正能操作（且有确认条兜底）
+    #      的「我的日程」栏目。⚠️ 只在 faq 栏目触发——"我的日程"本身就在 planner 语境，
+    #      删/改待办由下面的确定性三分支直接接管，不该弹这个按钮。
+    _in_qa_column = _explicit_module == "faq"
+    _todo_mutation = (
+        _rule_hit in (INTENT_REMOVE_TODO, INTENT_DONE)
+        or _sem_intent in (INTENT_REMOVE_TODO, INTENT_RETIME, INTENT_DONE)
+        or wants_remove_todo(message) or wants_remove_todo_loose(message)
+        or wants_retime_todo(message)
+        or wants_done_todo(message)
+    )
+    if _in_qa_column and not is_confirmation(message) and _todo_mutation:
+        append_conversation(session_id, "user", message)
+        append_conversation(session_id, "assistant", "提示：待办操作请到「我的日程」")
+        return {
+            "module": "faq",
+            "session_id": session_id,
+            "answer": (
+                "这件事要在「我的日程」里办哦～ 删待办 / 改待办 / 标记完成，"
+                "都得到那个栏目去操作（那里有确认条兜底，不会误操作）。\n"
+                "点下面的按钮就能直接过去 👇"
+            ),
+            "trace": [{"step": 1,
+                       "phase": "问答栏检测到待办操作 → 给『前往我的日程』按钮（不再静默失败）",
+                       "answer": message}],
+            "options": [{"kind": "goto_schedule", "label": "前往我的日程"}],
+            "awaiting_choice": False,
+        }
+
     # 1) 归哪个模块管：**显式栏目 > 语义层 > 关键词兜底**。
     #    学生在哪个栏目说话，本身就是最强的类型信号；他没指定时才轮到判定层。
     module_key = _explicit_module or _sem_module
@@ -991,6 +1055,51 @@ async def chat(req: Request):
                     f"日程里已经没有它了。"
                 ),
                 "trace": [{"step": 1, "phase": "✅ 学生确认（系统删除）",
+                           "answer": summary}],
+                "options": [],
+                "awaiting_choice": False,
+            }
+
+        # **标记完成的确认**：学生回一句"确认"，把上一轮那张【确认完成】真正执行掉。
+        # 跟删待办同一个道理——执行权在系统手里，模型连改状态的接口都碰不到。
+        # 只有走到这一段，update_todo_status(done) 才会被调用到。
+        done_prop = _pending_todo_done(session_id)
+        if done_prop:
+            take_pending(session_id)
+            target = get_todo(done_prop.get("todo_id") or "")
+            if target is None:
+                # 那条已经不在了（比如刚被删、或库里压根没有）→ 如实说，不假装标记。
+                append_conversation(session_id, "user", message)
+                append_conversation(session_id, "assistant", "那条待办已经不在了")
+                return {
+                    "module": "planner",
+                    "session_id": session_id,
+                    "answer": (
+                        f"✅ 这条待办已经不在日程里了（可能刚才已经删掉了），"
+                        f"不用再标记完成。\n刚才那条是：**{done_prop.get('title', '待办')}**｜"
+                        f"{done_prop.get('date', '')}（{done_prop.get('weekday', '')}）"
+                        f"{done_prop.get('start', '')}-{done_prop.get('end', '')}。"
+                    ),
+                    "trace": [{"step": 1, "phase": "✅ 待办已不存在", "answer": "不重复标记"}],
+                    "options": [],
+                    "awaiting_choice": False,
+                }
+            update_todo_status(done_prop.get("todo_id"), "done")
+            summary = (done_prop.get("summary")
+                       or f"{done_prop.get('title', '待办')}｜{done_prop.get('date', '')}"
+                          f"{done_prop.get('start', '')}-{done_prop.get('end', '')}")
+            append_conversation(session_id, "user", message)
+            # 回执是"真的标记过了"的凭据（跟删待办对称），刷新后还看得见。
+            append_conversation(session_id, "assistant", f"已标记完成：{summary}")
+            return {
+                "module": "planner",
+                "session_id": session_id,
+                "answer": (
+                    f"✅ 已标记为完成：**{done_prop.get('title', '待办')}**｜"
+                    f"{done_prop.get('date', '')}（{done_prop.get('weekday', '')}）"
+                    f"{done_prop.get('start', '')}-{done_prop.get('end', '')}。"
+                ),
+                "trace": [{"step": 1, "phase": "✅ 学生确认（系统标记完成）",
                            "answer": summary}],
                 "options": [],
                 "awaiting_choice": False,
@@ -1960,6 +2069,103 @@ async def chat(req: Request):
             ),
             "trace": [{"step": 1, "phase": "🤔 加课缺时间（系统追问）",
                        "answer": "学生说了星期却没给时间，先问清楚再出提案"}],
+            "options": [],
+            "awaiting_choice": False,
+        }
+
+    # 3h) **确定性标记完成分支**（人话：学生说"把游泳标记完成""勾掉交电费"——
+    #     系统接管：先列清楚是哪一条，出确认条，学生点头才算数，**模型碰不到改状态的接口**）
+    #
+    # 为什么必须系统接管：老版本模型手里有一个真能改状态的 update_todo_status 工具，
+    # 规矩只写在提示层（"必须先确认"）。提示是软的，模型口语一变就可能绕过去——
+    # 学生没点头就把待办置成已完成，他还在以为没办完，复盘时才发现已经"完成"了。
+    # 所以两件事一起做（跟删待办一个模子）：
+    #   ① 写工具从工具箱撤掉（planner 里只留只读的 propose_todo_done，出不了任何状态）；
+    #   ② 判定和列清单收归系统，三种情况各有各的走法（规格里的"3 确定性分支"）：
+    #      · 点名了唯一一条 → 出确认条（原样念一遍标题+日期+时段），等学生点头
+    #      · 命中好几条 / 没说清是哪条 → **列清单问是哪一条，列完就停**，绝不猜
+    #      · 一条都没命中 → 如实说，绝不编一条出来标记
+    # ⚠️ 必须排在删待办（3g）前面：学生说"把周二那条**待办**标记完成"也带"周二"，
+    #     让删待办先接会误判成"要删"，跑偏。标记完成不是删除，顺序摆正。
+    # ⚠️ "学生在回答是哪一条吗" 也只看**紧挨着的上一句**（同删待办的串味教训）。
+    _last_bot = next((m.get("content") or "" for m in reversed(get_conversation(session_id))
+                      if m.get("role") == "assistant"), "").strip()
+    asking_done = _last_bot == "标记完成缺细节"
+    done_intent = ((wants_done_todo(message) and not _rule_veto)
+                   or _sem_intent == INTENT_DONE)
+    if done_intent or asking_done:
+        # 学生是不是在回答"是哪一条"（回一句"第二条"或"游泳那条"）
+        followup = asking_done and not done_intent
+        held = _pending_todo_done_candidates(session_id)
+        if followup:
+            res = resolve_todo_done_reply(message, held)
+        else:
+            res = resolve_todo_done(message)
+        status = res.get("status")
+
+        if status == "ok":
+            proposal = res["proposal"]
+            save_pending(session_id, [proposal])
+            append_conversation(session_id, "user", message)
+            append_conversation(session_id, "assistant",
+                                f"已生成标记完成提案：{proposal['summary']}")
+            return {
+                "module": "planner",
+                "session_id": session_id,
+                "answer": (
+                    f"✅ 要标记为完成的是这一条：**{proposal['title']}**｜{proposal['date']}"
+                    f"（{proposal['weekday']}）{proposal['start']}-{proposal['end']}。\n"
+                    "确认条就在下面这条消息里，点【确认完成】我才改状态；"
+                    "点【取消】这条待办原封不动。"
+                    "（也可以直接在聊天框回一句「确认」，一样会执行。）"
+                ),
+                "trace": [{"step": 1, "phase": "✅ 生成标记完成提案（系统判定）",
+                           "answer": proposal["summary"]}],
+                "options": [proposal],
+                "awaiting_choice": True,
+            }
+
+        # 命中好几条：**列清单，问是下面哪一条，列完就停**。
+        # 这一支就是规格第 2 条——"不许猜"。清单同时记进暂存，
+        # 学生回"第二条"时系统接得住（见上面的 resolve_todo_done_reply）。
+        if status in ("many", "unclear") and res.get("todos"):
+            todos = res["todos"]
+            save_pending(session_id, [{"kind": "todo_done_candidates",
+                                       "todos": todos, "summary": "待标记候选"}])
+            append_conversation(session_id, "user", message)
+            append_conversation(session_id, "assistant", "标记完成缺细节")
+            head = ("你说的这条对上了好几条待办，我不敢替你挑 ✅"
+                    if status == "many" else "没太看明白你指哪一条 ✅")
+            return {
+                "module": "planner",
+                "session_id": session_id,
+                "answer": (
+                    f"{head}\n\n{render_todo_done_list(todos)}\n\n"
+                    "是下面哪一条？回我一个名字（或序号，比如「第二条」），"
+                    "我再把确认条挂出来——**你点头之前我一条都不会动。**"
+                ),
+                "trace": [{"step": 1, "phase": "✅ 标记完成命中多条（列清单，不猜）",
+                           "answer": f"候选 {len(todos)} 条，等学生点名"}],
+                "options": [],
+                "awaiting_choice": False,
+            }
+
+        # 一条都没命中：如实说。绝不从"没找到"里编一条出来标记。
+        clear_pending(session_id)
+        day = res.get("day")
+        where = f"{day}（{_weekday_of(day)}）" if day else ""
+        append_conversation(session_id, "user", message)
+        append_conversation(session_id, "assistant", "标记完成：没找到符合条件的")
+        return {
+            "module": "planner",
+            "session_id": session_id,
+            "answer": (
+                f"✅ 我在{where or '日程里'}没找到叫这个的待办，什么都没动。\n"
+                "你可以：① 说得再具体点（哪一天 + 叫什么）；"
+                "② 直接问我「那天排了什么」，我列给你看。"
+            ),
+            "trace": [{"step": 1, "phase": "✅ 标记完成没找到（如实说，不猜）",
+                       "answer": "没有匹配的待办，什么都不改"}],
             "options": [],
             "awaiting_choice": False,
         }
