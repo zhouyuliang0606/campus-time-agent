@@ -2489,12 +2489,59 @@ def _one_per_group(items: list) -> list:
     """
     seen, out = {}, []
     for it in (items or []):
-        key = (it.get("title"), it.get("date"), it.get("start"), it.get("end"))
+        key = _equiv_key(it)
         if key in seen:
             out.append(it)          # 组里多出来的 → 删
         else:
             seen[key] = it          # 每组第一条 → 留
     return out
+
+
+def _equiv_key(item: dict) -> tuple:
+    """两条待办"在业务上等价"的判据（人话：删哪条学生看到的日程都一样）。
+
+    标题 + 日期 + 起止 + 状态，四项全同才算等价。
+    状态必须进 key：一条 planned、一条 done 的两条同名待办，删哪条**不一样**。
+    """
+    return (item.get("title", ""), item.get("date", ""),
+            item.get("start", ""), item.get("end", ""), item.get("status", ""))
+
+
+def _single_equiv_group(items: list) -> list | None:
+    """整批候选是不是**同一组等价的**（人话：这几条删哪条都一样）。
+
+    是 → 把这一组原样返回（调用方挑"先写进去的那条"）；
+    不是（存在两种以上不同）→ None，意思是"真的分不清，别猜"。
+    空集 / 只有一条，都返回 None：只有"≥2 条且全等"才算"选了也不会有差别"。
+    """
+    if not items or len(items) < 2:
+        return None
+    keys = {_equiv_key(x) for x in items}
+    return list(items) if len(keys) == 1 else None
+
+
+def _earliest(items: list) -> dict:
+    """挑"先写进去的那条"（人话：等价的几条里，留下最早那条的规矩）。
+
+    没有 created_at 的就按列表顺序（存储层本来就是按写入先后排的）。
+    """
+    for i, it in enumerate(items):
+        if not it.get("created_at"):
+            return items[0]
+    return min(items, key=lambda x: (x.get("created_at") or "", ))
+
+
+# 学生看到卡发现"不是这条"时的说法 —— 把他放回清单，而不是硬着头皮执行。
+_RECHOOSE_WORDS = ("不对", "不是", "换一条", "换一个", "换那条", "重选", "重新选",
+                   "再看看", "不是我", "错了", "搞错")
+
+
+def _wants_rechoose(text: str) -> bool:
+    """学生在说"不是这条/换一条"（人话：把清单再端出来让他重挑）。"""
+    t = (text or "").strip()
+    if not t or len(t) > 20:
+        return False
+    return any(w in t for w in _RECHOOSE_WORDS)
 
 
 def _wants_all_candidates(text: str) -> bool:
@@ -2711,7 +2758,7 @@ def is_remove_todo_followup(text: str) -> bool:
     return any(_todo_name_match(name, x.get("title", "")) for x in list_todos())
 
 
-def resolve_todo_remove(text: str) -> dict:
+def resolve_todo_remove(text: str, pool: list | None = None) -> dict:
     """把"删掉周二那条游泳的待办"解析成**具体哪一条待办**（只读，一个字节都不删）。
 
     返回：
@@ -2719,18 +2766,29 @@ def resolve_todo_remove(text: str) -> dict:
       {"status": "many",      "todos": [...]}                     好几条，得让学生挑
       {"status": "empty",     "todos": []}                        这一天/这个名字没有待办
       {"status": "unclear",   "todos": [...]}                     没说清是哪条
+
+    :param pool: 只在**这批候选**里找（学生正对着上一句列的清单回答时用）。
+                 不传 ＝ 按全库找，是原来的行为。
     """
     t = (text or "").strip()
     day = _pick_date(t)
     name = _pick_todo_name(t)
+    in_context = pool is not None
 
     # 先把池子缩小：说了日期就只看那天，说了名字就再按名字筛
-    pool = list_todos(day) if day else list_todos()
+    pool = list(pool) if in_context else (list_todos(day) if day else list_todos())
+    if in_context and day:
+        narrowed = [x for x in pool if (x.get("date") or "") == day]
+        if narrowed:
+            pool = narrowed
     by_name = bool(name) and name not in ("", "待办", "日程", "事项")
     if by_name:
         hits = [x for x in pool if _todo_name_match(name, x.get("title", ""))]
         # 名字没命中，但整句话里出现了某条待办的名字（"帮我把交电费取消了吧"），
-        # 兜一层：从**全部**待办里找（学生可能没提日期，或日期说得不准）
+        # 兜一层：从**全部**待办里找（学生可能没提日期，或日期说得不准）。
+        # ⚠️ 这一兜在"对着清单回答"时**也要留着**：学生在清单摆着的时候说了个
+        #    清单外的新目标（"删掉跑步"），那是**新的一句下单**，不该被清单困住
+        #    （不给兜的话他会得到"重新列一遍游泳/交电费"，看着像没听懂）。
         if not hits:
             hits = [x for x in list_todos() if _todo_name_match(name, x.get("title", ""))]
         if not hits:
@@ -2746,15 +2804,54 @@ def resolve_todo_remove(text: str) -> dict:
         return {"status": "empty", "todos": [], "day": day, "name": name}
     if len(pool) == 1:
         return {"status": "ok", "proposal": _todo_remove_proposal(pool[0]), "todos": pool}
-    # 剩下好几条：只有"点名了名字"才算唯一命中（名字已经筛过了），
-    # 否则就是学生没说清（"删掉明天那条"而明天有两条）——绝不猜
+
+    # ★ 命中好几条：先看**证据够不够硬**，够硬就替他挑一条（仍然只出提案，不直接删）。
+    #   ⚠️ 两道闸门都必须过：**先得点名了东西**，再看证据。
+    #      为什么"点了名"是前提：只说筛条件（"删除撞时间的代办"）时，学生连**要删几条**
+    #      都还没定（他可能要删一整批）——这时候替他挑一条，是在他没说的地方做主，
+    #      比不猜还糟。点了名才是"处理这个名字名下的东西"。
+    #   过了闸门再看两处**结构上确定**的事实：
+    #   ① 名字**精确等于**的只有一条（"游泳" 对上《游泳》和《游泳锻炼》→ 前者是精确的）；
+    #   ② 这名字名下几条**在业务上完全等价**（同名同日同时段同状态）——删哪条学生看到的
+    #      日程都一样，所以挑一条**不存在"猜错"**：他要的就是"把重复的去掉一份"。
+    #   两个信号都不做相似度猜测：0.31 比 0.29 是噪声，按"最像"下结论会给出**假确定**。
+    #   ⚠️ 猜出来的仍然只是**提案**：卡上写明"我是怎么挑的"，学生点头才动。
+    if by_name:
+        exact = [x for x in pool if (x.get("title") or "").strip() == name]
+        if len(exact) == 1:
+            return {"status": "ok",
+                    "proposal": _todo_remove_proposal(
+                        exact[0], picked_by="exact_title",
+                        note=f"日程里名字**正好**是「{name}」的只有这一条，就是它。"),
+                    "todos": [exact[0]]}
+        grp = _single_equiv_group(pool)
+        if grp:
+            pick = _earliest(grp)
+            others = [x for x in grp if x.get("id") != pick.get("id")]
+            return {"status": "ok",
+                    "proposal": _todo_remove_proposal(
+                        pick, picked_by="duplicate_group", alternates=others,
+                        note=(f"「{name}」有 **{len(grp)} 份一模一样**的（同一天、同一时段），"
+                              f"删掉任意一份效果都一样——我挑的是**先写进去的那条**。"
+                              f"要删另一份的话，回我「换一条」。")),
+                    "todos": [pick]}
+
+    # 剩下好几条、证据又不够硬：学生没说清（"删掉明天那条"而明天有两条不同的）——绝不猜
     return {"status": "many", "todos": pool, "day": day, "name": name}
 
 
-def _todo_remove_proposal(item: dict) -> dict:
-    """把一条待办包成一张"待删除"提案（人话：原样念一遍，等学生点头）。"""
+def _todo_remove_proposal(item: dict, note: str = "", picked_by: str = "",
+                          alternates: list | None = None) -> dict:
+    """把一条待办包成一张"待删除"提案（人话：原样念一遍，等学生点头）。
+
+    :param note:      这条是怎么被挑中的（**必须**在学生能看见的地方写出来）。
+                      系统替他拿主意时，得让他一眼看出"挑的依据"，否则他会产生
+                      虚假确定感——不看卡就点确认，那和"直接删"没区别。
+    :param picked_by: 依据的机器名（"duplicate_group" / "exact_title"），给前端和测试认。
+    :param alternates: 同等可选的其它条（同一天同一时段的等价条目），供"不对"时参考。
+    """
     date = item.get("date", "")
-    return {
+    prop = {
         "kind": "todo_remove",
         "todo_id": item.get("id", ""),
         "title": item.get("title", "待办"),
@@ -2766,6 +2863,15 @@ def _todo_remove_proposal(item: dict) -> dict:
         "summary": (f"{item.get('title', '待办')}｜{date}（{_weekday_name(date)}）"
                     f"{item.get('start', '')}-{item.get('end', '')}"),
     }
+    # "这条是怎么挑中的"只在这条**是系统替他拿主意**的时候才带上；
+    # 唯一命中、或学生自己点名的，picked_by 为空，卡上就不啰嗦。
+    if picked_by:
+        prop["picked_by"] = picked_by
+    if note:
+        prop["note"] = note
+    if alternates:
+        prop["alternates"] = [x.get("id", "") for x in alternates if x.get("id")]
+    return prop
 
 
 def todo_remove_batch_proposal(items: list) -> dict:
@@ -2983,6 +3089,10 @@ def resolve_todo_remove_reply(text: str, candidates: list | None = None) -> dict
     """
     t = (text or "").strip()
     cap = len(candidates) if candidates else None
+    # 「不对 / 不是这条 / 换一条」——他在卡上看到系统替他挑的那条，说不合意。
+    # 这时**不许**硬着头皮往下走：把上一句的清单原样再端出来让他自己挑。
+    if candidates and _wants_rechoose(t):
+        return {"status": "many", "todos": list(candidates), "reason": "学生说不对，重新列"}
     idxs = _pick_todo_indexes(t, cap)
     if idxs and candidates:
         picked = []
@@ -3012,10 +3122,13 @@ def resolve_todo_remove_reply(text: str, candidates: list | None = None) -> dict
     #   但先让一步：这句话若**明确对上某一条真待办的名字**，还是听名字的——
     #   别让一个"都"字把学生点名的意思盖掉。
     if candidates and _wants_all_candidates(t):
-        named = resolve_todo_remove(t)
+        named = resolve_todo_remove(t, candidates)
         if named.get("status") != "ok":
             return {"status": "all", "todos": list(candidates)}
-    res = resolve_todo_remove(t)
+    # ★ 把**上一句那份清单**当上下文传进去：学生正对着它回答，
+    #   所以只在清单里找（别把清单外的东西捞回来），也让"等价组/精确命中"那两个
+    #   证据判决在**这批候选**上生效——这才是"按上下文判断"。
+    res = resolve_todo_remove(t, candidates)
     # 手上有清单、学生这句却既不是序号也没对上名字 → 回"没看明白是哪一条"（带上清单），
     # 绝不报"没找到"——清单还在记忆里，报"没找到"就是学生说的"记忆有问题"。
     if res.get("status") == "empty" and candidates:
