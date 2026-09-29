@@ -773,6 +773,27 @@
         return;
       }
 
+      // ---- ③-bis 问答栏「前往我的日程」按钮 ----
+      //
+      // 问答栏里学生说"删/改/标记完成待办"时，后端不给静默失败、也不替他办，
+      // 而是回一句引导 + 这颗按钮。点它直接把学生带到「我的日程」栏目
+      // （那里有确认条兜底，不会误操作）。是纯前端跳转，不起任何写库请求。
+      const gotos = options.filter(o => o.kind === "goto_schedule");
+      if (gotos.length) {
+        const g = gotos[gotos.length - 1];
+        const btn = document.createElement("button");
+        btn.className = "confirm-btn";
+        btn.style.cssText = "background:#3a6ff0;border-color:#3a6ff0;margin-top:6px";
+        btn.textContent = g.label || "前往我的日程";
+        btn.addEventListener("click", () => {
+          wrap.remove();
+          switchNav("schedule");   // 跳到「我的日程」栏目，那里才能办待办操作
+        });
+        wrap.appendChild(btn);
+        container.appendChild(wrap);
+        return;
+      }
+
       // ---- ①-ter 二选一卡：这件事的时间**由谁定**（本轮规格的第一站） ----
       //
       // 学生原话：「**要区分两种，一种是我有时间规划了，一种是我没有时间规划
@@ -1077,6 +1098,84 @@
           addMsg(botName(), "好的，一条都没删，日程保持原样。", "bot", "planner");
         });
         wrap.appendChild(no);
+        container.appendChild(wrap);
+        return;
+      }
+
+      // ---- ①-quin 标记完成：跟删待办同一个待遇（系统接管）----
+      //
+      // 模型手里只有只读的 propose_todo_done 工具，出不了任何状态；真把待办置成
+      // 已完成，是这张内嵌确认条被学生点【确认完成】之后、由后端 PUT 去做的。
+      // 命中多条时在后端就已经列成候选清单让学生点名了，这里只接单张确认条。
+      const dones = options.filter(o => o.kind === "todo_done");
+      if (confirmPageOk && dones.length === 1) {
+        const hint = document.createElement("div");
+        hint.className = "opt-hint";
+        hint.textContent = "✅ 要标记为完成的就是这一条，在下面这条确认条上点【确认完成】我才改状态：";
+        wrap.appendChild(hint);
+        container.appendChild(wrap);
+        openConfirm(dones[dones.length - 1], container);
+        return;
+      }
+      if (dones.length) {
+        const hint = document.createElement("div");
+        hint.className = "opt-hint";
+        hint.textContent = dones.length > 1
+          ? `✅ 有 ${dones.length} 条对上了你说的话，点选你要标记完成的那一条：`
+          : "✅ 要标记为完成的就是这一条：";
+        wrap.appendChild(hint);
+
+        dones.forEach(card => {
+          const box = document.createElement("div");
+          box.className = "opt-card";
+          box.innerHTML = `<div class="info"><b>${escapeHtml(card.title || "待办")}</b>` +
+            `<div class="meta">${escapeHtml(card.date || "")}（${escapeHtml(card.weekday || "")}）` +
+            ` ${escapeHtml(card.start || "")}-${escapeHtml(card.end || "")}</div></div>`;
+          wrap.appendChild(box);
+
+          const doneBtn = document.createElement("button");
+          doneBtn.className = "confirm-btn";
+          doneBtn.style.cssText = "background:#3a9d5a;border-color:#3a9d5a;margin-top:6px";
+          doneBtn.textContent = "✅ 标记为完成";
+          doneBtn.addEventListener("click", async () => {
+            doneBtn.disabled = true;
+            doneBtn.textContent = "⏳ 正在标记…";
+            try {
+              const r = await fetch("/api/todos/" + encodeURIComponent(card.todo_id), {
+                method: "PUT",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ session_id: sessionId(), status: "done" }),
+              });
+              const d = await r.json().catch(() => ({}));
+              if (r.ok && d.ok !== false) {
+                wrap.remove();
+                addMsg(botName(),
+                  `✅ 已标记为完成：${card.title}｜${card.date}（${card.weekday}）${card.start}-${card.end}。`,
+                  "bot", "planner");
+                loadScheduleView();   // 当场刷新，学生不用自己刷新页面
+              } else {
+                doneBtn.disabled = false;
+                doneBtn.textContent = "✅ 重试";
+                addMsg(botName(), "标记失败：" + (d.error || d.detail || "未知原因") + "，再试一次？");
+              }
+            } catch (e) {
+              doneBtn.disabled = false;
+              doneBtn.textContent = "✅ 重试";
+              addMsg(botName(), "哎呀，网络好像开小差了，请再试一次～");
+            }
+          });
+          wrap.appendChild(doneBtn);
+        });
+
+        const no2 = document.createElement("button");
+        no2.className = "confirm-btn";
+        no2.style.cssText = "background:#fff;color:#8a90a8;border:1px solid #d8def0;margin-top:6px";
+        no2.textContent = "✖ 先不标记";
+        no2.addEventListener("click", () => {
+          wrap.remove();
+          addMsg(botName(), "好的，这条先不标记完成，日程保持原样。", "bot", "planner");
+        });
+        wrap.appendChild(no2);
         container.appendChild(wrap);
         return;
       }
