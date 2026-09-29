@@ -45,12 +45,14 @@ INTENT_REMOVE_TODO = "remove_todo"    # 想删掉一条待办
 INTENT_LIST_TODO = "list_todo"        # 想看看自己有哪些待办
 INTENT_FIND_CARD = "find_card"        # 在找刚才那张确认卡 / 弹窗
 INTENT_RETIME = "retime_todo"         # 想把已排好的某件事换个时间
+INTENT_DONE = "done_todo"             # 想把一条已有的待办标记为已完成
 INTENT_CLEAR_TIMETABLE = "clear_timetable"   # 想清空课表
 INTENT_CHAT = "chat"                  # 以上都不是
 
 KNOWN_INTENTS = (
     INTENT_ADD_TODO, INTENT_REMOVE_TODO, INTENT_LIST_TODO,
-    INTENT_FIND_CARD, INTENT_RETIME, INTENT_CLEAR_TIMETABLE, INTENT_CHAT,
+    INTENT_FIND_CARD, INTENT_RETIME, INTENT_DONE,
+    INTENT_CLEAR_TIMETABLE, INTENT_CHAT,
 )
 
 # ── 类型（module）白名单 ─────────────────────────────────────────────────────
@@ -83,7 +85,8 @@ DEFAULT_MODULE = "faq"
 INTENT_MODULE = {
     INTENT_ADD_TODO: "planner", INTENT_REMOVE_TODO: "planner",
     INTENT_LIST_TODO: "planner", INTENT_FIND_CARD: "planner",
-    INTENT_RETIME: "planner", INTENT_CLEAR_TIMETABLE: "planner",
+    INTENT_RETIME: "planner", INTENT_DONE: "planner",
+    INTENT_CLEAR_TIMETABLE: "planner",
     INTENT_CHAT: DEFAULT_MODULE,
 }
 
@@ -155,6 +158,8 @@ _SEED_SAMPLES = [
      "title": "", "minutes": 0, "day_hint": ""},
     {"text": "把课表整个清掉重来", "intent": INTENT_CLEAR_TIMETABLE,
      "title": "", "minutes": 0, "day_hint": ""},
+    {"text": "把游泳标记完成", "intent": INTENT_DONE,
+     "title": "游泳", "minutes": 0, "day_hint": ""},
 ]
 
 _PUNCT_RE = re.compile(r"[\s，,。！!？?、；;：:~\-—『』「」《》\"'“”‘’()（）\[\]【】]")
@@ -301,6 +306,7 @@ _INTENT_SYSTEM = f"""你是校园时间管家的**类型与意图识别器**，�
 - list_todo：想看看自己有哪些待办
 - find_card：在找刚才那张确认卡片/弹窗（"卡片呢""怎么没弹出来"）
 - retime_todo：想把已经排好的某件事换个时间
+- done_todo：想把一条已有的待办标记为**已完成**（"把游泳标记完成""勾掉交电费""游泳做完了"），**不是删除、也不是新增**，module 一律给 planner
 - clear_timetable：想清空课表
 - chat：以上都不是（闲聊、问校园规定、查课表、查快递、查外卖…）
 
