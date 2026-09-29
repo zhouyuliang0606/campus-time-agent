@@ -2365,6 +2365,36 @@ async def chat(req: Request):
                 "awaiting_choice": True,
             }
 
+        # 学生说「每个删一个 / 每组删一个 / 重复的删掉一个」——他是要**去重**：
+        # 每组重复的只留一条，不是把整张清单清空。这两句话字面上都带量词，
+        # 混在一起就会把"去重"听成"全删"（学生截图批注"脑子有问题"）。
+        # 规则在回话里说清楚（留最早写入的那条），卡上把要删的逐条列出来 —— 他点头才动。
+        if status == "dedup" and res.get("todos"):
+            todos = res["todos"]
+            proposal = todo_remove_batch_proposal(todos)
+            save_pending(session_id, [proposal])
+            append_conversation(session_id, "user", message)
+            append_conversation(session_id, "assistant",
+                                f"已生成删待办提案：{proposal['summary']}")
+            return {
+                "module": "planner",
+                "session_id": session_id,
+                "answer": (
+                    f"🗑️ 明白，你是要**去重**：同一组重复的只留一条，多出来的这 "
+                    f"{proposal['count']} 条删掉。\n"
+                    "（每组留的是**先写进去的那条**；要留另一条的话，"
+                    "取消之后直接说序号也行。）\n"
+                    "我把要删的一条条列在下面的确认条上了——"
+                    "点【确认删除全部】我才删；点【取消】日程原封不动。"
+                    "（也可以直接在聊天框回一句「确认」，一样会执行。）"
+                ),
+                "trace": [{"step": 1,
+                           "phase": "🗑️ 学生说「每个删一个」→ 生成去重删除提案（系统判定）",
+                           "answer": proposal["summary"]}],
+                "options": [proposal],
+                "awaiting_choice": True,
+            }
+
         # 学生对着刚列出的清单说"都删了 / 全删掉 / 一起删了吧" —— 这是在**接着上一句
         # 指代**"你列的那几条我全都要删"，不是"没说名字"。所以该**一次点头、一次删完**：
         # 挂一张批量确认条，上面把每一条原样念清楚。
