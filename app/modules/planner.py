@@ -963,7 +963,12 @@ _DATE_RE = re.compile(r"(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2})-(\d{2}:\d{2})")
 # 上面那条要求"日期 + 时间段"连在一起写，可学生常常**单说一个日期**——
 # 「删掉 2026-09-29 那条」「9月29号那个预约怎么没了」。补两条只认日期的：
 _DATE_ONLY_RE = re.compile(r"(\d{4})-(\d{1,2})-(\d{1,2})")
-_CN_MD_RE = re.compile(r"(\d{1,2})\s*月\s*(\d{1,2})\s*[号日]")
+# 中文月日的写法比想象的杂：「10月3号」「10月三号」「十月三日」都有人写。
+# 早先只认阿拉伯数字，"10月三号"这种**日是中文数字**的写法直接被当成"没说日期"——
+# 删待办/标记完成走到"没找到"就是这么来的（学生截图实测）。
+_CN_MD_RE = re.compile(
+    r"([0-9]{1,2}|[一二三四五六七八九十]{1,3})\s*月\s*"
+    r"([0-9]{1,2}|[一二三四五六七八九十]{1,3})\s*[号日]")
 # 从学生话里抠出"要做的事"当待办标题：去掉确认词、去掉日期时间。
 # 注意：这里**不能**放 ":" / "："——它们会把时间里的冒号（07:00）也吃掉，
 # 导致下面的日期正则匹配不上、整串日期时间漏进标题。冒号分隔符在 _guess_title 末尾单独清理。
@@ -1393,6 +1398,19 @@ def _cn_num(s: str) -> int | None:
     return digit.get(s)
 
 
+def _num(s: str) -> int | None:
+    """阿拉伯数字、中文数字都转成 int（人话：'3'→3、'三'→3、'十'→10）。
+
+    月日两种写法学生混着用（"10月3号"/"10月三号"），统一走这里再拼日期。
+    """
+    s = (s or "").strip()
+    if not s:
+        return None
+    if s.isdigit():
+        return int(s)
+    return _cn_num(s)
+
+
 def _normalize_clock(t: str) -> str:
     """把中文报时换成数字钟（人话：'两点'→2:00、'两点半'→2:30）。
 
@@ -1504,9 +1522,12 @@ def _pick_date(text: str):
         return f"{int(m.group(1)):04d}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
     m = _CN_MD_RE.search(t)
     if m:
-        # 只写"9月29号"没写年份 → 按今年算（学生日常都这么说）
-        return (f"{datetime.date.today().year}-"
-                f"{int(m.group(1)):02d}-{int(m.group(2)):02d}")
+        # 只写"9月29号"没写年份 → 按今年算（学生日常都这么说）。
+        # 月/日两头都可能是中文数字（"10月三号"/"十月三日"），统一用 _num 转。
+        mo, da = _num(m.group(1)), _num(m.group(2))
+        if mo and da:
+            return (f"{datetime.date.today().year}-"
+                    f"{mo:02d}-{da:02d}")
     today = datetime.date.today()
     for word, off in (("大后天", 3), ("后天", 2), ("明天", 1), ("今晚", 0), ("今夜", 0), ("今天", 0)):
         if word in t:
@@ -2401,6 +2422,48 @@ _DONE_TODO_VERB = ("完成了", "做完", "搞定了", "搞定", "办完", "做�
 # 学生明说这几个词，就是在说待办（而不是课）——哪怕话里带了星期几。
 _TODO_WORDS = ("待办", "日程", "事项")
 
+# "撞时间的/冲突的/重复的"这类词在**说筛选条件**（挑出时间上打架的那几条），
+# 不是待办名。学生在日程里看到时间重叠的条目会被打上「撞」角标，就照这个词来点。
+_COLLIDE_WORDS = ("撞时间", "撞车", "时间冲突", "冲突", "时间重叠", "重叠",
+                  "重复", "同一时间", "时间一样", "一样的", "重了")
+
+# 量词 / 修饰词：不是待办名的一部分。不擦掉，"两个撞时间的代办"会被当成一个
+# 叫「两个撞时间」的待办名 → 匹配不上任何真待办 → 误报"没找到"（学生截图实测）。
+_TODO_NAME_NOISE = (
+    "两个", "俩", "两个都", "三个", "几个", "多条", "两条", "三条", "四条", "几条",
+    "两件", "几件", "都", "全部", "所有", "代办",
+)
+
+
+def _wants_colliding(text: str) -> bool:
+    """这句话是不是在按"时间撞车"筛选（人话："撞时间的待办都删掉"）。"""
+    return any(w in (text or "") for w in _COLLIDE_WORDS)
+
+
+def _colliding_subset(todos: list) -> list:
+    """从一组待办里挑出**跟同一天另一条时间重叠**的那些（人话：挑出"撞上的"）。
+
+    判据：同一天、且时间段有交叠（含起止完全相同）——跟前端给条目打「撞」角标
+    是同一套判据。只跟"另一条"比，所以孤零零一条永远不会被算成撞。
+    """
+    out = []
+    for i, a in enumerate(todos):
+        ad = a.get("date", "")
+        as_, ae = a.get("start", ""), a.get("end", "")
+        if not (as_ and ae):
+            continue
+        for j, b in enumerate(todos):
+            if i == j or b.get("date", "") != ad:
+                continue
+            bs, be = b.get("start", ""), b.get("end", "")
+            if not (bs and be):
+                continue
+            if to_minutes(as_) < to_minutes(be) and to_minutes(bs) < to_minutes(ae):
+                out.append(a)
+                break
+    return out
+
+
 # 候选清单里最多列几条（列一屏出来反而看不清）
 _REMOVE_LIST_CAP = 6
 
@@ -2425,10 +2488,11 @@ def _pick_todo_name(text: str) -> str:
               "上周", "下个", "这个", "那个", "那天", "这天", "当天", "那一天",
               "这一天", "当天的"):
         t = t.replace(w, " ")
-    for w in _REMOVE_TODO_INTENT + _REMOVE_INTENT + _DONE_TODO_INTENT + _DONE_TODO_VERB + (
-            "待办", "日程", "事项", "安排", "标记", "完成",
-            "那条", "这条", "那一条", "这一条",
-            "一条", "一下", "一下下", "的"):
+    for w in (_REMOVE_TODO_INTENT + _REMOVE_INTENT + _DONE_TODO_INTENT + _DONE_TODO_VERB
+              + _TODO_NAME_NOISE + _COLLIDE_WORDS + (
+              "待办", "日程", "事项", "安排", "标记", "完成", "删",
+              "那条", "这条", "那一条", "这一条",
+              "一条", "一下", "一下下", "的")):
         t = t.replace(w, " ")
     t = re.sub(r"^(我要|我想|帮我|请帮我|请|给我|把|别|我)\s*", "", t)
     t = re.sub(r"[，,。！!？?、；;：:~～\-—『』「」\"'“”‘’\s]", "", t)
@@ -2560,6 +2624,11 @@ def resolve_todo_remove(text: str) -> dict:
         if not hits:
             return {"status": "empty", "todos": [], "day": day, "name": name}
         pool = hits
+
+    # 「撞时间的」是**筛条件**（挑出时间重叠的），不是待办名。说了就照它收窄池子；
+    # 收窄后为空 = 那天压根没有撞上的，如实说"没找到"，绝不把不撞的端出来充数。
+    if _wants_colliding(t):
+        pool = _colliding_subset(pool)
 
     if not pool:
         return {"status": "empty", "todos": [], "day": day, "name": name}
@@ -2852,6 +2921,10 @@ def resolve_todo_done(text: str) -> dict:
         if not hits:
             return {"status": "empty", "todos": [], "day": day, "name": name}
         pool = hits
+
+    # 同删待办：说了"撞时间的"就只留时间重叠的那几条（收窄后为空 → 如实说没找到）。
+    if _wants_colliding(t):
+        pool = _colliding_subset(pool)
 
     if not pool:
         return {"status": "empty", "todos": [], "day": day, "name": name}
