@@ -2101,8 +2101,10 @@ async def chat(req: Request):
     done_intent = ((wants_done_todo(message) and not _rule_veto)
                    or _sem_intent == INTENT_DONE)
     if done_intent or asking_done:
-        # 学生是不是在回答"是哪一条"（回一句"第二条"或"游泳那条"）
-        followup = asking_done and not done_intent
+        # 学生是不是在回答"是哪一条"（回一句"第二条"/"23"/"游泳那条"）。
+        # 同删待办：不能再 and not done_intent——语义层会把「第二条」判成某类办事意图，
+        # 关掉 followup 就会退化成"没找到"。resolve_todo_done_reply 自带名字兜底。
+        followup = asking_done
         held = _pending_todo_done_candidates(session_id)
         if followup:
             res = resolve_todo_done_reply(message, held)
@@ -2201,8 +2203,13 @@ async def chat(req: Request):
                   and not _rule_veto)
                  or _sem_intent == INTENT_REMOVE_TODO)
     if rm_intent or asking_rm_todo:
-        # 学生是不是在回答"是哪一条"（回一句"第二条"或"游泳那条"）
-        followup = asking_rm_todo and not rm_intent
+        # 学生是不是在回答"是哪一条"（回一句"第二条"/"23"/"游泳那条"）。
+        # ⚠️ 只看"上一句是不是我那句追问"，**不能再 and not rm_intent**：
+        #    真机上语义层会把「第二条」判成 remove_todo（实测 confidence 0.85），
+        #    一旦因此把 followup 关掉，这句就被当成一次全新的删除指令 → 报"没找到"
+        #    （学生截图吐槽"记忆有问题"就是这么来的）。resolve_todo_remove_reply
+        #    内部已经"先按序号、再按名字"兜底，直接走它最稳。
+        followup = asking_rm_todo
         held = _pending_remove_candidates(session_id)
         # 「不去了删了吧」这种**没点名**的删除 → 十有八九指的就是刚写入的那条。
         # 系统手里有这份账（自己写的写库回执），把名字补上再走同一条解析路，
