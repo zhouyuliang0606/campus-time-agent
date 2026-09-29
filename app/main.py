@@ -99,6 +99,8 @@ from app.modules.planner import (
     wants_add_todo,
     _pick_day,
     _pick_part,
+    _pick_date,
+    _wants_colliding,
     wants_clear_timetable,
     wants_list_todo,
     wants_remove_course,
@@ -401,6 +403,11 @@ def _is_blind_delete(text: str) -> bool:
     """是不是**没点名**的删除（人话：他知道删哪条，就是懒得说名字）。"""
     t = (text or "").strip()
     if not t:
+        return False
+    # 带了"哪一天"或"撞时间的/冲突的"这类**筛选信息** → 不是盲删，别拿"最近写入的那条"去顶。
+    # 否则学生说"10月三号两个撞时间的待办删一下"，会被误当成"没点名的删除"，
+    # 拿他最近加的那条来充数（截图实测：他明明说了 10-03 + 撞时间，却被塞了 09-27 的"写作业"）。
+    if _pick_date(t) or _wants_colliding(t):
         return False
     if any(h in t for h in _BLIND_DELETE_HINTS):
         return True
