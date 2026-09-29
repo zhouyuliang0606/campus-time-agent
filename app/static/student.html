@@ -1024,6 +1024,25 @@
         return;
       }
 
+      // ---- ①-bis 批量卡：学生对着清单说「都删了 / 都完成了」时挂出来的那张 ----
+      //     他说的就是"你列的那几条全都要办"，所以**一张条、一次点头**（不是挂 N 张）。
+      //     跟单条同一个待遇：卡上逐条列清，点了【确认…全部】才由系统去写。
+      const batches = options.filter(
+        o => o.kind === "todo_remove_batch" || o.kind === "todo_done_batch");
+      if (confirmPageOk && batches.length) {
+        const b = batches[batches.length - 1];
+        const isDel = b.kind === "todo_remove_batch";
+        const hint = document.createElement("div");
+        hint.className = "opt-hint";
+        hint.textContent = isDel
+          ? `🗑️ 这 ${b.count || (b.items || []).length} 条全都要删（删除找不回来），在下面这条确认条上点【确认删除全部】才真的删：`
+          : `✅ 这 ${b.count || (b.items || []).length} 条全都要标记完成，在下面这条确认条上点【确认完成全部】才真的改：`;
+        wrap.appendChild(hint);
+        container.appendChild(wrap);
+        openConfirm(b, container);
+        return;
+      }
+
       // ---- ①-ter 删待办：学生点名要删的那一条（或那一批里他挑中的一条） ----
       //     删除不可逆，所以这里跟清空课表同一个待遇：单张走确认条（标红 + 把那条
       //     **原样念一遍**标题/日期/时段），多个候选就列成卡片让他挑一条。
