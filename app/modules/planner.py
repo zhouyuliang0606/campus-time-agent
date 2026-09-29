@@ -2440,6 +2440,32 @@ def _wants_colliding(text: str) -> bool:
     return any(w in (text or "") for w in _COLLIDE_WORDS)
 
 
+# "都 / 全部 / 一起 / 剩下的" —— 学生对着刚列出的清单说这些词时，
+# 指的就是「**你刚列的那几条，我全都要（或全不要）**」。
+#
+# 这是**指代**，不是字面上的"没说名字"。旧写法把「都删了」当"没点名"，
+# 于是端出**整张日程**（学生截图：系统列了 2 条，他回「都删了」，
+# 屏幕却冒出 11 条 —— "上下文连不上"说的就是这个）。
+_ALL_WORDS = (
+    "都", "全", "全部", "全都", "统统", "一起", "一块", "一并",
+    "所有", "每个", "每条", "这些", "这几条", "这两条", "这俩",
+    "剩下的", "其余的", "其他", "别的",
+)
+
+
+def _wants_all_candidates(text: str) -> bool:
+    """学生在回答"是哪一条"时，是不是在说「都要 / 都不要」（人话：全选）。
+
+    只在**上一句刚列过清单**时才会被问到（见 resolve_todo_remove_reply），
+    所以"都"这种极常见的字在这里不会误伤——但它仍然**不抢名字**：
+    若这句话能明确对上某一条真待办的名字，听名字的（见调用处）。
+    """
+    t = (text or "").strip()
+    if not t or len(t) > 30:
+        return False
+    return any(w in t for w in _ALL_WORDS)
+
+
 def _colliding_subset(todos: list) -> list:
     """从一组待办里挑出**跟同一天另一条时间重叠**的那些（人话：挑出"撞上的"）。
 
@@ -2698,6 +2724,38 @@ def _todo_remove_proposal(item: dict) -> dict:
     }
 
 
+def todo_remove_batch_proposal(items: list) -> dict:
+    """把"你列的这几条**全都要删**"包成一张**批量**确认条（人话：一次列清、一次点头）。
+
+    为什么要一张卡、不挂 N 张单条卡：学生说的就是"都"——那就该**一次点头、一次删完**。
+    挂 N 张条让他点 N 次，等于没听懂他的话（学生原话："去思考学生表达的意思，
+    不是字面上的"）。卡上把**每一条都原样念出来**，他点【确认删除全部】之前，
+    一条都不会动 —— "先列清楚，再动手"这条规矩不破。
+    """
+    its = [_todo_remove_proposal(x) for x in (items or [])]
+    shown = "、".join(x["title"] for x in its[:3])
+    tail = f" 等" if len(its) > 3 else ""
+    return {
+        "kind": "todo_remove_batch",
+        "items": its,
+        "count": len(its),
+        "summary": f"{shown}{tail}（共 {len(its)} 条）",
+    }
+
+
+def todo_done_batch_proposal(items: list) -> dict:
+    """标记完成的批量版（跟 todo_remove_batch_proposal 一对：学生说"都"就一次办完）。"""
+    its = [_todo_done_proposal(x) for x in (items or [])]
+    shown = "、".join(x["title"] for x in its[:3])
+    tail = f" 等" if len(its) > 3 else ""
+    return {
+        "kind": "todo_done_batch",
+        "items": its,
+        "count": len(its),
+        "summary": f"{shown}{tail}（共 {len(its)} 条）",
+    }
+
+
 def parse_remove_todo(text: str) -> dict | None:
     """解析成一张删待办确认卡；不是"恰好一条"就返回 None（交给上层列清单/如实说）。
 
@@ -2895,6 +2953,17 @@ def resolve_todo_remove_reply(text: str, candidates: list | None = None) -> dict
             # 学生一次点了好几条：一次只删一条（不猜、不批量），列出来请他挑一条
             return {"status": "many", "todos": picked, "reason": "一次只能删一条"}
         return {"status": "unclear", "todos": list(candidates), "reason": "序号超出范围"}
+    # ★「都删了 / 全部删掉 / 一起删了吧 / 剩下的都不要了」——
+    #   这在**接着上一句清单**说"你列的那几条我全都要删"，是指代，不是"没点名"。
+    #   放在名字解析**之前**是有意的：这种句子里本来就抠不出名字
+    #   （`_pick_todo_name("都删了") == ""`），先去解析名字只会掉进
+    #   "没点名 → 端出整张日程"的老坑（学生截图：列了 2 条，回「都删了」冒出 11 条）。
+    #   但先让一步：这句话若**明确对上某一条真待办的名字**，还是听名字的——
+    #   别让一个"都"字把学生点名的意思盖掉。
+    if candidates and _wants_all_candidates(t):
+        named = resolve_todo_remove(t)
+        if named.get("status") != "ok":
+            return {"status": "all", "todos": list(candidates)}
     res = resolve_todo_remove(t)
     # 手上有清单、学生这句却既不是序号也没对上名字 → 回"没看明白是哪一条"（带上清单），
     # 绝不报"没找到"——清单还在记忆里，报"没找到"就是学生说的"记忆有问题"。
@@ -3036,6 +3105,11 @@ def resolve_todo_done_reply(text: str, candidates: list | None = None) -> dict:
         if len(picked) > 1:
             return {"status": "many", "todos": picked, "reason": "一次只能改一条"}
         return {"status": "unclear", "todos": list(candidates), "reason": "序号超出范围"}
+    # 「都完成了 / 全标记完成」同删待办：接着上一句清单指代"这几条都要办"。
+    if candidates and _wants_all_candidates(t):
+        named = resolve_todo_done(t)
+        if named.get("status") != "ok":
+            return {"status": "all", "todos": list(candidates)}
     res = resolve_todo_done(t)
     # 同删待办：有清单时绝不报"没找到"
     if res.get("status") == "empty" and candidates:
