@@ -84,6 +84,8 @@ from app.modules.planner import (
     slot_is_free,
     todo_mode_proposal,
     todo_slots_proposal,
+    todo_remove_batch_proposal,
+    todo_done_batch_proposal,
     wants_remove_todo,
     wants_remove_todo_loose,
     wants_done_todo,
@@ -297,6 +299,24 @@ def _pending_todo_done(session_id: str) -> dict | None:
     entry = peek_pending(session_id) or {}
     for o in entry.get("options") or []:
         if isinstance(o, dict) and o.get("kind") == "todo_done" and not o.get("applied"):
+            return o
+    return None
+
+
+def _pending_todo_remove_batch(session_id: str) -> dict | None:
+    """暂存里那张待确认的**批量删除**确认条（人话：学生说"都删了"时挂出来的那张）。"""
+    entry = peek_pending(session_id) or {}
+    for o in entry.get("options") or []:
+        if isinstance(o, dict) and o.get("kind") == "todo_remove_batch" and not o.get("applied"):
+            return o
+    return None
+
+
+def _pending_todo_done_batch(session_id: str) -> dict | None:
+    """暂存里那张待确认的**批量标记完成**确认条（跟删除版一对）。"""
+    entry = peek_pending(session_id) or {}
+    for o in entry.get("options") or []:
+        if isinstance(o, dict) and o.get("kind") == "todo_done_batch" and not o.get("applied"):
             return o
     return None
 
@@ -1067,6 +1087,44 @@ async def chat(req: Request):
                 "awaiting_choice": False,
             }
 
+        # **批量删除的确认**：学生说"都删了"时挂的那张条，他回一句"确认"就在这里执行。
+        # 跟单条同一个道理：delete_todo 只有走到这里才会被调用，模型碰不到。
+        # 逐条删、并**如实报数**（有几条已经不在了就说几条，不假装全删了）。
+        rb = _pending_todo_remove_batch(session_id)
+        if rb:
+            take_pending(session_id)
+            items = [x for x in (rb.get("items") or []) if isinstance(x, dict)]
+            gone, ok_titles = [], []
+            for it in items:
+                tid = it.get("todo_id") or ""
+                if tid and get_todo(tid) is not None:
+                    delete_todo(tid)
+                    ok_titles.append(it.get("title") or "待办")
+                else:
+                    gone.append(it.get("title") or "待办")
+            append_conversation(session_id, "user", message)
+            summary = rb.get("summary") or f"共 {len(items)} 条"
+            # 这条回执跟单条删除用的是同一个前缀（_WRITTEN_RECEIPTS 靠它认出"真删过了"）
+            append_conversation(session_id, "assistant",
+                                f"已删除待办：{summary}"
+                                + (f"；另有 {len(gone)} 条已经不在了" if gone else ""))
+            lines = "\n".join(f"· **{t}**" for t in ok_titles)
+            extra = (f"\n\n（另有 {len(gone)} 条本来就已经不在日程里了："
+                     f"{'、'.join(gone)}）") if gone else ""
+            return {
+                "module": "planner",
+                "session_id": session_id,
+                "answer": (
+                    (f"✅ 已按你的确认删掉 {len(ok_titles)} 条：\n{lines}"
+                     if ok_titles else "🗑️ 这几条已经都不在日程里了，没有重复删。")
+                    + extra
+                ),
+                "trace": [{"step": 1, "phase": "✅ 学生确认（系统批量删除）",
+                           "answer": f"删 {len(ok_titles)} 条、已在库里 {len(gone)} 条"}],
+                "options": [],
+                "awaiting_choice": False,
+            }
+
         # **标记完成的确认**：学生回一句"确认"，把上一轮那张【确认完成】真正执行掉。
         # 跟删待办同一个道理——执行权在系统手里，模型连改状态的接口都碰不到。
         # 只有走到这一段，update_todo_status(done) 才会被调用到。
@@ -1108,6 +1166,39 @@ async def chat(req: Request):
                 ),
                 "trace": [{"step": 1, "phase": "✅ 学生确认（系统标记完成）",
                            "answer": summary}],
+                "options": [],
+                "awaiting_choice": False,
+            }
+
+        # **批量标记完成的确认**：学生说"都完成了"时挂的那张条，在这里执行。
+        db = _pending_todo_done_batch(session_id)
+        if db:
+            take_pending(session_id)
+            items = [x for x in (db.get("items") or []) if isinstance(x, dict)]
+            gone, ok_titles = [], []
+            for it in items:
+                tid = it.get("todo_id") or ""
+                if tid and get_todo(tid) is not None:
+                    update_todo_status(tid, "done")
+                    ok_titles.append(it.get("title") or "待办")
+                else:
+                    gone.append(it.get("title") or "待办")
+            append_conversation(session_id, "user", message)
+            append_conversation(session_id, "assistant",
+                                f"已标记完成：{db.get('summary') or '共 %d 条' % len(items)}")
+            lines = "\n".join(f"· **{t}**" for t in ok_titles)
+            extra = (f"\n\n（另有 {len(gone)} 条已经不在日程里了："
+                     f"{'、'.join(gone)}）") if gone else ""
+            return {
+                "module": "planner",
+                "session_id": session_id,
+                "answer": (
+                    (f"✅ 已按你的确认把 {len(ok_titles)} 条标记为完成：\n{lines}"
+                     if ok_titles else "✅ 这几条已经都不在日程里了，没有重复标记。")
+                    + extra
+                ),
+                "trace": [{"step": 1, "phase": "✅ 学生确认（系统批量标记完成）",
+                           "answer": f"标记 {len(ok_titles)} 条"}],
                 "options": [],
                 "awaiting_choice": False,
             }
@@ -2134,6 +2225,31 @@ async def chat(req: Request):
                 "awaiting_choice": True,
             }
 
+        # 学生对着刚列出的清单说"都完成了 / 全标记完成" —— 同删待办：
+        # 接着上一句指代"你列的那几条我都要办"，一次点头、一次办完。
+        if status == "all" and res.get("todos"):
+            todos = res["todos"]
+            proposal = todo_done_batch_proposal(todos)
+            save_pending(session_id, [proposal])
+            append_conversation(session_id, "user", message)
+            append_conversation(session_id, "assistant",
+                                f"已生成标记完成提案：{proposal['summary']}")
+            return {
+                "module": "planner",
+                "session_id": session_id,
+                "answer": (
+                    f"✅ 好，你说的是**上面那 {proposal['count']} 条全都要标记完成**。"
+                    "我把它们一条条列在下面的确认条上了——"
+                    "点【确认完成全部】我才改状态；点【取消】原封不动。"
+                    "（也可以直接在聊天框回一句「确认」，一样会执行。）"
+                ),
+                "trace": [{"step": 1,
+                           "phase": "✅ 学生说「都」→ 生成批量标记完成提案（系统判定）",
+                           "answer": proposal["summary"]}],
+                "options": [proposal],
+                "awaiting_choice": True,
+            }
+
         # 命中好几条：**列清单，问是下面哪一条，列完就停**。
         # 这一支就是规格第 2 条——"不许猜"。清单同时记进暂存，
         # 学生回"第二条"时系统接得住（见上面的 resolve_todo_done_reply）。
@@ -2244,6 +2360,35 @@ async def chat(req: Request):
                     "（也可以直接在聊天框回一句「确认」，一样会执行。）"
                 ),
                 "trace": [{"step": 1, "phase": "🗑️ 生成删待办提案（系统判定）",
+                           "answer": proposal["summary"]}],
+                "options": [proposal],
+                "awaiting_choice": True,
+            }
+
+        # 学生对着刚列出的清单说"都删了 / 全删掉 / 一起删了吧" —— 这是在**接着上一句
+        # 指代**"你列的那几条我全都要删"，不是"没说名字"。所以该**一次点头、一次删完**：
+        # 挂一张批量确认条，上面把每一条原样念清楚。
+        # 旧写法把这句话当"没点名"，端出**整张日程**（学生截图：列了 2 条，
+        # 他回「都删了」，屏幕却冒出 11 条 —— "上下文连不上"就是这一处）。
+        # ⚠️ 红线没破：这张条只是**提案**，他点【确认删除全部】之前一条都不会删。
+        if status == "all" and res.get("todos"):
+            todos = res["todos"]
+            proposal = todo_remove_batch_proposal(todos)
+            save_pending(session_id, [proposal])
+            append_conversation(session_id, "user", message)
+            append_conversation(session_id, "assistant",
+                                f"已生成删待办提案：{proposal['summary']}")
+            return {
+                "module": "planner",
+                "session_id": session_id,
+                "answer": (
+                    f"🗑️ 好，你说的是**上面那 {proposal['count']} 条全都要删**。"
+                    "我把它们一条条列在下面的确认条上了——"
+                    "点【确认删除全部】我才删；点【取消】日程原封不动。"
+                    "（也可以直接在聊天框回一句「确认」，一样会执行。）"
+                ),
+                "trace": [{"step": 1,
+                           "phase": "🗑️ 学生说「都」→ 生成批量删除提案（系统判定）",
                            "answer": proposal["summary"]}],
                 "options": [proposal],
                 "awaiting_choice": True,
