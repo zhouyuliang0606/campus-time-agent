@@ -597,6 +597,20 @@ _QA_MODULES = frozenset({
 })
 
 
+def _kb_has_answer(text: str) -> bool:
+    """这句话问的是**知识库里有的校园信息**吗（图书馆/校车/宿舍/奖学金…）。
+
+    用来给确定性分支让路：学生问「校车在哪坐」，那是问校园信息，不该被
+    "查日程"那条路当成"看不见某条待办"接走。查不到就返回 False——
+    让原分支照旧处理，别把他的问题甩给知识库冷处理。
+    """
+    try:
+        from app.modules.faq import search_kb      # 函数内导入：改动配置/打补丁都传入得去
+        return not (search_kb(text) or "").startswith("知识库里没有找到")
+    except Exception:
+        return False
+
+
 def _rule_intent(message: str) -> str | None:
     """把所有确定性分支的开关**预检**一遍（人话：先问"规则接不接得住"）。
 
@@ -1778,7 +1792,23 @@ async def chat(req: Request):
     #       ③ 都没有、但最近说过要加 → 那条**还没写进日程**，确认条补挂出来；
     #       ④ 都没有、最近也没说过 → 如实说"还没有"，要加说一声。
     #     全程不诊断"推送出了问题"、不提管理端、不让学生"二选一"。
-    missing = missing_thing_of(message)
+
+    # ★ 让路：这句话问的其实是**校园知识库里有的东西**（"校车在哪坐"）→ 交给知识库，
+    #   别拿"查日程"去兜。
+    #   实测那一幕：学生问「校车在哪坐」，`_MISSING_RE` 里的「在哪」把它当成报障，
+    #   抠出一个根本不存在的待办名"校车坐"，回「查了日程，确实还没有「校车坐」」——
+    #   他问的是校车在哪发车、几点发车，系统却在自己的日程里翻。
+    # ⚠️ 判据要**两条同时成立**才让路，宁可漏也不可把真报障让出去：
+    #   ① 话里没有"待办/日程/周表/课表/清单"这类**说自己日程**的词
+    #      （"我的校车待办没显示"仍然是报障，得由这条确定性分支接）；
+    #   ② 知识库里**真的有答案**（查不到就让这条分支照旧查日程，别把话甩冷宫）。
+    if (missing_thing_of(message) is not None
+            and not any(w in message for w in ("待办", "代办", "日程", "周表",
+                                               "月表", "课表", "清单", "列表"))
+            and _kb_has_answer(message)):
+        missing = None
+    else:
+        missing = missing_thing_of(message)
     if missing is not None:
         title, day = missing["title"], missing["date"]
         # 他没点名，就拿"最近要加的那件事"当默认答案——十有八九问的就是它
@@ -2372,6 +2402,29 @@ async def chat(req: Request):
         if not followup and _is_blind_delete(message):
             _blind_recent = _recent_written_todos(session_id)
             _still = [t for t, ok in _blind_recent if ok]
+            _gone = [t for t, ok in _blind_recent if not ok]
+            # ★ 回执里记着的**就那一条**、而它现在已经不在库里（他自己删过）→
+            #   先如实说"已经不在"，**不要**跑去解析、更不要端出整张日程。
+            #   放在这里（解析之前）是因为：他压根没点名，解析只会拿到"全部待办"
+            #   然后回一句"对上了好几条，我不敢替你挑"——学生刚删掉的那条，
+            #   在他听来就是系统装作不知道（这是在**有账可查**的前提下说的，
+            #   不是猜：回执是系统自己写的）。
+            if _gone and not _still and not wants_remove_course(message):
+                clear_pending(session_id)
+                append_conversation(session_id, "user", message)
+                append_conversation(session_id, "assistant", "删待办：已经不在了")
+                return {
+                    "module": "planner",
+                    "session_id": session_id,
+                    "answer": (f"🗑️ 「{_gone[0]}」已经不在日程里了——"
+                               "可能刚才已经删掉（或在月表里手动删过）。"
+                               "现在日程里一条都没少，不用再操作。"),
+                    "trace": [{"step": 1,
+                               "phase": "🗑️ 没点名的删除 → 那条已经不在库里，如实说",
+                               "answer": f"{_gone[0]} 已不在"}],
+                    "options": [],
+                    "awaiting_choice": False,
+                }
             if len(_still) == 1:
                 probe = f"删除{_still[0]}"
         if followup:
@@ -2536,22 +2589,8 @@ async def chat(req: Request):
                         "options": [],
                         "awaiting_choice": False,
                     }
-                if _gone and not _still:
-                    # 回执里有、库里已经没了 → 他多半已经删过（或手动删过）
-                    append_conversation(session_id, "user", message)
-                    append_conversation(session_id, "assistant", "删待办：已经不在了")
-                    return {
-                        "module": "planner",
-                        "session_id": session_id,
-                        "answer": (f"🗑️ 「{_gone[0]}」已经不在日程里了——"
-                                   "可能刚才已经删掉（或在月表里手动删过）。"
-                                   "现在日程里一条都没少，不用再操作。"),
-                        "trace": [{"step": 1,
-                                   "phase": "🗑️ 没点名的删除 → 那条已经不在库里，如实说",
-                                   "answer": f"{_gone[0]} 已不在"}],
-                        "options": [],
-                        "awaiting_choice": False,
-                    }
+                # （「已经不在了」那一支已挪到解析**之前**：他没点名时，解析只会
+                #   拿回"全部待办"，等走到这儿再说"已经不在"就晚了 —— 见上面。）
             append_conversation(session_id, "user", message)
             append_conversation(session_id, "assistant", "删待办：没找到符合条件的")
             return {
@@ -2616,6 +2655,46 @@ async def chat(req: Request):
             ),
             "trace": [{"step": 1, "phase": "🤔 删课缺细节（系统追问）",
                        "answer": "没说清是哪节，先问清楚再出提案"}],
+            "options": [],
+            "awaiting_choice": False,
+        }
+
+    # 3i) **知识库直答**（人话：问的是校园信息，就别让大模型现编）
+    #     真机实测出来的漏子：在**日程栏**问「校车在哪里坐」，所有确定性分支都不认
+    #     （它既不是加待办也不是删待办），最后掉给大模型——大模型手里没知识库，
+    #     回了一句"我这边查不到，你去看学校公众号"，可知识库里**明明躺着校车时刻表**。
+    #     所以位置很有讲究：放在**所有确定性分支之后、交给模型之前**——
+    #     该接的都接过了才轮到它，绝不会从待办操作手里抢话。
+    #     四道闸门缺一不可（宁可漏给模型，也不许在学生的待办操作上乱插嘴）：
+    #       ① 手上没有待确认的卡（有卡时他多半在跟卡对话，别把卡弄丢）；
+    #       ② 这句话不带"待办/日程/课表"这类词（"我的校车待办显示不出来"是报障）；
+    #       ③ 没有任何改数据的意图（加/删/改待办、加/删课、清空课表）；
+    #       ④ 它**像问句**，且知识库**真的**答得出来——答不出就老实交给模型。
+    #     ⚠️ 只给**日程栏（planner）**用：校园问答栏本来就有自己的知识库链路，
+    #       接管它反而会盖掉那一栏"没配密钥"的降级提示（test_01 就是这么被撞红的）。
+    #       这里补的正是**日程栏问校园信息没人管**的这个洞。
+    _holding_card = any(f(session_id) for f in (
+        _pending_todo, _pending_todo_remove, _pending_todo_done,
+        _pending_todo_remove_batch, _pending_todo_done_batch, _pending_todo_slots))
+    if (module_key == "planner"
+            and not _holding_card
+            and not any(w in message for w in ("待办", "代办", "日程", "周表",
+                                               "月表", "课表", "清单", "列表"))
+            and not (wants_add_todo(message) or wants_remove_todo(message)
+                     or wants_done_todo(message) or wants_add_course(message)
+                     or wants_remove_course(message)
+                     or wants_clear_timetable(message))
+            and looks_like_question(message)
+            and _kb_has_answer(message)):
+        from app.modules.faq import search_kb
+        append_conversation(session_id, "user", message)
+        append_conversation(session_id, "assistant", "校园问答：知识库直答")
+        return {
+            "module": module_key,
+            "session_id": session_id,
+            "answer": "📚 " + search_kb(message),
+            "trace": [{"step": 1, "phase": "📚 问的是校园信息 → 翻知识库（不交给模型现编）",
+                       "answer": "知识库命中"}],
             "options": [],
             "awaiting_choice": False,
         }
