@@ -1748,6 +1748,16 @@ def wants_add_todo(text: str) -> bool:
     t = (text or "").strip()
     if not t or len(t) > 80:      # 太长的多半是在聊天，不是在下单
         return False
+    # ★ 带"删"（含手误写法）或口语"不要了" → 这是在**删除**，不是下单 → 让给删待办。
+    #   不让的话「删悼交电费」「上次那个事不要了」会被"口语下单"接住，
+    #   跑去给学生**排空档**（实测：弹出的是"我看了下你这周的空档…"候选时段卡）——
+    #   他要删，系统却帮他排时间，这一幕比"没听懂"更离谱。
+    #   ⚠️ 必须放在所有"放行"判断**之前**：加待办分支（3c）排在删待办（3g）前面，
+    #   不在这里先让出去，删待办那条路永远没机会接手。
+    if (_DEL_ANY_RE.search(t)
+            or any(w in t for w in _REMOVE_TODO_INTENT)
+            or any(w in t for w in _REMOVE_TODO_SOFT)):
+        return False
     # ⚠️ 下面这几条"让路"必须排在"有意图词就放行"前面。
     # 否则"安排"这个词会把课表请求、学习计划请求一起拽过来——
     # 先把不属于待办的交出去，再谈接住。
@@ -2408,6 +2418,22 @@ _REMOVE_TODO_INTENT = (
     "删掉", "删除", "删了", "去掉", "移除", "取消", "撤销", "退掉", "不想做", "别安排了",
 )
 
+# ★「删」字的**容错**写法：学生手快打成「删悼」「删叼」「删去」都是同一个意思。
+#   早先只认上面那串固定词，打错一个字就整句掉出确定性分支——
+#   结果「删悼交电费」被当成"要加个什么事"，跑去排空档（实测：弹出候选时段卡）。
+#   「删」这个字在中文里几乎只用于删除，所以单字命中 + 后面最多跟两个字，风险很低。
+# ⚠️ 只用来**补**上面那张表，不替换它：固定词更准，容错是兜底。
+# ⚠️ 后面**最多跟 1 个字**，不能 2 个：「删除撞时间的代办」里，跟 2 个字会把
+#   「删除撞」整块擦掉，剩下的「时间」被当成待办名 —— 名字一旦非空，
+#   "撞时间"这个筛条件就走不到了，于是报"没找到"（这一版真踩过）。
+_DEL_ANY_RE = re.compile(r"删[^，。！!？?、\s]{0,1}")
+
+# ★ 口语里的"不要了"：学生说「上次那个事不要了」「那个不去了」就是**要删**，
+#   可是这几个词不在"删除"词表里（字面上也确实没有删字）→ 整句掉给加待办那条路。
+#   ⚠️ 只放**宽松那档**（wants_remove_todo_loose）："我不要加待办了"这种
+#   是在**撤掉刚才那张加卡**，由确认/取消那条路先接，不能让删除抢走。
+_REMOVE_TODO_SOFT = ("不要了", "不去了", "不搞了", "算了删", "取消掉", "去掉吧", "删了吧")
+
 # 标记完成（把某条**已存在的待办**标成已完成）的触发词。
 # 注意：**不放**"完成"这种极泛的词当总开关——"帮我安排完成作业"是新增，不是标记完成，
 # 碰上就会被误判。只有显式的"标记/勾/划"指令，或"完成/做完/搞定"精准对上一条已有待办时才算。
@@ -2605,13 +2631,36 @@ def _pick_todo_name(text: str) -> str:
               "上周", "下个", "这个", "那个", "那天", "这天", "当天", "那一天",
               "这一天", "当天的"):
         t = t.replace(w, " ")
-    for w in (_REMOVE_TODO_INTENT + _REMOVE_INTENT + _DONE_TODO_INTENT + _DONE_TODO_VERB
+    # ⚠️ 「一下 / 一下下」要在擦删除词**之前**擦掉：先擦删除词的话，「删+一」
+    #    被整块吃掉，只剩一个「下」赖在名字里（"10月三号…删一下" → 名字变成"下"，
+    #    而这句话里压根没有名字，全是修饰词）。
+    for w in ("一下下", "一下子", "一下"):
+        t = t.replace(w, " ")
+    # ★ 手误的删除词（「删悼」「删叼」）要先整块擦掉：只擦单字"删"的话
+    #   剩下的「悼」「叼」会粘进名字里（"悼交电费" → 对不上任何待办）。
+    t = _DEL_ANY_RE.sub(" ", t)
+    # ★ 纠正句里的"否定词"也不是名字的一部分（"不是这个，是交电费" → 交电费）。
+    #   早先这些字赖在名字里，剩下「不是是交电费」，匹配不上 → 只能原样重列清单，
+    #   学生明明说了是哪一条，系统却像没听见。
+    for w in ("不是这个", "不是这条", "不是那个", "不是", "不对", "错了", "搞错了",
+              "搞错", "换一条", "换一个", "重新选", "重选", "我要的是", "我说的是",
+              "其实是", "应该是", "上次", "刚才", "前面", "那回"):
+        t = t.replace(w, " ")
+    # 纠正句里"是交电费"的"是"留在名字里，卡上会写出「是交电费」这种怪话 → 只擦句首那个。
+    # ⚠️ 前面可能还留着逗号（"不是这个，是交电费" → "，是交电费"），标点要一起放过。
+    t = re.sub(r"^[\s，,、；;]*是\s*", "", t)
+    for w in (_REMOVE_TODO_INTENT + _REMOVE_TODO_SOFT + _REMOVE_INTENT + _DONE_TODO_INTENT
+              + _DONE_TODO_VERB
               + _TODO_NAME_NOISE + _COLLIDE_WORDS + (
               "待办", "日程", "事项", "安排", "标记", "完成", "删",
               "那条", "这条", "那一条", "这一条",
               "一条", "一下", "一下下", "的")):
         t = t.replace(w, " ")
-    t = re.sub(r"^(我要|我想|帮我|请帮我|请|给我|把|别|我)\s*", "", t)
+    # ⚠️ "把"可能连着出现两次（"帮我**把**交电费去掉" → 先擦掉"帮我"之后"把"又到句首了），
+    #    也可能被学生说在句尾（"游泳删掉**把**"，倒装）→ 两头都要擦。
+    for _ in range(2):
+        t = re.sub(r"^(我要|我想|帮我|请帮我|请|给我|把|别|我|将|把了)\s*", "", t)
+    t = re.sub(r"[呗啊呀呢吧哦啦哈呐咧咯嘛喽把把了]+$", "", t)
     t = re.sub(r"[，,。！!？?、；;：:~～\-—『』「」\"'“”‘’\s]", "", t)
     return t.strip()[:30]
 
@@ -2622,6 +2671,47 @@ def _todo_name_match(want: str, title: str) -> bool:
     if not a or not b:
         return False
     return a == b or a in b or b in a
+
+
+def _lev(a: str, b: str) -> int:
+    """两个字符串的编辑距离（人话：打错几个字）——小字符串够用，不引第三方库。"""
+    if a == b:
+        return 0
+    if not a or not b:
+        return max(len(a), len(b))
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        cur = [i]
+        for j, cb in enumerate(b, 1):
+            cur.append(min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (ca != cb)))
+        prev = cur
+    return prev[-1]
+
+
+def _fuzzy_name_match(want: str, title: str) -> bool:
+    """**打错字**也算对得上（人话：「游永」→《游泳》）。
+
+    ⚠️ 判据刻意收紧成两条**同时**成立，宁可漏也不可替他删错：
+      · 编辑距离：短名（≤4 字）只许错 **1** 个字，长名许错 2 个；
+      · 字符重合度 ≥ 0.5（「游永」vs「游泳」= 2×1/3 ≈ 0.67 过；
+        「上课」vs「吃饭」= 0 不过）。
+    不做"最像的那一条"这种排序猜测——0.31 比 0.29 是噪声；
+    这里只认"明显就是它打错了"的那一档，猜出来的卡还要**写明依据**并留"不对"的出口。
+    """
+    a, b = (want or "").strip(), (title or "").strip()
+    if not a or not b or len(a) < 2:
+        return False
+    tol = 1 if min(len(a), len(b)) <= 4 else 2
+    if _lev(a, b) > tol:
+        return False
+    sa, sb = set(a), set(b)
+    return (2 * len(sa & sb) / (len(sa | sb) or 1)) >= 0.5
+
+
+def _fuzzy_name_hits(name: str, items: list) -> list:
+    """在所有条目里按**打错字**的判据找一遍（名字精确匹配落空后的兜底）。"""
+    return [x for x in (items or [])
+            if _fuzzy_name_match(name, (x.get("title") or "").strip())]
 
 
 def _pick_todo_index(text: str) -> int | None:
@@ -2692,7 +2782,9 @@ def wants_remove_todo(text: str) -> bool:
     t = (text or "").strip()
     if not t or len(t) > 80:
         return False
-    if not any(w in t for w in _REMOVE_TODO_INTENT):
+    if not (any(w in t for w in _REMOVE_TODO_INTENT)
+            or any(w in t for w in _REMOVE_TODO_SOFT)
+            or _DEL_ANY_RE.search(t)):
         return False
     if wants_clear_timetable(t):
         return False
@@ -2781,7 +2873,13 @@ def resolve_todo_remove(text: str, pool: list | None = None) -> dict:
         narrowed = [x for x in pool if (x.get("date") or "") == day]
         if narrowed:
             pool = narrowed
-    by_name = bool(name) and name not in ("", "待办", "日程", "事项")
+    # ★ "那个啥/上次那个事"这种**指代词**不算点名：他说的是"某个东西"，不是某个名字。
+    #   算成点名 → 按名字一条都找不到 → 回"没找到"；不算点名 → 池子就是全部待办 →
+    #   走"列清单问是哪一条"，比"没找到"有用得多（模糊口语的正确答法）。
+    _VAGUE_NAMES = ("", "待办", "日程", "事项", "事", "事情", "东西", "玩意",
+                    "那个", "这个", "啥", "什么", "一件", "那条", "这条")
+    by_name = bool(name) and name not in _VAGUE_NAMES
+    fuzzy = False          # 这一批是不是靠"打错字"的判据捞上来的
     if by_name:
         hits = [x for x in pool if _todo_name_match(name, x.get("title", ""))]
         # 名字没命中，但整句话里出现了某条待办的名字（"帮我把交电费取消了吧"），
@@ -2791,6 +2889,12 @@ def resolve_todo_remove(text: str, pool: list | None = None) -> dict:
         #    （不给兜的话他会得到"重新列一遍游泳/交电费"，看着像没听懂）。
         if not hits:
             hits = [x for x in list_todos() if _todo_name_match(name, x.get("title", ""))]
+        if not hits:
+            # ★ 再兜一层**打错字**（「把游永删了」→《游泳》）。
+            #   先在这批候选里找，再在全库找。早先没有这一兜，学生打错一个字
+            #   就得到"没找到这条待办"——可库里明明就躺着那一条。
+            hits = _fuzzy_name_hits(name, pool) or _fuzzy_name_hits(name, list_todos())
+            fuzzy = bool(hits)
         if not hits:
             return {"status": "empty", "todos": [], "day": day, "name": name}
         pool = hits
@@ -2802,6 +2906,18 @@ def resolve_todo_remove(text: str, pool: list | None = None) -> dict:
 
     if not pool:
         return {"status": "empty", "todos": [], "day": day, "name": name}
+    # ★ 靠"打错字"只捞到**一条**时也要**写明是猜的**（真机实测出来的漏子）：
+    #   早先直接走下面 `len(pool) == 1` 那一支，卡上干干净净、一个字都不提——
+    #   学生打错字、系统替他改了名字还不说，他会以为本来就有一条叫这个的，
+    #   看都不看就点确认。猜的和命中的，卡片上必须长得不一样。
+    if by_name and fuzzy and len(pool) == 1:
+        return {"status": "ok",
+                "proposal": _todo_remove_proposal(
+                    pool[0], picked_by="fuzzy_name",
+                    note=(f"日程里没有**正好**叫「{name}」的，"
+                          f"最接近的是《{pool[0].get('title', '')}》——"
+                          f"我当你是打错字了。不是这条就回我「不对」。")),
+                "todos": pool}
     if len(pool) == 1:
         return {"status": "ok", "proposal": _todo_remove_proposal(pool[0]), "todos": pool}
 
@@ -2817,6 +2933,24 @@ def resolve_todo_remove(text: str, pool: list | None = None) -> dict:
     #   两个信号都不做相似度猜测：0.31 比 0.29 是噪声，按"最像"下结论会给出**假确定**。
     #   ⚠️ 猜出来的仍然只是**提案**：卡上写明"我是怎么挑的"，学生点头才动。
     if by_name:
+        if fuzzy:
+            # ★ 打错字这一档：**等价组**优先（"游永"对上两份一模一样的《游泳》→
+            #   删哪份都一样，直接出卡），否则只有一条就出卡并写明"我当你是打错字了"；
+            #   好几条都像打错字 → 不猜，列清单让他点名。
+            grp = _single_equiv_group(pool)
+            if grp:
+                pick = _earliest(grp)
+                others = [x for x in grp if x.get("id") != pick.get("id")]
+                return {"status": "ok",
+                        "proposal": _todo_remove_proposal(
+                            pick, picked_by="fuzzy_name", alternates=others,
+                            note=(f"没有正好叫「{name}」的，最接近的是"
+                                  f"《{pick.get('title', '')}》，它有 **{len(grp)} 份一模一样**的"
+                                  f"——删掉任意一份都一样，我挑的是**先写进去的那条**。"
+                                  f"要删另一份就回我「换一条」。")),
+                        "todos": [pick]}
+            # （只捞到一条的情形已在上面先返回了——那里也要写明"我当你是打错字了"）
+            return {"status": "many", "todos": pool, "day": day, "name": name}
         exact = [x for x in pool if (x.get("title") or "").strip() == name]
         if len(exact) == 1:
             return {"status": "ok",
@@ -3068,7 +3202,10 @@ def wants_remove_todo_loose(text: str) -> bool:
     t = (text or "").strip()
     if not t or len(t) > 80:
         return False
-    if not any(w in t for w in _REMOVE_TODO_INTENT):
+    # 删字（含手误写法）+ 口语"不要了"都算（后者只有"宽松"这档认，理由见词表注释）
+    if not (any(w in t for w in _REMOVE_TODO_INTENT)
+            or any(w in t for w in _REMOVE_TODO_SOFT)
+            or _DEL_ANY_RE.search(t)):
         return False
     if wants_clear_timetable(t) or "课" in t or _PERIOD_RE.search(t):
         return False
@@ -3091,7 +3228,15 @@ def resolve_todo_remove_reply(text: str, candidates: list | None = None) -> dict
     cap = len(candidates) if candidates else None
     # 「不对 / 不是这条 / 换一条」——他在卡上看到系统替他挑的那条，说不合意。
     # 这时**不许**硬着头皮往下走：把上一句的清单原样再端出来让他自己挑。
+    #
+    # ⚠️ 但有一种例外必须接住：**他一边否定一边说了是哪一条**
+    #   （"不是这个，是交电费""不对，我要删的是晨读"）。这时候"重列一遍清单"
+    #   等于没听见后半句——学生明明说了是哪条，系统却像失忆。
+    #   所以先按他说的名字找一遍，找到了就照他的；找不到（光说"不对"）才重列。
     if candidates and _wants_rechoose(t):
+        alt = resolve_todo_remove(t, candidates)
+        if alt.get("status") == "ok":
+            return alt
         return {"status": "many", "todos": list(candidates), "reason": "学生说不对，重新列"}
     idxs = _pick_todo_indexes(t, cap)
     if idxs and candidates:
@@ -3200,7 +3345,12 @@ def resolve_todo_done(text: str) -> dict:
     name = _pick_todo_name(t)
 
     pool = list_todos(day) if day else list_todos()
-    by_name = bool(name) and name not in ("", "待办", "日程", "事项")
+    # ★ "那个啥/上次那个事"这种**指代词**不算点名：他说的是"某个东西"，不是某个名字。
+    #   算成点名 → 按名字一条都找不到 → 回"没找到"；不算点名 → 池子就是全部待办 →
+    #   走"列清单问是哪一条"，比"没找到"有用得多（模糊口语的正确答法）。
+    _VAGUE_NAMES = ("", "待办", "日程", "事项", "事", "事情", "东西", "玩意",
+                    "那个", "这个", "啥", "什么", "一件", "那条", "这条")
+    by_name = bool(name) and name not in _VAGUE_NAMES
     if by_name:
         hits = [x for x in pool if _todo_name_match(name, x.get("title", ""))]
         if not hits:
