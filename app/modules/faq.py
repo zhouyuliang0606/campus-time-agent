@@ -28,6 +28,35 @@ def _load() -> dict:
         return json.load(f)
 
 
+def _kb_fuzzy_hit(q: str, kw: str) -> bool:
+    """关键词**打错一个字**也算命中（人话：「图收馆」也能找到"图书馆"）。
+
+    做法：在问句里按关键词的长度滑一遍窗口，只要有一处跟关键词相差 ≤1 个字就算命中。
+    ⚠️ 只补在精确匹配**落空**之后，且只差一个字（长词两个），不搞"最像的那条"排序猜测。
+
+    ⚠️⚠️ **两个字的关键字不许模糊匹配**（`n < 3` 直接放弃）。原因很实在：
+    中文两字词差一个字就是**另一个词**——「校车」和「校长」编辑距离也是 1，
+    结果"校长办公室电话多少"会翻出校车时刻表（真踩过，学生问校长电话，
+    屏幕冒出校车发车时间）。三个字差一个（「图收馆」→「图书馆」）才像手误。
+    """
+    from app.modules.planner import _lev       # 放到函数里导入，免得模块互相套住
+
+    kw = kw.lower()
+    n = len(kw)
+    # 两个字太短，一个字之差就是另一个词（校车/校长）→ 不猜
+    if n < 3:
+        return False
+    tol = 1 if n <= 4 else 2
+    for i in range(len(q) - n + 1):
+        win = q[i:i + n]
+        if _lev(win, kw) > tol:
+            continue
+        sw, sk = set(win), set(kw)
+        if (2 * len(sw & sk) / (len(sw | sk) or 1)) >= 0.5:
+            return True
+    return False
+
+
 def search_kb(query: str) -> str:
     """工具：在校园知识库里按关键词检索，返回最相关的内容（人话：像在手册里翻目录）。"""
     data = _load()
@@ -38,6 +67,12 @@ def search_kb(query: str) -> str:
         keywords = [k.lower() for k in item.get("keywords", [])]
         if any(kw and kw in q for kw in keywords):
             hits.append(item)
+    # ★ 精确匹配落空 → 再按"打错字"找一遍（"图收馆几点关门" 也要能翻到图书馆那条）
+    if not hits:
+        for item in data["entries"]:
+            keywords = [k.lower() for k in item.get("keywords", [])]
+            if any(kw and _kb_fuzzy_hit(q, kw) for kw in keywords):
+                hits.append(item)
 
     if not hits:
         return "知识库里没有找到和「" + query + "」直接相关的内容。"
