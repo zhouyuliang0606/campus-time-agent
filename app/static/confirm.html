@@ -293,6 +293,77 @@ const KIND = {
       return `已标记为完成：<b>${esc(p.title)}</b>（${esc(p.date)} ${esc(p.start)}-${esc(p.end)}）。`;
     },
   },
+  // 批量删除：学生对着候选清单说「都删了」时挂的那张卡。
+  // 他说的就是"你列的那几条全都要删"，那就该**一次点头、一次删完**——
+  // 挂 N 张单条卡让他点 N 次，等于没听懂他的话。
+  // 卡上把每一条**原样念出来**（"先列清楚，再动手"），他点【确认删除全部】之前一条都不动。
+  todo_remove_batch: {
+    icon: "🗑️", title: "批量删除待办", confirm: "确认删除全部", danger: true,
+    render(p) {
+      const items = Array.isArray(p.items) ? p.items : [];
+      const rows = items.map((it, i) =>
+        `<div class="meta" style="margin:2px 0">
+           <b>${i + 1}. ${esc(it.title || "待办")}</b>｜${esc(it.date)}
+           （${esc(it.weekday || "")}）${esc(it.start)}-${esc(it.end)}</div>`).join("");
+      return `<p class="summary">这 ${items.length} 条全都要删</p>
+        ${rows}
+        <div class="dlg-warn"><b>删除之后找不回来。</b><br>
+          上面每一条都会一起删掉。点【确认删除全部】才真的删；点【取消】日程原封不动。</div>`;
+    },
+    async apply(p) {
+      const items = Array.isArray(p.items) ? p.items : [];
+      let ok = 0, fail = 0;
+      // 逐条删：一条失败不影响其它条（部分成功也要如实告诉学生）
+      for (const it of items) {
+        try {
+          const r = await api("DELETE", "/api/todos/" + encodeURIComponent(it.todo_id),
+            { session_id: sid() });
+          if (r && r.ok === false) fail++; else ok++;
+        } catch (e) { fail++; }
+      }
+      if (!ok && fail) throw new Error("一条都没删成功，请再试一次");
+      return { ok: true, deleted: ok, failed: fail };
+    },
+    doneText(p, r) {
+      const n = (r && r.deleted != null) ? r.deleted : (p.items || []).length;
+      const bad = (r && r.failed) ? `，另有 ${r.failed} 条没删掉，可以再试一次` : "";
+      return `已删除 <b>${n}</b> 条待办${bad}，日程里已经没有它们了。`;
+    },
+  },
+  // 批量标记完成（跟批量删除一对：学生说"都完成了"就一次办完）。
+  todo_done_batch: {
+    icon: "✅", title: "批量标记为完成", confirm: "确认完成全部", danger: false,
+    render(p) {
+      const items = Array.isArray(p.items) ? p.items : [];
+      const rows = items.map((it, i) =>
+        `<div class="meta" style="margin:2px 0">
+           <b>${i + 1}. ${esc(it.title || "待办")}</b>｜${esc(it.date)}
+           （${esc(it.weekday || "")}）${esc(it.start)}-${esc(it.end)}</div>`).join("");
+      return `<p class="summary">这 ${items.length} 条全都要标记完成</p>
+        ${rows}
+        <div class="dlg-warn" style="border-color:#3a9d5a;color:#2f7d48;">
+          <b>确认后上面每一条都会标记为已完成。</b><br>
+          点【确认完成全部】才真的改状态；点【取消】原封不动。</div>`;
+    },
+    async apply(p) {
+      const items = Array.isArray(p.items) ? p.items : [];
+      let ok = 0, fail = 0;
+      for (const it of items) {
+        try {
+          const r = await api("PUT", "/api/todos/" + encodeURIComponent(it.todo_id),
+            { session_id: sid(), status: "done" });
+          if (r && r.ok === false) fail++; else ok++;
+        } catch (e) { fail++; }
+      }
+      if (!ok && fail) throw new Error("一条都没改成功，请再试一次");
+      return { ok: true, deleted: ok, failed: fail };
+    },
+    doneText(p, r) {
+      const n = (r && r.deleted != null) ? r.deleted : (p.items || []).length;
+      const bad = (r && r.failed) ? `，另有 ${r.failed} 条没改成功` : "";
+      return `已把 <b>${n}</b> 条待办标记为完成${bad}。`;
+    },
+  },
   // 二选一：这件事的时间**由谁定**（本轮规格的第一站）。
   //
   // 学生原话：「**要区分两种，一种是我有时间规划了，一种是我没有时间规划
