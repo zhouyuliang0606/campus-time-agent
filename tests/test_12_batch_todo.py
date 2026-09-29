@@ -187,6 +187,102 @@ def batch_f_guard():
     return c
 
 
+def _seed_dupes():
+    """沙箱里铺一组**重复**的：两条一模一样的「甲」+ 一条不重复的「丙」。
+
+    这样"撞时间"筛出来的候选就是那两条甲 —— 正好用来验「每个删一个」（去重）。
+    """
+    from app.store import add_todo, delete_todo, list_todos
+    for t in list_todos():
+        delete_todo(t["id"])
+    d = "2026-10-03"
+    add_todo("甲", d, "14:00", "15:00")
+    add_todo("甲", d, "14:00", "15:00")   # 跟上面那条一模一样 → 重复
+    add_todo("丙", d, "20:00", "20:30")
+    return d
+
+
+def batch_g_dedupe():
+    """G 单元：「每个删一个」是**去重**，不是全删（学生截图："脑子有问题"就是这一处）。"""
+    title("G. 「每个删一个/去重」→ 每组留一条，别听成全删")
+    c = Checker()
+    from app.modules.planner import (_wants_one_each, _wants_all_candidates,
+                                     _one_per_group, resolve_todo_remove_reply)
+
+    # ① 认词：分配量词不该被当成"全都要"
+    for s in ("每个删一个", "每组删一个", "各删一个", "每样去掉一个",
+              "重复的删掉一个", "去重", "把重复的删一个", "只留一个就行"):
+        c.check(f"「{s}」→ 认作去重", _wants_one_each(s), f"返回 {_wants_one_each(s)}")
+    for s in ("都删了", "全部删掉", "第一条", "23", "游泳那条"):
+        c.check(f"「{s}」→ 不算去重", not _wants_one_each(s), f"返回 {_wants_one_each(s)}")
+    c.check("**关键回归**：「每个删一个」不再被当成全选（旧代码 all=True → 全删）",
+            not _wants_all_candidates("每个删一个"),
+            f"all={_wants_all_candidates('每个删一个')}")
+
+    # ② 分组：每组留最早写入的那条，只交出多出来的
+    six = []
+    for i, (t_, s_, e_) in enumerate([("游泳", "14:00", "15:00"), ("游泳", "14:00", "15:00"),
+                                      ("交电费", "19:00", "19:30"), ("交电费", "19:00", "19:30"),
+                                      ("晨读", "07:00", "07:30"), ("晨读", "07:00", "07:30")]):
+        six.append({"id": str(i), "title": t_, "date": "2026-10-03", "start": s_, "end": e_})
+    dup = _one_per_group(six)
+    c.check("三对重复 → 交出 3 条（每组一条）", len(dup) == 3, f"{len(dup)}")
+    c.check("交出来的是每组**后**写入的那条（留先来的）",
+            [x["id"] for x in dup] == ["1", "3", "5"], str([x["id"] for x in dup]))
+    c.check("一组只有一条时不动它（他说的是「删一个」不是「删掉它」）",
+            _one_per_group([{"id": "x", "title": "独一无二", "date": "d",
+                             "start": "1", "end": "2"}]) == [])
+
+    # ③ 解析：去重归去重、全选归全选
+    r = resolve_todo_remove_reply("每个删一个", six)
+    c.check("回「每个删一个」→ dedup 且只带 3 条",
+            r["status"] == "dedup" and len(r["todos"]) == 3, r.get("status"))
+    r2 = resolve_todo_remove_reply("都删了", six)
+    c.check("回「都删了」→ 仍是 all 且是全部 6 条（没被去重抢走）",
+            r2["status"] == "all" and len(r2["todos"]) == 6, r2.get("status"))
+    return c
+
+
+def batch_h_dedupe_e2e():
+    """H 单元：端到端——重复的两条 → 「每个删一个」→ 挂 1 条卡 → 确认后只删掉多出来的那条。"""
+    title("H. 端到端去重：重复 2 条 → 每个删一个 → 只删 1 条，另一条留着")
+    c = Checker()
+    with sandbox():
+        client = make_client()
+        _seed_dupes()
+        from app.store import list_todos
+
+        sid = "ded-1"
+        client.post("/api/chat", json={"message": "删除撞时间的代办",
+                                       "module": "planner", "session_id": sid})
+        d = client.post("/api/chat", json={"message": "每个删一个",
+                                           "module": "planner", "session_id": sid}).json()
+        opts = d.get("options") or []
+        kinds = [o.get("kind") for o in opts]
+        c.check("回「每个删一个」→ 一张批量卡", kinds == ["todo_remove_batch"], str(kinds))
+        c.check("卡上就 1 条（重复里多出来的那条），不是把两条都端出来",
+                bool(opts) and opts[0].get("count") == 1,
+                str(opts[0].get("summary")) if opts else "无卡")
+        c.check("回话说明了规则（留先写进去的那条）",
+                "留" in (d.get("answer") or ""), (d.get("answer") or "")[:80])
+        c.check("还没确认 → 3 条一条没少", len(list_todos()) == 3, f"{len(list_todos())}")
+
+        r = client.post("/api/chat", json={"message": "确认", "session_id": sid}).json()
+        left = [t.get("title") for t in list_todos()]
+        c.check("确认后只删掉 1 条（剩 2 条）", len(left) == 2, str(left))
+        c.check("留下的是重复里的另一条 + 不重复的丙",
+                sorted(left) == ["丙", "甲"], str(sorted(left)))
+        c.check("回执如实报数（删 1 条）", "1" in (r.get("answer") or ""),
+                (r.get("answer") or "").replace("\n", " ")[:70])
+
+        # 手里没清单时说去重 → 不许凭空造卡
+        d2 = client.post("/api/chat", json={"message": "每个删一个", "module": "planner",
+                                            "session_id": "ded-2"}).json()
+        c.check("没清单时说「每个删一个」→ 不出批量卡",
+                "todo_remove_batch" not in [o.get("kind") for o in (d2.get("options") or [])])
+    return c
+
+
 def main():
     results = [
         batch_a_unit(),
@@ -195,6 +291,8 @@ def main():
         batch_d_confirm_e2e(),
         batch_e_done_e2e(),
         batch_f_guard(),
+        batch_g_dedupe(),
+        batch_h_dedupe_e2e(),
     ]
     total_pass = sum(r.passed for r in results)
     total_fail = sum(r.failed for r in results)
