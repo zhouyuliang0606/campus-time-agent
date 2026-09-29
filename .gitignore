@@ -47,6 +47,8 @@ app/data/intent_samples.json
 app/data/workorders.json
 app/data/student_messages.json
 server.log
+# 本地起 uvicorn 的临时日志（.uvicorn_dev.log / .uvicorn_live.log 等）
+.uvicorn*.log
 
 # ===== 端到端截图产物（只是给人看的证据，不入库） =====
 tests/_shots/
