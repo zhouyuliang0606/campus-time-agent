@@ -273,6 +273,26 @@ const KIND = {
       return `已删除：<b>${esc(p.title)}</b>（${esc(p.date)} ${esc(p.start)}-${esc(p.end)}），日程里已经没有它了。`;
     },
   },
+  // 标记完成：跟删待办同一套"系统接管"规矩——模型出不了状态，只有学生点【确认完成】，
+  // 这张卡才去 PUT /api/todos/{id} 把 status 置成 done。点【取消】原封不动。
+  todo_done: {
+    icon: "✅", title: "标记为完成", confirm: "确认完成", danger: false,
+    render(p) {
+      return `<p class="summary">${esc(p.title || "待办")}</p>
+        <div class="meta">${esc(p.date)}（${esc(p.weekday || "")}）
+          ${esc(p.start)}-${esc(p.end)}${p.minutes ? " · 约 " + Number(p.minutes) + " 分钟" : ""}</div>
+        <div class="dlg-warn" style="border-color:#3a9d5a;color:#2f7d48;">
+          <b>确认后这条待办会标记为已完成。</b><br>
+          点【确认完成】才真的改状态；点【取消】这条待办原封不动。</div>`;
+    },
+    async apply(p) {
+      return api("PUT", "/api/todos/" + encodeURIComponent(p.todo_id),
+        { session_id: sid(), status: "done" });
+    },
+    doneText(p) {
+      return `已标记为完成：<b>${esc(p.title)}</b>（${esc(p.date)} ${esc(p.start)}-${esc(p.end)}）。`;
+    },
+  },
   // 二选一：这件事的时间**由谁定**（本轮规格的第一站）。
   //
   // 学生原话：「**要区分两种，一种是我有时间规划了，一种是我没有时间规划
