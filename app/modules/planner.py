@@ -1886,7 +1886,7 @@ def wants_add_todo(text: str) -> bool:
     if (_GO_INTENT_RE.search(t)
             and not any(k in t for k in ("吗", "？", "?"))
             and not _GO_QUESTION_RE.search(t)      # 问路/问办法的（"我要去哪里取快递"）不是下单
-            and _name and _name != "待办"):
+            and _title_ok(_name)):                 # "我要去X" 必须 X 是件真事才放行，纯疑问/愿望不放开
         return True
     # 没有意图词，但话里自带"日期/星期 + 起止时间"的也算下单——
     # （比如"确认 2026-09-24 19:00-20:30 背单词"，前端点候选卡回发的是这副模样；
@@ -2072,6 +2072,20 @@ def propose_todo_tool(title: str, when: str = "", date: str = "",
     真挑不出来（那天满课）才返回带 hint 的 JSON —— 绝不瞎凑一个时间。
     """
     blob = " ".join(x for x in (date, when, start, end) if x)
+    # ★ 统一否决：模型直调这条路也必须过和 wants_add_todo 同一道关。
+    #   否则「我想问一下交电费怎么操作」被模型直接 propose_todo_tool(title="交电费", date="周三")
+    #   就会绕过 wants_add_todo 的 _GO_QUESTION_RE 守卫，照样出成待办确认卡。
+    #   复用现有的 looks_like_question / _GO_QUESTION_RE（禁止另写一套）。
+    _raw = " ".join(x for x in (str(title or ""), when, date, start, end) if x).strip()
+    from app.agent.intent import looks_like_question
+    if looks_like_question(_raw) or _GO_QUESTION_RE.search(_raw):
+        return json.dumps({
+            "error": "这像是在问事/问办法，不是要加待办",
+            "hint": ("学生这句是在提问（问路、问流程、问时间），不该出待办确认条。"
+                     "**走问答/知识库去答他**，别替他排日程；"
+                     "真要加待办，等他把「要加哪件事」说清楚再说。"),
+            "got": _raw,
+        }, ensure_ascii=False)
     day = _pick_date(blob) or _pick_date(f"{date} {when}")
     begin, finish = _pick_span(blob)
     if not begin and start:
@@ -2089,6 +2103,16 @@ def propose_todo_tool(title: str, when: str = "", date: str = "",
         end_begin, end_finish = _pick_span(end)
         finish = end_finish or end_begin
     name = (title or "").strip().strip("\"'“”‘’『』「」") or "待办"
+    # ★ 事名判真：title 抠不出一件真事（"待办"/残渣/类别词）就拒出卡，
+    #   交追问分支去问他要加什么——绝不把半句话当代办名挂出去。
+    if not _title_ok(name):
+        return json.dumps({
+            "error": "还不知道要安排什么事",
+            "hint": ("title 没说清要加哪件事（学生可能只说了时长、或者整句都是废话）→ "
+                     "**问学生要安排什么事**，比如「说个名字就行，比如『游泳』『健身』」；"
+                     "⛔ 不要问「你想几点」，也不要把那半句话当待办名挂出去。"),
+            "got": _raw,
+        }, ensure_ascii=False)
     if not day:
         return json.dumps({
             "error": "日期没解析出来",
@@ -4509,6 +4533,15 @@ def propose_todo_mode_tool(title: str, when: str = "") -> str:
             "error": "至少给个任务名",
             "hint": "title 传「游泳」这样的事名。⛔ 别拿学生整句话当名字。",
         }, ensure_ascii=False)
+    # ★ 统一否决（同 propose_todo_tool）：模型直调这条路也要过同一道关。
+    from app.agent.intent import looks_like_question
+    if looks_like_question(blob) or _GO_QUESTION_RE.search(blob):
+        return json.dumps({
+            "error": "这像是在问事/问办法，不是要加待办",
+            "hint": ("学生这句是在提问（问路、问流程、问时间），不该出「时间你自己定」二分卡。"
+                     "**走问答/知识库去答他**，别替他排日程。"),
+            "got": blob,
+        }, ensure_ascii=False)
     card = todo_mode_proposal(blob)
     if card is None:
         return json.dumps({
@@ -4570,6 +4603,16 @@ def propose_todo_slots_tool(title: str, when: str = "") -> str:
         return json.dumps({
             "error": "至少给个任务名",
             "hint": "title 传「健身」这样的事名；时间不确定就留空，系统会自己列几段。",
+        }, ensure_ascii=False)
+    # ★ 统一否决（同 propose_todo_tool）：模型直调这条路也要过同一道关。
+    from app.agent.intent import looks_like_question
+    if looks_like_question(blob) or _GO_QUESTION_RE.search(blob):
+        return json.dumps({
+            "error": "这像是在问事/问办法，不是要加待办",
+            "hint": ("学生这句是在提问（问路、问流程、问时间），不该出候选时段卡。"
+                     "**走问答/知识库去答他**，别替他排日程；"
+                     "真要加待办，等他把「要加哪件事」说清楚再说。"),
+            "got": blob,
         }, ensure_ascii=False)
     card = todo_slots_proposal(blob)
     if card is None:
