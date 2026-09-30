@@ -18,8 +18,8 @@ from fastapi.staticfiles import StaticFiles
 from app.agent.engine import AgentEngine
 from app.agent.intent import (
     DEFAULT_MODULE, INTENT_ADD_TODO, INTENT_CHAT, INTENT_CLEAR_TIMETABLE,
-    INTENT_DONE, INTENT_FIND_CARD, INTENT_LIST_TODO, INTENT_REMOVE_TODO,
-    INTENT_RETIME,
+    INTENT_DONE, INTENT_FIND_CARD, INTENT_LIST_TODO, INTENT_MEANING,
+    INTENT_REMOVE_TODO, INTENT_RETIME, SOURCE_MEANING,
     QUESTION_RE, classify, looks_like_question, remember, to_canonical,
 )
 from app.agent.pending import (
@@ -801,9 +801,75 @@ async def health():
     return {"status": "ok", "modules": list(REGISTRY.keys())}
 
 
+def _read_step(sem: dict | None, sem_intent: str | None,
+               rule_hit: str | None) -> dict:
+    """把"判定层是怎么理解这句话的"做成一条思考轨迹（人话）。
+
+    为什么要把这一步**露出来**（2026-09-30 学生报障：「没有展示思考过程」）：
+    学生看到的只有结果。一旦结果不对（他打的是「中文12点的车」，
+    卡片上却写着「中文的车」），他**无从判断是哪一步错了** ——
+    是事名抠错了？时间读错了？还是压根没听懂？
+    把"听成什么 + 凭什么"写在轨迹最前面，他自己一眼就能归因，
+    也能拿它判断该不该点【确认加入】。
+
+    ⚠️ 它只**复述**已经算好的结论（`sem` / `sem_intent` / `rule_hit`），
+       不重新判定一次 —— 不许在这儿出现第二套判定逻辑（那必然跟主链路漂移）。
+    """
+    # "问"还是"办"：语义层说了算；它没开口（没配 key / 把握太低 / **压根没叫它**）
+    # 就用规则层预检的结论。
+    # ⚠️ 别只看 `sem_intent`：常规下单句（「帮我加个游泳周四19:00」）是**故意不叫**
+    #    语义层的（`_need_review` 为假，零 API 调用），这时候只看 `sem_intent`
+    #    会把一句明白的"办事"报成"问事"——轨迹里写假话比不写更坏。
+    intent = sem_intent or rule_hit
+    verdict = "问事" if (not intent or intent == INTENT_CHAT) else "办事"
+    # 依据：哪一档判的。样本库/语义层是 `sem` 自己标的；
+    # 它俩都没给结论时，看规则层预检有没有认出来。
+    src = (sem or {}).get("source")
+    if src not in SOURCE_MEANING:
+        src = "rule" if rule_hit else "none"
+    msg = f"我把这句听成 **{verdict}**"
+    if intent and intent != INTENT_CHAT:
+        msg += f"（{INTENT_MEANING.get(intent, intent)}）"
+    msg += f"｜依据：{SOURCE_MEANING.get(src, src)}"
+    # 事名只在"它真要用到事名、而且**是语义层读出来的**"时才提（加/删/改/完成）：
+    #   · 答一句校园规定也提"事名没读出来"，那是自己给自己找疑；
+    #   · 规则层那条路上 `sem` 是 None（没叫模型），事名是主链路自己从原话里抠的，
+    #     在这儿说"还没读出来"更是胡说 —— 卡片上明明写着。
+    # 这是卡片上最容易出错、学生最想核对的一项，所以由语义层给出时单独点出来。
+    if sem and intent in (INTENT_ADD_TODO, INTENT_REMOVE_TODO, INTENT_RETIME, INTENT_DONE):
+        _t = ((sem or {}).get("title") or "").strip()
+        msg += f"｜事名读成了「{_t}」" if _t else "｜事名还没读出来"
+    return {"step": 0, "phase": "🧠 " + msg, "answer": ""}
+
+
 @app.post("/api/chat")
 async def chat(req: Request):
-    """对话入口（人话：前端把用户的话发到这里，返回回答 + Agent 思考轨迹）。
+    """对话入口。
+
+    **本函数只干一件事：补一条"我把这句听成什么"再交出去。**
+    真正的对话逻辑全在 `_chat_impl` 里 —— 它有一千多行、几十个 return，
+    每条分支各回各的卡。想让"听成什么"**一条都不漏**，只能在这儿统一补：
+    挨个 return 去加必然漏（实测就漏了"加待办缺细节（追问）"那条，
+    而那正是学生说错话时最该看到解释的一条）。
+
+    `meta` 是 `_chat_impl` 回填中间结论的小本子（目前只有判定层的 `read`）。
+    用参数传而不是全局变量/上下文变量：同一时刻可能有多个请求在跑，
+    全局量会串（A 学生的判定被写进 B 学生的回复）。
+    """
+    meta: dict = {}
+    resp = await _chat_impl(req, meta)
+    read = meta.get("read")
+    if read and isinstance(resp, dict):
+        try:
+            tr = [t for t in (resp.get("trace") or []) if isinstance(t, dict)]
+            resp["trace"] = [read] + tr
+        except Exception:
+            pass
+    return resp
+
+
+async def _chat_impl(req: Request, meta: dict):
+    """对话主体（人话：前端把用户的话发到这里，返回回答 + Agent 思考轨迹）。
 
     前端可以显式带 module 字段（如 {"message": "...", "module": "express"}）直接锁定模块，
     方便主页四个模块各自独立对话；不带的则交给 router 自动判断意图。
@@ -870,6 +936,13 @@ async def chat(req: Request):
     # 而否决一张**本来就该出**的卡（"帮我安排周二的游泳"）比漏判更让学生恼火。
     _rule_veto = bool(_need_review and _sem_intent and _sem_intent != _rule_hit
                       and (_asks or _sem_intent == INTENT_CHAT))
+    # 「我把这句听成什么」——交给外面的 `chat()` 统一插进思考轨迹（见 `_read_step`）。
+    # 在这儿只**记下结论**，不重新判定：`_sem` / `_sem_intent` / `_rule_hit` 就是判定层
+    # 刚算出来的那三个，照抄即可。
+    # ⚠️ 之所以要绕这一下：这个函数有**几十个 return**（每条分支各回各的卡），
+    #    想在每个 return 上都补一句必然漏几个 —— 实测就漏了"加待办缺细节（追问）"
+    #    那条（学生报障那类句子的必经之路）。记在 meta 里、出口补一次，覆盖全部。
+    meta["read"] = _read_step(_sem, _sem_intent, _rule_hit)
 
     # 1.5) **问答栏（校园问答）说"删 / 改 / 标记完成待办" → 给「前往我的日程」按钮**，
     #      而不是静默失败。根因：学生在这个栏目说话，_explicit_module == "faq"，
@@ -2877,12 +2950,7 @@ async def classify_probe(req: Request):
     detail = {
         "is_question": is_question,
         "source": source,                       # sample（样本库）/ llm / rule / none
-        "source_note": {
-            "sample": "样本库命中（零成本、离线可跑，且是语义层的缓存）",
-            "llm": "语义层（问了一次大模型，只做分类）",
-            "rule": "规则层预检（没配 key 或语义层拿不准时的兜底）",
-            "none": "三档都没给结论，主链路会照原样答一句",
-        }.get(source, source),
+        "source_note": SOURCE_MEANING.get(source, source),
         "module_of_client": (body.get("module") or "").strip(),
         "semantic": sem,                        # None = 这一档没生效（没 key / 把握太低）
         "matched_sample": (sem or {}).get("matched") or "",
