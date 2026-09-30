@@ -90,6 +90,14 @@ INTENT_MODULE = {
     INTENT_CHAT: DEFAULT_MODULE,
 }
 
+# ★ 2026-09-30 补：**不需要"字段"就能办**的意图。
+#   "字段"= 事名/时长/钟点/日期。这几条只要知道"想干什么"就够执行了：
+#   列待办、找卡片、清课表 —— 它们不吃事名，样本库半命中可以直接用，省一次 API。
+#   其余（加/删/改/完成）**必须**拿到事名，事名认错了比没认出来严重得多，
+#   所以半命中时不敢复用，一律回去问模型现读（见 classify）。
+_FIELDLESS_INTENTS = (INTENT_LIST_TODO, INTENT_FIND_CARD,
+                      INTENT_CLEAR_TIMETABLE, INTENT_CHAT)
+
 
 def module_hint(intent: str | None, fallback: str = DEFAULT_MODULE) -> str:
     """由意图推类型（人话：不知道归哪个模块管，就看它想干什么）。
@@ -137,6 +145,11 @@ _SAMPLES_MAX = 400          # 上限，免得无限膨胀成一个谁也读不�
 #   无关两句（"我要去吃火锅" / "图书馆几点关门"）≈ 0.1~0.2
 # 定 0.42 偏保守：宁可漏（往下走语义层），不可错（替学生办错事）。
 _SIM_THRESHOLD = 0.42
+# ★ 2026-09-30 补的"全命中"高阈：到了这个相似度才算"几乎是同一句话"，
+#   这时候连**字段**（事名/时长/钟点）一起复用才安全。理由见 match_sample。
+#   实测锚点：「我想去健身，帮我安排个时间」撞「…游泳…」= 0.73（必须落在半命中）；
+#             长句只差一个字 ≈ 0.9（该算全命中）。
+_SIM_FULL = 0.9
 # 太短的话不做模糊匹配：字少的时候 Dice 会虚高（"加个" 能跟 "加个健身" 算到 0.5+），
 # 一句话里少一个字意思就全变了，风险比收益大。
 _MIN_MATCH_LEN = 4
@@ -237,7 +250,10 @@ def remember(text: str, intent: str, fields: dict | None = None) -> None:
             _save_samples(samples)
             return
     item = {"text": t, "intent": intent, "at": time.time(), "hits": 1}
-    for k in ("title", "minutes", "day_hint", "module"):
+    # ⚠️ 记**钟点**（start/end），但**不记 date**：日期是相对"今天"算出来的，
+    #    存进去下次读出来就是个错日子（今天学的"周四"到下周指的是另一天了）。
+    #    day_hint（"周四"/"今天"）本身是相对说法，存它没问题。
+    for k in ("title", "minutes", "day_hint", "module", "start", "end"):
         v = (fields or {}).get(k)
         if v:
             item[k] = v
@@ -268,11 +284,29 @@ def match_sample(text: str) -> dict | None:
             best, best_score = s, score
     if best is None or best_score < _SIM_THRESHOLD:
         return None
-    out = {"intent": best.get("intent"), "title": best.get("title") or "",
-           "minutes": int(best.get("minutes") or 0),
-           "day_hint": best.get("day_hint") or "", "date": "", "start": "",
-           "end": "", "confidence": round(best_score, 2), "source": "sample",
+    # ★ 命中分两档（2026-09-30 修"张冠李戴"）：
+    #   · **全命中**（≥ `_SIM_FULL`）：几乎一字不差 → 连**字段**一起复用，这才是真缓存；
+    #   · **半命中**（够 0.42 但不到）：只是"像" → **字段一律不复用**，只借路线。
+    #   为什么要分：模糊匹配拿字段是**会换掉学生要办的事**的。本机实测的惨案——
+    #     「我想去健身，帮我安排个时间」撞上「我想去游泳，帮我安排个时间」(0.73)
+    #       → 事名被照抄成「游泳」，卡上写着"要不要把游泳排进日程"；
+    #     「我打算找个空档练会儿钢琴」撞上「…练会儿吉他」(0.82) → 「练吉他」。
+    #   学生说了健身，系统回他游泳 —— 这比"没听懂"严重得多。
+    #   模糊匹配只配定**路线**（module/intent），字段必须让模型现读（它还会顺手纠错别字）。
+    full = best_score >= _SIM_FULL
+    out = {"intent": best.get("intent"),
+           "title": (best.get("title") or "") if full else "",
+           "minutes": int(best.get("minutes") or 0) if full else 0,
+           "day_hint": (best.get("day_hint") or "") if full else "",
+           # 日期**永不缓存**：今天学的"周四"到下周就是另一个日子了。
+           # 钟点（12:00）跟日期无关，可以存——所以 remember 记 start/end 但不记 date。
+           "date": "",
+           "start": (best.get("start") or "") if full else "",
+           "end": (best.get("end") or "") if full else "",
+           "confidence": round(best_score, 2), "source": "sample",
            "matched": best.get("text") or "",
+           # 给调用方看"这次是整句复用还是只借了个路线"（排查 `/classify` 时一眼分明）
+           "cache": "full" if full else "route_only",
            # 学的时候如果记下了 module 就用它，没记下就按意图推——
            # 类型判定跟意图一样，都得从这一层出来，调用方不用自己猜。
            "module": (best.get("module") or module_hint(best.get("intent")))}
@@ -446,12 +480,25 @@ async def classify(text: str, history: list | None = None,
     两道都没定 → None。调用方自己决定怎么兜（router 会退到关键词表，
     main.py 会退回"原来那条确定性分支"，**行为不倒退**）。
 
+    ⚠️ 样本库那一档**分两种命中**（2026-09-30 修），别当成"命中就完事"：
+      · **全命中**（几乎一字不差，`cache="full"`）→ 字段可信，直接返回，不花 API；
+      · **半命中**（只是"像"，`cache="route_only"`）→ **只借 module/intent**。
+        要事名的意图（加/删/改/完成）**继续问模型**——模糊匹配会张冠李戴
+        （「我想去健身…」被句子里的"游泳"顶掉，见 `match_sample` 的注释）；
+        不吃事名的意图（列待办/找卡片/清课表）本来就不需要字段，半命中直接用。
+        模型不可用（没 key / 调不通）时退回半命中，字段本来就是空的 ——
+        落回规则层解析，跟"没有样本库"时一模一样，**不倒退**。
+
     返回的字典里 `module` 和 `intent` 都是**已经验过白名单**的，拿来即用。
     """
     hit = match_sample(text)
-    if hit:
+    if hit and (hit.get("cache") == "full" or hit.get("intent") in _FIELDLESS_INTENTS):
         return hit
-    return await classify_with_llm(text, history, override=override)
+    sem = await classify_with_llm(text, history, override=override)
+    if sem:
+        return sem
+    # 半命中 + 模型不可用 → 只交路线（字段本就是空的），让调用方照旧往下走
+    return hit
 
 
 async def understand(text: str, history: list | None = None,
