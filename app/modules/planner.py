@@ -420,7 +420,7 @@ def parse_slot_text(text: str, title: str = "", fallback_date: str = "") -> dict
     if prop is None:
         prop = auto_todo_proposal(f"{t} {title}".strip())
     if prop is None:
-        prop = _span_only_proposal(t, title, fallback_date)
+        prop = span_only_proposal(t, title, fallback_date)
     if prop is None:
         return None
     if title and prop.get("title") in ("", "待办"):
@@ -430,16 +430,28 @@ def parse_slot_text(text: str, title: str = "", fallback_date: str = "") -> dict
     return prop
 
 
-def _span_only_proposal(text: str, title: str, fallback_date: str) -> dict | None:
-    """只有起止钟点、没有日期的那一行字 → 用兜底那天补成一张卡（内部用）。
+def span_only_proposal(text: str, title: str = "", fallback_date: str = "") -> dict | None:
+    """只有起止钟点、没有日期的那一行字 → 用兜底那天补成一张卡。
 
     顺延规则：兜底那天就是今天、而这一段已经过去了 → 挪到明天。
     宁可挪一天，也不给学生排一段"已经过去的晚上七点"。
+
+    ★ 2026-09-30 起**对外**（原来叫 _span_only_proposal，只给 parse_slot_text 用）。
+      两处要用它，口径只留一份：
+      · `parse_slot_text`：学生在「其他」里自己填的那一行；
+      · `app/main.py` 的**语义层加待办分支**：模型/样本库说了"这是件要办的事"、
+        句子里也报了钟点，**可就是没说哪天**（「中文12点的车」）。
+        只报钟点不等于"没说清时间" —— 再摊一堆候选时段，等于让他把自己刚说过的
+        那个点重挑一遍，而且挑出来的候选里根本没有他说的那个点。
+
+    ⚠️ 规则层那一路**故意不用它**：「三点下课，帮我加个买水果」里的"三点"
+       未必是这件事的时间（`_pick_span` 还会把它读成 03:00）。
+       规则层交不出日期时，摊候选时段更安全 —— 宁可漏，不可替学生办错事。
     """
     begin, finish = _pick_span(text or "")
     if not begin:
         return None
-    day = (fallback_date or "").strip()
+    day = (fallback_date or datetime.date.today().isoformat()).strip()
     if _iso_weekday(day) == 0:
         return None
     if not finish:

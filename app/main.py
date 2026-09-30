@@ -67,6 +67,7 @@ from app.modules.planner import (
     parse_todo_from_reply,
     parse_mode_answer,
     plan_todo_slot,
+    span_only_proposal,
     mode_to_card,
     claims_proposal_sent,
     missing_thing_of,
@@ -2085,6 +2086,18 @@ async def _chat_impl(req: Request, meta: dict):
             proposal = parse_add_todo(prev_user + "，" + message)
         if proposal is None:
             proposal = parse_add_todo(blob)
+        if proposal is None and _sem_intent == INTENT_ADD_TODO and _sem:
+            # ★ 2026-09-30 补：语义层/样本库说了"这是件要办的事"、这句话里也**报了钟点**，
+            #   可就是**没说哪天** —— 学生报障那句「中文12点的车」正是这一档。
+            #   `parse_add_todo` 的契约是"日期和起始时刻缺一个就返回 None"，于是
+            #   12 点被丢掉、改去摊一堆候选时段；而摊出来的候选里**根本没有他说的那个点**，
+            #   等于让他把自己刚说过的钟点重挑一遍。
+            #   就着他报的那个点出条、一条就够（本文件下面那句注释早就这么写了，
+            #   只是"没说哪天"这一档一直没人接）。见 planner.span_only_proposal：
+            #   兜底日期用今天，今天这个点已经过了就顺延到明天。
+            # ⚠️ **只在语义层这一路兜**：规则层那句里的时间未必是这件事的时间
+            #   （「三点下课，帮我加个买水果」会被读成 03:00），交不出日期时摊候选更安全。
+            proposal = span_only_proposal(blob, (_sem.get("title") or "").strip())
         if proposal is not None:
             # 学生**自己报了准点** → 就着他给的这个点出条，一条就够。
             # 不必再摊候选：他已经说清要哪个点了，再摊三个等于让他重挑一遍。
