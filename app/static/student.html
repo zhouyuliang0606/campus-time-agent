@@ -66,10 +66,26 @@
     .user .bubble { background: #4f7cff; color: #fff; border-bottom-right-radius: 2px; }
     .bot .bubble { background: #f0f3fa; color: #1f2733; border-bottom-left-radius: 2px; }
     .sys .bubble { background: #fff7e6; color: #8a6d3b; border: 1px dashed #ffd591; font-size: 13px; }
+    /* 「我是这么想的」——Agent 的思考轨迹（2026-09-30 起默认展示）。
+       规格变更的来由：原来刻意不展示（怕吓到非技术评委），
+       可学生一旦看到结果不对（他打「中文12点的车」，卡片写着「中文的车」），
+       **无从判断是哪一步错了**。现在默认摊开，设置里能关掉。
+       放在结果**下面**、字号更小、灰底虚线框 —— 想细看的人看得到，不想看的人不碍事。 */
     .trace {
-      margin-top: 6px; font-size: 12px; color: #6a7388;
+      margin-top: 8px; font-size: 12px; color: #6a7388;
       background: #fafbff; border: 1px dashed #d8def0; border-radius: 8px;
-      padding: 8px 10px; white-space: pre-wrap;
+      padding: 8px 10px; max-width: 92%;
+    }
+    .trace > summary {
+      cursor: pointer; color: #4f7cff; font-size: 12px; outline: none;
+      user-select: none; list-style: none;
+    }
+    .trace > summary::-webkit-details-marker { display: none; }
+    .trace > summary::before { content: "▾ "; }
+    .trace:not([open]) > summary::before { content: "▸ "; }
+    .trace .trace-row { margin-top: 6px; line-height: 1.5; white-space: pre-wrap; }
+    .trace .trace-row .st {
+      display: inline-block; min-width: 14px; color: #9aa6c0; margin-right: 4px;
     }
     .inputbar { display: flex; gap: 10px; margin-top: 14px; }
     .inputbar input {
@@ -652,13 +668,56 @@
       else showView(VIEW_OF[key]);
     }
 
-    function addMsg(who, content, kind, module) {
+    // ---- 思考轨迹的展示开关（设置里能关，默认开）----
+    // 用 localStorage 记：学生自己选的，刷新页面不该被忘掉。
+    function traceOn() {
+      return localStorage.getItem("campustime_trace") !== "0";   // 默认 = 开
+    }
+
+    // 把后端给的 trace（[{step, phase, answer}]）画成一块可折叠的"我是这么想的"。
+    // ⚠️ 一律走 escapeHtml/richText —— phase 里有学生原话，直接塞 innerHTML 就是 XSS。
+    //
+    // 三处收拾（都是实测看到的噪声，不收拾的话这块比正文还长）：
+    //   ① ReAct 的空流程标记（"🤔 思考""🔧 调用工具""📦 工具结果"）**没有内容**，
+    //      对学生等于三个看不懂的词 —— 只有当它们带内容时才画。
+    //   ② 问答模块的轨迹里有一条"💡 最终回答"，它**就是气泡里那段正文**，
+    //      再画一遍等于把回答重复一次 → **整条不画**（只把 answer 抹掉的话，
+    //      会剩下一个光秃秃的"💡 最终回答"标签，比重复更莫名其妙）。
+    //   ③ 单条 answer 截断到 80 字：轨迹是给人扫一眼的，不是给人读第二遍正文的。
+    const _BARE_TRACE_PHASES = ["思考", "调用工具", "工具结果"];
+    function renderTrace(trace, content) {
+      const body = String(content == null ? "" : content).trim();
+      const rows = [];
+      trace.forEach(function (t) {
+        if (!t || !t.phase) return;
+        const label = String(t.phase).replace(/[^\u4e00-\u9fa5A-Za-z0-9]/g, "");
+        const hasAns = t.answer != null && String(t.answer).trim() !== "";
+        if (!hasAns && _BARE_TRACE_PHASES.indexOf(label) >= 0) return;   // ①
+        let an = hasAns ? String(t.answer).trim() : "";
+        if (an && body && an === body) return;                            // ②
+        if (an.length > 80) an = an.slice(0, 80) + "…";                   // ③
+        // 步骤号只在**真有编号**时画：0 是"判定层"那条自加的说明，不是第 0 步，
+        // 画个"0"出来只会让人以为少了一步。（JS 里 0 是假值，正好顺带垫掉。）
+        const st = t.step ? '<span class="st">' + escapeHtml(String(t.step)) + "</span>" : "";
+        rows.push('<div class="trace-row">' + st +
+          richText(String(t.phase)) + (an ? " — " + richText(an) : "") +
+          "</div>");
+      });
+      if (!rows.length) return "";
+      return '<details class="trace" open><summary>🧠 我是这么想的</summary>' +
+        rows.join("") + "</details>";
+    }
+
+    function addMsg(who, content, kind, module, trace) {
       const el = document.createElement("div");
       el.className = "msg " + (kind === "sys" ? "sys" : (who === "我" ? "user" : "bot"));
       let html = `<div class="who">${who}${module ? `<span class="tag">${module}</span>` : ""}</div>`;
       html += `<div class="bubble">${richText(content)}</div>`;
-      // 注意：学生端**不展示** Agent 思考轨迹（避免吓到非技术评委）；
-      // 取而代之的是底部「正在思考…」提示，藏在 sendMsg 里。
+      // 思考轨迹跟着助手的回复一起出现（系统提示那类不挂，它不是"思考"）。
+      // 默认展示：它是学生核对"它有没有听错"的唯一凭据（见 .trace 的注释）。
+      if (kind !== "sys" && trace && trace.length && traceOn()) {
+        html += renderTrace(trace, content);
+      }
       el.innerHTML = html;
       log.appendChild(el);
       log.scrollTop = log.scrollHeight;
@@ -1398,7 +1457,7 @@
         showThinking(false);
         if (data.error) addMsg(botName(), "哎呀，管家这边遇到了点小状况，请稍后再试或换个说法～");
         else {
-          const el = addMsg(botName(), data.answer, "bot", data.module);
+          const el = addMsg(botName(), data.answer, "bot", data.module, data.trace);
           // 规划模块回了候选 → 渲染成可勾选卡片（学生点卡片才真正写入日程）
           if (data.options && data.options.length) renderOptions(el, data.options);
           // 课表可能在刚才这一轮里被改了（学生直接在聊天框回了"确认"），
@@ -1600,7 +1659,7 @@
         st.textContent = d.answer ? "管家已给出课表预览，请在下方聊天里确认后再导入" : "已请求管家读取课表";
         // 同步留痕到聊天框：这段"管家帮我导课表"的对话学生能翻到
         addMsg("我", `📤 上传课表《${f.name}》，请管家读取并给我预览清单`, "user");
-        addMsg(botName(), d.answer || "已收到课表，正在读取。", "bot", "planner");
+        addMsg(botName(), d.answer || "已收到课表，正在读取。", "bot", "planner", d.trace);
         // 按人设规矩：导入课表属于规划操作，不上报管理端；学生确认后才会真正写入
       } catch (e) {
         st.textContent = "哎呀，网络好像开小差了，请稍后再试";
@@ -2123,6 +2182,11 @@
         '<div class="card"><h2>助手名字</h2><div class="desc">给管家起个称呼，会显示在对话里。</div>'+
         '<div style="display:flex;gap:10px;"><input id="setName" value="'+escapeHtml(name)+'" maxlength="12" style="flex:1;padding:10px 12px;border:1px solid #d8def0;border-radius:10px;font-size:14px;outline:none;"/><button class="btn" id="setNameBtn">保存</button></div></div>'+
         '<div class="card"><h2>助手性格</h2><div class="desc">挑一个聊天腔调。</div><div id="setPersona" class="persona-list"></div></div>'+
+        // 思考轨迹开关。**默认开**：它是学生核对"管家有没有听错"的唯一凭据
+        // （学生报障原话：「没有展示思考过程」）。给个关掉的口子是为了
+        // 演示/评委场景能回到"只看结果"的干净样子。
+        '<div class="card"><h2>思考过程</h2><div class="desc">每条回复下面要不要展示"我是这么想的"（它把你的话听成了什么、依据是哪一档）。关掉之后只显示结果。</div>'+
+        '<label style="display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;"><input type="checkbox" id="setTrace" '+(traceOn()?"checked":"")+' style="width:16px;height:16px;"> 展示思考过程</label></div>'+
         '<div class="card"><h2>模型与 API</h2><div class="desc">默认用管理端配置的模型；也可填自己的 API Key（仅存本机）。</div>'+
         '<div id="setModelInfo" style="font-size:13px;margin-bottom:10px;"></div>'+
         '<button class="btn" id="setModelBtn">'+(cfg&&cfg.api_key?"修改 API":"添加 API")+'</button> '+
@@ -2130,6 +2194,11 @@
       document.getElementById("setNameBtn").addEventListener("click", function(){
         var v=document.getElementById("setName").value.trim()||"管家";
         localStorage.setItem("campustime_name", v); var gw=document.getElementById("greetWho"); if(gw) gw.textContent=v; loadProfile();
+      });
+      // 思考过程开关：立刻存本机。已画出来的旧消息不动（改的是"以后的回复"），
+      // 不然一点开关满屏消息重排，学生反而不知道自己点了什么。
+      document.getElementById("setTrace").addEventListener("change", function(e){
+        localStorage.setItem("campustime_trace", e.target.checked ? "1" : "0");
       });
       (async function(){
         var personas=[]; try{ personas=(await (await fetch("/api/student-personas")).json()).personas||[]; }catch(e){}
