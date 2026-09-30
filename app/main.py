@@ -20,7 +20,8 @@ from app.agent.intent import (
     DEFAULT_MODULE, INTENT_ADD_TODO, INTENT_CHAT, INTENT_CLEAR_TIMETABLE,
     INTENT_DONE, INTENT_FIND_CARD, INTENT_LIST_TODO, INTENT_MEANING,
     INTENT_REMOVE_TODO, INTENT_RETIME, SOURCE_MEANING,
-    QUESTION_RE, classify, looks_like_question, remember, to_canonical,
+    QUESTION_RE, classify, looks_like_question, physio_state_only, remember,
+    to_canonical,
 )
 from app.agent.pending import (
     clear_pending, is_confirmation, peek_pending, save_pending, take_pending,
@@ -221,6 +222,22 @@ ASSISTANT_RULES = """
       学生说的是课（"去掉周二的高数"）→ 那归课表，调 propose_course_change，别拿待办去套。
 4. 自我定位：你是辅助工具，不是决策者。所有对用户数据的改动，决定权永远在学生本人；
    学生上传的文件（docx/xlsx 等）只读取内容，**禁止修改或覆盖源文件**。
+"""
+
+# 「闲聊守则」（2026-09-30 补）：学生只是感叹/聊日常时，别把闲聊推销成待办。
+# 与 FILE_HINT / ASSISTANT_RULES 同理——拼在**所有**学生端模块上，改一处全站生效。
+# 病根：共享排程工具（propose_todo_tool 等）是注入**所有**模块的，学生说一句
+# 「好累啊」，尾部模型手上正好有"出待办卡"的工具，顺手就来一句
+# "要不要我帮你安排个休息时间？"——他只是在吐槽，屏幕上却冒出推销。
+CHITCHAT_RULES = """
+【闲聊守则 —— 学生只是在感叹/聊日常时，务必遵守】
+1. 学生说累、说天气、说吃饭、吐槽心情这类**日常闲聊**，就像靠谱的学长一样
+   自然回一两句，可以带一句关心（"累了就歇会儿，别硬撑"）；语气像同学说话，别端着。
+2. ⛔ 闲聊时**绝不**主动提议帮他加待办、排时间、定计划；**绝不调用**
+   propose_todo_tool / propose_todo_slots_tool / propose_todo_mode_tool
+   这类排程/提案工具——除非学生**明确**说了"帮我加/记一下/安排某事"。
+3. ⛔ 不许用"要不要我帮你安排个…？"这类话收尾**推销**待办。
+4. 闲聊回复保持一两句，写完就停：不写小作文、不列清单、不问时间。
 """
 
 router = Router()
@@ -849,6 +866,10 @@ def _schedule_tools_allowed(module_key: str, sem_intent: str | None, message: st
     原则：planner 主业就是排日程，始终给；其他模块只有语义层或规则层
     明确判成 add_todo 才给，否则模型会把闲聊/问候/模块名也当成待办名挂卡。
     """
+    # ★ 纯生理状态感叹（"我饿了""好累啊"）：一个排程工具都不给。
+    #   这正是"闲聊被推销成待办"的入口——学生只是在说状态（见 CHITCHAT_RULES）。
+    if physio_state_only(message):
+        return False
     if module_key == "planner":
         return True
     if sem_intent == INTENT_ADD_TODO:
@@ -941,6 +962,27 @@ async def _chat_impl(req: Request, meta: dict):
             _sem = None          # 语义层挂了也不能让对话崩，掉回老路
     _sem_intent = (_sem or {}).get("intent") or None
     _sem_module = (_sem or {}).get("module") or None
+    # ★ 生理状态句的**确定性否决**（2026-09-30 补，见 intent.physio_state_only）。
+    #   规则层对「我饿了」是干净的（`wants_add_todo` 返回 False），可线上**语义层
+    #   把它判成了 add_todo**，一张写着「饿」的待办卡就挂到了学生眼前——他只是在说状态。
+    #   提示词里补例子只能降低概率、消不掉（模型是非确定性的），所以这里加一条跟
+    #   问句守卫同款的**硬否决**：纯状态感叹 → 强制按 chat 走，不出卡、不推销。
+    _physio = physio_state_only(message)
+    if _physio:
+        # 例外：学生正在补上一轮"要安排什么事"的追问——那句状态话是在**回答**，
+        # 不是自言自语，不能拦（拦了追问就原地打转）。标记见 `asking_add`。
+        try:
+            _recent = get_conversation(session_id)[-4:]
+            if any("加待办缺细节" in (m.get("content") or "")
+                   for m in _recent if m.get("role") == "assistant"):
+                _physio = False
+        except Exception:
+            pass
+    if _physio:
+        if _sem:            # 只改语义层给的**结论**，不无中生有造一份
+            _sem = dict(_sem, intent=INTENT_CHAT, module=DEFAULT_MODULE)
+        _sem_intent = INTENT_CHAT
+        _sem_module = DEFAULT_MODULE
     # 规则判了"要办事"、可这句话在问事（或者人就在问答栏里）→ **以语义层为准**。
     # 只在两者结论**不一致**时才否决规则；判得一样就照旧走，不额外改变任何行为。
     # 判据刻意收窄成两种**正面肯定**（宁可漏判、不可替学生办错事）：
@@ -1002,8 +1044,8 @@ async def _chat_impl(req: Request, meta: dict):
     # 2) 取该模块的系统提示和工具箱（提示可能是函数，按需调用以拼入最新人格）
     prompt_src, build_tools = REGISTRY.get(module_key, (DEFAULT_PROMPT, lambda: {}))
     base_prompt = prompt_src() if callable(prompt_src) else prompt_src
-    # 统一拼上"你会读文件"的说明 + 学生助手人设规矩，每个模块都生效
-    prompt = base_prompt + FILE_HINT + ASSISTANT_RULES
+    # 统一拼上"你会读文件"的说明 + 学生助手人设规矩 + 闲聊守则，每个模块都生效
+    prompt = base_prompt + FILE_HINT + ASSISTANT_RULES + CHITCHAT_RULES
     # 学生端选了性格，且不是驿站模块（驿站用管理员配的人格），就把性格腔调拼进去
     if persona_key and module_key != "station":
         prompt += "\n" + persona_block(persona_key)
@@ -2092,9 +2134,13 @@ async def _chat_impl(req: Request, meta: dict):
     # 开头的 `not _rule_veto`：规则想"加一条"，可语义层判它**不是**要办事
     # （多半在问事：在校园问答栏问「我要去哪里取快递」），就以语义层为准——
     # 否则那张卡会写着「哪取快递」挂到学生眼前，而他只是想知道去哪儿取。
+    # 末尾的 `and not _physio`：**纯生理状态感叹（"我饿了""好累啊"）任何情况下
+    #   都不许进这条分支** —— 哪怕语义层硬判了 add_todo。这是他的一条安全绳，
+    #   判据见 `intent.physio_state_only`（生理词 + 无行动词 + 没报钟点 + 短句）。
     if ((not _rule_veto
             and (wants_add_todo(message) or (asking_add and is_add_todo_answer(message))))
-            or _sem_intent == INTENT_ADD_TODO) and not wants_add_course(message):
+            or _sem_intent == INTENT_ADD_TODO) \
+            and not _physio and not wants_add_course(message):
         # 追问后的补充回答（学生先说"帮我安排周二的游泳"，再补"下午两点到三点"）：
         # 补充那句里没有标题、也没有日期，单独解析会把标题弄丢——
         # 把上一句原话拼回来一起算。识别标记就是下面追问分支写进会话历史的那句"加待办缺细节"。
