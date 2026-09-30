@@ -2810,6 +2810,90 @@ async def chat(req: Request):
     }
 
 
+# ============ 判定层只读接口（意图抽取 / 路由诊断） ============
+
+@app.post("/classify")
+async def classify_probe(req: Request):
+    """意图抽取 + 路由的**只读**接口（人话：只回答"这句话我理解成什么"，一个字节都不写）。
+
+    它跟 `/api/chat` **并存**，不替代聊天主链路：聊天照旧走 `/api/chat`，
+    这个口子只是把**判定层**的中间结果摊开给人看——"它到底听成了什么"。
+    演示时可以拿它单独展示意图识别能力；出问题时也能一眼看出是哪一档判的。
+
+    ⚠️ 三样东西**必须合并**，少一个就答不全（这是本接口存在的全部理由）：
+      · `looks_like_question(message)` → `is_question`
+        （**`classify()` 不返回它**——它只回 module/intent/title/…，
+         少了这一项，"纯问句 → is_question=true"这类用例根本没法验）
+      · `Router().route(...)`  → 最终 `module`（内部还会走样本库 / 关键词兜底）
+      · `intent.classify(...)` → `intent` / `confidence` / **是哪一档判的**（`source`）
+    三处都是**项目已有的判定逻辑**，这里**不写第二套**——两本账一定漂移。
+
+    ⚠️ `classify` 与 `Router().route` **都是 async**，必须 await；
+    而且 `route` 要传 `sem=`：同一句话只判一次（不传的话它会再问一次模型，
+    白花一次调用，还可能给出"module 和 intent 不是同一次判定"的怪结果）。
+
+    请求体：`{"message": str, "module"?: str, "history"?: list, "model"?: dict}`
+      · `module` 是**客户端所在栏目**（跟 `/api/chat` 里那个 module 同义），
+        只回显在 `detail` 里供对照，**不用它覆盖判定结果**；
+      · `model` 是学生端自带的 API 配置（跟 `/api/chat` 一致），可省。
+    返回：`{"is_question", "module", "intent", "confidence", "detail"}`
+    """
+    try:
+        body = await req.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+
+    message = (body.get("message") or "").strip()
+    if not message:
+        return JSONResponse(
+            {"is_question": False, "module": "", "intent": "", "confidence": 0.0,
+             "detail": {"error": "message 不能为空"}},
+            status_code=400)
+
+    history = body.get("history")
+    history = history if isinstance(history, list) else []
+    override = body.get("model") if isinstance(body.get("model"), dict) else None
+
+    # ① 语义层 / 样本库（一次调用，同时给 module + intent；没 key 会自动跳过）
+    sem = await classify(message, history=history, override=override)
+    # ② 粗判"这是问还是办"（classify 不返回它，必须单独调）
+    is_question = looks_like_question(message)
+    # ③ 语义层没给结论时，回落到**规则层预检**（`_rule_intent`，就是主链路判断
+    #    "要不要升级到语义层"用的那一份）。这里只把它**展示**出来，不改任何行为。
+    #    ⚠️ 它按设计不需要跟各分支完全一致（见它的 docstring），所以 source 记成 "rule"，
+    #    前端会照这个注明"规则层预检"，不让人误以为是最终裁决。
+    rule_intent = None if sem else _rule_intent(message)
+    # ④ 最终类型：把语义结果 + 已确定的意图一起喂进去，不再重复判定
+    #    （只传 sem 的话，「帮我加个游泳周四19:00」会因为句子里没有关键词而落到 faq，
+    #      出现 intent=add_todo、module=faq 这种自相矛盾的一对——冒烟时就撞见了）
+    module = await Router().route(message, override=override, sem=sem,
+                                  intent_hint=rule_intent)
+    intent = ((sem or {}).get("intent") or rule_intent
+              or (INTENT_CHAT if is_question else ""))
+    source = ((sem or {}).get("source") or ("rule" if rule_intent else "none"))
+
+    detail = {
+        "is_question": is_question,
+        "source": source,                       # sample（样本库）/ llm / rule / none
+        "source_note": {
+            "sample": "样本库命中（零成本、离线可跑，且是语义层的缓存）",
+            "llm": "语义层（问了一次大模型，只做分类）",
+            "rule": "规则层预检（没配 key 或语义层拿不准时的兜底）",
+            "none": "三档都没给结论，主链路会照原样答一句",
+        }.get(source, source),
+        "module_of_client": (body.get("module") or "").strip(),
+        "semantic": sem,                        # None = 这一档没生效（没 key / 把握太低）
+        "matched_sample": (sem or {}).get("matched") or "",
+        "history_used": len([m for m in history if isinstance(m, dict)]),
+        "wrote_anything": False,                # 说清楚：这个口子不写库
+    }
+    return {"is_question": is_question, "module": module, "intent": intent,
+            "confidence": float((sem or {}).get("confidence") or 0.0),
+            "detail": detail}
+
+
 # ============ 管理员侧接口（发布通知 + 接收学生消息） ============
 
 @app.post("/api/student-message")
