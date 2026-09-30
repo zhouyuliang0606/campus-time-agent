@@ -463,7 +463,8 @@ def span_only_proposal(text: str, title: str = "", fallback_date: str = "") -> d
     name = _pick_title(text or "")
     if not name or name == "待办":
         name = (title or "").strip() or "待办"
-    if name == "待办":
+    # 语义层可能把"12"这种时间碎片当 title 传下来，必须再过判真关
+    if not _title_ok(name):
         return None
     wd = _weekday_name(day)
     return {
@@ -1603,6 +1604,8 @@ def looks_like_thing(name: str) -> bool:
       · 里面还有"小时/时间/大概" → 抠到的是时间，不是事；
       · 里面还有"待办/日程/事项" → 抠到的是类别词；
       · 整串就是"帮我/安排/添加"这种动作 → 他说了要加，但没说加什么；
+      · 整串只剩数字/中文数字/钟点词（"12" / "十二" / "12点" / "十点半"）
+        → 那是**时间碎片**，不是一件事（学生说"明天中午12"，话还没说完）；
       · 太长（>24 字）→ 那是在说一整句话，不是在说一件事的名字；
       · 一个字都没有、全是符号（`**`）→ 那是排版标记，不是名字。
     不像就当"没说清"，交给追问分支去问，绝不写进日程。
@@ -1613,6 +1616,9 @@ def looks_like_thing(name: str) -> bool:
     if t in _EMPTY_TITLES:
         return False
     if not _HAS_WORD_CHAR_RE.search(t):
+        return False
+    # 时间碎片："12" / "十二点" / "12点" / "十点半" / "3分" / "整点" 都不是一件事
+    if re.fullmatch(r"[0-9零一二两三四五六七八九十半刻点分整]+", t):
         return False
     return not any(w in t for w in _TITLE_NOISE)
 
@@ -1936,6 +1942,10 @@ def parse_add_todo(text: str) -> dict | None:
     if not end:                    # 只给了开始时间，默认排 1 小时
         end = to_hhmm(to_minutes(start) + 60)
     title = _pick_title(t)
+    # 2026-09-30 补：时间碎片（"12" / "12点"）不能当待办名挂卡，否则
+    # 「明天中午12」会出一张标题叫"12"的确认卡。判不过就当作"没说清"。
+    if not _title_ok(title):
+        return None
     return {
         "kind": "todo_add",
         "title": title,
