@@ -20,12 +20,13 @@
   d) 前端**从来没有渲染过 `trace`** —— 后端一直在算、也一直在返回，没人显示。
      （`.trace` 的样式是遗留的，`addMsg` 里那句注释写着"学生端不展示思考轨迹"。）
 
-分五批：
+分六批：
   A 错别字纠正（规则层，离线就能纠）
   B 样本库不再张冠李戴（半命中只借路线、全命中才复用字段）
   C 钟点不再丢失（to_canonical）
   D 思考过程真的回了、且写了"听成什么"
   E 红线：这一批的改动**一个字节都不许写库**
+  F 报了钟点、只是没说哪天（就着他报的那个点出条，不再摊一屏候选把他刚说的点埋掉）
 """
 import json
 import os
@@ -76,9 +77,10 @@ def _set_samples(items):
     _it._save_samples(list(items or []))
 
 
-def _llm_json(intent="add_todo", title="", module="planner", conf=0.9):
+def _llm_json(intent="add_todo", title="", module="planner", conf=0.9,
+              start="", day_hint=""):
     return json.dumps({"module": module, "intent": intent, "title": title,
-                       "minutes": 0, "day_hint": "", "date": "", "start": "",
+                       "minutes": 0, "day_hint": day_hint, "date": "", "start": start,
                        "end": "", "confidence": conf}, ensure_ascii=False)
 
 
@@ -270,6 +272,86 @@ def batch_trace(c, client):
     return c.summary("D 批（思考过程）")
 
 
+# ── F. 报了钟点、只是没说哪天 ──────────────────────────────────────────────
+def batch_span_only(c, client):
+    title("F. 学生报了准点、只是没说哪天 —— 就着他报的那个点出条")
+    import datetime as _dt
+
+    from app.modules.planner import _now_minutes, span_only_proposal, to_minutes
+
+    # F1 报障那一幕的另一半：事名对了、钟点也在，只缺"哪天"。
+    #    原来 `parse_add_todo` 的契约是"日期和时刻缺一个就返回 None" ——
+    #    于是 12 点被丢掉、改去摊一屏候选，而候选里**根本没有他说的那个点**。
+    p = span_only_proposal("加个坐车，12:00")
+    _c(c, "F1 只有钟点也能出条（不再一律摊候选）",
+       bool(p) and p.get("title") == "坐车" and p.get("start") == "12:00",
+       p and {k: p.get(k) for k in ("title", "date", "start", "end")},
+       "接的是 planner.span_only_proposal（原来叫 _span_only_proposal，只给自填那一档用）。")
+
+    # F2 已经过去的钟点要顺延到明天：不给他排一段"已经过去的 12 点"。
+    #    期望值**跟着现在几点算**，不写死日期 —— 否则跨过 12:00 这条就红。
+    today = _dt.date.today().isoformat()
+    tomorrow = (_dt.date.today() + _dt.timedelta(days=1)).isoformat()
+    want = today if to_minutes("12:00") > _now_minutes() else tomorrow
+    _c(c, "F2 今天这个点已经过了就顺延到明天", bool(p) and p.get("date") == want,
+       p and p.get("date"), "顺延规则跟 plan_todo_slot 里那条是同一个口径，不另立一套。")
+
+    # F3 连钟点都没有 → **不猜**（返回 None，让调用方去摊候选 / 追问）。
+    #    这一条是给"兜底不许变成臆造"立的桩。
+    _c(c, "F3 连钟点都没有就不猜（返回 None）", span_only_proposal("加个坐车") is None,
+       span_only_proposal("加个坐车"), "")
+
+    # F4 只给起点 → 默认排 1 小时（跟单条卡那条路同一个默认）。
+    _c(c, "F4 只给起点 → 默认排 1 小时", bool(p) and p.get("end") == "13:00",
+       p and p.get("end"), "")
+
+    # ── F5 端到端：**样本库全命中的形状**（有 title/start、没有 day_hint）──
+    #    这正是学生那句被学进样本库之后的样子，也是线上真实走的那条路。
+    _set_samples([])
+    restore = patch_llm(_llm_json(title="坐车", start="12:00"), with_key=True)
+    try:
+        before = _todo_ids()
+        d = client.post("/api/chat", json={"sid": "span-f1",
+                                           "message": "中文12点的车"}).json()
+        ans = d.get("answer") or ""
+        opts = d.get("options") or []
+        _c(c, "F5a 出的是一条确认条，**不是**一屏候选时段",
+           len(opts) == 1 and opts[0].get("kind") == "todo_add"
+           and "挑方便的勾上" not in ans,
+           f"options={len(opts)} kind={opts[0].get('kind') if opts else None}",
+           "摊候选等于让他把自己刚说过的钟点重挑一遍，而候选里没有那个点。")
+        _c(c, "F5b 这条就是 12:00（今天已过则明天 12:00）",
+           bool(opts) and opts[0].get("start") == "12:00"
+           and opts[0].get("date") in (today, tomorrow),
+           opts and {k: opts[0].get(k) for k in ("title", "date", "start", "end")}, "")
+        after = _todo_ids()
+        _c(c, "F5c 仍然只是提案：待办一条没多", before == after,
+           f"{len(before)} → {len(after)} 条", "红线：出卡不写库，学生点确认才写。")
+    finally:
+        restore()
+        _set_samples([])
+
+    # ── F6 边界：**规则层那一路不吃这个兜底** ──
+    #    这句有"帮我加"这个动作词，走的是规则层；里面的"12点"未必是这件事的时间
+    #    （「三点下课，帮我加个买水果」会被 _pick_span 读成 03:00）。
+    #    交不出日期时摊候选更安全 —— 宁可漏，不可替学生办错事。
+    restore = patch_llm(_llm_json(title="坐车"), with_key=False)
+    try:
+        d2 = client.post("/api/chat", json={"sid": "span-f2",
+                                            "message": "帮我加个12点的车"}).json()
+        ans2 = d2.get("answer") or ""
+        o2 = d2.get("options") or []
+        _c(c, "F6 规则层那句话不吃这个兜底：它如实**问哪一天**，不臆造一个日期",
+           "哪一天" in ans2 and not o2,
+           f"answer={ans2[:40]!r} options={len(o2)}",
+           "「三点下课，帮我加个买水果」里的三点未必是这件事的时间"
+           "（_pick_span 会读成 03:00）——交不出日期时问一句/摊候选更安全。")
+    finally:
+        restore()
+        _set_samples([])
+    return c.summary("F 批（报了钟点没说哪天）")
+
+
 # ── E. 红线：不写库 ────────────────────────────────────────────────────────
 def batch_redline(c, client):
     title("E. 红线：这一批的改动一个字节都不许写库")
@@ -300,6 +382,7 @@ def main():
         rc |= batch_typo(Checker())
         rc |= batch_sample(Checker(), client)
         rc |= batch_canonical(Checker())
+        rc |= batch_span_only(Checker(), client)
         rc |= batch_trace(Checker(), client)
         rc |= batch_redline(Checker(), client)
     return rc
