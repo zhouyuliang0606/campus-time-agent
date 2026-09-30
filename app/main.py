@@ -1779,8 +1779,9 @@ async def _chat_impl(req: Request, meta: dict):
     if (wants_list_todo(message) and not _rule_veto) or _sem_intent == INTENT_LIST_TODO:
         todos = list_todos()
         if not todos:
-            answer = ("📋 你目前还没有任何待办。\n"
-                      "说一句「加个游泳，周四 19:00-20:30」，我就给你出确认条。")
+            fallback = ("📋 你目前还没有任何待办。\n"
+                        "说一句「加个游泳，周四 19:00-20:30」，我就给你出确认条。")
+            facts = {"intent": "list_todos", "count": 0, "todos": []}
         else:
             todos_sorted = sorted(
                 todos,
@@ -1791,7 +1792,21 @@ async def _chat_impl(req: Request, meta: dict):
                 lines.append(
                     f"· {t.get('title', '')}｜{t.get('date', '')}"
                     f"（{wd}）{t.get('start', '')}-{t.get('end', '')}")
-            answer = "\n".join(lines)
+            fallback = "\n".join(lines)
+            # 交给模型润色的是**结构化事实**（系统 list_todos() 真查出来的），模型只复述、不改事实
+            facts = {
+                "intent": "list_todos", "count": len(todos),
+                "todos": [{"title": t.get("title", ""),
+                           "date": t.get("date", ""),
+                           "weekday": t.get("weekday") or _weekday_name(t.get("date") or ""),
+                           "start": t.get("start", ""),
+                           "end": t.get("end", "")} for t in todos_sorted],
+            }
+        # ★ 架构升级 · 试点 1：系统查出列表 → 模型说人话（润色）。
+        #   失败 / 超时 / 没配 key → 原样退回上面的模板话术（离线兜底，现象与迁移前一致）。
+        #   模型只复述、不决定事实；列表数据始终来自 list_todos()，与迁移前逐字一致。
+        from app.agent.polish import polish_reply
+        answer = await polish_reply(facts, fallback, override=model_config)
         append_conversation(session_id, "user", message)
         append_conversation(session_id, "assistant", f"已列出待办：{len(todos)} 条")
         return _sem_done({
@@ -2115,12 +2130,23 @@ async def _chat_impl(req: Request, meta: dict):
         if proposal is not None:
             # 学生**自己报了准点** → 就着他给的这个点出条，一条就够。
             # 不必再摊候选：他已经说清要哪个点了，再摊三个等于让他重挑一遍。
+            # ★ 架构升级 · 试点 2：确认卡字段 / 暂存 / 写库路径**一个字节都不改**，
+            #   只把下面那段模板话术交给模型润色（超时/失败/没 key → 原样退回模板）。
+            #   模型只复述事实，不许新增、不许说"已办好"（承诺词守卫在 polish 里）。
+            _card_fallback = (
+                f"📝 要不要把 **{proposal['title']}** 排进日程？"
+                f"{proposal['date']}（{proposal['weekday']}）"
+                f"{proposal['start']}-{proposal['end']}。\n"
+                f"下面点一下【确认加入】我就写进去，回一句「确认」也一样。")
+            from app.agent.polish import polish_reply
+            _card_answer = await polish_reply(
+                {"intent": "add_todo", "title": proposal["title"],
+                 "date": proposal["date"], "weekday": proposal.get("weekday", ""),
+                 "start": proposal["start"], "end": proposal["end"],
+                 "executed": False},
+                _card_fallback, override=model_config)
             return _sem_done(_offer_response(
-                session_id, proposal, message,
-                (f"📝 要不要把 **{proposal['title']}** 排进日程？"
-                 f"{proposal['date']}（{proposal['weekday']}）"
-                 f"{proposal['start']}-{proposal['end']}。\n"
-                 f"下面点一下【确认加入】我就写进去，回一句「确认」也一样。"),
+                session_id, proposal, message, _card_answer,
                 "📝 生成待办提案（系统判定）"))
 
         # 学生没说时间（「那你帮我加一个健身在周四」「加个健身」「帮我加个游泳」）。
