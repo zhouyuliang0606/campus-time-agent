@@ -14,11 +14,13 @@
       ① 调用方已经判好的结果（同一句只判一次，省一次调用）
       ② 样本库：以前真办成功过的说法，命中就沿用当时的类型（零成本、离线可跑）
       ③ 语义层：`app/agent/intent.py`，一次调用同时给出 module + intent
-      ④ `_QUICK_MAP` 关键词兜底：只有 ②③ 都没结果才用（没配 key / 调不通 / 离线）
-      ⑤ 还不行回 `faq`——**答一句，比替学生办错一件事安全**
+      ④ 调用方已确定的**意图**（`intent_hint`）：按意图推类型，比子串命中强
+      ⑤ `_QUICK_MAP` 关键词兜底：只有 ②③④ 都没结果才用（没配 key / 调不通 / 离线）
+      ⑥ 还不行回 `faq`——**答一句，比替学生办错一件事安全**
 """
 from app.agent.intent import (
-    DEFAULT_MODULE, MODULE_KEYS, classify_with_llm, match_sample, module_hint,
+    DEFAULT_MODULE, INTENT_CHAT, INTENT_MODULE, MODULE_KEYS, classify_with_llm,
+    match_sample, module_hint,
 )
 from app.llm.client import DeepSeekClient
 
@@ -63,7 +65,7 @@ class Router:
         self.llm = llm
 
     async def route(self, user_input: str, override: dict | None = None,
-                    sem: dict | None = None) -> str:
+                    sem: dict | None = None, intent_hint: str | None = None) -> str:
         """返回模块关键字（如 "schedule"）。拿不准时回 `faq`。
 
         `override` 是学生端自己填的 API 配置（透传给模型那一档，这样服务器
@@ -71,6 +73,11 @@ class Router:
 
         `sem` 是调用方**已经拿到的判定结果**（`intent.classify` 的返回）。
         传进来就直接用，不再重复问一次——同一句话的判定只该发生一次。
+
+        `intent_hint` 是调用方**已经确定的意图**（主链路里就是规则层预检的结论）。
+        只在语义层没结果时用，且**排在关键词兜底之前**：意图是"他想干什么"，
+        比"句子里出现了哪个词"强得多——「帮我加个取快递的待办」里有关键词"取快递"，
+        可他要办的是**待办**，该归 planner。不传（None）就是老行为，调用方零影响。
         """
         # ① 调用方已经判好了（module 合法才算数）
         if (sem or {}).get("module") in MODULE_KEYS:
@@ -95,11 +102,18 @@ class Router:
         except Exception:
             pass
 
-        # ④ 关键词兜底（旧的那张 50 多词表，位置从"第一"降到"最后"）
+        # ④ 意图先行：调用方已经判出**确定意图**（规则层预检结论）→ 按意图推类型。
+        #    位置刻意排在关键词表**之前**：意图比子串命中强。否则会出现
+        #    「帮我加个游泳周四19:00」这种自相矛盾的组合——intent=add_todo 却因为
+        #    句子里没有关键词而落到默认的 faq（`/classify` 冒烟时就撞见了这一幕）。
+        if intent_hint and intent_hint != INTENT_CHAT and intent_hint in INTENT_MODULE:
+            return INTENT_MODULE[intent_hint]
+
+        # ⑤ 关键词兜底（旧的那张 50 多词表，位置从"第一"降到"最后"）
         text = (user_input or "").lower()
         for keyword, module in _QUICK_MAP.items():
             if keyword in text:
                 return module
 
-        # ⑤ 什么都不知道 → 问答模块。答一句总比替他办错一件事安全。
+        # ⑥ 什么都不知道 → 问答模块。答一句总比替他办错一件事安全。
         return DEFAULT_MODULE
