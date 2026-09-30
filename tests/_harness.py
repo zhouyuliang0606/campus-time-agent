@@ -123,6 +123,49 @@ def make_client():
     return TestClient(app)
 
 
+class FakeLLM:
+    """假的模型客户端（人话：照着剧本回一句 JSON，不真联网）。
+
+    为什么必须有它：判定层（`app/agent/intent.py` 的语义层）要吃模型的输出，
+    而真模型每次回的措辞都在飘——不钉住它，意图相关的那几批测试**每次结果都不一样**，
+    根本没法归档成"通过 N 项"的稳定报告。
+    """
+
+    def __init__(self, reply: str):
+        self._reply = reply
+
+    async def chat(self, messages, tools=None, tool_choice="auto", override=None):
+        return {"content": self._reply}
+
+
+def patch_llm(reply: str, with_key: bool = True):
+    """把大模型客户端换成打桩的，返回恢复函数（人话：临时换个假师傅）。
+
+    `with_key=False` 是另一件重要的事：把 `get_llm_config` 打桩成"没有密钥"，
+    用来验证**离线也能兜底**那条路（没 key → 语义层自动跳过 → 样本库/关键词顶上）。
+
+    ⚠️ 打桩打的是 `app.llm.client.DeepSeekClient` 与 `app.config.get_llm_config`
+    这两个**模块属性**：`intent.classify_with_llm` 与 `router` 都是**在函数内部**
+    `from ... import` 的，所以改模块属性看得见；要是谁把它们挪到模块顶部导入，
+    这里就**静默失效**了（补丁传不进去，语义层照旧打真网络——见 test_08 踩过的坑）。
+    """
+    import app.config as _cfg
+    import app.llm.client as _client
+    old_client, old_cfg = _client.DeepSeekClient, _cfg.get_llm_config
+    _client.DeepSeekClient = lambda *a, **k: FakeLLM(reply)
+    if with_key:
+        _cfg.get_llm_config = lambda *a, **k: {"api_key": "test-key", "base_url": "http://x",
+                                               "model": "m"}
+    else:
+        _cfg.get_llm_config = lambda *a, **k: {"api_key": "", "base_url": "http://x",
+                                               "model": "m"}
+
+    def _restore():
+        _client.DeepSeekClient = old_client
+        _cfg.get_llm_config = old_cfg
+    return _restore
+
+
 def title(text):
     """打印分节标题，让输出像一份可读的检查清单。"""
     print(f"\n=== {text} ===")

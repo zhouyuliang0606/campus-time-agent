@@ -23,7 +23,10 @@ import json as _json
 import os
 import time
 
-from _harness import Checker, sandbox, make_client, data_path, title
+# `_FakeLLM` / `_patch_llm` 已抽到 `tests/_harness.py` 共享（test_intent_classify.py 也要用，
+# 同一份打桩逻辑复制两遍迟早漂移）。这里用别名导入，下面二十多处调用点一个字不用改。
+from _harness import Checker, sandbox, make_client, data_path, title, FakeLLM as _FakeLLM, \
+    patch_llm as _patch_llm
 
 
 def _seed_timetable():
@@ -33,35 +36,6 @@ def _seed_timetable():
     sample = [{"day": d, "start": "08:00", "end": "09:40",
                "course": f"课程{d}", "location": "教学楼"} for d in range(1, 6)]
     _store.save_timetable(sample)
-
-
-class _FakeLLM:
-    """假的模型客户端（人话：照着剧本回一句 JSON，不真联网）。"""
-
-    def __init__(self, reply: str):
-        self._reply = reply
-
-    async def chat(self, messages, tools=None, tool_choice="auto", override=None):
-        return {"content": self._reply}
-
-
-def _patch_llm(reply: str, with_key: bool = True):
-    """把大模型客户端换成打桩的，返回恢复函数。"""
-    import app.config as _cfg
-    import app.llm.client as _client
-    old_client, old_cfg = _client.DeepSeekClient, _cfg.get_llm_config
-    _client.DeepSeekClient = lambda *a, **k: _FakeLLM(reply)
-    if with_key:
-        _cfg.get_llm_config = lambda *a, **k: {"api_key": "test-key", "base_url": "http://x",
-                                               "model": "m"}
-    else:
-        _cfg.get_llm_config = lambda *a, **k: {"api_key": "", "base_url": "http://x",
-                                               "model": "m"}
-
-    def _restore():
-        _client.DeepSeekClient = old_client
-        _cfg.get_llm_config = old_cfg
-    return _restore
 
 
 # ── ① 样本库（离线，零成本那一档）──────────────────────────────────────────
