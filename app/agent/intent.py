@@ -487,8 +487,15 @@ def to_canonical(text: str, sem: dict | None) -> str:
         bits.append(sem["day_hint"].strip())
     start = (sem.get("start") or "").strip()
     end = (sem.get("end") or "").strip()
+    # ⚠️ 2026-09-30 修：原来只有 `start and end` 同时存在才拼。
+    #    可学生十有八九只说一个起点（「中文12点的车」→ start=12:00、end 空），
+    #    这一条把整个钟点**悄悄丢掉**：bits 变成空的 → 规范话退回原话 →
+    #    模型明明读懂了 12 点，最后还是靠规则层去抠，标题就抠成了「中文的车」。
+    #    end 缺失时由 planner 按默认时长补，不在这儿替它编。
     if start and end:
         bits.append(f"{start}-{end}")
+    elif start:
+        bits.append(start)
     if not bits:
         return text
     return "，".join(bits)
