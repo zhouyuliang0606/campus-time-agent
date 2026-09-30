@@ -843,6 +843,19 @@ def _read_step(sem: dict | None, sem_intent: str | None,
     return {"step": 0, "phase": "🧠 " + msg, "answer": ""}
 
 
+def _schedule_tools_allowed(module_key: str, sem_intent: str | None, message: str) -> bool:
+    """判断当前语境该不该把出待办卡的只读工具交给模型。
+
+    原则：planner 主业就是排日程，始终给；其他模块只有语义层或规则层
+    明确判成 add_todo 才给，否则模型会把闲聊/问候/模块名也当成待办名挂卡。
+    """
+    if module_key == "planner":
+        return True
+    if sem_intent == INTENT_ADD_TODO:
+        return True
+    return wants_add_todo(message)
+
+
 @app.post("/api/chat")
 async def chat(req: Request):
     """对话入口。
@@ -1000,13 +1013,14 @@ async def _chat_impl(req: Request, meta: dict):
     # 以后新增模块会自动带上这个能力，不用重复实现。
     tools = build_tools()
     tools.update(files_tools())
-    # 不管路由把话分到哪个模块，都给它配上"查空档 + 把待办变成能点的确认条"这几件
-    # **只读**工具。原因很具体：学生说「我想周四去健身」时，路由可能把这句分给
-    # 「校园问答」，而那个模块原本文具盒里只有一个 search_kb —— 它就只能**在文字里**
-    # 写一句「- 任务：健身 - 时间：周四 15:40~17:10 点【确认】就入库了」，
-    # 界面上一个按钮都没有；学生回「确认」，系统也不知道他在确认什么。
-    # 这几件工具都不写库（真写入永远是后端的确认条），所以发给谁都安全。
-    tools.update(scheduling_tools())
+    # 把"查空档 + 把待办变成能点的确认条"的只读工具只交给确实要办日程的语境：
+    #   · planner 模块主业就是排日程，始终拥有这些工具；
+    #   · 其他模块：只有语义层或规则层明确判成 add_todo 才给，
+    #     否则模型会把闲聊/问候/模块名也当成待办名挂卡。
+    #     实测：faq 栏里问"你是谁"，模型却把"校园问答"当待办名、用旧提案的时间出了张确认卡。
+    # 这些工具本身只读，但挂出确认条就是"代办"行为，必须对齐真实意图。
+    if _schedule_tools_allowed(module_key, _sem_intent, message):
+        tools.update(scheduling_tools())
 
     # 3) **确定性确认分支**（人话：学生回一句"确认"就当场执行，不劳模型判断）
     #    踩过的坑：学生明明打了"确认"，AI 却回"我没有权限删除"，还让学生自己去
