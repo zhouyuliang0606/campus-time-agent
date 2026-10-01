@@ -26,7 +26,12 @@ class DeepSeekClient:
     def __init__(self) -> None:
         # 刻意不在构造时把配置"定死"：管理员在后台改完配置希望能立刻生效，
         # 不能等到下一次重启。所以每次真正要发请求时才去问 config 要最新配置。
-        pass
+        #
+        # last_usage / last_model 是给**用量统计**留的窗口：HTTP 响应里的 usage
+        # 原本是被丢掉的，网关要在调用结束后立刻来取（两次之间不能有 await，
+        # 所以不用加锁）。没拿到就是 None，记账按 0 处理，绝不因此让对话失败。
+        self.last_usage: dict | None = None
+        self.last_model: str = ""
 
     def _config(self, override: dict | None = None) -> tuple[str, str, str]:
         """取本次调用要用配置（人话：现用现取，保证后台改完即时生效）。
@@ -53,6 +58,10 @@ class DeepSeekClient:
         """
         # 本次调用要用配置：现用现取，管理员在后台改完立刻生效；学生端自定义 key 优先
         api_key, base_url, model = self._config(override=override)
+        # 先把上一次的用量清掉：这次万一失败，网关读到的是 None（= 未统计），
+        # 而不是上一轮的成功数字（那会把账记串）。
+        self.last_usage = None
+        self.last_model = model
 
         # 组装请求体。temperature 越低，回答越稳重、越不容易胡说
         payload: dict[str, Any] = {
@@ -101,6 +110,10 @@ class DeepSeekClient:
 
         # DeepSeek 返回结构里，回答在 choices[0].message
         message = data["choices"][0]["message"]
+
+        # 把这次的用量露给网关（人话：花了多少 token，网关拿去记账）。
+        # 有的厂商不回 usage，那就是 None，记账按 0 处理，不影响对话。
+        self.last_usage = data.get("usage") or None
 
         if DEBUG:
             # 调试模式：把模型到底回了文字还是想调工具打印出来
