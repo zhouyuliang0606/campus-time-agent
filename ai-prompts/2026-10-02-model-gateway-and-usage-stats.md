@@ -65,3 +65,61 @@
 
 ## 关联
 - 本快照为**设计稿阶段**留痕，无代码 commit；执行窗口落地后在此回填关联 commit 哈希。
+
+---
+
+## 执行回填（2026-10-02 · 执行窗口落地）
+
+上面是设计稿，下面是**真动手之后**的留痕。设计稿里"待回填"的三项验收全部实测通过。
+
+### 落地清单（六个细粒度提交，代码 / 测试 / 文档分开）
+
+| 提交 | 内容 |
+| --- | --- |
+| `5c19a08` | `app/store.py` 用量记账三函数（JSONL 流水，内部全 try/except） |
+| `dbdf4be` | 新增 `app/llm/gateway.py`：`ModelGateway` + 跨厂商 tool_calls 标准化 + `try/finally` 记账；`client.py` 开 `last_usage` / `last_model` 窗口 |
+| `c16e2b4` | 接线：engine / `intent.classify` / `polish_reply` / 后台「测试连通」改走网关；`.gitignore` 排除 `llm_usage.jsonl` |
+| `8d0ce41` | 四个测试文件的打桩跟随网关化（见下方"踩坑"） |
+| `d0fa1a5` | `GET /api/admin/usage`、`POST /api/admin/usage/clear` + 管理端「📊 用量统计」卡片 |
+| `88eb71c` | 第二十二批测试（75 项 / 7 批全绿） |
+
+### 验收口径：三项全过（真机实测，非沙箱）
+
+1. **真实对话一条进 usage（user=session_id、token 正确）** ✅
+   真机发「帮我安排下周的复习计划」（planner，`session_id=gw-live-001`），流水 4 条：
+   语义判定 1 条记 `内部:语义判定`，引擎 3 条记 `gw-live-001`；
+   prompt/completion token 逐条有值（9935/57、8992/403、8486/37），耗时 730–1438ms，全部 `ok`。
+2. **后台改 model 字段即换模型（零代码）** ✅
+   后台把 model 改成 `deepseek-reasoner` →「测试连通」→ 流水立刻出现
+   `deepseek-reasoner`，占比条自动变成 deepseek-chat 80% / deepseek-reasoner 20%。
+   改完再改回 `deepseek-chat`，全程无代码改动、无重启。
+3. **出错也记账、服务不崩** ✅
+   故意把 model 填成 `deepseek-no-such-model` → 上游 400 → 接口返回
+   `{"ok":false,"message":"大模型接口出错（HTTP 400）…"}`，**同时**流水记下
+   `status=error` + 错误原文；`/admin` 仍返回 200，服务没崩。
+   「拔 key → status=error」这条由单测覆盖（`test_22` 第三批）。
+
+另有两项由桩测覆盖：非 OpenAI 风格 tool_calls → 统一结构且加待办出卡行为不变
+（`test_22` 第六批，OpenAI/Claude/Gemini 三种口音逐项比对事名与时间）。
+
+### 踩坑与修正（这轮最有价值的两条）
+
+- **引擎不再持有 `DeepSeekClient`，四个测试文件一上来就 AttributeError**
+  —— 全量因此**少了 81 项**却只报"1 项失败"，极易被误读成"改动只碰坏了 1 项"。
+  教训：**看总账数字，别只看失败数**；少了那么多说明有测试**根本没跑起来**。
+  修法：打桩只留 `app.llm.client.DeepSeekClient` + `app.config.get_llm_config`
+  两处（网关按需 import，补丁传得进去）。已把"旧的'引擎顶层 import 必须单独打一份'
+  那条经验已失效"写进四个文件的注释，免得后人照抄回去。
+- **test_06 那 1 项红与本轮无关**：做了两轮 A/B —— 网关提交 `dbdf4be`、
+  以及本次改动前的基线 `2f38f63`，**两处都是同一项红**
+  （「再回一句『确认』→ 真写进日程」），确认是既有/日期相关问题，不是本轮引入。
+- 端到端里「帮我加个游泳周四19:00」走的是**确定性分支**，压根没问模型，
+  所以流水里是功能名、不会是会话 id —— 会记会话 id 的是引擎那条路，已单独一批验。
+  这条写进了测试注释，否则下次改测试的人会误判成 bug。
+
+### 收尾自证
+
+- 全量回归：**通过 1662 项 / 失败 1 项（共 23 批）**，那 1 项即上面 A/B 证明的既有问题。
+- 重启后端后真机复验，跑完待办仍 **4 条**（只出卡不点确认 = 零污染）。
+- 演示流水已清空（含那条故意填错的模型名），管理员下次用会自动重新累计。
+- 未动 `docs/技术文档.pdf`。
