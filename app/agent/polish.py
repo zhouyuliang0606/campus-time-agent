@@ -20,7 +20,8 @@
    假回复被同一次打桩复用过来）—— 判为无效，退回模板。润色绝不吐 JSON。
 
 ## 补丁可见性（踩过的坑）
-客户端一律**在函数内** `from app.llm.client import DeepSeekClient`。
+客户端一律**在函数内** import（现在是 `from app.llm.gateway import ModelGateway`，
+网关内部再按需 import 客户端）。
 若放到模块顶部，就成了"导入时绑定"—— 测试的 `patch_llm` 打不进来，
 润色链路会**安静地**打真网络（沙箱里就是"没 key → 抛异常 → 降级"，
 于是"测试全绿、真机照样错"）。同理，`get_llm_config` 也函数内 import。
@@ -86,10 +87,11 @@ async def polish_reply(facts: dict, fallback: str, *, override: dict | None = No
     if not llm_available(override):
         return fallback
     try:
-        from app.llm.client import DeepSeekClient      # 函数内 import：看得到测试补丁
-        client = DeepSeekClient()
+        from app.llm.gateway import ModelGateway      # 函数内 import：看得到测试补丁
+        # 也走网关：润色同样是一次真实的大模型调用，别让它从用量统计里漏掉。
+        gateway = ModelGateway(user="内部:话术润色", override=override)
         msg = await asyncio.wait_for(
-            client.chat(
+            gateway.chat(
                 [
                     {"role": "system", "content": _POLISH_SYSTEM},
                     {"role": "user", "content": json.dumps(facts, ensure_ascii=False)},

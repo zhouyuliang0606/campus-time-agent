@@ -14,7 +14,7 @@ import json
 from typing import Any, Callable
 
 from app.agent.tools import Tool
-from app.llm.client import DeepSeekClient
+from app.llm.gateway import ModelGateway
 
 
 def _is_async(fn: Callable[..., Any]) -> bool:
@@ -27,13 +27,18 @@ class AgentEngine:
 
     def __init__(
         self,
-        llm: DeepSeekClient | None = None,
+        llm=None,
         tools: dict[str, Tool] | None = None,
         system_prompt: str = "",
         session_id: str = "",
         llm_override: dict | None = None,
     ) -> None:
-        self.llm = llm or DeepSeekClient()
+        # 出口统一：不管有没有外部注入的客户端，一律过网关（记账 + 工具调用标准化）。
+        # 注入的本身就是网关时直接沿用，免得套两层、一笔调用记两次账。
+        # user 用会话 id——管理台那张用量表就能看出"是哪位学生在问"。
+        self.llm = llm if isinstance(llm, ModelGateway) else ModelGateway(
+            user=session_id or "内部:agent", override=llm_override, client=llm
+        )
         # 学生端自定义 API 配置（{base_url, model, api_key}），优先于服务器配置
         self.llm_override = llm_override
         self.tools: dict[str, Tool] = tools or {}

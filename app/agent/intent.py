@@ -474,10 +474,13 @@ async def classify_with_llm(text: str, history: list | None = None,
         return None
     try:
         from app.config import get_llm_config
-        from app.llm.client import DeepSeekClient
+        from app.llm.gateway import ModelGateway
         if not (get_llm_config(override=override).get("api_key") or "").strip():
             return None          # 没 key → 这一层不生效，样本库照旧兜
-        client = client or DeepSeekClient()
+        # 走网关而不是直接 new 客户端：全项目只有网关这一个出口，
+        # 这样"换了哪家模型、花了多少 token"在管理台都看得见。
+        # user 记功能名（这里是内部判定，不是某个学生在提问）。
+        gateway = ModelGateway(user="内部:语义判定", override=override, client=client)
     except Exception:
         return None
 
@@ -494,7 +497,7 @@ async def classify_with_llm(text: str, history: list | None = None,
         msgs.append({"role": "user", "content": t})
 
     try:
-        reply = await client.chat(msgs, override=override)
+        reply = await gateway.chat(msgs, override=override)
     except Exception:
         return None
 

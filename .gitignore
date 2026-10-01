@@ -42,6 +42,11 @@ app/data/pending.json
 # 不入库的另一个理由：它会把本机调试时说的话记进去，那是私人语料。
 app/data/intent_samples.json
 
+# ===== 模型用量流水（app/llm/gateway.py 每次调用追加一行） =====
+# 跟 pending.json 同性质：纯运行时流水，且里面写着**学生的会话 id**，属隐私。
+# 管理员想从零计数，在后台「用量统计」卡片点清空即可（不用动文件）。
+app/data/llm_usage.jsonl
+
 # 注意：app/data/kb.json 是"入库的种子知识库"，有意保留版本管理，
 # 管理员在后台改条目后会出现 diff —— 这是知识内容本身，值得被记录。
 app/data/workorders.json
