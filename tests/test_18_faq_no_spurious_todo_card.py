@@ -67,27 +67,26 @@ class _ToolCaller:
 def _patch_llm(sem_reply: str, tool_name: str, tool_args: dict):
     """把 DeepSeek 客户端换成上面那个会"硬调出待办卡"的假模型，返回恢复函数。
 
-    ⚠️ 必须同时打三处（否则引擎仍走真网络，测试变成「看真模型心情」的非确定性）：
+    ⚠️ 必须同时打两处（否则引擎仍走真网络，测试变成「看真模型心情」的非确定性）：
       · app.config.get_llm_config        —— classify_with_llm 在函数内 `from app.config
                                              import`，改模块属性看得见，没 key 它直接跳过；
-      · app.llm.client.DeepSeekClient     —— 同上，语义/路由判定层在函数内 import；
-      · app.agent.engine.DeepSeekClient   —— 引擎在模块顶层 import，改模块属性才传得进去
-                                            （光改 app.llm.client 的，引擎那份是加载时的副本）。
+      · app.llm.client.DeepSeekClient     —— 语义/路由/润色/网关都是**函数内** import，
+                                            改模块属性看得见。
+
+    2026-10-02 起**不再打** `app.agent.engine.DeepSeekClient`：引擎已改为走网关
+    `app/llm/gateway.py`，而网关是**要用时才** import 客户端，所以打上面一处就通。
+    （旧的"引擎模块顶层 import、必须单独打一份"那条经验已随网关化失效。）
     """
     import app.config as _cfg
     import app.llm.client as _client
-    import app.agent.engine as _engine
     old_client, old_cfg = _client.DeepSeekClient, _cfg.get_llm_config
-    old_engine_client = _engine.DeepSeekClient
     _factory = lambda *a, **k: _ToolCaller(sem_reply, tool_name, tool_args)
     _client.DeepSeekClient = _factory
-    _engine.DeepSeekClient = _factory
     _cfg.get_llm_config = lambda *a, **k: {"api_key": "test-key", "base_url": "http://x",
                                            "model": "m"}
 
     def _restore():
         _client.DeepSeekClient = old_client
-        _engine.DeepSeekClient = old_engine_client
         _cfg.get_llm_config = old_cfg
     return _restore
 

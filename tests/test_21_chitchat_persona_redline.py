@@ -81,19 +81,19 @@ class _EngineSpy:
 def _patch_llm(sem_reply: str, engine_reply: str = "嗯，知道了。"):
     import app.config as _cfg
     import app.llm.client as _client
-    import app.agent.engine as _engine
+    # 只打 `app.llm.client` 一处即可（2026-10-02 网关化之后）：
+    # 语义层 / 润色层 / 引擎都改走网关，网关是**要用时才** import 客户端，
+    # 所以模块属性补丁传得进去。以前"引擎那份是顶层 import 的副本、得单独打一份"
+    # 不再是事实，`_engine.DeepSeekClient` 这个属性已经不存在了（打了会 AttributeError）。
     old_client, old_cfg = _client.DeepSeekClient, _cfg.get_llm_config
-    old_engine_client = _engine.DeepSeekClient
     fake = _FakeLLM(sem_reply, engine_reply)
     _factory = lambda *a, **k: fake
     _client.DeepSeekClient = _factory
-    _engine.DeepSeekClient = _factory
     _cfg.get_llm_config = lambda *a, **k: {"api_key": "test-key", "base_url": "http://x",
                                            "model": "m"}
 
     def _restore():
         _client.DeepSeekClient = old_client
-        _engine.DeepSeekClient = old_engine_client
         _cfg.get_llm_config = old_cfg
     return _restore
 

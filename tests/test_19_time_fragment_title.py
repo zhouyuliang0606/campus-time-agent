@@ -47,21 +47,24 @@ class _FakeLLM:
 
 
 def _patch_llm(sem_reply: str):
-    """把语义分类用的 DeepSeekClient 换成假货；引擎如走到也用它（返回纯文本）。"""
+    """把语义分类用的大模型客户端换成假货；引擎如走到也用它（返回纯文本）。
+
+    ⚠️ 只打 `app.llm.client.DeepSeekClient` 一处就够了（2026-10-02 起）：
+    引擎不再自己 import 客户端，它走**网关**，而网关是**在要用的时候**才
+    `from app.llm.client import DeepSeekClient`，所以改模块属性照样看得见。
+    以前"引擎在模块顶层 import，必须连 `app.agent.engine.DeepSeekClient` 一起打"
+    那条经验，已经在网关化之后失效——别再照抄回去。
+    """
     import app.config as _cfg
     import app.llm.client as _client
-    import app.agent.engine as _engine
     old_client, old_cfg = _client.DeepSeekClient, _cfg.get_llm_config
-    old_engine_client = _engine.DeepSeekClient
     _factory = lambda *a, **k: _FakeLLM(sem_reply)
     _client.DeepSeekClient = _factory
-    _engine.DeepSeekClient = _factory
     _cfg.get_llm_config = lambda *a, **k: {"api_key": "test-key", "base_url": "http://x",
                                            "model": "m"}
 
     def _restore():
         _client.DeepSeekClient = old_client
-        _engine.DeepSeekClient = old_engine_client
         _cfg.get_llm_config = old_cfg
     return _restore
 

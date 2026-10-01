@@ -47,16 +47,18 @@ class _FakeLLM:
 def _patch_client(reply: str, with_key: bool = True, delay: float = 0.0):
     """把客户端换成假货（+ 可选：配 key / 延迟）。返回恢复函数。
 
-    ⚠️ 三个模块属性都要打：`app.llm.client`（分类/路由/润色函数内 import 看得见）、
-    `app.agent.engine`（顶层绑定，不打就漏）、`app.config.get_llm_config`（决定有没有 key）。
+    ⚠️ 两处模块属性要打：`app.llm.client.DeepSeekClient`（分类/路由/润色/网关
+    都是**函数内** import，看得见补丁）、`app.config.get_llm_config`（决定有没有 key）。
+
+    2026-10-02 起**不再打** `app.agent.engine.DeepSeekClient`：引擎改走网关，
+    网关按需 import 客户端，打 `app.llm.client` 一处就通。要是哪天又有人给引擎
+    加回模块顶层的客户端 import，这条经验就得翻回来——但那是倒退，别做。
     """
     import app.config as _cfg
     import app.llm.client as _client
-    import app.agent.engine as _engine
-    old = (_client.DeepSeekClient, _cfg.get_llm_config, _engine.DeepSeekClient)
+    old = (_client.DeepSeekClient, _cfg.get_llm_config)
     factory = lambda *a, **k: _FakeLLM(reply, delay)
     _client.DeepSeekClient = factory
-    _engine.DeepSeekClient = factory
     if with_key:
         _cfg.get_llm_config = lambda *a, **k: {"api_key": "test-key",
                                                "base_url": "http://x", "model": "m"}
@@ -65,7 +67,7 @@ def _patch_client(reply: str, with_key: bool = True, delay: float = 0.0):
                                                "base_url": "http://x", "model": "m"}
 
     def _restore():
-        _client.DeepSeekClient, _cfg.get_llm_config, _engine.DeepSeekClient = old
+        _client.DeepSeekClient, _cfg.get_llm_config = old
     return _restore
 
 
