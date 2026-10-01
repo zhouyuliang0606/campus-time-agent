@@ -468,3 +468,143 @@ def clear_conversation(sid: str) -> None:
     data = _sread("sessions.json", {"sessions": {}})
     data.get("sessions", {}).pop(sid, None)
     _swrite("sessions.json", data)
+
+
+# ============ 模型用量记账（JSONL 流水） ============
+# 为什么用 JSONL 而不是 JSON 数组：记账是"只追加"的流水，
+# 一行一条，写坏了也只丢一行，不会让 json.load 把整份统计一起崩掉。
+# 硬要求：**记账失败绝不能影响对话**——下面每个函数内部都自己吞异常，
+# 网关那边是 try/finally 包着，这里再兜一层底。
+
+USAGE_FILE = "llm_usage.jsonl"
+
+
+def _usage_path() -> str:
+    return _path(USAGE_FILE)
+
+
+def log_llm_usage(record: dict) -> None:
+    """追加一条模型调用流水（人话：这次调用谁发起的、用了哪个模型、
+    花了多少 token、成功没有、耗时多久）。
+
+    这个函数**对外承诺不抛异常**：记账是旁路，对话才是主线。
+    """
+    try:
+        os.makedirs(_data_dir(), exist_ok=True)
+        row = dict(record or {})
+        row.setdefault("ts", _now())
+        with open(_usage_path(), "a", encoding="utf-8") as f:
+            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+
+
+def read_llm_usage(limit: int = 0) -> list:
+    """读流水（limit>0 时只返回**最近** limit 条，按写入顺序）。
+
+    坏行直接跳过——一条脏数据不该毁掉整份统计。
+    """
+    rows = []
+    try:
+        with open(_usage_path(), encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rows.append(json.loads(line))
+                except Exception:
+                    continue
+    except FileNotFoundError:
+        return []
+    except Exception:
+        return rows
+    if limit and limit > 0:
+        rows = rows[-limit:]
+    return rows
+
+
+def _as_int(v) -> int:
+    """把 token 数安全地变成整数（None / 空串 / "123" 都要能扛住）。"""
+    try:
+        return int(v)
+    except Exception:
+        return 0
+
+
+def summarize_llm_usage(limit_recent: int = 50) -> dict:
+    """汇总用量（人话：给管理台那张"用量统计"卡片算好所有数字）。
+
+    返回结构：
+      total_calls / ok_calls / error_calls
+      prompt_tokens / completion_tokens / total_tokens
+      avg_latency_ms（只算成功的那些，失败往往很快，混进来会把均值拉低）
+      users（去重后的调用方个数）
+      models: [{model, calls, tokens, share}]   share 是百分比(0-100)，按调用量降序
+      recent: 最近 limit_recent 条流水，**最新在前**
+      last_ts: 最后一条的时间，没有流水时是空串
+    """
+    rows = read_llm_usage()
+    total = len(rows)
+    ok = err = 0
+    p_tok = c_tok = 0
+    lat_sum = lat_n = 0
+    by_model = {}
+    users = set()
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        status = str(r.get("status") or "")
+        if status == "ok":
+            ok += 1
+        else:
+            err += 1
+        pt = _as_int(r.get("prompt_tokens"))
+        ct = _as_int(r.get("completion_tokens"))
+        if not pt and not ct:
+            tt = _as_int(r.get("total_tokens"))
+            p_tok += tt
+        else:
+            p_tok += pt
+            c_tok += ct
+        if status == "ok":
+            lt = _as_int(r.get("latency_ms"))
+            if lt > 0:
+                lat_sum += lt
+                lat_n += 1
+        m = str(r.get("model") or "unknown")
+        slot = by_model.setdefault(m, {"model": m, "calls": 0, "tokens": 0})
+        slot["calls"] += 1
+        slot["tokens"] += _as_int(r.get("total_tokens")) or (pt + ct)
+        u = r.get("user")
+        if u:
+            users.add(str(u))
+    models = sorted(by_model.values(), key=lambda x: (-x["calls"], x["model"]))
+    for slot in models:
+        slot["share"] = round(slot["calls"] * 100.0 / total, 1) if total else 0.0
+    recent = rows[-(limit_recent or 0):] if (limit_recent and limit_recent > 0) else []
+    recent = list(reversed(recent))
+    return {
+        "total_calls": total,
+        "ok_calls": ok,
+        "error_calls": err,
+        "prompt_tokens": p_tok,
+        "completion_tokens": c_tok,
+        "total_tokens": p_tok + c_tok,
+        "avg_latency_ms": int(lat_sum / lat_n) if lat_n else 0,
+        "users": len(users),
+        "models": models,
+        "recent": recent,
+        "last_ts": str(rows[-1].get("ts") or "") if rows else "",
+    }
+
+
+def clear_llm_usage() -> int:
+    """清空流水（人话：管理员点"清空"按钮）。返回被清掉多少条。"""
+    n = len(read_llm_usage())
+    try:
+        with open(_usage_path(), "w", encoding="utf-8"):
+            pass
+    except Exception:
+        return 0
+    return n
