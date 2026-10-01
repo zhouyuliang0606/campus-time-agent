@@ -28,7 +28,8 @@ from app.agent.pending import (
 )
 from app.agent.router import Router
 from app.config import DEBUG, check_config, get_llm_config
-from app.llm.client import DeepSeekClient, LLMError
+from app.llm.client import LLMError
+from app.llm.gateway import ModelGateway
 from app.upload import UploadError, extract_text, ext_supported, unsupported_reason
 from app.modules.schedule import SYSTEM_PROMPT as SCHEDULE_PROMPT, build_tools as schedule_tools
 from app.store import (
@@ -36,6 +37,7 @@ from app.store import (
     list_kb, add_kb_entry, update_kb_entry, delete_kb_entry,
     get_persona, set_persona,
     get_settings, set_settings,
+    summarize_llm_usage, clear_llm_usage,
     MAX_UPLOAD_BYTES,
     save_upload, list_uploads, get_upload, get_upload_meta, get_upload_raw_path,
     get_conversation, append_conversation, clear_conversation,
@@ -3338,11 +3340,47 @@ async def settings_test():
     try:
         # 问个极短的问题，目的只是验证鉴权和网络，
         # 顺便把模型名回显出来，方便确认连的是不是自己想用的那个
-        client = DeepSeekClient()
-        await client.chat([{"role": "user", "content": "回复两个字：正常"}])
+        # 走网关（唯一出口），这样"测连通"这一次调用也会进用量统计，
+        # 管理员能直接看到它用的是哪个模型、通没通。
+        gateway = ModelGateway(user="内部:后台连通测试")
+        await gateway.chat([{"role": "user", "content": "回复两个字：正常"}])
     except LLMError as e:
         return {"ok": False, "message": str(e)}
     return {"ok": True, "message": f"连通正常 · 模型 {cfg['model']} · 配置来源：{cfg['source']}"}
+
+
+# ============ 管理控制台：模型用量统计 ============
+# 数据源就是网关写的那条 JSONL 流水（app/data/llm_usage.jsonl）。
+# 这里只做"读 + 汇总 + 清空"，**不提供写接口**——账只能由网关记，
+# 免得哪天有人手改出一个跟真实调用对不上的漂亮数字。
+
+@app.get("/api/admin/usage")
+async def usage_get(limit: int = 50):
+    """用量汇总（人话：管理台那张"用量统计"卡片的数据源）。
+
+    limit 控制"最近调用"那张表返回多少条（默认 50，上限 200，别把浏览器撑死）。
+    """
+    limit = max(1, min(int(limit or 50), 200))
+    try:
+        data = summarize_llm_usage(limit_recent=limit)
+    except Exception as e:
+        # 统计挂了也不能让整张管理台白屏：给一份全零的空壳，前端照常渲染
+        data = {"total_calls": 0, "ok_calls": 0, "error_calls": 0,
+                "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0,
+                "avg_latency_ms": 0, "users": 0, "models": [], "recent": [],
+                "last_ts": "", "error": str(e)}
+    data["ok"] = True
+    return data
+
+
+@app.post("/api/admin/usage/clear")
+async def usage_clear():
+    """清空用量流水（人话：演示前想从零开始计数就点它）。
+
+    只清流水，**不动任何待办/课表/会话**。返回清掉了多少条，前端好给个明确回执。
+    """
+    n = clear_llm_usage()
+    return {"ok": True, "cleared": n, "message": f"已清空 {n} 条调用记录"}
 
 
 # ============ 学生个人库：周表（课程）与待办 ============

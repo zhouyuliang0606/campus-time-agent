@@ -43,6 +43,26 @@
     .empty { color: #8a93a6; font-size: 13px; text-align: center; padding: 16px; }
     .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
     @media (max-width: 720px) { .grid2 { grid-template-columns: 1fr; } }
+    /* ===== 用量统计卡片 ===== */
+    /* 六个数字格：用 minmax(0,1fr) 而不是 repeat(6,1fr) —— 后者在内容宽时
+       会把整行撑爆、把卡片挤变形（前端布局踩过的坑，别抄回去）。 */
+    .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 10px; }
+    .tile { border: 1px solid #eef0f6; border-radius: 10px; padding: 10px 12px; background: #fbfcff; }
+    .tile .n { font-size: 20px; font-weight: 700; color: #2b3a55; }
+    .tile .k { font-size: 12px; color: #8a93a6; margin-top: 2px; }
+    .tile.bad .n { color: #e0414a; }
+    .tile.good .n { color: #2fa36b; }
+    .bar-row { margin: 6px 0; }
+    .bar-top { display: flex; justify-content: space-between; font-size: 12px; color: #4a5366; }
+    .bar { height: 8px; border-radius: 4px; background: #eef2ff; overflow: hidden; margin-top: 3px; }
+    .bar > i { display: block; height: 100%; background: linear-gradient(90deg, #ff7a59, #ff5c8a); }
+    .utab { width: 100%; border-collapse: collapse; font-size: 12px; }
+    .utab th, .utab td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #f0f2f8; white-space: nowrap; }
+    .utab th { color: #8a93a6; font-weight: 600; }
+    .utab-wrap { max-height: 300px; overflow: auto; border: 1px solid #eef0f6; border-radius: 10px; }
+    .pill { font-size: 11px; border-radius: 6px; padding: 1px 6px; }
+    .pill.ok { background: #e8f7ef; color: #2fa36b; }
+    .pill.err { background: #fdecec; color: #e0414a; }
   </style>
 </head>
 <body>
@@ -116,7 +136,34 @@
       </div>
     </div>
 
-    <!-- 第三行：知识库管理（占满整行） -->
+    <!-- 第三行：模型用量统计（数据源 = 网关 app/llm/gateway.py 记的那条 JSONL 流水） -->
+    <div class="card">
+      <h2>📊 用量统计（每 5 秒自动刷新 · 只记不写，账由网关记）</h2>
+      <div class="small" id="usageMeta">读取中…</div>
+      <div class="tiles" id="usageTiles" style="margin-top:10px;"></div>
+
+      <div style="margin-top:14px;">
+        <div class="small" style="margin-bottom:6px;">各模型调用占比</div>
+        <div id="usageModels"></div>
+      </div>
+
+      <div style="margin-top:14px;">
+        <div class="small" style="margin-bottom:6px;">最近调用（最新在前）</div>
+        <div class="utab-wrap" id="usageRecent"><div class="empty">还没有调用记录</div></div>
+      </div>
+
+      <div>
+        <button class="btn ghost" id="refreshUsage">立即刷新</button>
+        <button class="btn ghost" id="clearUsage">清空用量记录</button>
+        <span class="small" id="usageStatus" style="margin-left:8px;"></span>
+      </div>
+      <div class="small" style="margin-top:8px;">
+        流水文件：<code>app/data/llm_usage.jsonl</code>（一行一次调用，已排除入库）。
+        「调用方」一列：学生对话记<b>会话 id</b>，内部链路（语义判定 / 话术润色 / 后台测连通）记<b>功能名</b>。
+      </div>
+    </div>
+
+    <!-- 第四行：知识库管理（占满整行） -->
     <div class="card">
       <h2>📚 知识库管理（零代码维护，学生端问答直接吃这份数据）</h2>
       <div class="grid2">
@@ -395,10 +442,85 @@
     document.getElementById("saveApi").addEventListener("click", saveApi);
     document.getElementById("testApi").addEventListener("click", testApi);
 
+    // ---------- 用量统计 ----------
+    // 数字只做展示：后端已经把汇总算好了，前端不碰原始数据。
+    function _num(n) { return (n === 0 || n) ? String(n) : "0"; }
+
+    async function loadUsage() {
+      let d;
+      try {
+        d = await (await fetch("/api/admin/usage?limit=50")).json();
+      } catch (e) {
+        document.getElementById("usageMeta").textContent = "用量接口暂时读不到，5 秒后自动重试";
+        return;
+      }
+      if (!d.ok) { document.getElementById("usageMeta").textContent = "用量接口返回异常"; return; }
+
+      // 六个数字格
+      const tiles = [
+        { k: "总调用次数", n: _num(d.total_calls) },
+        { k: "总 token", n: _num(d.total_tokens) },
+        { k: "成功", n: _num(d.ok_calls), cls: "good" },
+        { k: "失败", n: _num(d.error_calls), cls: d.error_calls ? "bad" : "" },
+        { k: "平均耗时(ms)", n: _num(d.avg_latency_ms) },
+        { k: "调用方个数", n: _num(d.users) },
+      ];
+      document.getElementById("usageTiles").innerHTML = tiles.map(t =>
+        `<div class="tile ${t.cls || ""}"><div class="n">${t.n}</div><div class="k">${t.k}</div></div>`
+      ).join("");
+
+      document.getElementById("usageMeta").textContent =
+        `提示 token ${_num(d.prompt_tokens)} · 完成 token ${_num(d.completion_tokens)}`
+        + (d.last_ts ? ` · 最后一条：${d.last_ts}` : "");
+
+      // 各模型占比
+      const models = d.models || [];
+      document.getElementById("usageModels").innerHTML = models.length
+        ? models.map(m => `
+            <div class="bar-row">
+              <div class="bar-top"><span>${escapeHtml(m.model)}</span>
+                <span>${m.calls} 次 · ${_num(m.tokens)} tokens · ${m.share}%</span></div>
+              <div class="bar"><i style="width:${Math.max(m.share, 1)}%"></i></div>
+            </div>`).join("")
+        : '<div class="empty">还没有调用记录</div>';
+
+      // 最近调用
+      const rows = d.recent || [];
+      document.getElementById("usageRecent").innerHTML = rows.length
+        ? `<table class="utab"><thead><tr>
+             <th>时间</th><th>调用方</th><th>模型</th><th>提示</th><th>完成</th>
+             <th>耗时</th><th>状态</th><th>错误</th></tr></thead><tbody>${
+            rows.map(r => `<tr>
+              <td>${escapeHtml(r.ts || "")}</td>
+              <td>${escapeHtml(r.user || "")}</td>
+              <td>${escapeHtml(r.model || "")}</td>
+              <td>${_num(r.prompt_tokens)}</td>
+              <td>${_num(r.completion_tokens)}</td>
+              <td>${_num(r.latency_ms)} ms</td>
+              <td><span class="pill ${r.status === "ok" ? "ok" : "err"}">${r.status === "ok" ? "成功" : "失败"}</span></td>
+              <td>${escapeHtml((r.error || "").slice(0, 40))}</td>
+            </tr>`).join("")}</tbody></table>`
+        : '<div class="empty">还没有调用记录</div>';
+    }
+
+    async function clearUsage() {
+      const st = document.getElementById("usageStatus");
+      if (!confirm("确定清空全部用量记录吗？只清统计流水，不动任何待办/课表/会话。")) return;
+      const d = await (await fetch("/api/admin/usage/clear", { method: "POST" })).json();
+      st.textContent = "✅ " + (d.message || "已清空");
+      loadUsage();
+      setTimeout(() => { st.textContent = ""; }, 4000);
+    }
+
+    document.getElementById("refreshUsage").addEventListener("click", loadUsage);
+    document.getElementById("clearUsage").addEventListener("click", clearUsage);
+
     // 进入页面先拉一次，然后每 5 秒自动刷新收件箱和工单
     loadNotices(); loadPersona(); loadKB(); loadMessages(); loadWorkOrders(); loadApiSettings();
+    loadUsage();
     setInterval(loadMessages, 5000);
     setInterval(loadWorkOrders, 5000);
+    setInterval(loadUsage, 5000);
   </script>
 </body>
 </html>
