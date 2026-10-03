@@ -534,17 +534,20 @@ def _no_card_answer() -> str:
     )
 
 
-def _tt_import_answer(n_courses: int, source: str = "") -> str:
-    """课表导入兜底补出「确认修改」卡时那句回话。
+def _tt_confirm_answer(n_courses: int, source: str = "") -> str:
+    """上传课表后那句回话：**只问"要不要改"，不逐门念课**。
 
-    模型的原话不能沿用：它多半在文字里念了一遍清单、还可能自称"已导入"，
-    而此刻真正挂出来的是这张卡——话术跟着事实走，清单看卡，别看聊天流。
+    学生原话（2026-10-04）：「如果是上传课表就弹是否修改就行，不用每门课
+    单独拎出来」。所以：
+    - 模型的原话**不沿用**——它多半把十几门课又念了一遍（还可能自称"已导入"），
+      而此刻真正要他动手的是下面那张卡；
+    - 卡上也只给门数（见 `confirm.html` 的 `timetable_change`），
+      清单他自己在文件里看过，确认后周表上也会一条条列出来。
     """
     src = f"（清单来自{source}）" if source else ""
     return (
-        f"📄 课表读好了，共 {n_courses} 门课{src}——「确认修改」卡已经挂出来了，"
-        "卡上就是完整预览清单。\n"
-        "**点【确认修改】**才会写入周表；不想导就点【取消】，什么都不会动。"
+        f"📄 课表读好了，共 {n_courses} 门课{src}。要不要用这份课表替换现在的周表？\n"
+        "**点卡片上的【确认修改】**才写入；不想改就点【取消】，周表一个字都不会动。"
     )
 
 
@@ -3008,6 +3011,7 @@ async def _chat_impl(req: Request, meta: dict):
     model_opts = list(result.get("options") or [])
     final_answer = result["answer"]
     final_trace = result["trace"]
+    tt_source = ""   # 兜底补卡时课程清单的出处（"管家回话" / "文件原文"），只在回话里带一句
     if not model_opts and looks_like_timetable_import(message):
         # 课表导入请求走**自己的**兜底，绝不进下面的待办补条——
         # 那会把模型话术里的「确认修改」当任务名，挂出
@@ -3026,10 +3030,12 @@ async def _chat_impl(req: Request, meta: dict):
         if tt_courses:
             model_opts = [{
                 "kind": "timetable_change",
-                "summary": f"导入课表（{tt_src}解析 {len(tt_courses)} 门课，系统补出确认卡）",
+                # 卡上只给门数：学生要的是"要不要改"，不是把十几门课再念一遍
+                # （2026-10-04 学生原话「不用每门课单独拎出来」）。
+                "summary": f"导入课表（共 {len(tt_courses)} 门课）",
                 "courses": tt_courses,
             }]
-            final_answer = _tt_import_answer(len(tt_courses), tt_src)
+            tt_source = tt_src
             final_trace = list(result.get("trace") or []) + [{
                 "step": 1,
                 "phase": "🛟 模型没调课表提案工具 → 系统从它的话里补出「确认修改」卡",
@@ -3070,6 +3076,16 @@ async def _chat_impl(req: Request, meta: dict):
                 "step": 1,
                 "phase": "⚠️ 模型自称已提交但系统补不出卡 → 如实纠正，不让学生空等",
             }]
+
+    # 上传课表 → 只要一张「是否修改」卡，回话统一成一句"要不要改"。
+    # 模型自己调了 propose_timetable_change 时最爱在文字里把十几门课再念一遍，
+    # 那句原话必须换掉（学生原话：不用每门课单独拎出来）——
+    # 清单他自己在文件里看过，确认后周表上也会一条条列出来。
+    if looks_like_timetable_import(message):
+        _tt_opts = [o for o in model_opts if o.get("kind") == "timetable_change"]
+        if _tt_opts:
+            _n = len(_tt_opts[-1].get("courses") or [])
+            final_answer = _tt_confirm_answer(_n, tt_source)
 
     # 写进会话历史的是**学生最终看到的那一句**（补条之后的话术）。
     # 以前这一步在补条之前，结果刷新页面看到的是模型那句"提案已发出"（底下没按钮），

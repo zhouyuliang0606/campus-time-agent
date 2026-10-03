@@ -1374,7 +1374,7 @@
       if (confirmPageOk && tts.length === 1) {
         const hint = document.createElement("div");
         hint.className = "opt-hint";
-        hint.textContent = "🗓️ 课表修改提案（整表替换），在下面这条确认条上点【确认变更】才会生效：";
+        hint.textContent = "🗓️ 课表修改提案（整表替换），在下面这条确认条上点【确认修改】才会生效：";
         wrap.appendChild(hint);
         container.appendChild(wrap);
         openConfirm(tts[tts.length - 1], container);
@@ -1725,17 +1725,19 @@
     document.getElementById("schNext").addEventListener("click", () => { if (schTab === "week") schWeekOffset++; else schMonthOffset++; renderSchCurrent(); });
 
     // 给管家的导入指令（面板上传与聊天上传共用同一段话）：
-    // 人设规矩是"预览确认制"——预览清单**就是**「确认修改」卡上的内容，
-    // 所以必须点名让管家调 propose_timetable_change 把整份课表交上来出卡。
+    // 人设规矩是"预览确认制"——但**预览不等于把课一门门念出来**。
+    // 学生原话（2026-10-04）：「如果是上传课表就弹是否修改就行，不用每门课单独拎出来」。
+    // 所以课程只进工具参数（系统拿去写库），聊天里只留一句"读好了，共 N 门课"。
     // ⚠️ 不能说"先不要写入周表，等我确认后再导入"：模型会把这句读成"先别出卡"，
     //    结果只在文字里发清单、卡永远不来（2026-10-03 学生截图实测）。
     function timetableImportMsg(name, chars) {
       return `我上传了一份课表文件《${name}》（共 ${chars} 字）。请先用 read_uploaded_file 读取内容，` +
         `把解析出的课程整理成完整清单（星期、时间、课程名、地点；"第几节"这类表述` +
         `按学校常见上课时间换算成 HH:MM，day 用 1=周一 到 7=周日），` +
-        `然后**调用 propose_timetable_change** 把整份课表交上来，给我出「确认修改」卡——` +
-        `卡上就是预览清单，我点确认后由系统写入周表。` +
-        `不要只用文字发清单，也不要自己宣布导入成功；写不写入永远等我点卡。`;
+        `然后**调用 propose_timetable_change** 把整份课表交上来，给我出「确认修改」卡。` +
+        `回话里**只说一句**「课表读好了，共 N 门课，要不要替换现在的周表」——` +
+        `**不要把课一门门再念一遍**（清单在文件里我看过了，确认后周表上也会列出来）。` +
+        `不要自己宣布导入成功；写不写入永远等我点卡。`;
     }
 
     // 面板里直接上传课表：上传文件 → 发给管家（planner 模块）→ 结果进聊天 + 刷新周月表

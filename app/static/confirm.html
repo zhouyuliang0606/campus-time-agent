@@ -198,13 +198,15 @@ const KIND = {
     },
   },
   timetable_change: {
-    icon: "📚", title: "课表变更", confirm: "确认变更", danger: false,
+    // 学生要的是"是否修改"两个字（2026-10-04 原话：「如果是上传课表就弹是否修改就行，
+    // 不用每门课单独拎出来」）→ 按钮就叫【确认修改】，跟规划页那颗「确认修改课表」对齐。
+    icon: "📚", title: "课表修改", confirm: "确认修改", danger: false,
     render(p) {
       const cs = Array.isArray(p.courses) ? p.courses : [];
-      // 学生只要"确认/取消"两个字：一句话说清改了什么 + 变更后几门课，足够了。
-      // 之前把整张新课表 11 门全列出来，弹窗被撑到一屏高，按钮都挤没了。
-      return `<p class="summary">${esc(p.summary || "课表变更")}</p>
-        <div class="meta">确认后周表共 <b>${cs.length}</b> 门课。</div>
+      // 不列课名：之前把整张新课表 11 门全列出来，弹窗被撑到一屏高、按钮都挤没了；
+      // 而且学生自己上传的文件他看过，确认后周表上也会一条条列出来。
+      return `<p class="summary">${esc(p.summary || "课表修改")}</p>
+        <div class="meta">要不要用这份课表替换现在的周表？确认后周表共 <b>${cs.length}</b> 门课。</div>
         <div class="dlg-warn">点【${esc(k_confirm(p))}】才写入周表；点【取消】原封不动。</div>`;
     },
     async apply(p) {
