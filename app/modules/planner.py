@@ -1137,7 +1137,14 @@ _TT_MAX_COURSES = 80  # 一张课表不可能有这么多门课，超了多半�
 # 课名/地点格的"像名字"闸门：短、没有句读、至少含一个汉字或字母。
 # 没有这道闸门，模型话术里的整句（"已经把「确认修改」卡发给你了…"）会被当成课名——
 # 抠出假课比抠不出来更糟（2026-10-03 反向测试实测抓到）。
-_TT_SENT_PUNCT = "，。！？；…《》‘’“”"
+_TT_SENT_PUNCT = "，。！？…《》‘’“”"
+# 时段词：它是"什么时候"，不是"在哪儿"。学生文件里常见「…；晚上 19:00-20:40 大学英语」，
+# 不滤掉的话前一门课的地栏会被写成"晚上"。
+_TT_PERIOD_WORDS = ("上午", "中午", "下午", "晚上", "早上", "傍晚", "夜里", "凌晨", "白天", "晚间")
+# 拆词的分隔符：竖线（含全角）、空白、分号逗号顿号——学生文件用「；」串一整天的课
+_TT_SPLIT_RE = re.compile(r"[|\s\uFF5C;；,，、]+")
+# 「高等数学（教三301）」这种课名带括号地点的写法
+_TT_BRACKET_RE = re.compile(r"^(.+?)[（(【\[](.+?)[）)】\]]$")
 
 
 def _tt_name_ok(t: str) -> bool:
@@ -1146,6 +1153,76 @@ def _tt_name_ok(t: str) -> bool:
     if any(p in t for p in _TT_SENT_PUNCT):
         return False
     return any("\u4e00" <= ch <= "\u9fff" or (ch.isascii() and ch.isalpha()) for ch in t)
+
+
+def _tt_tokens(seg: str) -> list:
+    """按分隔符切词（不做过滤，过滤交给调用方）。"""
+    return [t.strip() for t in _TT_SPLIT_RE.split(seg or "") if t.strip()]
+
+
+def _tt_pick_names(seg: str, day: str | None) -> list:
+    """一段文字里"像课名/地点"的词（滤掉分隔线、表头、时段词、星期）。"""
+    out = []
+    for t in _tt_tokens(seg):
+        if t in ("---", "--", "-", ":", "：") or set(t) <= set("-—―:："):
+            continue
+        if any(h in t.lower() for h in _TT_HEAD_WORDS):
+            continue
+        if day and day in t:  # 残留的「周二：」这种下一天的表头不许混进来
+            continue
+        if t in _TT_PERIOD_WORDS or _TT_DAY_RE.search(t):
+            continue
+        if not _tt_name_ok(t):
+            continue
+        out.append(t)
+    return out
+
+
+def _tt_course_loc(name: str, rest: list) -> tuple:
+    """从一个词里拆出（课名, 地点）。「高等数学（教三301）」→「高等数学」+「教三301」。"""
+    m = _TT_BRACKET_RE.match(name)
+    if m:
+        a, b = m.group(1).strip(), m.group(2).strip()
+        if _tt_name_ok(a) and len(a) <= 12:
+            return a, (b if _tt_name_ok(b) else "")
+    for t in rest:  # 括号里没有地点 → 后面的那个词多半是教室
+        if t != name:
+            return name, t
+    return name, ""
+
+
+def _tt_courses_in_line(line: str) -> list:
+    """一整行能抠出**好几门课**——学生文件与模型回话都是"一天一行、用；串起来"。
+
+    老写法一行只认第一个钟点（其余全被吞掉），学生那份文件因此只抠出 5 门里的 1 门
+    （2026-10-04 实测）。现在按**每个钟点**切段：两个钟点之间那段就是这一门课的
+    "课名 + 地点"。
+    """
+    spans = list(_TT_TIME_RE.finditer(line))
+    if not spans:
+        return []  # 没有起止钟点的行不是课程行（表头、分隔线、「第1-2节」未换算的行）
+    dm = _TT_DAY_RE.search(line)
+    day = dm.group(1) if dm else None
+
+    # markdown 表的 day 列可能是纯数字 1-7（前端模板就是这么交代的）
+    if day is None:
+        pre = _tt_tokens(line[:spans[0].start()])
+        day = next((t for t in pre if re.fullmatch(r"[1-7]", t)), None)
+    if not day:
+        return []
+
+    out = []
+    for i, m in enumerate(spans):
+        start = f"{int(m.group(1)):02d}:{m.group(2)}"
+        end = f"{int(m.group(3)):02d}:{m.group(4)}"
+        stop = spans[i + 1].start() if i + 1 < len(spans) else len(line)
+        names = _tt_pick_names(line[m.end():stop], day)
+        if not names:
+            continue  # 有时段没课名 → 这半行不认（比编一个课名强）
+        course, location = _tt_course_loc(names[0], names[1:])
+        out.append({"day": day, "start": start, "end": end,
+                    "course": course, "location": location})
+    return out
 
 
 def looks_like_timetable_import(message: str) -> bool:
@@ -1164,55 +1241,12 @@ def looks_like_timetable_import(message: str) -> bool:
     return "课表" in t and "read_uploaded_file" in t
 
 
-def _tt_course_row(line: str) -> dict | None:
-    """把一行"表格形状"的话抠成一条课程；认不出返回 None。"""
-    m = _TT_TIME_RE.search(line)
-    if not m:
-        return None  # 没有起止钟点的行不是课程行（表头、分隔线、「第1-2节」未换算的行）
-    start = f"{int(m.group(1)):02d}:{m.group(2)}"
-    end = f"{int(m.group(3)):02d}:{m.group(4)}"
-
-    dm = _TT_DAY_RE.search(line)
-    day = dm.group(1) if dm else None
-
-    # 摘掉时间与星期，剩下的按竖线/空白拆开，滤掉分隔线与表头词
-    rest = line[:m.start()] + " " + line[m.end():]
-    if dm:
-        rest = rest.replace(dm.group(1), " ")
-    toks = [t.strip() for t in re.split(r"[|\s]+", rest) if t.strip()]
-    toks = [t for t in toks
-            if t not in ("---", "--", "-", ":")
-            and not set(t) <= set("-—―:：")
-            and not any(h in t.lower() for h in _TT_HEAD_WORDS)]
-
-    # markdown 表的 day 列可能是纯数字 1-7（前端模板就是这么交代的）。
-    # 「1」和「周一」同现时两样都是 day 列，数字格必须一并摘掉——
-    # 否则它会被当成课名（实测「| 1 | 周一 | 08:00-09:40 | 高数 |」抠出课名"1"）。
-    digit_day = None
-    for t in list(toks):
-        if re.fullmatch(r"[1-7]", t):
-            digit_day = t
-            toks.remove(t)
-            break  # 只摘第一格；课表里不会有第二处"孤零零的 1-7"
-    if len(toks) < 1:  # 摘完数字 day 后一个词都不剩 → 这行没有课名
-        return None
-    # 只留"像名字"的词当课名/地点（整句话术、纯数字都进不来）
-    names = [t for t in toks if _tt_name_ok(t)]
-    if not names:
-        return None
-    course = names[0]
-    location = names[-1] if len(names) >= 2 and names[-1] != course else ""
-    d = day or digit_day
-    if not d:
-        return None
-    return {"day": d, "start": start, "end": end, "course": course, "location": location}
-
-
 def timetable_courses_from_reply(text: str) -> list | None:
     """模型没调工具、只在文字里念了课表清单 → 系统替它把课程抠回来。
 
-    只认"表格形状"的话：竖线分列的表行（markdown 表），
-    或「周一 08:00-09:40 高等数学 教三301」这种一行一门的纯文本行。
+    只认"表格形状"的话：竖线分列的表行（markdown 表）、
+    「周一 08:00-09:40 高等数学 教三301」这种纯文本行、
+    以及学生文件里最常见的"一天一行、用；串好几门课"。
     抠出来后再过一遍 validate_courses（day/时间不合法的整行丢弃）；
     一条都抠不出 / 全都不合法 → 返回 None，让上层**如实说**没整理出来，
     绝不许上层把它捞成待办卡。
@@ -1222,14 +1256,12 @@ def timetable_courses_from_reply(text: str) -> list | None:
         line = raw.strip()
         if not line:
             continue
-        row = _tt_course_row(line)
-        if row is None:
-            continue
-        key = json.dumps(row, ensure_ascii=False, sort_keys=True)
-        if key in seen:  # 模型爱把同一门课念两遍，去重
-            continue
-        seen.add(key)
-        courses.append(row)
+        for row in _tt_courses_in_line(line):
+            key = json.dumps(row, ensure_ascii=False, sort_keys=True)
+            if key in seen:  # 模型爱把同一门课念两遍，去重
+                continue
+            seen.add(key)
+            courses.append(row)
         if len(courses) >= _TT_MAX_COURSES:
             break
     if not courses:

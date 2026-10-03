@@ -534,17 +534,58 @@ def _no_card_answer() -> str:
     )
 
 
-def _tt_import_answer(n_courses: int) -> str:
+def _tt_import_answer(n_courses: int, source: str = "") -> str:
     """课表导入兜底补出「确认修改」卡时那句回话。
 
     模型的原话不能沿用：它多半在文字里念了一遍清单、还可能自称"已导入"，
     而此刻真正挂出来的是这张卡——话术跟着事实走，清单看卡，别看聊天流。
     """
+    src = f"（清单来自{source}）" if source else ""
     return (
-        f"📄 课表读好了，共 {n_courses} 门课——「确认修改」卡已经挂出来了，"
+        f"📄 课表读好了，共 {n_courses} 门课{src}——「确认修改」卡已经挂出来了，"
         "卡上就是完整预览清单。\n"
         "**点【确认修改】**才会写入周表；不想导就点【取消】，什么都不会动。"
     )
+
+
+def _tt_file_courses(message: str, session_id: str = "") -> list | None:
+    """兜底的兜底：直接读**上传的那份文件**抠课程。
+
+    学生原话（2026-10-04）：「解析出来了，卡没出来……由于是修改课表，
+    我认为可以弹是否更改课表的卡」。模型回话的排版千奇百怪（列表体、表格、
+    括号地点、一行多课），系统抠不干净时，**文件原文**才是最硬的依据——
+    它已经躺在库里，不用再问模型一次。
+
+    ⛔ 只按**点名**找文件（消息里的《文件名》，重试时从本会话最近几句里找），
+    **绝不拿"最近那份文件"猜**——万一那是别的资料，挂出来的就是一张假卡。
+    """
+    name = None
+    m = re.search(r"《([^》]+)》", message or "")
+    if m:
+        name = m.group(1).strip()
+    else:
+        # 「重新导入课表」这种重试没点名文件 → 回本会话最近几句话里找《…》
+        for msg in reversed(get_conversation(session_id) or []):
+            if (msg.get("role") or "") != "user":
+                continue
+            m2 = re.search(r"《([^》]+)》", msg.get("content") or "")
+            if m2:
+                name = m2.group(1).strip()
+                break
+    if not name:
+        return None
+    fid = None
+    for f in (list_uploads() or []):
+        if (f.get("name") or "").strip() == name:
+            fid = f.get("id")
+            break
+    if not fid:
+        return None
+    try:
+        content = get_upload(fid)
+    except Exception:
+        return None
+    return timetable_courses_from_reply(content or "")
 
 
 def _tt_import_no_card_answer() -> str:
@@ -2975,17 +3016,24 @@ async def _chat_impl(req: Request, meta: dict):
         # 念了一遍课程清单 → 系统把清单抠回来，自己把「确认修改」卡挂出来
         # （写库仍然只在学生点卡之后，执行层不经过模型）。
         tt_courses = timetable_courses_from_reply(result.get("answer") or "")
+        tt_src = "管家回话"
+        tt_from_file = _tt_file_courses(message, session_id)
+        # 两路都抠，取**更全**的那份：学生那份文件原文（一天一行、；串多门）
+        # 经常比模型回话完整；反过来模型能替他把"第几节"换算成钟点。
+        # 宁可多列——清单全在卡上，学生看了再决定点不点确认。
+        if tt_from_file and (not tt_courses or len(tt_from_file) > len(tt_courses)):
+            tt_courses, tt_src = tt_from_file, "文件原文"
         if tt_courses:
             model_opts = [{
                 "kind": "timetable_change",
-                "summary": "导入课表文件（管家念了清单没出卡，系统补出确认卡）",
+                "summary": f"导入课表（{tt_src}解析 {len(tt_courses)} 门课，系统补出确认卡）",
                 "courses": tt_courses,
             }]
-            final_answer = _tt_import_answer(len(tt_courses))
+            final_answer = _tt_import_answer(len(tt_courses), tt_src)
             final_trace = list(result.get("trace") or []) + [{
                 "step": 1,
                 "phase": "🛟 模型没调课表提案工具 → 系统从它的话里补出「确认修改」卡",
-                "answer": f"共 {len(tt_courses)} 门课",
+                "answer": f"共 {len(tt_courses)} 门课（清单来自{tt_src}）",
             }]
         else:
             final_answer = _tt_import_no_card_answer()
