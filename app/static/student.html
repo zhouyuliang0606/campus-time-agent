@@ -421,6 +421,107 @@
   .av-grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 8px; }
   .av-opt { aspect-ratio: 1; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 20px; cursor: pointer; color: #fff; border: 2px solid transparent; }
   .av-opt.sel { border-color: #1f2733; }
+
+  /* ============ 视觉改版 · 清爽留白（2026-10-02） ============
+     只改观感（三栏比例 / 留白 / 配色 / 控件圆角），**不动任何 id、类名与交互逻辑**。
+     放在所有基础规则之后、媒体查询之前：
+     ① 同权重下后者覆盖前者，所以能盖掉上面那些旧样式；
+     ② 又在移动端断点之前，所以 @media 里的响应式规则依旧生效（不会被这次改版破坏）。 */
+  :root {
+    --bg: #f7f8fa;            /* 页面底色：更柔、更浅，去掉原来的偏蓝 */
+    --surface: #fff;          /* 卡片/面板 */
+    --line: #eaedf3;          /* 弱边框（主） */
+    --line-strong: #dee4ee;   /* 弱边框（强调，如虚线上传区） */
+    --text: #22283a;          /* 一级文字 */
+    --text-2: #5b6579;        /* 二级文字 */
+    --text-3: #8d96a8;        /* 三级文字（辅助说明） */
+    --brand: #4d6bb5;         /* 主色：低饱和蓝（原来 #4f7cff 太跳） */
+    --brand-soft: #eef2fb;    /* 主色浅底 */
+    --brand-soft-2: #f6f8fd;  /* 更浅的灰蓝底 */
+    --radius: 10px;           /* 控件统一圆角 */
+    --radius-lg: 14px;        /* 卡片统一圆角 */
+    --gap: 16px;              /* 区块统一间距 */
+  }
+  body { background: var(--bg); color: var(--text); }
+  header { background: var(--brand); }
+
+  /* —— ① 三栏比例：侧边栏收窄、主区更宽、输入区收紧 —— */
+  .sidebar { width: 200px; padding: 16px 14px; gap: 6px; border-right: 1px solid var(--line); }
+  .sb-profile { padding: 12px; border-radius: var(--radius-lg); background: var(--brand-soft-2); border-color: var(--line); }
+  .sb-profile:hover { border-color: var(--brand); }
+  .sb-item { padding: 12px 14px; border-radius: var(--radius); gap: 12px; color: var(--text-2); }
+  .sb-item:hover { background: var(--brand-soft-2); }
+  .sb-item.active { background: var(--brand-soft); color: var(--brand); border-color: transparent; }
+  .topbar { padding: 14px 24px; border-bottom: 1px solid var(--line); }
+  .stage { padding: 24px 28px; }
+  .composer { padding: 14px 28px 18px; border-top: 1px solid var(--line); }
+
+  /* —— ② 留白：间距与内边距整体放大 —— */
+  .modules { gap: var(--gap); }
+  .mod { padding: 18px 14px; border-radius: var(--radius-lg); border: 1px solid var(--line); }
+  .mod:hover { border-color: var(--brand); transform: none; }
+  .mod.active { border-color: var(--brand); background: var(--brand-soft); }
+  .wk { gap: 8px; }
+  .mcal { gap: 8px; }
+  .faq-grid { gap: 12px; }
+  .msg { margin: 16px 0; }
+  .msg .bubble { padding: 12px 16px; line-height: 1.65; border-radius: var(--radius-lg); }
+  .user .bubble { background: var(--brand); }
+  .bot .bubble { background: #f2f4f9; }
+  #log { padding: 22px 24px; border-radius: var(--radius-lg); box-shadow: none; border: 1px solid var(--line); }
+  .card { padding: 22px 24px; margin-bottom: 20px; border-radius: var(--radius-lg); box-shadow: none; border: 1px solid var(--line); }
+  .notices { border-radius: var(--radius-lg); box-shadow: none; border: 1px solid var(--line); margin-bottom: 20px; }
+  .persona-bar { padding: 12px 16px; border-radius: var(--radius-lg); box-shadow: none; border: 1px solid var(--line); margin-bottom: 16px; }
+  .persona { border: 1px solid var(--line); border-radius: 20px; padding: 7px 14px; }
+  .persona.active { border-color: var(--brand); background: var(--brand-soft); color: var(--brand); }
+  .view { border-radius: var(--radius-lg); box-shadow: none; border: 1px solid var(--line); }
+  .view-head { padding: 16px 22px; border-bottom: 1px solid var(--line); }
+  .view-body { padding: 18px 22px; }
+  .row, .wo-item, .todo-row, .up-row { padding: 13px 16px; border-radius: var(--radius); border: 1px solid var(--line); }
+  .row { margin-bottom: 12px; }
+  .wo-item, .up-row { margin-bottom: 10px; }
+  .todo-list { gap: 12px; }
+  .opt-card { padding: 12px 16px; border-radius: var(--radius); border: 1px solid var(--line); background: var(--brand-soft-2); }
+  .opt-card.checked { border-color: var(--brand); background: var(--brand-soft); }
+  .opt-card .info { line-height: 1.6; }
+  .faq-btn { border: 1px solid var(--line); background: var(--surface); border-radius: var(--radius); padding: 14px 12px; }
+  .faq-btn:hover { border-color: var(--brand); background: var(--brand-soft); color: var(--brand); }
+
+  /* —— ③ 配色：主色降饱和、文字分三级、边框弱化 —— */
+  .chip { border-color: var(--line); color: var(--brand); background: var(--surface); border-radius: 20px; }
+  .chip:hover { background: var(--brand-soft); }
+  .paste-btn, .wo-item .mini { border-color: var(--line); color: var(--brand); background: var(--surface); }
+  .paste-btn:hover { background: var(--brand-soft); }
+  .btn, .confirm-btn, .inputbar button, .wo-form button { background: var(--brand); border-radius: var(--radius); }
+  .btn.ghost { background: var(--brand-soft); color: var(--brand); }
+  .tab { border-color: var(--line); color: var(--text-2); border-radius: var(--radius); }
+  .tab.active { background: var(--brand); border-color: var(--brand); color: #fff; }
+  .inputbar input, .model-sel, .slot-other, .wo-form select, .wo-form textarea, .attach, .mic {
+    border: 1px solid var(--line); border-radius: var(--radius);
+  }
+  .inputbar input:focus, .model-sel:focus { border-color: var(--brand); }
+  .hint, .opt-hint, .persona-bar .lbl, .thinking, .card .desc { color: var(--text-3); }
+  .msg .who, .empty, .sb-sub, .todo-sub, .row .info .sub, .wo-item .t .sub, .up-sub,
+  .wk .wd, .mcal .wd, .mcal .more { color: var(--text-3); }
+  .trace { border-color: var(--line); background: var(--brand-soft-2); color: var(--text-2); }
+  .trace > summary { color: var(--brand); }
+  .wk .day, .mcal .d { border: 1px solid var(--line); background: var(--surface); }
+  .wk .day.today, .mcal .d.today { border-color: var(--brand); background: var(--brand-soft-2); }
+  .mcal .d.today { box-shadow: none; }
+  .mcal .d.sel { background: var(--brand-soft); }
+  .wk .wd.today, .mcal .tdy { color: var(--brand); }
+  .evt.course { background: var(--brand-soft); border-color: var(--brand); color: #33456e; }
+  .tag { background: var(--brand-soft); color: var(--brand); }
+  .tb-link { background: var(--brand-soft); color: var(--brand); border-radius: var(--radius); }
+  .tb-link:hover { background: var(--brand-soft-2); }
+  .sb-avatar { background: var(--brand); }
+  .sb-more { border-top: 1px solid var(--line); }
+  .up-drop { border-color: var(--line-strong); }
+  .up-drop.over { border-color: var(--brand); background: var(--brand-soft); }
+  .probe-out { border-color: var(--line); background: var(--brand-soft-2); }
+  .row .code, .opt-card .info b { color: var(--brand); }
+  .st.cook { background: var(--brand); }
+
   @media (max-width: 720px) {
     .sidebar { width: 64px; padding: 10px 8px; }
     .sb-name, .sb-sub, .sb-item span:not(.ico), .sb-more-toggle span:not(.ico), .sb-foot { display: none; }
@@ -1624,12 +1725,17 @@
     document.getElementById("schNext").addEventListener("click", () => { if (schTab === "week") schWeekOffset++; else schMonthOffset++; renderSchCurrent(); });
 
     // 给管家的导入指令（面板上传与聊天上传共用同一段话）：
-    // 人设规矩是"预览确认制"——管家先读文件、给课程预览清单，学生确认后才真正写入周表
+    // 人设规矩是"预览确认制"——预览清单**就是**「确认修改」卡上的内容，
+    // 所以必须点名让管家调 propose_timetable_change 把整份课表交上来出卡。
+    // ⚠️ 不能说"先不要写入周表，等我确认后再导入"：模型会把这句读成"先别出卡"，
+    //    结果只在文字里发清单、卡永远不来（2026-10-03 学生截图实测）。
     function timetableImportMsg(name, chars) {
       return `我上传了一份课表文件《${name}》（共 ${chars} 字）。请先用 read_uploaded_file 读取内容，` +
-        `把解析出的课程整理成**预览清单**给我看（星期、时间、课程名、地点；"第几节"这类表述` +
-        `按学校常见上课时间换算成 HH:MM，day 用 1=周一 到 7=周日）。` +
-        `先不要写入周表，等我确认后再导入。`;
+        `把解析出的课程整理成完整清单（星期、时间、课程名、地点；"第几节"这类表述` +
+        `按学校常见上课时间换算成 HH:MM，day 用 1=周一 到 7=周日），` +
+        `然后**调用 propose_timetable_change** 把整份课表交上来，给我出「确认修改」卡——` +
+        `卡上就是预览清单，我点确认后由系统写入周表。` +
+        `不要只用文字发清单，也不要自己宣布导入成功；写不写入永远等我点卡。`;
     }
 
     // 面板里直接上传课表：上传文件 → 发给管家（planner 模块）→ 结果进聊天 + 刷新周月表

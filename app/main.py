@@ -97,6 +97,8 @@ from app.modules.planner import (
     is_add_todo_followup,
     is_mode_answer,
     is_slot_answer,
+    looks_like_timetable_import,
+    timetable_courses_from_reply,
     pick_todo_missing,
     retime_todo_proposal,
     todo_missing_advice,
@@ -529,6 +531,34 @@ def _no_card_answer() -> str:
         "刚才那句「已经提交 / 已经加入」不作数，是我说错了，别等它。\n\n"
         "你再说一遍要加什么（比如「帮我加个游泳」），我重新出一张确认条；\n"
         "**点【确认加入】、或者回一句「确认」**才会真正写进你的周表和月表。"
+    )
+
+
+def _tt_import_answer(n_courses: int) -> str:
+    """课表导入兜底补出「确认修改」卡时那句回话。
+
+    模型的原话不能沿用：它多半在文字里念了一遍清单、还可能自称"已导入"，
+    而此刻真正挂出来的是这张卡——话术跟着事实走，清单看卡，别看聊天流。
+    """
+    return (
+        f"📄 课表读好了，共 {n_courses} 门课——「确认修改」卡已经挂出来了，"
+        "卡上就是完整预览清单。\n"
+        "**点【确认修改】**才会写入周表；不想导就点【取消】，什么都不会动。"
+    )
+
+
+def _tt_import_no_card_answer() -> str:
+    """课表导入没出卡（模型没调工具、话里也抠不出课程清单）→ 如实说明。
+
+    ⚠️ 绝不能掉进下面的待办补条：那会把话术里的「确认修改」当任务名，
+    挂出「要不要把 确认修改 排进日程」的假卡（2026-10-03 学生截图实测）。
+    """
+    return (
+        "⚠️ 先说实话：文件我读到了，但这次**没能把课程整理成确认卡**，"
+        "周表还一个字都没动。\n\n"
+        "你再发一次「**重新导入课表**」（或重新上传文件后点「📅 让管家读取这份课表」）"
+        "我就再试一遍；还不行的话，把课程一行一条直接发给我也行——"
+        "比如「周一 08:00-09:40 高等数学 教三301」。"
     )
 
 
@@ -2937,7 +2967,33 @@ async def _chat_impl(req: Request, meta: dict):
     model_opts = list(result.get("options") or [])
     final_answer = result["answer"]
     final_trace = result["trace"]
-    if not model_opts:
+    if not model_opts and looks_like_timetable_import(message):
+        # 课表导入请求走**自己的**兜底，绝不进下面的待办补条——
+        # 那会把模型话术里的「确认修改」当任务名，挂出
+        # 「要不要把 确认修改 排进日程」的假卡（2026-10-03 学生截图实测）。
+        # 正路是：模型读了文件却忘了调 propose_timetable_change、只在文字里
+        # 念了一遍课程清单 → 系统把清单抠回来，自己把「确认修改」卡挂出来
+        # （写库仍然只在学生点卡之后，执行层不经过模型）。
+        tt_courses = timetable_courses_from_reply(result.get("answer") or "")
+        if tt_courses:
+            model_opts = [{
+                "kind": "timetable_change",
+                "summary": "导入课表文件（管家念了清单没出卡，系统补出确认卡）",
+                "courses": tt_courses,
+            }]
+            final_answer = _tt_import_answer(len(tt_courses))
+            final_trace = list(result.get("trace") or []) + [{
+                "step": 1,
+                "phase": "🛟 模型没调课表提案工具 → 系统从它的话里补出「确认修改」卡",
+                "answer": f"共 {len(tt_courses)} 门课",
+            }]
+        else:
+            final_answer = _tt_import_no_card_answer()
+            final_trace = list(result.get("trace") or []) + [{
+                "step": 1,
+                "phase": "⚠️ 课表导入没出卡 → 如实说明，绝不挂假卡",
+            }]
+    elif not model_opts:
         recent_add_req = _recent_add_request(session_id)
         rescued = rescue_proposal_from_reply(result["answer"], recent_add_req)
         if rescued is not None:

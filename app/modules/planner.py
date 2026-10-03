@@ -1118,6 +1118,126 @@ def validate_courses(courses: list) -> tuple[list, list]:
     return cleaned, errors
 
 
+# ============ 课表导入的出卡兜底（模型没调 propose_timetable_change 时用） ============
+#
+# 2026-10-03 学生截图实测：上传课表文件后，模型读了文件、把课程整理成一张**文字表格**，
+# 就是不调 propose_timetable_change → 界面上什么卡都没有；
+# 更糟的一次还触发了 main.py 的待办补条兜底，把话术里的「确认修改」当成了任务名，
+# 挂出「要不要把 确认修改 排进日程」的假卡。
+# 所以这里给两样东西：① 认出"这是导入课表的请求"；② 从模型的文字表格里把课程抠回来，
+# 让系统自己把「确认修改」卡挂出来（写库仍然只在学生点卡之后）。
+
+# 表格里时间格的写法：08:00-09:40 / 08:00–09:40（en dash）/ 8:00~9:40 / 08:00到09:40
+_TT_TIME_RE = re.compile(r"(\d{1,2})[:：](\d{2})\s*[-–—―~～至到]\s*(\d{1,2})[:：](\d{2})")
+# 星期格的写法：周一 / 星期一 / 周天（表格里 day=1..7 的纯数字格另算）
+_TT_DAY_RE = re.compile(r"(周[一二三四五六日天]|星期[一二三四五六日天])")
+# 表头/分隔线格：出现这些词的行不是课程
+_TT_HEAD_WORDS = ("星期", "时间", "课程", "地点", "day", "weekday")
+_TT_MAX_COURSES = 80  # 一张课表不可能有这么多门课，超了多半是抠错了，宁可放弃
+# 课名/地点格的"像名字"闸门：短、没有句读、至少含一个汉字或字母。
+# 没有这道闸门，模型话术里的整句（"已经把「确认修改」卡发给你了…"）会被当成课名——
+# 抠出假课比抠不出来更糟（2026-10-03 反向测试实测抓到）。
+_TT_SENT_PUNCT = "，。！？；…《》‘’“”"
+
+
+def _tt_name_ok(t: str) -> bool:
+    if not t or len(t) > 12:
+        return False
+    if any(p in t for p in _TT_SENT_PUNCT):
+        return False
+    return any("\u4e00" <= ch <= "\u9fff" or (ch.isascii() and ch.isalpha()) for ch in t)
+
+
+def looks_like_timetable_import(message: str) -> bool:
+    """这句是不是「让管家读课表文件导入」的请求。
+
+    只用在 main.py 的出卡兜底里挑路（要不要走课表补卡而不是待办补条），
+    **不参与路由**——正常请求照旧走各自分支。
+    探测刻意放宽：凡是提到课表文件/导入课表/读取课表的都算，
+    因为对这些句子挂"待办卡"永远都是错的（宁可漏补卡，不可挂假卡）。
+    """
+    t = message or ""
+    if any(w in t for w in ("导入课表", "课表导入", "读取课表", "课表文件",
+                            "上传课表", "读取这份课表", "解析课表")):
+        return True
+    # 前端 timetableImportMsg 模板里点名了工具名
+    return "课表" in t and "read_uploaded_file" in t
+
+
+def _tt_course_row(line: str) -> dict | None:
+    """把一行"表格形状"的话抠成一条课程；认不出返回 None。"""
+    m = _TT_TIME_RE.search(line)
+    if not m:
+        return None  # 没有起止钟点的行不是课程行（表头、分隔线、「第1-2节」未换算的行）
+    start = f"{int(m.group(1)):02d}:{m.group(2)}"
+    end = f"{int(m.group(3)):02d}:{m.group(4)}"
+
+    dm = _TT_DAY_RE.search(line)
+    day = dm.group(1) if dm else None
+
+    # 摘掉时间与星期，剩下的按竖线/空白拆开，滤掉分隔线与表头词
+    rest = line[:m.start()] + " " + line[m.end():]
+    if dm:
+        rest = rest.replace(dm.group(1), " ")
+    toks = [t.strip() for t in re.split(r"[|\s]+", rest) if t.strip()]
+    toks = [t for t in toks
+            if t not in ("---", "--", "-", ":")
+            and not set(t) <= set("-—―:：")
+            and not any(h in t.lower() for h in _TT_HEAD_WORDS)]
+
+    # markdown 表的 day 列可能是纯数字 1-7（前端模板就是这么交代的）。
+    # 「1」和「周一」同现时两样都是 day 列，数字格必须一并摘掉——
+    # 否则它会被当成课名（实测「| 1 | 周一 | 08:00-09:40 | 高数 |」抠出课名"1"）。
+    digit_day = None
+    for t in list(toks):
+        if re.fullmatch(r"[1-7]", t):
+            digit_day = t
+            toks.remove(t)
+            break  # 只摘第一格；课表里不会有第二处"孤零零的 1-7"
+    if len(toks) < 1:  # 摘完数字 day 后一个词都不剩 → 这行没有课名
+        return None
+    # 只留"像名字"的词当课名/地点（整句话术、纯数字都进不来）
+    names = [t for t in toks if _tt_name_ok(t)]
+    if not names:
+        return None
+    course = names[0]
+    location = names[-1] if len(names) >= 2 and names[-1] != course else ""
+    d = day or digit_day
+    if not d:
+        return None
+    return {"day": d, "start": start, "end": end, "course": course, "location": location}
+
+
+def timetable_courses_from_reply(text: str) -> list | None:
+    """模型没调工具、只在文字里念了课表清单 → 系统替它把课程抠回来。
+
+    只认"表格形状"的话：竖线分列的表行（markdown 表），
+    或「周一 08:00-09:40 高等数学 教三301」这种一行一门的纯文本行。
+    抠出来后再过一遍 validate_courses（day/时间不合法的整行丢弃）；
+    一条都抠不出 / 全都不合法 → 返回 None，让上层**如实说**没整理出来，
+    绝不许上层把它捞成待办卡。
+    """
+    courses, seen = [], set()
+    for raw in (text or "").splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        row = _tt_course_row(line)
+        if row is None:
+            continue
+        key = json.dumps(row, ensure_ascii=False, sort_keys=True)
+        if key in seen:  # 模型爱把同一门课念两遍，去重
+            continue
+        seen.add(key)
+        courses.append(row)
+        if len(courses) >= _TT_MAX_COURSES:
+            break
+    if not courses:
+        return None
+    cleaned, _errors = validate_courses(courses)
+    return cleaned or None
+
+
 def import_timetable(courses_json: str) -> str:
     """把整理好的课程写进周表（**仅供测试与内部调用**——AI 不再直接持有这个写入工具，
     修改/导入课表一律走 propose_timetable_change 提案 → 学生点确认卡 → 系统 apply）。
