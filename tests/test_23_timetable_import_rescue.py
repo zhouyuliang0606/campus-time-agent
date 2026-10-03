@@ -51,7 +51,12 @@ _CLAIM_ANSWER = (
 
 
 class _FakeEngine:
-    """恒定返回"只有文字、没有 options"的结果（钉死"模型没调工具"这条路径）。"""
+    """恒定返回"只有文字、没有 options"的结果（钉死"模型没调工具"这条路径）。
+
+    `options` 也做成类属性，好让 3-ter 那批钉住另一条路：
+    模型**自己调了** propose_timetable_change（options 里已有卡），
+    但文字里还是把课念了一遍 —— 那种回话也必须被换成一句"要不要改"。
+    """
 
     def __init__(self, *a, **kw):
         pass
@@ -59,10 +64,11 @@ class _FakeEngine:
     async def run(self, message, history=None):
         return {"answer": _FakeEngine.answer, "trace": [
             {"step": 1, "phase": "💡 最终回答", "answer": _FakeEngine.answer}],
-            "options": []}
+            "options": list(_FakeEngine.options or [])}
 
 
 _FakeEngine.answer = ""
+_FakeEngine.options = []
 
 
 def _fake_model_env():
@@ -74,6 +80,8 @@ def _fake_model_env():
     import app.main as M
     import app.config as _cfg
     import app.llm.client as _client
+    _FakeEngine.answer = ""
+    _FakeEngine.options = []
     old = (M.AgentEngine, M.get_llm_config, _cfg.get_llm_config, _client.DeepSeekClient)
     M.AgentEngine = _FakeEngine
     M.get_llm_config = lambda *a, **k: {"api_key": "test-key",
@@ -205,6 +213,13 @@ def batch_c_rescue_card():
         c.check("轨迹写明是系统补的卡",
                 any("补出「确认修改」卡" in (s.get("phase") or "")
                     for s in (d.get("trace") or [])))
+        # 学生原话（2026-10-04）：「不用每门课单独拎出来」——回话只问"要不要改"
+        c.check("回话只问要不要改",
+                "要不要用这份课表替换现在的周表" in (d.get("answer") or ""),
+                (d.get("answer") or "")[:60])
+        c.check("回话里不许逐门念课（课名不在回话里）",
+                not any(x in (d.get("answer") or "") for x in ("高等数学", "体育")),
+                (d.get("answer") or "")[:60])
         after = client.get("/api/timetable").json()
         c.check("没点确认 → 周表一个字没动",
                 before.get("courses") == after.get("courses"))
@@ -262,6 +277,70 @@ def batch_c2_file_source():
         c.check("没点名文件时绝不拿最近那份文件瞎猜 → 零卡",
                 not (d.get("options") or []),
                 str([o.get("kind") for o in (d.get("options") or [])]))
+    return c
+
+
+def batch_c3_no_course_list():
+    c = Checker()
+    title("3-ter. 上传课表只弹「是否修改」：模型自己出了卡，回话也不许念清单")
+
+    # 学生原话（2026-10-04）：「如果是上传课表就弹是否修改就行，不用每门课单独拎出来」。
+    # 最常见的一幕其实是**模型很乖地调了 propose_timetable_change**，
+    # 但文字里还是把十几门课又念了一遍 —— 学生看到的是一整屏重复清单。
+    VERBOSE = ("课表解析完成，共 3 门课：\n"
+               "- 周一 08:00-09:40 高等数学 教三301\n"
+               "- 周二 10:05-11:45 大学英语 外语楼204\n"
+               "- 周三 14:00-15:40 数据结构 机房B\n"
+               "请确认是否导入。")
+    COURSES = [
+        {"day": 1, "start": "08:00", "end": "09:40", "course": "高等数学", "location": "教三301"},
+        {"day": 2, "start": "10:05", "end": "11:45", "course": "大学英语", "location": "外语楼204"},
+        {"day": 3, "start": "14:00", "end": "15:40", "course": "数据结构", "location": "机房B"},
+    ]
+
+    with sandbox():
+        client = make_client()
+        before = client.get("/api/timetable").json()
+        restore = _fake_model_env()
+        try:
+            _FakeEngine.answer = VERBOSE
+            _FakeEngine.options = [{"kind": "timetable_change",
+                                    "summary": "导入 2026 秋季课表",
+                                    "courses": COURSES}]
+            d = _ask(client, "tt-7", _IMPORT_MSG)
+        finally:
+            restore()
+        card = _tt_card(d.get("options"))
+        ans = d.get("answer") or ""
+        c.check("模型自己出的卡照旧在（没被兜底换掉）",
+                card is not None and len(card.get("courses") or []) == 3,
+                str(len(card.get("courses") or [])) if card else "无卡")
+        c.check("课程清单原样留在卡里（写库要用）",
+                card and card["courses"][0]["course"] == "高等数学")
+        c.check("回话换成一句「要不要改」",
+                "要不要用这份课表替换现在的周表" in ans, ans[:60])
+        c.check("回话里不许出现课名（不逐门念）",
+                not any(x in ans for x in ("高等数学", "大学英语", "数据结构")), ans[:80])
+        c.check("门数还在回话里", "3 门课" in ans, ans[:60])
+        after = client.get("/api/timetable").json()
+        c.check("没点确认 → 周表一个字没动",
+                before.get("courses") == after.get("courses"))
+
+    # 反向：不是上传课表（普通加课请求）→ 不许动模型的回话
+    with sandbox():
+        client = make_client()
+        restore = _fake_model_env()
+        try:
+            _FakeEngine.answer = "好，我把周三下午那节加上去，你看看对不对。"
+            _FakeEngine.options = [{"kind": "timetable_change",
+                                    "summary": "加一节数据结构",
+                                    "courses": COURSES[:1]}]
+            d = _ask(client, "tt-8", "帮我周三下午加一节数据结构")
+        finally:
+            restore()
+        c.check("非上传请求：模型回话原样保留（不被换成导入话术）",
+                "我把周三下午那节加上去" in (d.get("answer") or ""),
+                (d.get("answer") or "")[:60])
     return c
 
 
@@ -329,6 +408,8 @@ def batch_e_frontend_template():
             "先不要写入周表，等我确认后再导入" not in seg)
     c.check("模板不许教学生等一句没有分支接的「确认导入」",
             "确认导入" not in seg)
+    # 学生原话：不用每门课单独拎出来 —— 模板要明说"别在回话里把课念一遍"
+    c.check("模板不许把课一门门念出来", "不要把课一门门再念一遍" in seg)
     return c
 
 
@@ -338,6 +419,7 @@ def main():
         batch_b_parser(),
         batch_c_rescue_card(),
         batch_c2_file_source(),
+        batch_c3_no_course_list(),
         batch_d_no_fake_todo_card(),
         batch_e_frontend_template(),
     ]
