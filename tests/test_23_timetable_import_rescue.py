@@ -147,6 +147,26 @@ def batch_b_parser():
     c.check("没有地点列也能抠（location 留空）",
             r5 and r5[0]["location"] == "" and r5[0]["course"] == "体育")
 
+    # 学生真文件那两种写法（2026-10-04 补）：一天一行用「；」串好几门 + 列表体带括号地点
+    r7 = timetable_courses_from_reply(
+        "周一：08:00-09:40 高等数学 教三301；10:05-11:45 大学英语 外语楼204；"
+        "14:00-15:40 数据结构 机房B")
+    c.check("一天一行用「；」串三门 → 三门全抠出来", r7 is not None and len(r7) == 3, str(r7))
+    c.check("其中第一门是 周一 08:00-09:40 高等数学@教三301",
+            r7 and r7[0] == {"day": 1, "start": "08:00", "end": "09:40",
+                             "course": "高等数学", "location": "教三301"})
+    c.check("第三门是 数据结构@机房B（不是被吞掉）",
+            r7 and r7[2]["course"] == "数据结构" and r7[2]["location"] == "机房B")
+
+    r8 = timetable_courses_from_reply(
+        "- **周二**：08:00-09:40 线性代数（教二108）｜晚上 19:00-20:40 大学英语（外语楼204）")
+    c.check("列表体 + 「课名（地点）」括号写法 → 课名与地点分开",
+            r8 and len(r8) == 2 and r8[0]["course"] == "线性代数"
+            and r8[0]["location"] == "教二108", str(r8))
+    c.check("时段词「晚上」不会被当成教室",
+            r8 and r8[1]["course"] == "大学英语" and r8[1]["location"] == "外语楼204"
+            and r8[1]["start"] == "19:00", str(r8))
+
     r6 = timetable_courses_from_reply(
         "| 周一 | 08:00-09:40 | 体育 | 大操场 |\n| 周一 | 08:00-09:40 | 体育 | 大操场 |")
     c.check("一模一样的两行去重成一条", r6 is not None and len(r6) == 1)
@@ -188,6 +208,60 @@ def batch_c_rescue_card():
         after = client.get("/api/timetable").json()
         c.check("没点确认 → 周表一个字没动",
                 before.get("courses") == after.get("courses"))
+    return c
+
+
+def batch_c2_file_source():
+    c = Checker()
+    title("3-bis. 文件原文兜底：模型回话抠不干净时，直接读库里那份文件")
+
+    # 学生 2026-10-04 原话：「解析出来了，卡没出来……由于是修改课表，
+    # 我认为可以弹是否更改课表的卡」——模型把清单念成一行多课的列表体，
+    # 系统抠不全；这时文件原文（一天一行、；串多门）才是硬依据。
+    FILE_TEXT = (
+        "周一：08:00-09:40 高等数学 教三301；10:05-11:45 大学英语 外语楼204；"
+        "14:00-15:40 数据结构 机房B\n"
+        "周二：08:00-09:40 线性代数 教二108；晚上 19:00-20:40 大学英语 外语楼204\n")
+    PARTIAL_REPLY = ("解析出来了：\n"
+                     "- **周一**：08:00-09:40 高等数学（教三301）｜"
+                     "10:05-11:45 大学英语（外语楼204）\n"
+                     "- **周二**：08:00-09:40 线性代数（教二108）\n"
+                     "（清单就这些）")
+
+    with sandbox():
+        client = make_client()
+        client.post("/api/upload", files={"file": ("导入用课表.txt", FILE_TEXT.encode("utf-8"))})
+        restore = _fake_model_env()
+        try:
+            _FakeEngine.answer = PARTIAL_REPLY
+            d = _ask(client, "tt-5", "我上传了一份课表文件《导入用课表.txt》（共 120 字）。"
+                                     "请先用 read_uploaded_file 读取内容，整理成预览清单给我看。")
+        finally:
+            restore()
+        card = _tt_card(d.get("options"))
+        n = len(card.get("courses") or []) if card else 0
+        c.check("回话只念了 3 门 → 卡上补齐到 5 门（取更全的文件原文）", n == 5,
+                f"实际 {n} 门")
+        c.check("晚上那节（19:00 大学英语）也在卡上",
+                card and any(x["start"] == "19:00" and x["course"] == "大学英语"
+                             for x in card["courses"]))
+        c.check("回话里写明清单来自文件原文",
+                "文件原文" in (d.get("answer") or ""), (d.get("answer") or "")[:60])
+
+    # ⛔ 反向：消息没点名文件 → 不许拿"最近那份文件"猜（那可能是别的资料）
+    with sandbox():
+        client = make_client()
+        client.post("/api/upload", files={"file": ("完全无关的资料.txt",
+                                                   "学生会章程第一条……".encode("utf-8"))})
+        restore = _fake_model_env()
+        try:
+            _FakeEngine.answer = "我读了文件，里面没有课程信息。"
+            d = _ask(client, "tt-6", "重新导入课表")
+        finally:
+            restore()
+        c.check("没点名文件时绝不拿最近那份文件瞎猜 → 零卡",
+                not (d.get("options") or []),
+                str([o.get("kind") for o in (d.get("options") or [])]))
     return c
 
 
@@ -263,6 +337,7 @@ def main():
         batch_a_detector(),
         batch_b_parser(),
         batch_c_rescue_card(),
+        batch_c2_file_source(),
         batch_d_no_fake_todo_card(),
         batch_e_frontend_template(),
     ]
