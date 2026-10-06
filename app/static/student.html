@@ -543,7 +543,6 @@
         <div class="sb-item active" data-nav="chat"><span class="ico">💬</span>校园问答</div>
         <div class="sb-item" data-nav="schedule"><span class="ico">🗓️</span>日程</div>
         <div class="sb-item" data-nav="todos"><span class="ico">✅</span>代办事项</div>
-        <div class="sb-item" data-nav="upload"><span class="ico">📤</span>上传文件</div>
         <div class="sb-item" data-nav="settings"><span class="ico">⚙️</span>设置</div>
       </nav>
       <div class="sb-more" id="sbMore">
@@ -670,9 +669,6 @@
         </div><!-- /chatStage -->
         <div id="navTodos" class="nav-view">
           <div class="card"><h2>代办事项</h2><div class="desc">勾选标记完成，或删除。改动即时同步到日程。</div><div id="todoList" class="todo-list"></div></div>
-        </div>
-        <div id="navUpload" class="nav-view">
-          <div class="card"><h2>上传文件</h2><div class="desc">上传资料给管家读取，或管理已上传的文件（也可点下方 📎 直接在对话框里传）。</div><div id="upDrop" class="up-drop">把文件拖到这里，或 <label class="up-link">选择文件<input type="file" id="upInput" multiple style="display:none" /></label></div><div id="upList" class="up-list"></div></div>
         </div>
         <div id="navSettings" class="nav-view">
           <div class="card"><h2>设置</h2><div class="desc">助手名字、性格、模型与 API 都在这里调。</div><div id="settingsBody"></div></div>
@@ -1507,7 +1503,6 @@
       express:  n => `📦 这是你的快递面板。想知道"我有哪些快递待取？"直接问我即可。`,
       takeout:  n => `🍱 这是你的外卖面板。想点餐或查订单，直接跟我说就行。`,
       todos:    n => `✅ 代办事项面板。跟我说"提醒我周五交作业"就能加一条待办。`,
-      upload:   n => `📎 上传文件面板。把资料拖进来，或直接在对话框里发文件给我。`,
       settings: n => `⚙ 设置面板。这里可以改助手名字、性格、模型与 API。`,
     };
     function applyGreeting(view) {
@@ -2109,7 +2104,7 @@
 
   // ================= 三栏外壳交互（新增） =================
   (function(){
-    var NAV_TITLE = {chat:"校园问答", schedule:"日程", todos:"代办事项", upload:"上传文件", settings:"设置", express:"快递", takeout:"外卖"};
+    var NAV_TITLE = {chat:"校园问答", schedule:"日程", todos:"代办事项", settings:"设置", express:"快递", takeout:"外卖"};
     function cap(x){ return x.charAt(0).toUpperCase()+x.slice(1); }
     function switchNav(view){
       var oldView = currentView;
@@ -2131,7 +2126,6 @@
       else if(view==="takeout") showView("view-takeout");
       else if(view==="chat") showView("view-faq");
       else if(view==="todos") loadTodosView();
-      else if(view==="upload") loadUploadView();
       else if(view==="settings") loadSettingsView();
       // 仅"校园问答/日程"需要换各自的开场白与历史；其余纯查看模块不动聊天区
       if (chatMod && view !== oldView) resetLogForModule(view);
@@ -2241,10 +2235,10 @@
           var done=t.status==="done";
           var wd=""; try{ wd=WD[((new Date(t.date).getDay()+6)%7)]; }catch(e){}
           return '<div class="todo-row '+(done?"done":"")+'">'+
-            '<input type="checkbox" '+(done?"checked":"")+' data-id="'+encodeURIComponent(t.todo_id)+'" class="todo-done" />'+
+            '<input type="checkbox" '+(done?"checked":"")+' data-id="'+encodeURIComponent(t.id)+'" class="todo-done" />'+
             '<div class="todo-main"><div class="todo-title">'+escapeHtml(t.title)+'</div>'+
             '<div class="todo-sub">'+escapeHtml(t.date)+'（'+wd+'） '+escapeHtml(t.start||"")+'-'+escapeHtml(t.end||"")+'</div></div>'+
-            '<button class="todo-del" data-id="'+encodeURIComponent(t.todo_id)+'">删除</button></div>';
+            '<button class="todo-del" data-id="'+encodeURIComponent(t.id)+'">删除</button></div>';
         }).join("");
         box.querySelectorAll(".todo-done").forEach(function(cb){ cb.addEventListener("change", async function(){
           var id=decodeURIComponent(cb.dataset.id);
@@ -2257,30 +2251,6 @@
         }); });
       }catch(e){ box.innerHTML='<div class="empty">待办加载失败</div>'; }
     }
-
-    async function loadUploadView(){
-      var list=document.getElementById("upList"); if(!list) return;
-      try{
-        var d=await (await fetch("/api/uploads")).json();
-        var files=d.files||[];
-        list.innerHTML = files.length ? files.map(function(f){
-          return '<div class="up-row"><span class="up-name">'+escapeHtml(f.name)+'</span><span class="up-sub">'+(f.chars||0)+' 字</span><a class="up-link" href="/api/uploads/'+f.id+'/download" target="_blank">下载</a></div>';
-        }).join("") : '<div class="empty">还没有上传过文件。</div>';
-      }catch(e){ list.innerHTML='<div class="empty">文件列表加载失败</div>'; }
-    }
-    var upInput=document.getElementById("upInput");
-    if(upInput) upInput.addEventListener("change", async function(){
-      var files=upInput.files; if(!files||!files.length) return;
-      for(var i=0;i<files.length;i++){ var form=new FormData(); form.append("file", files[i]); try{ await fetch("/api/upload",{method:"POST",body:form}); }catch(e){} }
-      upInput.value=""; loadUploadView();
-    });
-    var upDrop=document.getElementById("upDrop");
-    if(upDrop){ upDrop.addEventListener("dragover", function(e){ e.preventDefault(); upDrop.classList.add("over"); });
-      upDrop.addEventListener("dragleave", function(){ upDrop.classList.remove("over"); });
-      upDrop.addEventListener("drop", function(e){ e.preventDefault(); upDrop.classList.remove("over");
-        if(e.dataTransfer&&e.dataTransfer.files){ var fl=e.dataTransfer.files;
-          for(var i=0;i<fl.length;i++){ (function(fi){ var form=new FormData(); form.append("file", fi); try{ fetch("/api/upload",{method:"POST",body:form}); }catch(e){} })(fl[i]); }
-          loadUploadView(); } }); }
 
     function loadSettingsView(){
       var box=document.getElementById("settingsBody"); if(!box) return;
