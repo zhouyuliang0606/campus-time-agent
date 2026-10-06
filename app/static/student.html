@@ -896,6 +896,10 @@
         if (cfWrap && d.h) {
           const f = cfWrap.querySelector("iframe");
           if (f) f.style.height = Math.max(96, Math.min(560, Number(d.h) || 0)) + "px";
+          // iframe 从兜底高度（170px）长高的这一下会把底部撑出可视区——
+          // 卡明明挂出来了，学生不滚动就看不见，跟"没弹卡"是一回事
+          // （2026-10-07 报障「第一次不弹」的另一半）。挂出来就让它进视野。
+          cfWrap.scrollIntoView({ behavior: "smooth", block: "nearest" });
         }
       }
     });
@@ -1759,10 +1763,20 @@
           method: "POST", headers: { "Content-Type": "application/json" },
           body: JSON.stringify(body),
         })).json();
-        st.textContent = d.answer ? "管家已给出课表预览，请在下方聊天里确认后再导入" : "已请求管家读取课表";
+        st.textContent = (d.options || []).length
+          ? "管家已给出课表提案，请在下方确认条上点【确认修改】"
+          : (d.answer || "已请求管家读取课表");
         // 同步留痕到聊天框：这段"管家帮我导课表"的对话学生能翻到
         addMsg("我", `📤 上传课表《${f.name}》，请管家读取并给我预览清单`, "user");
-        addMsg(botName(), d.answer || "已收到课表，正在读取。", "bot", "planner", d.trace);
+        // ★★ 这条路径是**自己 fetch /api/chat** 的（不走 sendMsg），
+        //    以前漏了 renderOptions：后端明明出了「确认修改」卡，前端只写了一行文字、
+        //    把卡悄悄丢了 —— 学生看到的是"没有弹卡"，只能再追问一次，
+        //    而追问走 sendMsg（那里有 renderOptions）卡才出来。
+        //    报障原话（2026-10-07）：「第一次不弹第二次追问才弹」。
+        //    ★ 教训：凡是自己打 /api/chat 的地方，都要跟 sendMsg 一样把 options 渲染出来，
+        //      否则"后端出了卡、学生看不到"这类问题会从任何一个旁路冒出来。
+        const _ttEl = addMsg(botName(), d.answer || "已收到课表，正在读取。", "bot", "planner", d.trace);
+        if (d.options && d.options.length) renderOptions(_ttEl, d.options);
         // 按人设规矩：导入课表属于规划操作，不上报管理端；学生确认后才会真正写入
       } catch (e) {
         st.textContent = "哎呀，网络好像开小差了，请稍后再试";
