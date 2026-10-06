@@ -1225,6 +1225,12 @@ def _tt_courses_in_line(line: str) -> list:
     return out
 
 
+# 课表导入请求的自然语言探测：允许「上传了课表」「课表读取一下」「解析这份课表」
+# 这类中间带别的字的表达。对这些句子挂"待办卡"永远是错的，所以宁可放宽、不可漏判。
+_TT_IMPORT_RE = re.compile(
+    r"(?:上传|读取|解析|导入).*课表|课表.*(?:上传|读取|解析|导入)", re.I)
+
+
 def looks_like_timetable_import(message: str) -> bool:
     """这句是不是「让管家读课表文件导入」的请求。
 
@@ -1234,11 +1240,11 @@ def looks_like_timetable_import(message: str) -> bool:
     因为对这些句子挂"待办卡"永远都是错的（宁可漏补卡，不可挂假卡）。
     """
     t = message or ""
-    if any(w in t for w in ("导入课表", "课表导入", "读取课表", "课表文件",
-                            "上传课表", "读取这份课表", "解析课表")):
+    # 前端 timetableImportMsg 模板里点名了工具名（最稳）
+    if "课表" in t and "read_uploaded_file" in t:
         return True
-    # 前端 timetableImportMsg 模板里点名了工具名
-    return "课表" in t and "read_uploaded_file" in t
+    # 自然语言：上传/读取/解析/导入 + 课表（允许中间有别的字）
+    return bool(_TT_IMPORT_RE.search(t))
 
 
 def timetable_courses_from_reply(text: str) -> list | None:
