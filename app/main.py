@@ -1140,6 +1140,55 @@ async def _chat_impl(req: Request, meta: dict):
     if _schedule_tools_allowed(module_key, _sem_intent, message):
         tools.update(scheduling_tools())
 
+    # 2.5) **课表导入：第一句话就直接出「确认修改」卡**（2026-10-07 学生报障）
+    #   现象：上传课表那句被判成「问事」（语义层给了 chat、module=schedule），
+    #   第一句没弹卡；第二次追问反而弹了张**代办**卡——
+    #   没被课表接走的话就掉进待办补条（那张假卡的老路）。
+    #   学生的要求很明确：**第一次就直接改课表**。
+    #
+    #   判据：规则层明说（`looks_like_timetable_import` 命中）= **硬信号**，
+    #       语义层猜的「chat / 问事」= 弱信号 → 以规则为准。
+    #       跟 `physio_state_only` 是同款的确定性硬闸门，
+    #       只是一个强制按 chat 走（不出卡），这个强制按办事走（直接出卡）。
+    #
+    #   位置必须在**所有待办分支之前**——分支顺序本身就是判定，
+    #   放在后面就会被待办补条抢走（那正是"第二次弹代办卡"的成因）。
+    #   只有真能从文件原文抠出课程才直接出卡；抠不出就照旧交给模型，不抢它的活
+    #   （模型还能替他把"第几节"换算成钟点，那条路原样保留）。
+    if looks_like_timetable_import(message):
+        _tt_direct = _tt_file_courses(message, session_id)
+        if _tt_direct:
+            _tt_card = {
+                "kind": "timetable_change",
+                # 卡上只给门数：学生要的是"要不要改"，不是把十几门课再念一遍
+                # （2026-10-04 学生原话「不用每门课单独拎出来」）。
+                "summary": f"导入课表（共 {len(_tt_direct)} 门课）",
+                "courses": _tt_direct,
+            }
+            save_pending(session_id, [_tt_card])
+            append_conversation(session_id, "user", message)
+            append_conversation(session_id, "assistant",
+                                 f"已生成课表修改提案：{_tt_card['summary']}")
+            # 这句规则层明说是"办事"，别再被写成"问事"——轨迹里写假话比不写更坏。
+            meta["read"] = {
+                "step": 0,
+                "phase": "🧠 我把这句听成 **办事**（导入课表）｜依据：规则层（课表导入，硬信号）",
+                "answer": "",
+            }
+            return {
+                "module": "planner",
+                "session_id": session_id,
+                # 回话一律走 `_tt_confirm_answer`：跟下面模型那条路用的是同一句话，
+                # 免得"第一句话直接出卡"和"模型出卡"两种走法说法不一致
+                # （也才能带上「（清单来自文件原文）」这句出处）。
+                "answer": _tt_confirm_answer(len(_tt_direct), "文件原文"),
+                "trace": [{"step": 1,
+                           "phase": "📄 课表导入：系统直接读文件出卡（第一句话就出，不等模型）",
+                           "answer": f"文件原文抠出 {len(_tt_direct)} 门课"}],
+                "options": [_tt_card],
+                "awaiting_choice": True,
+            }
+
     # 3) **确定性确认分支**（人话：学生回一句"确认"就当场执行，不劳模型判断）
     #    踩过的坑：学生明明打了"确认"，AI 却回"我没有权限删除"，还让学生自己去
     #    页面上找删除按钮——那里根本没有入口。这里把执行权收归系统，学生点头即写入。
