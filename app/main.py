@@ -3010,9 +3010,30 @@ async def _chat_impl(req: Request, meta: dict):
     # 只要它自称发过提案，系统就照它的意思把卡补出来（写库仍要学生点按钮）。
     model_opts = list(result.get("options") or [])
     final_answer = result["answer"]
-    final_trace = result["trace"]
+    final_trace = list(result.get("trace") or [])
     tt_source = ""   # 兜底补卡时课程清单的出处（"管家回话" / "文件原文"），只在回话里带一句
-    if not model_opts and looks_like_timetable_import(message):
+
+    # ── 出卡环节诊断（visible in 学生端「🧠 我是这么想的」面板）──
+    # 即使最后没出卡，学生也能在这块看到卡在哪一档：
+    #   ① 这句有没有被识别成「课表导入」  ② 模型自己有没有调提案工具
+    #   ③ 从回话抠出几门 / 从文件原文抠出几门  ④ 最终为什么没出卡
+    _tt_diag = []
+    tt_detected = looks_like_timetable_import(message)
+    if tt_detected:
+        _tt_diag.append({
+            "step": 1,
+            "phase": "🔍 课表导入探测：命中（识别成「读课表文件导入」）",
+            "answer": f"模型自带 options 数 = {len(model_opts)}",
+        })
+    elif "课表" in (message or ""):
+        # 提了"课表"却没命中正则 → 典型"说法逃过探测"，单独留痕提醒
+        _tt_diag.append({
+            "step": 1,
+            "phase": "🔍 课表导入探测：未命中（提到课表但说法逃过正则）",
+            "answer": "被当成普通/待办请求处理；若本意是导入课表，请用「上传课表」模板按钮（文案含 read_uploaded_file，必命中）",
+        })
+
+    if tt_detected and not model_opts:
         # 课表导入请求走**自己的**兜底，绝不进下面的待办补条——
         # 那会把模型话术里的「确认修改」当任务名，挂出
         # 「要不要把 确认修改 排进日程」的假卡（2026-10-03 学生截图实测）。
@@ -3022,6 +3043,17 @@ async def _chat_impl(req: Request, meta: dict):
         tt_courses = timetable_courses_from_reply(result.get("answer") or "")
         tt_src = "管家回话"
         tt_from_file = _tt_file_courses(message, session_id)
+        _tt_diag.append({
+            "step": 2,
+            "phase": "🔍 从模型回话抠课",
+            "answer": f"回话里抠出 {len(tt_courses or [])} 门可识别课程",
+        })
+        _tt_diag.append({
+            "step": 3,
+            "phase": "🔍 从文件原文抠课",
+            "answer": (f"文件原文抠出 {len(tt_from_file or [])} 门"
+                       if tt_from_file else "未找到挂到本会话的课表文件，或文件非文本/表格格式（图片、PDF 截图都抠不出）"),
+        })
         # 两路都抠，取**更全**的那份：学生那份文件原文（一天一行、；串多门）
         # 经常比模型回话完整；反过来模型能替他把"第几节"换算成钟点。
         # 宁可多列——清单全在卡上，学生看了再决定点不点确认。
@@ -3036,17 +3068,25 @@ async def _chat_impl(req: Request, meta: dict):
                 "courses": tt_courses,
             }]
             tt_source = tt_src
-            final_trace = list(result.get("trace") or []) + [{
-                "step": 1,
+            _tt_diag.append({
+                "step": 4,
                 "phase": "🛟 模型没调课表提案工具 → 系统从它的话里补出「确认修改」卡",
-                "answer": f"共 {len(tt_courses)} 门课（清单来自{tt_src}）",
-            }]
+                "answer": f"最终采用：{tt_src}，共 {len(tt_courses)} 门 → 出卡",
+            })
         else:
             final_answer = _tt_import_no_card_answer()
-            final_trace = list(result.get("trace") or []) + [{
-                "step": 1,
+            _tt_diag.append({
+                "step": 4,
                 "phase": "⚠️ 课表导入没出卡 → 如实说明，绝不挂假卡",
-            }]
+                "answer": "回话和文件两路都抠不出可识别课程：检查模型是否真读了文件 / 文件是否为图片PDF / 排版是否为表格或纯文本行",
+            })
+    elif tt_detected and model_opts:
+        # 模型自己调了 propose_timetable_change，引擎已给出卡，这里只统一回话
+        _tt_diag.append({
+            "step": 2,
+            "phase": "✅ 模型自己调了 propose_timetable_change，引擎已出卡（只统一回话）",
+            "answer": f"timetable_change 卡数 = {len([o for o in model_opts if o.get('kind') == 'timetable_change'])}",
+        })
     elif not model_opts:
         recent_add_req = _recent_add_request(session_id)
         rescued = rescue_proposal_from_reply(result["answer"], recent_add_req)
@@ -3076,6 +3116,9 @@ async def _chat_impl(req: Request, meta: dict):
                 "step": 1,
                 "phase": "⚠️ 模型自称已提交但系统补不出卡 → 如实纠正，不让学生空等",
             }]
+
+    # 把出卡环节的诊断拼回 trace（学生端「我是这么想的」面板可见，即使没出卡也能定位）
+    final_trace = final_trace + _tt_diag
 
     # 上传课表 → 只要一张「是否修改」卡，回话统一成一句"要不要改"。
     # 模型自己调了 propose_timetable_change 时最爱在文字里把十几门课再念一遍，
