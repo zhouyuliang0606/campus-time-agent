@@ -423,6 +423,64 @@ def batch_e_frontend_template():
     return c
 
 
+def batch_f_diagnostics():
+    c = Checker()
+    title("6. 出卡环节诊断：即使没出卡，学生也能从 trace 看出卡在哪一档")
+
+    def _trace_text(d):
+        return " || ".join(f"{s.get('phase', '')} / {s.get('answer', '')}"
+                           for s in (d.get("trace") or []))
+
+    # 6a 命中 + 成功出卡：trace 要列全「探测→回话抠课→文件抠课→出卡」
+    with sandbox():
+        client = make_client()
+        restore = _fake_model_env()
+        try:
+            _FakeEngine.answer = _TABLE_ANSWER
+            d = _ask(client, "tt-d1", _IMPORT_MSG)
+        finally:
+            restore()
+        t = _trace_text(d)
+        c.check("命中：trace 含「探测：命中」", "探测：命中" in t, t[:120])
+        c.check("命中：trace 含「从模型回话抠课」", "从模型回话抠课" in t, t[:120])
+        c.check("命中：trace 含「从文件原文抠课」", "从文件原文抠课" in t, t[:120])
+        c.check("命中：trace 含「出卡」结论", "出卡" in t, t[:200])
+        c.check("命中：同时确实挂出了 timetable_change 卡",
+                _tt_card(d.get("options")) is not None)
+
+    # 6b 命中但抠不出课 → 如实没出卡，trace 写明「没出卡」
+    with sandbox():
+        client = make_client()
+        restore = _fake_model_env()
+        try:
+            _FakeEngine.answer = "今天天气不错，课表改天再说。"
+            d = _ask(client, "tt-d2", _IMPORT_MSG)
+        finally:
+            restore()
+        t = _trace_text(d)
+        c.check("没出卡：trace 含「没出卡 → 如实说明」", "没出卡" in t, t[:200])
+        c.check("没出卡：确实没有任何卡", not (d.get("options") or []),
+                str([o.get("kind") for o in (d.get("options") or [])]))
+
+    # 6c 逃过正则（提了课表但说法不匹配）→ trace 标「未命中」，并提示用模板按钮
+    # 注意：像「看看我的课表」这类会被样本库误判成「看待办列表」提前返回，
+    # 那属于路由层问题（会显示"列出待办"而非课表诊断）；这里选一个能走到出卡环节的措辞。
+    with sandbox():
+        client = make_client()
+        restore = _fake_model_env()
+        try:
+            _FakeEngine.answer = _TABLE_ANSWER
+            d = _ask(client, "tt-d3", "我传了课表你帮看看")
+        finally:
+            restore()
+        t = _trace_text(d)
+        c.check("逃过正则：trace 含「探测：未命中（提到课表但说法逃过正则）」",
+                "未命中（提到课表但说法逃过正则）" in t, t[:200])
+        c.check("逃过正则：被当成普通请求，未挂课表卡",
+                _tt_card(d.get("options")) is None)
+    return c
+
+
 def main():
     results = [
         batch_a_detector(),
@@ -432,6 +490,7 @@ def main():
         batch_c3_no_course_list(),
         batch_d_no_fake_todo_card(),
         batch_e_frontend_template(),
+        batch_f_diagnostics(),
     ]
     total_pass = sum(r.passed for r in results)
     total_fail = sum(r.failed for r in results)
