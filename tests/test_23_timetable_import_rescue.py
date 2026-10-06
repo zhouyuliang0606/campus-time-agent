@@ -115,12 +115,22 @@ def batch_a_detector():
     c.check("前端模板那句话 → True", looks_like_timetable_import(_IMPORT_MSG) is True)
     c.check("「重新导入课表」→ True", looks_like_timetable_import("重新导入课表") is True)
     c.check("「上传课表」→ True", looks_like_timetable_import("上传课表") is True)
+    # 学生截图 2026-10-06：自然语言，中间带"了"/"并"等字
+    c.check("「我上传了课表…请管家读取并给我预览清单」→ True",
+            looks_like_timetable_import(
+                "我上传了课表《2026秋季课表-纯文本.txt》，请管家读取并给我预览清单") is True)
+    c.check("「请解析一下这份课表」→ True",
+            looks_like_timetable_import("请解析一下这份课表") is True)
+    c.check("「把这份课表读取一下」→ True",
+            looks_like_timetable_import("把这份课表读取一下") is True)
     c.check("下单句「帮我加个游泳周四19:00」→ False",
             looks_like_timetable_import("帮我加个游泳周四19:00") is False)
     c.check("闲聊「今天天气怎么样」→ False",
             looks_like_timetable_import("今天天气怎么样") is False)
     c.check("只说「课表」不提文件/导入 → False",
             looks_like_timetable_import("明天周二有课表吗") is False)
+    c.check("只说上传文件、没说课表 → False",
+            looks_like_timetable_import("帮我上传个文件") is False)
     return c
 
 
