@@ -354,6 +354,61 @@ def batch_c3_no_course_list():
     return c
 
 
+def batch_c4_first_message_direct():
+    c = Checker()
+    title("3-quater. 第一句话就直接出课表卡：不等模型，也不许被待办抢走")
+
+    # 报障原话（2026-10-07 学生）：「上传课表被当成了问事所以没有弹卡，
+    # 第二次追问是代办弹了」——两处病，一副药：
+    #   ① 规则层明说「导入课表」= 硬信号，语义层猜的 chat / 问事必须让位；
+    #   ② 分支要排在**所有待办分支之前**，否则等到「第二句」就被待办补条接走了。
+    # 钉的是「第一句话」，所以假引擎这次**一个字都不说**：
+    # 模型还没开口，卡就必须已经挂出来了。
+    FILE_TEXT = (
+        "周一：08:00-09:40 高等数学 教三301；10:05-11:45 大学英语 外语楼204\n"
+        "周二：08:00-09:40 线性代数 教二108\n")
+
+    with sandbox():
+        client = make_client()
+        client.post("/api/upload", files={
+            "file": ("2026秋季课表-纯文本.txt", FILE_TEXT.encode("utf-8"))})
+        before = client.get("/api/timetable").json()
+        restore = _fake_model_env()
+        try:
+            _FakeEngine.answer = ""      # 模型沉默 → 卡只能是系统出的
+            d = _ask(client, "tt-7", _IMPORT_MSG)
+        finally:
+            restore()
+        card = _tt_card(d.get("options"))
+        n = len(card.get("courses") or []) if card else 0
+        c.check("第一句话就挂出 timetable_change 卡（模型还没开口）", card is not None,
+                str([o.get("kind") for o in (d.get("options") or [])]))
+        c.check("卡上是文件原文里的 3 门课", n == 3, f"实际 {n} 门")
+        c.check("回话写明清单来自文件原文", "文件原文" in (d.get("answer") or ""),
+                (d.get("answer") or "")[:60])
+        tr = " / ".join((s.get("phase") or "") for s in (d.get("trace") or []))
+        c.check("轨迹写「办事」不再写「问事」", "办事" in tr and "问事" not in tr, tr[:120])
+        c.check("第一句话绝不出代办卡（「第二次弹代办」的反面）",
+                _todo_card(d.get("options")) is None,
+                str([o.get("kind") for o in (d.get("options") or [])]))
+        c.check("没点确认 → 周表一个字没动",
+                before.get("courses") == client.get("/api/timetable").json().get("courses"))
+
+    # ⛔ 反向：说的是课表但**没上传过任何文件** → 不许硬凑一张空卡，
+    #    该交回模型那条路（模型还能替他把「第几节」换算成钟点）。
+    with sandbox():
+        client = make_client()
+        restore = _fake_model_env()
+        try:
+            _FakeEngine.answer = "你还没传文件呢，传一份我就能帮你排。"
+            d = _ask(client, "tt-8", "帮我导入课表《还没传的课表.txt》")
+        finally:
+            restore()
+        c.check("文件不存在 → 不抢模型的活，零卡", not (d.get("options") or []),
+                str([o.get("kind") for o in (d.get("options") or [])]))
+    return c
+
+
 def batch_d_no_fake_todo_card():
     c = Checker()
     title("4. 反向三连：假待办卡必须绝迹，老的待办补条不许被误伤")
@@ -488,6 +543,7 @@ def main():
         batch_c_rescue_card(),
         batch_c2_file_source(),
         batch_c3_no_course_list(),
+        batch_c4_first_message_direct(),
         batch_d_no_fake_todo_card(),
         batch_e_frontend_template(),
         batch_f_diagnostics(),
