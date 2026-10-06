@@ -559,6 +559,22 @@ let fromParent = false;   // 提案是不是父页面直接递过来的（是的
 function render(p) {
   const k = p && KIND[p.kind];
   if (!k) {
+    if (inFrame) {
+      // 嵌在聊天框里时，真正的提案由父页面通过 postMessage 递过来（openConfirm 在
+      // iframe 加载完那一刻就 post 了）。此刻 /api/pending 里可能压根没有这张卡——
+      // 课表修改类提案（timetable_change）本就不进暂存，只能靠 postMessage 拿到。
+      // 所以"空"只是暂态：先显示加载中，等父页面把提案递过来再覆盖成真的卡；
+      // 若 1.2s 还没递到（比如 iframe 被环境拦了、postMessage 失败），再通知父页面
+      // 撤掉确认条，避免学生卡在一个空白框里。
+      // ⚠️ 不能早一步 tellParent("empty")：那样会把确认条（连同 iframe）撤掉，
+      // 而此刻 postMessage 还没到——后端明明已经出好的卡就凭空消失了（课表导入"没有弹卡"就是这个 race）。
+      bodyEl.innerHTML = `<div class="empty">正在加载确认条…</div>`;
+      okBtn.disabled = true;
+      okBtn.style.display = "none";
+      reportHeight();
+      setTimeout(() => { if (!fromParent) tellParent("empty", {}); }, 1200);
+      return;
+    }
     bodyEl.innerHTML = `<div class="empty">当前没有待确认的变更。<br>
       <span style="font-size:12px;">这个页面是"出了提案才弹出来"的——不是常驻的。<br>
       去<b>学生端聊天</b>里说一句「把课表全部删除」或「把今天的复习线代安排到 19:00」，<br>
