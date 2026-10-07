@@ -63,8 +63,11 @@ def batch_b_css_present():
     title("2. 时间轴样式与深色主题对齐（不撑破面板布局）")
     src = open("app/static/student.html", encoding="utf-8").read()
     c.check("有时间轴网格样式 .tl-grid", ".tl-grid {" in src)
-    c.check("有可点空格样式 .tl-cell", ".tl-cell {" in src)
-    c.check("有待办色块样式 .tl-evt", ".tl-evt {" in src)
+    c.check("有日列容器样式 .tl-daycol（绝对定位落位，替代逐格虚线）", ".tl-daycol {" in src)
+    c.check("有待办色块样式 .tl-evt（position:absolute 跨行单块）",
+            ".tl-evt {" in src and "position: absolute" in src)
+    c.check("回归守卫：已弃用逐格贴块的 tlOverlapsHour",
+            "tlOverlapsHour" not in src)
     c.check("深色主题给了时间轴覆盖（.tl-wrap 出现在主题块里）",
             src.count(".tl-wrap") >= 2)
     return c
