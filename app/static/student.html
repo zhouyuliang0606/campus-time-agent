@@ -726,8 +726,7 @@
         <div class="view-head"><span>🗓️ 我的日程</span><span class="grow"></span><button class="close">收起面板 ✕</button></div>
         <div class="view-body">
           <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;flex-wrap:wrap;">
-            <button class="tab active" id="tabTimeline">时间轴</button>
-            <button class="tab" id="tabWeek">周表</button>
+            <button class="tab active" id="tabWeek">周视图</button>
             <button class="tab" id="tabMonth">月表</button>
             <span class="small" id="schRange" style="margin-left:4px;"></span>
             <span style="flex:1;"></span>
@@ -740,9 +739,9 @@
           <div class="small" id="ttPanelStatus" style="margin:-4px 0 8px;min-height:14px;"></div>
 
           <!-- ①-b 周时间轴：第三种入口。学生不对话、不上传，直接点格子增/改/删待办。
-               它与"列表式周表(schWeek)/月表(schMonth)"同源 /api/todos，三者同属"我的日程"
-               面板下的一组 tab（时间轴/周表/月表），由 setSchTab() 统一显隐切换，互不干扰：
-               列表照旧只读展示，时间轴才允许动手。 -->
+               它与"列表式周表(schWeek)/月表(schMonth)"同源 /api/todos。"周视图"tab 下
+               两者上下同卡：时间轴在上做整周概览、周列表在下做逐日明细，一起滚动、互不干扰；
+               列表照旧只读展示，时间轴才允许动手。月表为独立 tab。 -->
           <div class="tl-wrap" id="tlWrap">
             <div class="tl-bar">
               <b>🗓️ 周时间轴</b>
@@ -756,6 +755,7 @@
             <div class="tl-note" id="tlNote"></div>
           </div>
 
+          <div class="small" id="schWeekHead" style="margin:14px 0 6px;display:none;">📋 逐日明细（时间轴下方）</div>
           <div id="schWeek"></div>
           <div id="schMonth" style="display:none;"></div>
           <div id="schDayDetail" style="display:none;margin-top:10px;"></div>
@@ -1799,7 +1799,7 @@
     const minsOf = hhmm => { const [h, m] = String(hhmm).split(":").map(Number); return h * 60 + m; };
     function mondayOf(d) { const t = new Date(d); t.setDate(t.getDate() - (isoWd(d) - 1)); t.setHours(0, 0, 0, 0); return t; }
 
-    let schTab = "timeline", schWeekOffset = 0, schMonthOffset = 0, schSelDate = null;
+    let schTab = "week", schWeekOffset = 0, schMonthOffset = 0, schSelDate = null;
     let schCourses = [], schTodos = [];
 
     async function loadScheduleView() {
@@ -2098,19 +2098,20 @@
       } catch (e) { const msg = document.getElementById("tlFormMsg"); if (msg) msg.textContent = "❌ 网络异常，请重试"; }
     }
 
-    document.getElementById("tabTimeline").addEventListener("click", () => { schTab = "timeline"; setSchTab(); });
     document.getElementById("tabWeek").addEventListener("click", () => { schTab = "week"; setSchTab(); });
     document.getElementById("tabMonth").addEventListener("click", () => { schTab = "month"; setSchTab(); });
     function setSchTab() {
-      document.getElementById("tabTimeline").classList.toggle("active", schTab === "timeline");
       document.getElementById("tabWeek").classList.toggle("active", schTab === "week");
       document.getElementById("tabMonth").classList.toggle("active", schTab === "month");
-      document.getElementById("tlWrap").style.display = schTab === "timeline" ? "block" : "none";
-      document.getElementById("schWeek").style.display = schTab === "week" ? "block" : "none";
+      // 周视图：时间轴(上) + 周列表(下) 同卡一起滚动；月表独立
+      const week = schTab === "week";
+      document.getElementById("tlWrap").style.display = week ? "block" : "none";
+      document.getElementById("schWeek").style.display = week ? "block" : "none";
+      document.getElementById("schWeekHead").style.display = week ? "block" : "none";
       document.getElementById("schMonth").style.display = schTab === "month" ? "block" : "none";
       document.getElementById("schDayDetail").style.display = schTab === "month" ? "block" : "none";
-      if (schTab === "timeline") tlRender();
-      else renderSchCurrent();
+      if (week) { tlRender(); renderSchWeek(); }
+      else if (schTab === "month") { renderSchMonth(); }
     }
     document.getElementById("schPrev").addEventListener("click", () => {
       if (schTab === "month") schMonthOffset--; else schWeekOffset--;
