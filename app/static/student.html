@@ -1435,6 +1435,37 @@
         return;
       }
 
+      // ---- ②-bis 上报工单提案：单张确认卡，点【确认上报】由系统写工单 ----
+      const wos = options.filter(o => o.kind === "work_order_report");
+      if (confirmPageOk && wos.length === 1) {
+        const hint = document.createElement("div");
+        hint.className = "opt-hint";
+        hint.textContent = "📮 上报管理端提案（点下面这条确认条上的【确认上报】才会生成工单，点【取消】不上报）：";
+        wrap.appendChild(hint);
+        container.appendChild(wrap);
+        openConfirm(wos[wos.length - 1], container);
+        return;
+      }
+      if (wos.length) {
+        const hint = document.createElement("div");
+        hint.className = "opt-hint";
+        hint.textContent = wos.length > 1
+          ? `📮 有 ${wos.length} 张上报工单提案，点选你要上报的那一张确认：`
+          : "📮 上报管理端提案（确认后立即生成工单，点取消不上报）：";
+        wrap.appendChild(hint);
+        wos.forEach(wo => {
+          const card = document.createElement("div");
+          card.className = "opt-card checked";
+          const info = document.createElement("div");
+          info.className = "info";
+          info.innerHTML = `<b>${escapeHtml(wo.summary || "上报管理端")}</b>`;
+          card.appendChild(info);
+          wrap.appendChild(card);
+        });
+        container.appendChild(wrap);
+        return;
+      }
+
       // ---- ① 候选时间段：可勾选卡片 ----
       const hint = document.createElement("div");
       hint.className = "opt-hint";

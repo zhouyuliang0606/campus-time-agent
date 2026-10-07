@@ -98,6 +98,7 @@ from app.modules.planner import (
     is_mode_answer,
     is_slot_answer,
     looks_like_timetable_import,
+    looks_like_work_order_report,
     timetable_courses_from_reply,
     pick_todo_missing,
     retime_todo_proposal,
@@ -1188,6 +1189,49 @@ async def _chat_impl(req: Request, meta: dict):
                 "options": [_tt_card],
                 "awaiting_choice": True,
             }
+
+    # 2.6) **快递/外卖丢失破损 → 第一句话就出「确认上报」卡**（2026-10-07 学生报障）
+    #   现象：学生说"快递丢了 / 上报管理员"，被语义层判成「问事」，助手只回一长段
+    #   查件话术、从没出卡，学生要上报却找不到入口（"没有出卡，也没有上传"）。
+    #   学生的要求很明确：**说要上报就直接出卡**。
+    #
+    #   判据：规则层 `looks_like_work_order_report` 命中 = **硬信号**（上报/工单/丢失破损），
+    #       语义层猜的「chat / 问事」= 弱信号 → 以规则为准（同款 timetable 硬闸门）。
+    #   位置必须在**所有待办分支之前**——先出卡，不被待办补条抢走。
+    #   卡是可取消的提案：学生点【确认上报】才写工单（走 /api/workorders，系统写库，
+    #   不经过模型，守住"写库只归系统"的红线）；点【取消】什么都不做。
+    _wo_kind = looks_like_work_order_report(message)
+    if _wo_kind:
+        _wo_card = {
+            "kind": "work_order_report",
+            "summary": f"上报管理端：{_wo_kind}",
+            "wo_kind": _wo_kind,
+            "desc": "",
+        }
+        save_pending(session_id, [_wo_card])
+        append_conversation(session_id, "user", message)
+        append_conversation(session_id, "assistant",
+                             f"已生成工单上报提案：{_wo_card['summary']}")
+        # 这句规则层明说是"办事"（上报工单），别再被写成"问事"——轨迹里写假话比不写更坏。
+        meta["read"] = {
+            "step": 0,
+            "phase": "🧠 我把这句听成 **办事**（上报工单）｜依据：规则层（快递/外卖问题上报，硬信号）",
+            "answer": "",
+        }
+        return {
+            "module": "express",
+            "session_id": session_id,
+            "answer": (
+                "📮 听起来你的快递/外卖可能出了问题。要不要**上报管理端**立案跟进？\n"
+                "下面这条确认条点【确认上报】就会生成工单（也可填补充描述）；"
+                "点【取消】就不上报，数据一点都不会动。"
+            ),
+            "trace": [{"step": 1,
+                       "phase": "📮 上报工单：系统直接出卡（不等模型判断）",
+                       "answer": f"问题类型 = {_wo_kind}"}],
+            "options": [_wo_card],
+            "awaiting_choice": True,
+        }
 
     # 3) **确定性确认分支**（人话：学生回一句"确认"就当场执行，不劳模型判断）
     #    踩过的坑：学生明明打了"确认"，AI 却回"我没有权限删除"，还让学生自己去
@@ -3295,13 +3339,24 @@ async def admin_messages():
 
 @app.post("/api/workorders")
 async def workorder_create(req: Request):
-    """提交一条工单（人话：面板表单提交的；聊天里由助手调 submit_work_order 工具落库）。"""
+    """提交一条工单（人话：面板表单提交的；聊天里由确认条点【确认上报】落库）。
+
+    聊天来源（source="chat"）会带上 session_id：学生点卡上报成功后，把那条
+    work_order_report 确认卡从暂存里清掉，避免它一直挂在 /api/pending 里反复出现。
+    """
     body = await req.json()
     kind = (body.get("kind") or "").strip()
     if not kind:
         return JSONResponse({"error": "问题类型不能为空"}, status_code=400)
     item = add_workorder(kind=kind, desc=(body.get("desc") or "").strip(),
                          source=body.get("source") or "panel")
+    # 聊天里点卡上报的：清掉那张确认卡（面板表单提交没有 session，不受影响）
+    sid = (body.get("session_id") or "").strip()
+    if sid and (body.get("source") or "panel") == "chat":
+        try:
+            clear_pending(sid)
+        except Exception:
+            pass
     return {"ok": True, "workorder": item}
 
 

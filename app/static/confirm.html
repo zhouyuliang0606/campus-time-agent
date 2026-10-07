@@ -217,6 +217,41 @@ const KIND = {
       return `课表已更新，现在共 <b>${(r && r.count) || (p.courses || []).length}</b> 门课。`;
     },
   },
+  work_order_report: {
+    // 快递/外卖丢失破损 → 学生点【确认上报】才由系统写工单（不经过模型，守住写库红线）。
+    // 卡是可取消的提案：点【取消】一个字都不写。补充描述可选，留空也能上报。
+    icon: "📮", title: "上报管理端", confirm: "确认上报", danger: false,
+    render(p) {
+      return `<p class="summary">${esc(p.summary || "上报管理端")}</p>
+        <div class="meta">点【确认上报】即生成工单，管理员会在管理端看到并处理；
+          点【取消】不上报，数据一点都不会动。</div>
+        <div class="other">
+          <label class="other-l" for="cfWoDesc">补充描述（可选）</label>
+          <textarea id="cfWoDesc" rows="3" placeholder="比如：取件码 B-5678，菜鸟驿站-北区，昨天还显示待取今天就找不到了"
+            autocomplete="off" style="width:100%;resize:vertical;font:inherit;"></textarea>
+        </div>`;
+    },
+    after() {
+      const ta = document.getElementById("cfWoDesc");
+      if (ta) ta.addEventListener("input", () => {});  // 仅占位：apply 时直接读值
+    },
+    async apply(p) {
+      const ta = document.getElementById("cfWoDesc");
+      const desc = ta ? ta.value.trim() : "";
+      return api("POST", "/api/workorders", {
+        kind: p.wo_kind || "疑似丢件",
+        desc,
+        source: "chat",
+        session_id: sid(),
+      });
+    },
+    doneText(p, r) {
+      const id = (r && r.workorder && r.workorder.id) || "";
+      return `✅ 工单已上报管理端（编号 ${esc(String(id))}）：${esc(p.wo_kind || "疑似丢件")}。`
+        + (r && r.workorder && r.workorder.desc ? ` —— ${esc(r.workorder.desc)}` : "")
+        + "。管理员会尽快处理，进度可在快递面板的「我提交过的工单」里看到。";
+    },
+  },
   todo_add: {
     icon: "📝", title: "加入日程（待办）", confirm: "确认加入", danger: false,
     render(p) {

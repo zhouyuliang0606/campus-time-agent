@@ -1247,6 +1247,47 @@ def looks_like_timetable_import(message: str) -> bool:
     return bool(_TT_IMPORT_RE.search(t))
 
 
+# ============ 快递/外卖丢失破损 → 上报工单的出卡兜底（2026-10-07 学生报障） ============
+# 现象：学生说"快递丢了 / 上报管理员"，被语义层判成「问事」，助手只回一长段查件话术、
+#       从没出卡，学生要上报却找不到入口（"没有出卡，也没有上传"）。
+# 这里把"上报工单"做成确定性硬闸门：命中就直接出卡（可取消的提案），
+# 学生点【确认上报】才由系统写工单（走 /api/workorders，不经过模型，守住写库红线）。
+#
+# ⚠️ 探测刻意放宽：只要是"快递/包裹/外卖 丢失破损异常"或明确"上报/工单"都算——
+#   对这些句子挂"待办卡"或静默当问事永远都是错的（宁可出卡让学生取消，不可不出卡）。
+#   普通查件（"到哪了""取件码多少"）不含这些词，照旧走 express 模块，不受此分支影响。
+
+_WORK_ORDER_RE = re.compile(
+    r"(快递|包裹|外卖|取件码).{0,6}(丢|丢失|遗失|不见|破损|异常|没收到|收不到|找不到)"
+    r"|丢(了|失|踪).{0,5}(快递|包裹|外卖)"
+    r"|(上报(管理端|管理员|给管理)?|报给?(管理端|管理员)|提交工单|开个?工单|走工单|报修)"
+)
+
+
+def _work_order_kind(message: str) -> str:
+    """从原话里估一个工单问题类型（人话：卡上和工单里显示的「kind」）。"""
+    t = message or ""
+    if "破损" in t:
+        return "包裹破损"
+    if "取件码" in t and any(w in t for w in ("异常", "不对", "错", "失效")):
+        return "取件码异常"
+    if "外卖" in t:
+        return "外卖丢失"
+    return "疑似丢件"
+
+
+def looks_like_work_order_report(message: str) -> str | None:
+    """这句是不是「要上报管理端处理快递/外卖问题」。
+
+    命中返回问题类型（疑似丢件/包裹破损/取件码异常/外卖丢失），没命中返回 None。
+    只用在 main.py 的出卡兜底里挑路，**不参与路由**——正常请求照旧走各自分支。
+    """
+    t = message or ""
+    if not _WORK_ORDER_RE.search(t):
+        return None
+    return _work_order_kind(t)
+
+
 def timetable_courses_from_reply(text: str) -> list | None:
     """模型没调工具、只在文字里念了课表清单 → 系统替它把课程抠回来。
 
