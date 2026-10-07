@@ -726,7 +726,8 @@
         <div class="view-head"><span>🗓️ 我的日程</span><span class="grow"></span><button class="close">收起面板 ✕</button></div>
         <div class="view-body">
           <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;flex-wrap:wrap;">
-            <button class="tab active" id="tabWeek">周表</button>
+            <button class="tab active" id="tabTimeline">时间轴</button>
+            <button class="tab" id="tabWeek">周表</button>
             <button class="tab" id="tabMonth">月表</button>
             <span class="small" id="schRange" style="margin-left:4px;"></span>
             <span style="flex:1;"></span>
@@ -739,8 +740,9 @@
           <div class="small" id="ttPanelStatus" style="margin:-4px 0 8px;min-height:14px;"></div>
 
           <!-- ①-b 周时间轴：第三种入口。学生不对话、不上传，直接点格子增/改/删待办。
-               它是"列表式周表(schWeek)"之外的一个可编辑视图，两者同源 /api/todos，
-               互不干扰：列表照旧只读展示，时间轴才允许动手。 -->
+               它与"列表式周表(schWeek)/月表(schMonth)"同源 /api/todos，三者同属"我的日程"
+               面板下的一组 tab（时间轴/周表/月表），由 setSchTab() 统一显隐切换，互不干扰：
+               列表照旧只读展示，时间轴才允许动手。 -->
           <div class="tl-wrap" id="tlWrap">
             <div class="tl-bar">
               <b>🗓️ 周时间轴</b>
@@ -1797,7 +1799,7 @@
     const minsOf = hhmm => { const [h, m] = String(hhmm).split(":").map(Number); return h * 60 + m; };
     function mondayOf(d) { const t = new Date(d); t.setDate(t.getDate() - (isoWd(d) - 1)); t.setHours(0, 0, 0, 0); return t; }
 
-    let schTab = "week", schWeekOffset = 0, schMonthOffset = 0, schSelDate = null;
+    let schTab = "timeline", schWeekOffset = 0, schMonthOffset = 0, schSelDate = null;
     let schCourses = [], schTodos = [];
 
     async function loadScheduleView() {
@@ -1806,7 +1808,7 @@
         const td = await (await fetch("/api/todos")).json(); schTodos = td.todos || [];
       } catch (e) { /* 拉不到就按空数据渲染，不炸面板 */ }
       renderSchCurrent();
-      tlRender();   // 周时间轴与列表同源（都用上面的 schCourses/schTodos），跟随刷新
+      setSchTab();   // 时间轴/周表/月表同源，统一由 setSchTab 显隐切换并刷新当前 tab
     }
     function renderSchCurrent() { if (schTab === "week") renderSchWeek(); else renderSchMonth(); }
 
@@ -2096,18 +2098,28 @@
       } catch (e) { const msg = document.getElementById("tlFormMsg"); if (msg) msg.textContent = "❌ 网络异常，请重试"; }
     }
 
+    document.getElementById("tabTimeline").addEventListener("click", () => { schTab = "timeline"; setSchTab(); });
     document.getElementById("tabWeek").addEventListener("click", () => { schTab = "week"; setSchTab(); });
     document.getElementById("tabMonth").addEventListener("click", () => { schTab = "month"; setSchTab(); });
     function setSchTab() {
+      document.getElementById("tabTimeline").classList.toggle("active", schTab === "timeline");
       document.getElementById("tabWeek").classList.toggle("active", schTab === "week");
       document.getElementById("tabMonth").classList.toggle("active", schTab === "month");
+      document.getElementById("tlWrap").style.display = schTab === "timeline" ? "block" : "none";
       document.getElementById("schWeek").style.display = schTab === "week" ? "block" : "none";
       document.getElementById("schMonth").style.display = schTab === "month" ? "block" : "none";
       document.getElementById("schDayDetail").style.display = schTab === "month" ? "block" : "none";
-      renderSchCurrent();
+      if (schTab === "timeline") tlRender();
+      else renderSchCurrent();
     }
-    document.getElementById("schPrev").addEventListener("click", () => { if (schTab === "week") schWeekOffset--; else schMonthOffset--; renderSchCurrent(); tlRender(); });
-    document.getElementById("schNext").addEventListener("click", () => { if (schTab === "week") schWeekOffset++; else schMonthOffset++; renderSchCurrent(); tlRender(); });
+    document.getElementById("schPrev").addEventListener("click", () => {
+      if (schTab === "month") schMonthOffset--; else schWeekOffset--;
+      setSchTab();
+    });
+    document.getElementById("schNext").addEventListener("click", () => {
+      if (schTab === "month") schMonthOffset++; else schWeekOffset++;
+      setSchTab();
+    });
 
     // 给管家的导入指令（面板上传与聊天上传共用同一段话）：
     // 人设规矩是"预览确认制"——但**预览不等于把课一门门念出来**。
