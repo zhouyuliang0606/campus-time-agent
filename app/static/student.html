@@ -286,6 +286,76 @@
     .mcal .tdy { font-size: 10px; color: #4f7cff; font-weight: 700; }
     .mcal .more { font-size: 10px; color: #a0a8bb; margin-top: 1px; }
 
+    /* ①-b 我的日程 · 周时间轴（第三种入口：不对话、不上传，直接点格子增/改/删待办）
+       为什么要有它：对话出卡最智能但要打字，上传课表是批量导入，/plan 是独立整页——
+       学生想"自己动手改一条"时，在聊天面板里没有落点。这里补一个左侧/上方的周网格。
+       命名一律加 tl_ 前缀（timeline），跟 loadScheduleView 等既有逻辑井水不犯河水。 */
+    .tl-wrap {
+      margin: 12px 0 4px; border: 1px solid #eef0f6; border-radius: 10px;
+      background: #fbfcff; padding: 10px 10px 12px;
+    }
+    .tl-bar {
+      display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+      margin-bottom: 8px; font-size: 12px; color: #8a93a6;
+    }
+    .tl-bar b { color: #4a5366; font-size: 13px; }
+    .tl-grid {
+      display: grid; grid-template-columns: 52px repeat(7, minmax(0, 1fr));
+      gap: 3px; font-size: 11px;
+    }
+    .tl-grid .tl-corner { }
+    .tl-colh {
+      text-align: center; color: #8a93a6; font-weight: 600; padding: 2px 0;
+      white-space: nowrap; overflow: hidden;
+    }
+    .tl-colh.today { color: #4f7cff; }
+    .tl-hour {
+      color: #a0a8bb; text-align: right; padding-right: 5px; line-height: 26px;
+      font-variant-numeric: tabular-nums;
+    }
+    /* 空格：可点 → 新增。整行 26px 高，够点得着又不浪费纵向空间。 */
+    .tl-cell {
+      height: 26px; border: 1px dashed #e3e7f2; border-radius: 5px; background: #fff;
+      cursor: pointer; box-sizing: border-box;
+    }
+    .tl-cell:hover { border-color: #4f7cff; background: #f2f6ff; }
+    /* 已有待办色块：绝对定位覆盖在格子上，按 start/end 决定高度 */
+    .tl-evt {
+      border-left: 3px solid #f0a03c; background: #fff5e6; color: #7a5212;
+      border-radius: 5px; padding: 1px 4px; cursor: pointer; overflow: hidden;
+      font-size: 10px; line-height: 1.3; overflow-wrap: anywhere;
+    }
+    .tl-evt:hover { filter: brightness(.96); }
+    .tl-evt.done { background: #eef7ef; border-color: #7dc48a; color: #3f6b48; text-decoration: line-through; }
+    .tl-evt.course { background: #eaf1ff; border-color: #4f7cff; color: #24406e; cursor: default; }
+    .tl-evt .tl-tm { opacity: .75; }
+    /* 每列是一个相对定位的容器，色块靠 top/height 落位（1 小时 = 26px+3px gap） */
+    .tl-daycol { position: relative; }
+    /* 新增/编辑用的轻量内联表单 */
+    .tl-form {
+      margin-top: 10px; border: 1px solid #d8def0; border-radius: 10px;
+      background: #fff; padding: 12px 14px;
+    }
+    .tl-form h4 { margin: 0 0 8px; font-size: 13px; color: #4a5366; }
+    .tl-form .tl-frow {
+      display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 8px;
+    }
+    .tl-form input, .tl-form select {
+      border: 1px solid #d8def0; border-radius: 7px; padding: 6px 9px; font-size: 13px;
+    }
+    .tl-form .tl-btn {
+      padding: 6px 14px; border-radius: 8px; border: 1px solid #4f7cff;
+      background: #4f7cff; color: #fff; cursor: pointer; font-size: 13px;
+    }
+    .tl-form .tl-btn.ghost { background: #fff; color: #4a5366; border-color: #d8def0; }
+    .tl-form .tl-btn.danger { background: #fff; color: #e0414a; border-color: #f3c2c5; }
+    .tl-note { font-size: 12px; color: #8a93a6; margin-top: 6px; }
+    .tl-notime { margin-top: 10px; }
+    .tl-notime .tl-chip {
+      display: inline-block; margin: 3px 6px 0 0; padding: 3px 9px; border-radius: 7px;
+      background: #fff5e6; border: 1px solid #f0a03c; color: #7a5212; font-size: 11px; cursor: pointer;
+    }
+
     /* ②③ 快递/外卖列表行 */
     .row {
       display: flex; align-items: center; gap: 10px; border: 1px solid #eef0f6;
@@ -511,6 +581,18 @@
   .mcal .d.sel { background: var(--brand-soft); }
   .wk .wd.today, .mcal .tdy { color: var(--brand); }
   .evt.course { background: var(--brand-soft); border-color: var(--brand); color: #33456e; }
+  /* 周时间轴（深色主题对齐既有排版变量） */
+  .tl-wrap { border-color: var(--line); background: var(--brand-soft-2); }
+  .tl-bar, .tl-hour, .tl-colh, .tl-note { color: var(--text-3); }
+  .tl-bar b, .tl-form h4 { color: var(--text-2); }
+  .tl-colh.today { color: var(--brand); }
+  .tl-cell { border-color: var(--line); background: var(--surface); }
+  .tl-cell:hover { border-color: var(--brand); background: var(--brand-soft-2); }
+  .tl-evt { background: var(--brand-soft-2); border-color: var(--brand); color: var(--text-2); }
+  .tl-form { border-color: var(--line); background: var(--surface); }
+  .tl-form input, .tl-form select { border-color: var(--line); }
+  .tl-form .tl-btn { background: var(--brand); border-color: var(--brand); }
+  .tl-form .tl-btn.ghost { background: var(--surface); color: var(--text-2); border-color: var(--line); }
   .tag { background: var(--brand-soft); color: var(--brand); }
   .tb-link { background: var(--brand-soft); color: var(--brand); border-radius: var(--radius); }
   .tb-link:hover { background: var(--brand-soft-2); }
@@ -601,6 +683,23 @@
             <a href="/plan" class="small" style="text-decoration:none;color:#4f7cff;">完整版日程 →</a>
           </div>
           <div class="small" id="ttPanelStatus" style="margin:-4px 0 8px;min-height:14px;"></div>
+
+          <!-- ①-b 周时间轴：第三种入口。学生不对话、不上传，直接点格子增/改/删待办。
+               它是"列表式周表(schWeek)"之外的一个可编辑视图，两者同源 /api/todos，
+               互不干扰：列表照旧只读展示，时间轴才允许动手。 -->
+          <div class="tl-wrap" id="tlWrap">
+            <div class="tl-bar">
+              <b>🗓️ 周时间轴</b>
+              <span>点空格加待办 · 点色块改/删</span>
+              <span style="flex:1;"></span>
+              <span id="tlRange" class="small"></span>
+            </div>
+            <div class="tl-grid" id="tlGrid"></div>
+            <div class="tl-notime" id="tlNoTime"></div>
+            <div id="tlFormBox"></div>
+            <div class="tl-note" id="tlNote"></div>
+          </div>
+
           <div id="schWeek"></div>
           <div id="schMonth" style="display:none;"></div>
           <div id="schDayDetail" style="display:none;margin-top:10px;"></div>
@@ -1653,6 +1752,7 @@
         const td = await (await fetch("/api/todos")).json(); schTodos = td.todos || [];
       } catch (e) { /* 拉不到就按空数据渲染，不炸面板 */ }
       renderSchCurrent();
+      tlRender();   // 周时间轴与列表同源（都用上面的 schCourses/schTodos），跟随刷新
     }
     function renderSchCurrent() { if (schTab === "week") renderSchWeek(); else renderSchMonth(); }
 
@@ -1741,6 +1841,182 @@
         : `<div class="empty">${schSelDate} 还没有待办</div>`;
     }
 
+    // ============ ①-b 周时间轴：不对话、不上传，直接点格子增/改/删待办（第三种入口） ============
+    //
+    // 定位：这条是"用户本人直接操作"，不是 AI 提案 —— 所以**不走 options 提案卡**，
+    // 直接调既有的确定性写库接口（POST/PUT/DELETE /api/todos，与 /plan 同一套）。
+    // 三条红线照守：① 破坏性操作（删）必须 confirm；② 写入权仍全在系统侧接口，前端只是
+    // 调用方；③ 不碰 todo_id 提案卡字段（那是 confirm 卡专用的，只在 loadTodosView 里取值）。
+    // 数据与列表同源：schCourses / schTodos 由 loadScheduleView() 一次性拉好，这里只负责画。
+    const TL_START = 8, TL_END = 22, TL_HOUR_H = 29;   // 08:00-22:00，1 小时一格（26px 高 + 3px gap）
+    let tlEditingId = null;                             // 非空=编辑态，空=新增态
+
+    function tlRender() {
+      const grid = document.getElementById("tlGrid");
+      if (!grid) return;
+      const base = mondayOf(new Date()); base.setDate(base.getDate() + schWeekOffset * 7);
+      const days = []; for (let i = 0; i < 7; i++) { const d = new Date(base); d.setDate(d.getDate() + i); days.push(d); }
+      const todayIso = isoD(new Date());
+      const rng = document.getElementById("tlRange");
+      if (rng) rng.textContent = isoD(days[0]) + " ~ " + isoD(days[6]) + (schWeekOffset === 0 ? "（本周）" : "");
+
+      // 表头：左上角空格 + 7 个星期列头
+      let html = '<div class="tl-corner"></div>';
+      days.forEach(d => {
+        const dIso = isoD(d);
+        html += `<div class="tl-colh ${dIso === todayIso ? "today" : ""}">` +
+          `${WD[isoWd(d) - 1]}<br><span class="small">${d.getMonth() + 1}/${d.getDate()}</span></div>`;
+      });
+
+      // 每个小时一行：左列时间标签 + 7 个可点空格；有安排的列在此单元格上叠加色块
+      for (let h = TL_START; h < TL_END; h++) {
+        html += `<div class="tl-hour">${String(h).padStart(2, "0")}:00</div>`;
+        days.forEach(d => {
+          const dIso = isoD(d);
+          const wd = isoWd(d);
+          // 该列在这个小时内的待办/课程（取颜色主题：课程蓝、待办橙）
+          const items = [
+            ...schCourses.filter(c => Number(c.day) === wd && tlOverlapsHour(c.start, c.end, h))
+              .map(c => ({ cls: "course", label: c.course, start: c.start, end: c.end, id: null })),
+            ...schTodos.filter(t => t.date === dIso && t.start && tlOverlapsHour(t.start, t.end, h))
+              .map(t => ({ cls: t.status === "done" ? "todo done" : "todo", label: t.title,
+                           start: t.start, end: t.end, id: t.id, todo: t })),
+          ];
+          const evt = items.length
+            ? `<div class="tl-evt ${items[0].cls}" title="${escQ(items[0].label + " " + items[0].start + "-" + items[0].end)}"` +
+              (items[0].id ? ` data-tlid="${escQ(items[0].id)}"` : "") +
+              `><span class="tl-tm">${escapeHtml(items[0].start)}</span> ${escapeHtml(items[0].label)}</div>`
+            : "";
+          html += `<div class="tl-cell" data-date="${dIso}" data-hour="${h}">${evt}</div>`;
+        });
+      }
+      grid.innerHTML = html;
+
+      // 点空格 → 打开新增表单（预填这一格）
+      grid.querySelectorAll(".tl-cell").forEach(td => {
+        td.addEventListener("click", (e) => {
+          if (e.target.closest(".tl-evt[data-tlid]")) return;   // 点色块走它自己的编辑
+          tlOpenForm(null, td.dataset.date, Number(td.dataset.hour));
+        });
+      });
+      // 点色块 → 编辑该待办（课程色块不可点）
+      grid.querySelectorAll(".tl-evt[data-tlid]").forEach(el => {
+        el.addEventListener("click", (e) => {
+          e.stopPropagation();
+          const t = schTodos.find(x => x.id === el.dataset.tlid);
+          if (t) tlOpenForm(t.id, t.date, minsOf(t.start) / 60);
+        });
+      });
+
+      tlRenderNoTime();
+    }
+
+    // 这个安排是否和 H 点这个小时有交集（用于把色块落到对应格子）
+    function tlOverlapsHour(start, end, h) {
+      const s = minsOf(start), e = minsOf(end);
+      return e > h * 60 && s < (h + 1) * 60;
+    }
+
+    // 没有时间的待办（start/end 缺失）：不硬塞进时间轴，单独列在下面，点了照样能编辑
+    function tlRenderNoTime() {
+      const box = document.getElementById("tlNoTime");
+      if (!box) return;
+      const noTime = schTodos.filter(t => !t.start || !t.end);
+      box.innerHTML = noTime.length
+        ? '<span class="small">没定时间的待办：</span>' + noTime.map(t =>
+            `<span class="tl-chip" data-tlid="${escQ(t.id)}">${escapeHtml(t.title)}</span>`).join("")
+        : "";
+      box.querySelectorAll(".tl-chip").forEach(el =>
+        el.addEventListener("click", () => {
+          const t = schTodos.find(x => x.id === el.dataset.tlid);
+          if (t) tlOpenForm(t.id, t.date, 9);
+        }));
+    }
+
+    // 打开新增/编辑表单。todoId 为空=新增；date/hour 为预填。
+    function tlOpenForm(todoId, date, hour) {
+      const todos_ = schTodos;
+      const cur = todoId ? todos_.find(t => t.id === todoId) : null;
+      tlEditingId = cur ? cur.id : null;
+      const d0 = cur ? cur.date : date;
+      const s0 = cur && cur.start ? cur.start : String(hour).padStart(2, "0") + ":00";
+      const e0 = cur && cur.end ? cur.end : String(Math.min(hour + 1, TL_END)).padStart(2, "0") + ":00";
+      const t0 = cur ? cur.title : "";
+      const box = document.getElementById("tlFormBox");
+      if (!box) return;
+      box.innerHTML = `
+        <div class="tl-form">
+          <h4>${cur ? "✏️ 编辑待办" : "➕ 新增待办"}（直接写库，与对话/上传同一套数据）</h4>
+          <div class="tl-frow">
+            <input id="tlTitle" placeholder="要做什么（如：去图书馆）" value="${escQ(t0)}" style="flex:1;min-width:160px;">
+          </div>
+          <div class="tl-frow">
+            <input id="tlDate" type="date" value="${escQ(d0)}">
+            <input id="tlStart" type="time" value="${escQ(s0)}">
+            <span>→</span>
+            <input id="tlEnd" type="time" value="${escQ(e0)}">
+          </div>
+          <div class="tl-frow">
+            <button class="tl-btn" id="tlSave">${cur ? "保存修改" : "加入日程"}</button>
+            <button class="tl-btn ghost" id="tlCancel">取消</button>
+            ${cur ? '<button class="tl-btn danger" id="tlDel">删除这条</button>' : ""}
+          </div>
+          <div class="tl-note" id="tlFormMsg"></div>
+        </div>`;
+      document.getElementById("tlCancel").addEventListener("click", tlCloseForm);
+      document.getElementById("tlSave").addEventListener("click", () => tlSave(tlEditingId));
+      const del = document.getElementById("tlDel");
+      if (del) del.addEventListener("click", () => tlDelete(tlEditingId));
+    }
+
+    function tlCloseForm() {
+      tlEditingId = null;
+      const box = document.getElementById("tlFormBox");
+      if (box) box.innerHTML = "";
+    }
+
+    async function tlSave(editId) {
+      const msg = document.getElementById("tlFormMsg");
+      const title = (document.getElementById("tlTitle").value || "").trim();
+      const date = document.getElementById("tlDate").value;
+      const start = document.getElementById("tlStart").value;
+      const end = document.getElementById("tlEnd").value;
+      if (!title || !date || !start || !end) { if (msg) msg.textContent = "标题、日期、起止时间都要填。"; return; }
+      if (minsOf(end) <= minsOf(start)) { if (msg) msg.textContent = "结束时间要晚于开始时间。"; return; }
+      try {
+        let r;
+        if (editId) {
+          r = await fetch("/api/todos/" + encodeURIComponent(editId), {
+            method: "PUT", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ title, date, start, end }),
+          });
+        } else {
+          r = await fetch("/api/todos", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ title, date, start, end, session_id: sessionId() }),
+          });
+        }
+        if (!r.ok) { const d = await r.json().catch(() => ({})); if (msg) msg.textContent = "❌ 保存失败：" + (d.error || r.status); return; }
+        tlCloseForm();
+        await loadScheduleView();   // 与既有"确认完立刻刷新日程"惯例一致：时间轴+列表同步
+      } catch (e) { if (msg) msg.textContent = "❌ 网络异常，请重试"; }
+    }
+
+    async function tlDelete(editId) {
+      if (!editId) return;
+      // 破坏性操作沿用 /plan 的确认范式，绝不"一点就删"
+      if (!confirm("确定删除这条待办？")) return;
+      try {
+        const r = await fetch("/api/todos/" + encodeURIComponent(editId), {
+          method: "DELETE", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ session_id: sessionId() }),
+        });
+        if (!r.ok) { const d = await r.json().catch(() => ({})); const msg = document.getElementById("tlFormMsg"); if (msg) msg.textContent = "❌ 删除失败：" + (d.error || r.status); return; }
+        tlCloseForm();
+        await loadScheduleView();
+      } catch (e) { const msg = document.getElementById("tlFormMsg"); if (msg) msg.textContent = "❌ 网络异常，请重试"; }
+    }
+
     document.getElementById("tabWeek").addEventListener("click", () => { schTab = "week"; setSchTab(); });
     document.getElementById("tabMonth").addEventListener("click", () => { schTab = "month"; setSchTab(); });
     function setSchTab() {
@@ -1751,8 +2027,8 @@
       document.getElementById("schDayDetail").style.display = schTab === "month" ? "block" : "none";
       renderSchCurrent();
     }
-    document.getElementById("schPrev").addEventListener("click", () => { if (schTab === "week") schWeekOffset--; else schMonthOffset--; renderSchCurrent(); });
-    document.getElementById("schNext").addEventListener("click", () => { if (schTab === "week") schWeekOffset++; else schMonthOffset++; renderSchCurrent(); });
+    document.getElementById("schPrev").addEventListener("click", () => { if (schTab === "week") schWeekOffset--; else schMonthOffset--; renderSchCurrent(); tlRender(); });
+    document.getElementById("schNext").addEventListener("click", () => { if (schTab === "week") schWeekOffset++; else schMonthOffset++; renderSchCurrent(); tlRender(); });
 
     // 给管家的导入指令（面板上传与聊天上传共用同一段话）：
     // 人设规矩是"预览确认制"——但**预览不等于把课一门门念出来**。
