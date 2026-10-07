@@ -62,6 +62,7 @@
 - `2026-10-07-schedule-timeline-self-edit.md` — **自行编辑日程：学生端「我的日程」加周时间轴直改待办（第三种入口）**（据《CampusTime-自行编辑日程-实现指令.md》F 项）。不对话、不上传，直接点格子增/改/删：`student.html` 加 08:00–22:00 × 周一~周日的 CSS Grid（浅色+深色两套样式），待办按 `start/end` 落色块、没定时间的单独列；点空格新增走 `POST /api/todos`、点色块编辑走 `PUT /api/todos/:id`、删除沿用 `confirm()` 范式走 `DELETE /api/todos/:id`。设计定性为"用户本人直接操作"→ **不走 options 提案卡**，直接调既有确定性接口；统一 `tl_` 前缀、**不碰 `todo_id` 提案卡字段**。真机 playwright 探针走通增→核对落库→改→删（自动确认）→清空，零残留；新增 `test_29`（21 项 / 3 批）。全量 1824 通过 / 3 失败（30 批），3 红经 A/B 证明改动前就红
 - `2026-10-07-schedule-timeline-second-round.md` — **周时间轴第二轮修复（spec §6）**：首版验收不通过（跨小时课逐行重复、同格第二条被静默吞、点课程块误开新增表单）。纯前端改 `student.html`：`tlRender` 由「逐格贴块」改「单块跨行绝对定位」，同列撞车贪心分道，点空格按点击位置预填（含非整点），课程块（无 `data-tlid`）被守卫拦下不可编辑；删 `tlOverlapsHour`；`tlOpenForm(todoId,date,s0,e0)`。真机 Playwright 探针 PASS（7 daycol、跨小时课按天每条 1 块、点课程不弹表单、非整点预填、增改删持久化、Console 无报错）；`test_29` 更新断言 22/0
 - `2026-10-07-timeline-visual-refresh.md` — **用户反馈「两个日程表太丑了」**：仅改 CSS 不做功能改动。周时间轴改卡片式（渐变+阴影+hover 上浮、时间放右上角、today 药丸高亮、网格线淡化、表单/无时间块同步）；列表式周表/月表卡片也刷新为白底圆角阴影。`test_29` 22/0、真机探针 PASS、已截图 `timeline_visual.png`
+- `2026-10-07-schedule-timeline-tab-merge.md` — **「周时间轴和日程表放一起」**：把周时间轴、列表式周表、列表式月表整合进「我的日程」面板下同一组 tab（时间轴/周表/月表，默认时间轴），由 `setSchTab()` 统一显隐切换、三者同源互不干扰。根因是初始加载没调 `setSchTab()` 导致两表默认同时堆着。纯前端 `student.html` 接线，`test_29` 22/0、真机 Playwright 探针 PASS（默认时间轴可见、周/月隐藏、切换正确、Console 无报错）
 - （后续每次开发会话追加新文件……）
 ## 评审怎么看
 
