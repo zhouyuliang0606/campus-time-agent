@@ -301,6 +301,7 @@
     .tl-bar b { color: #4a5366; font-size: 13px; }
     .tl-grid {
       display: grid; grid-template-columns: 52px repeat(7, minmax(0, 1fr));
+      grid-template-rows: auto repeat(14, 26px);
       gap: 3px; font-size: 11px;
     }
     .tl-grid .tl-corner { }
@@ -310,8 +311,11 @@
     }
     .tl-colh.today { color: #4f7cff; }
     .tl-hour {
-      color: #a0a8bb; text-align: right; padding-right: 5px; line-height: 26px;
+      color: #a0a8bb; text-align: right; padding-right: 5px; line-height: 26px; height: 26px;
       font-variant-numeric: tabular-nums;
+    }
+    .tl-hours {
+      grid-row: 2 / span 14; display: flex; flex-direction: column; gap: 3px;
     }
     /* 空格：可点 → 新增。整行 26px 高，够点得着又不浪费纵向空间。 */
     .tl-cell {
@@ -321,16 +325,20 @@
     .tl-cell:hover { border-color: #4f7cff; background: #f2f6ff; }
     /* 已有待办色块：绝对定位覆盖在格子上，按 start/end 决定高度 */
     .tl-evt {
-      border-left: 3px solid #f0a03c; background: #fff5e6; color: #7a5212;
+      position: absolute; box-sizing: border-box; border-left: 3px solid #f0a03c;
+      background: #fff5e6; color: #7a5212;
       border-radius: 5px; padding: 1px 4px; cursor: pointer; overflow: hidden;
-      font-size: 10px; line-height: 1.3; overflow-wrap: anywhere;
+      font-size: 10px; line-height: 1.3; overflow-wrap: anywhere; white-space: nowrap;
     }
     .tl-evt:hover { filter: brightness(.96); }
     .tl-evt.done { background: #eef7ef; border-color: #7dc48a; color: #3f6b48; text-decoration: line-through; }
     .tl-evt.course { background: #eaf1ff; border-color: #4f7cff; color: #24406e; cursor: default; }
     .tl-evt .tl-tm { opacity: .75; }
     /* 每列是一个相对定位的容器，色块靠 top/height 落位（1 小时 = 26px+3px gap） */
-    .tl-daycol { position: relative; }
+    .tl-daycol {
+      position: relative; grid-row: 2 / span 14; min-height: 403px;
+      background: repeating-linear-gradient(to bottom, #e3e7f2 0 1px, transparent 1px 29px);
+    }
     /* 新增/编辑用的轻量内联表单 */
     .tl-form {
       margin-top: 10px; border: 1px solid #d8def0; border-radius: 10px;
@@ -589,6 +597,7 @@
   .tl-cell { border-color: var(--line); background: var(--surface); }
   .tl-cell:hover { border-color: var(--brand); background: var(--brand-soft-2); }
   .tl-evt { background: var(--brand-soft-2); border-color: var(--brand); color: var(--text-2); }
+  .tl-daycol { background: repeating-linear-gradient(to bottom, var(--line) 0 1px, transparent 1px 29px); }
   .tl-form { border-color: var(--line); background: var(--surface); }
   .tl-form input, .tl-form select { border-color: var(--line); }
   .tl-form .tl-btn { background: var(--brand); border-color: var(--brand); }
@@ -1851,6 +1860,9 @@
     const TL_START = 8, TL_END = 22, TL_HOUR_H = 29;   // 08:00-22:00，1 小时一格（26px 高 + 3px gap）
     let tlEditingId = null;                             // 非空=编辑态，空=新增态
 
+    // 2026-10-07 第二轮修复（spec §6）：改"逐格贴块"为"单块跨行（绝对定位覆盖）"。
+    // 一门跨小时课只在它那段画一条连续色块；同列撞车贪心分道，绝不 items[0] 静默吞；
+    // 点课程块不开新增表单；点空格按点击位置预填（含非整点）。
     function tlRender() {
       const grid = document.getElementById("tlGrid");
       if (!grid) return;
@@ -1860,61 +1872,83 @@
       const rng = document.getElementById("tlRange");
       if (rng) rng.textContent = isoD(days[0]) + " ~ " + isoD(days[6]) + (schWeekOffset === 0 ? "（本周）" : "");
 
-      // 表头：左上角空格 + 7 个星期列头
+      const PITCH = TL_HOUR_H;          // 1 小时像素高（26 + 3 gap），必须对齐 CSS
+      const H0 = TL_START * 60;         // 08:00
+      const fmtHM = m => String(Math.floor(m / 60)).padStart(2, "0") + ":" + String(m % 60).padStart(2, "0");
+
+      // —— 表头：左上角 + 7 个星期列头 ——
       let html = '<div class="tl-corner"></div>';
       days.forEach(d => {
         const dIso = isoD(d);
         html += `<div class="tl-colh ${dIso === todayIso ? "today" : ""}">` +
           `${WD[isoWd(d) - 1]}<br><span class="small">${d.getMonth() + 1}/${d.getDate()}</span></div>`;
       });
-
-      // 每个小时一行：左列时间标签 + 7 个可点空格；有安排的列在此单元格上叠加色块
-      for (let h = TL_START; h < TL_END; h++) {
-        html += `<div class="tl-hour">${String(h).padStart(2, "0")}:00</div>`;
-        days.forEach(d => {
-          const dIso = isoD(d);
-          const wd = isoWd(d);
-          // 该列在这个小时内的待办/课程（取颜色主题：课程蓝、待办橙）
-          const items = [
-            ...schCourses.filter(c => Number(c.day) === wd && tlOverlapsHour(c.start, c.end, h))
-              .map(c => ({ cls: "course", label: c.course, start: c.start, end: c.end, id: null })),
-            ...schTodos.filter(t => t.date === dIso && t.start && tlOverlapsHour(t.start, t.end, h))
-              .map(t => ({ cls: t.status === "done" ? "todo done" : "todo", label: t.title,
-                           start: t.start, end: t.end, id: t.id, todo: t })),
-          ];
-          const evt = items.length
-            ? `<div class="tl-evt ${items[0].cls}" title="${escQ(items[0].label + " " + items[0].start + "-" + items[0].end)}"` +
-              (items[0].id ? ` data-tlid="${escQ(items[0].id)}"` : "") +
-              `><span class="tl-tm">${escapeHtml(items[0].start)}</span> ${escapeHtml(items[0].label)}</div>`
-            : "";
-          html += `<div class="tl-cell" data-date="${dIso}" data-hour="${h}">${evt}</div>`;
+      // —— 第二行：左列小时标尺（纵向 14 格）+ 7 个相对定位的日列容器 ——
+      const hours = [];
+      for (let h = TL_START; h < TL_END; h++) hours.push(`<div class="tl-hour">${String(h).padStart(2, "0")}:00</div>`);
+      html += `<div class="tl-hours" style="grid-column:1;">${hours.join("")}</div>`;
+      days.forEach((d, i) => {
+        const dIso = isoD(d);
+        const wd = isoWd(d);
+        // 收集这一天全部安排（课程 + 待办），统一绝对定位成"一整块"
+        const evs = [
+          ...schCourses.filter(c => Number(c.day) === wd)
+            .map(c => ({ cls: "course", label: c.course, start: c.start, end: c.end, id: null })),
+          ...schTodos.filter(t => t.date === dIso && t.start && t.end)
+            .map(t => ({ cls: t.status === "done" ? "todo done" : "todo", label: t.title, start: t.start, end: t.end, id: t.id })),
+        ];
+        // 同列撞车 → 贪心分道，保证每条都渲染（不静默吞）
+        const lanes = [];   // lanes[lane] = 该道已占用到的结束分钟
+        evs.forEach(ev => {
+          const s = Math.max(minsOf(ev.start), H0), e = Math.min(minsOf(ev.end), TL_END * 60);
+          let lane = lanes.findIndex(end => end <= s);
+          if (lane === -1) { lane = lanes.length; lanes.push(e); } else lanes[lane] = e;
+          ev._lane = lane;
         });
-      }
+        const laneCnt = Math.max(lanes.length, 1);
+        let blocks = "";
+        evs.forEach(ev => {
+          const s0 = minsOf(ev.start), e0 = minsOf(ev.end);
+          const top = Math.max((s0 - H0) / 60, 0) * PITCH;
+          const hpx = Math.max((Math.min(e0, TL_END * 60) - Math.max(s0, H0)) / 60 * PITCH - 2, 14);
+          const lw = 100 / laneCnt;
+          const left = ev._lane * lw + 0.5, width = lw - 1;
+          const overTop = s0 < H0, overBot = e0 > TL_END * 60;
+          const rangeTxt = (overTop ? "◀" : "") + fmtHM(s0) + "–" + fmtHM(e0) + (overBot ? "▶" : "");
+          const showTm = hpx >= 18;
+          const title = escQ((overTop ? "原 " + fmtHM(s0) + " 起 · " : "") + (overBot ? "至 " + fmtHM(e0) + " 截 · " : "") + ev.label);
+          blocks += `<div class="tl-evt ${ev.cls}"${ev.id ? ` data-tlid="${escQ(ev.id)}"` : ""} ` +
+            `style="top:${top}px;height:${hpx}px;left:${left}%;width:${width}%;" title="${title}">` +
+            (showTm ? `<span class="tl-tm">${rangeTxt}</span> ` : "") + escapeHtml(ev.label) + `</div>`;
+        });
+        html += `<div class="tl-daycol" data-date="${dIso}" style="grid-column:${i + 2};">${blocks}</div>`;
+      });
       grid.innerHTML = html;
 
-      // 点空格 → 打开新增表单（预填这一格）
-      grid.querySelectorAll(".tl-cell").forEach(td => {
-        td.addEventListener("click", (e) => {
-          if (e.target.closest(".tl-evt[data-tlid]")) return;   // 点色块走它自己的编辑
-          tlOpenForm(null, td.dataset.date, Number(td.dataset.hour));
+      // 点日列空白处 → 新增（按点击位置预填起止，支持非整点）
+      grid.querySelectorAll(".tl-daycol").forEach(dc => {
+        dc.addEventListener("click", (e) => {
+          if (e.target.closest(".tl-evt")) return;   // 点任何色块都不开新增表单（课程块也拦）
+          const dIso = dc.dataset.date;
+          const rect = dc.getBoundingClientRect();
+          let mins = Math.floor((e.clientY - rect.top) / PITCH * 60);
+          let h = TL_START + Math.floor(mins / 60), m = mins % 60;
+          if (h >= TL_END) { h = TL_END - 1; m = 0; }
+          const s0 = String(h).padStart(2, "0") + ":" + String(m).padStart(2, "0");
+          const e0 = String(Math.min(h + 1, TL_END)).padStart(2, "0") + ":" + String(m).padStart(2, "0");
+          tlOpenForm(null, dIso, s0, e0);
         });
       });
-      // 点色块 → 编辑该待办（课程色块不可点）
+      // 点待办色块 → 编辑（课程色块无 data-tlid，被上面守卫吞掉，不可编辑）
       grid.querySelectorAll(".tl-evt[data-tlid]").forEach(el => {
         el.addEventListener("click", (e) => {
           e.stopPropagation();
           const t = schTodos.find(x => x.id === el.dataset.tlid);
-          if (t) tlOpenForm(t.id, t.date, minsOf(t.start) / 60);
+          if (t) tlOpenForm(t.id, t.date, t.start, t.end);
         });
       });
 
       tlRenderNoTime();
-    }
-
-    // 这个安排是否和 H 点这个小时有交集（用于把色块落到对应格子）
-    function tlOverlapsHour(start, end, h) {
-      const s = minsOf(start), e = minsOf(end);
-      return e > h * 60 && s < (h + 1) * 60;
     }
 
     // 没有时间的待办（start/end 缺失）：不硬塞进时间轴，单独列在下面，点了照样能编辑
@@ -1929,18 +1963,18 @@
       box.querySelectorAll(".tl-chip").forEach(el =>
         el.addEventListener("click", () => {
           const t = schTodos.find(x => x.id === el.dataset.tlid);
-          if (t) tlOpenForm(t.id, t.date, 9);
+          if (t) tlOpenForm(t.id, t.date, "09:00", "10:00");
         }));
     }
 
-    // 打开新增/编辑表单。todoId 为空=新增；date/hour 为预填。
-    function tlOpenForm(todoId, date, hour) {
+    // 打开新增/编辑表单。todoId 为空=新增；date 为预填日期；s0/e0 为预填起止（编辑时取原值）
+    function tlOpenForm(todoId, date, s0, e0) {
       const todos_ = schTodos;
       const cur = todoId ? todos_.find(t => t.id === todoId) : null;
       tlEditingId = cur ? cur.id : null;
       const d0 = cur ? cur.date : date;
-      const s0 = cur && cur.start ? cur.start : String(hour).padStart(2, "0") + ":00";
-      const e0 = cur && cur.end ? cur.end : String(Math.min(hour + 1, TL_END)).padStart(2, "0") + ":00";
+      const st = cur && cur.start ? cur.start : (s0 || "09:00");
+      const en = cur && cur.end ? cur.end : (e0 || "10:00");
       const t0 = cur ? cur.title : "";
       const box = document.getElementById("tlFormBox");
       if (!box) return;
