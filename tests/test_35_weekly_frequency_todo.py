@@ -205,9 +205,56 @@ def batch_e_frontend():
     return c
 
 
+def batch_f_semantic_route():
+    c = Checker()
+    title("F 批 · 语义层重拼那句话时不能把次数弄丢（to_canonical 没有「频次」这个槽位）")
+    from app.modules.planner import carry_freq, weekly_times, todo_slots_proposal
+
+    blob = carry_freq("健身房锻炼", "我一周要去三次健身房")
+    c.check("原话里的频次被补回句尾", weekly_times(blob) == 3, blob)
+    card = todo_slots_proposal(blob)
+    c.check("补回去之后仍然预选 3 段",
+            card is not None and int(card.get("preselect") or 0) == 3,
+            card and card.get("preselect"))
+    c.check("标题不受补词影响（还是那件事，不是整句话）",
+            card is not None and card.get("title") == "健身房锻炼", card and card.get("title"))
+    c.check("已经带频次的规范话不重复补（免得拼成「三次 三次」）",
+            carry_freq("健身 一周三次", "我一周要去三次健身房") == "健身 一周三次")
+    c.check("原话本来没频次 → 原样返回", carry_freq("吃火锅", "我想吃火锅") == "吃火锅")
+    src = open("app/main.py", encoding="utf-8").read()
+    c.check("main.py 里 to_canonical 那一处过的是 carry_freq（不是又一条漏网的）",
+            "carry_freq(to_canonical(" in src, "语义层那条路还在裸用 to_canonical")
+
+    # 语义层会把「一周」猜成一个具体日子并拼进规范话（实测：「加个健身房锻炼，2026-10-12」）。
+    # 那个日子是它替学生编的，留着就会把"点名哪天就不预选"那道闸误关掉。
+    from app.modules.planner import _pick_date
+    fixed = carry_freq("加个健身房锻炼，2026-10-12", "我一周要去三次健身房")
+    c.check("原话没点名哪天 → 语义层编出来的日期被摘掉",
+            "2026-10-12" not in fixed, fixed)
+    # 注意别拿 `_pick_date(fixed)` 当判据：fixed 里带着我们刚补上的「一周三次」，
+    # 而 `_pick_date` 会把"一周"读成"一周后"→ 这条断言会因为自己的补词永远红。
+    c.check("摘掉日期后，_pick_date 仍只可能被「一周」这种范围词骗到（记录已知行为）",
+            _pick_date(fixed) is not None, "顺带钉住 carry_freq 的已知副作用，别以后当成 bug")
+    card2 = todo_slots_proposal(fixed)
+    c.check("摘掉之后这条路径也预选 3 段（真机踩过：这条给出的是 0）",
+            card2 is not None and int(card2.get("preselect") or 0) == 3,
+            card2 and (card2.get("preselect"), card2.get("title")))
+    # 反过来：学生真点了哪天，那个日子必须留着（不能被他说的"周六"被我们擦掉）
+    kept = carry_freq("加个健身，周六", "周六去健身")
+    c.check("原话点了哪天 → 规范话里的日子原样保留", kept == "加个健身，周六", kept)
+    # 真机踩过的那条：样本库里存着 day_hint="周一至周日"，规范话里就带着它回来，
+    # 于是"点名哪天就不预选"那道闸被一个学生没说过的日子顶掉了。
+    card3 = todo_slots_proposal(carry_freq("加个健身房锻炼，周一至周日", "我一周要去三次健身房"))
+    c.check("语义层补的「周一至周日」也被摘掉 → 这条同样预选 3 段",
+            card3 is not None and int(card3.get("preselect") or 0) == 3,
+            card3 and (card3.get("preselect"), card3.get("title")))
+    return c
+
+
 def main():
     results = [batch_a_parse(), batch_b_title(), batch_c_card_shape(),
-               batch_c2_shortfall(), batch_d_e2e(), batch_e_frontend()]
+               batch_c2_shortfall(), batch_d_e2e(), batch_e_frontend(),
+               batch_f_semantic_route()]
     total_pass = sum(r.passed for r in results)
     total_fail = sum(r.failed for r in results)
     print(f"\n===== 频次待办（一周 N 次）总账：通过 {total_pass} 项，失败 {total_fail} 项 =====")
