@@ -88,6 +88,7 @@ from app.modules.planner import (
     slot_is_free,
     todo_mode_proposal,
     todo_slots_proposal,
+    carry_freq,
     todo_remove_batch_proposal,
     todo_done_batch_proposal,
     wants_remove_todo,
@@ -2349,7 +2350,7 @@ async def _chat_impl(req: Request, meta: dict):
         #    信息会整段丢掉——"帮我安排周二的游泳"里的"周二"就不在语义字段里，一替下去
         #    候选时段会摊到一整周（实测踩过）。所以只在规则读不出来时才用规范话兜。
         if _sem_intent == INTENT_ADD_TODO and _sem and not wants_add_todo(message):
-            blob = to_canonical(message, _sem)
+            blob = carry_freq(to_canonical(message, _sem), message)
         else:
             blob = (prev_user + "，" + message) if (asking_add and prev_user) else message
         proposal = None

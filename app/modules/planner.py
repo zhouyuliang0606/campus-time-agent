@@ -630,6 +630,35 @@ def missing_thing_of(text: str, extra_names: list | None = None) -> dict | None:
     return {"title": title, "date": day}
 
 
+def carry_freq(blob: str, message: str) -> str:
+    """语义层重拼那句话时，把「一周三次」这类频次字样**带过去**，别在半路丢掉。
+
+    `to_canonical` 只按语义层给的槽位（日期/事名/钟点）重拼一句规范话术，
+    而语义层**没有"频次"这个槽位** —— 于是同一句话走规则层能排 3 段、
+    走语义层只排 1 段（2026-10-08 实测：「我一周要去三次健身房」被拼成「健身房锻炼」，
+    次数直接蒸发）。频次字样该不该留在标题里是 `_pick_title` 的事（不该留），
+    但**次数本身不能丢**，所以这里把原话里匹配到的那段补回句尾，
+    下游 `todo_slots_proposal` 才仍然看得见它。
+    """
+    blob = blob or ""
+    if weekly_times(blob) is not None:
+        return blob
+    m = _FREQ_RE.search(message or "")
+    if not m:
+        return blob
+    # 语义层会把「一周」猜成一个具体日子（实测拼出「加个健身房锻炼，2026-10-12」），
+    # 那个日子一旦进 blob，下游"他点名了哪天就别预选多段"那道闸就会误关 —— 次数又丢了。
+    # 判据：**原话去掉频次短语之后有没有点名哪天**。没有，就把拼出来的 ISO 日期摘掉，
+    # 因为那是语义层替学生编的，不是学生说的。
+    if not _pick_date(_FREQ_RE.sub(" ", message or "")):
+        blob = _DATE_ONLY_RE.sub(" ", blob)
+        blob = _DAY_WORD_RE.sub(" ", blob)
+    # 补的是**规范写法**「一周三次」，不是原话里那一段（原话可能是「一周要去三次」）。
+    # 差别的代价实测过：把原话整段拼上去，擦频次时「一周」「三次」各自被擦掉，
+    # 中间的"要去"没人擦，标题就成了「健身房锻炼要去」——卡片名字带尾巴。
+    return f"{blob} 一周{m.group(1)}次"
+
+
 def todo_slots_proposal(text: str, max_slots: int = 3) -> dict | None:
     """学生只说了"加个健身"（没说几点）→ 摊开几个候选时段，让他自己打勾。
 
@@ -650,14 +679,18 @@ def todo_slots_proposal(text: str, max_slots: int = 3) -> dict | None:
     title = _pick_title(t)
     if not title or title == "待办":
         return None          # 连"要做什么事"都没说 → 由追问分支去问，别拿"待办"占位
-    day = _pick_date(t)
+    day = _pick_date(_FREQ_RE.sub(" ", t))
     times = weekly_times(t) or 0
+    # 「一周三次」里的"一周"会被 `_pick_date` 当成相对日期（一周后 = 2026-10-14），
+    # 于是频次模式被"他指定了哪天"这道闸误拦，候选还全挤到那一天去。
+    # 所以判"有没有点名哪天"、以及去找空档，都用**去掉频次短语之后**的那句话。
+    plain = _FREQ_RE.sub(" ", t)
     # 「一周三次」且**没指定哪天** → 按一周 N 段排，前 N 段替他勾上。
     # 为什么要求"没指定哪天"：他要是说了「周四一周三次」，那两句本身就打架
     # （候选全挤在周四 = 一天三练），这种矛盾句宁可退回老路子只排那天，
     # 也别替他造出"周四连跑三趟健身房"这种谁也没说要的东西。
     if times >= 2 and not day:
-        slots = candidate_slots(t, max_slots=times + 2, days_ahead=7)
+        slots = candidate_slots(plain, max_slots=times + 2, days_ahead=7)
         if not slots:
             return None
         pre = min(times, len(slots))
@@ -887,7 +920,7 @@ def mode_to_card(card: dict, mode: str) -> dict | None:
     if mode == "ai":
         # 报了频次（"一周三次"）又说"你帮我安排" → 替他挑的就不该只有一段。
         # 走同一张候选卡（前 N 段已勾上），比"替他敲定一个点"更贴合他这句话。
-        if (weekly_times(text) or 0) >= 2 and not _pick_date(text):
+        if (weekly_times(text) or 0) >= 2 and not _pick_date(_FREQ_RE.sub(" ", text)):
             multi = todo_slots_proposal(text)
             if multi is not None:
                 return multi
@@ -1639,8 +1672,11 @@ _DURATION_RE = re.compile(
 # 待办模型是一条 = 一天一个时段，按天铺开等于替学生造 3 条他没说要的东西，
 # 宁可少认、回一句"这个我还排不了"，也别把兑现不了的承诺挂出去。
 _FREQ_RE = re.compile(
-    r"(?:一|每|这|本)?\s*(?:周|星期|礼拜)\s*(?:之?内|里)?"
-    r"[^，,。；;！!？?\d]{0,6}?"
+    r"(?:"
+    r"(?:一|每|这|本)\s*(?:周|星期|礼拜)"          # 带前缀：一周 / 每周 / 这星期
+    r"|(?<![一二每这本])(?:周|星期|礼拜)(?![一二三四五六日天])"  # 光杆"周"，且不是"周四"那种星期几
+    r")"
+    r"(?:之?内|里)?[^，,。；;！!？?\d]{0,6}?"
     r"(?<!第)(\d{1,2}|[一二两三四五六七八九十]{1,2})\s*(?:次|回|趟|遍|练)(?!课)"
 )
 # 数量本身（"三次"/"3 回"）。`(?<!第)` 挡「周四下午第一次上课」——
@@ -1651,6 +1687,9 @@ _COUNT_UNIT_RE = re.compile(
 # 频次里的范围词（"一周"/"每星期"/"一礼拜"）。只在 _FREQ_RE 命中时才擦，
 # 所以「忙了一周」「下周三」这类不带次数的写法不受影响。
 _WEEK_SCOPE_RE = re.compile(r"(?:一|每|这|本)\s*(?:周|星期|礼拜)\s*(?:之?内|里)?")
+# 语义层爱替学生"补"一个日子（实测样本库里存着 day_hint="周一至周日"）。
+# 学生原话没点名哪天的时候，这种补出来的日子要能摘掉 —— 见 `carry_freq`。
+_DAY_WORD_RE = re.compile(r"(?:下|本|这|上)?(?:周|星期|礼拜)[一二三四五六日天]")
 # 出现在"名字"里就说明抠到的不是事情，是时间/类别/动作残渣
 _TITLE_NOISE = (
     # 时间与时长残渣
