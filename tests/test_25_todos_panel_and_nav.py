@@ -45,9 +45,21 @@ def run():
         src = f.read()
 
     # ---- ① 待办面板用对的主键 ----
+    # 2026-10-08 XSS 收口后，`data-id` 那侧从 encodeURIComponent(t.id) 换成了 esc(t.id)
+    # （属性上下文要的是转义引号，不是 URL 编码），encode 挪到真正拼 URL 的 fetch 处。
+    # 所以这里**不能再钉 `encodeURIComponent(t.id)` 这个字面量**——钉住写法会把正确的
+    # 重构判成回归。改钉语义：主键取自 t.id，且拼 URL 时确实 encode 过。
+    head = src.find("async function loadTodosView")
+    body = src[head:] if head >= 0 else ""
     c.check("待办面板用 t.id（不是 t.todo_id）",
-            "encodeURIComponent(t.id)" in src,
+            head >= 0 and "t.id" in body,
             "loadTodosView 没用 t.id，增删会打 /api/todos/undefined")
+    c.check("待办面板增删打的是 encodeURIComponent(id) 过的 URL",
+            body.count('"/api/todos/"+encodeURIComponent(id)') >= 2,
+            "PUT/DELETE 没对 id 做 URL 编码（或那条路径改名了，护栏要跟着看）")
+    c.check("待办面板写进 data-id 属性的 id 走 esc()",
+            'data-id="\'+esc(t.id)' in body,
+            "id 直插属性上下文，含引号的 id 会破属性")
     c.check("待办面板不再出现 t.todo_id",
             "t.todo_id" not in src,
             "loadTodosView 仍在用 t.todo_id（API 没这个字段）")
