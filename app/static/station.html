@@ -120,6 +120,7 @@
     </div>
   </div>
 
+  <script src="/static/esc.js"></script>
   <script>
     // 快捷操作：前两个是"主动推送"，后面是常见咨询
     // 提示词都故意写成让 Agent 去调工具，这样页面上能看到它真的读了台账
@@ -134,10 +135,6 @@
     const log = document.getElementById("log");
     const text = document.getElementById("text");
     const send = document.getElementById("send");
-
-    function escapeHtml(s) {
-      return String(s).replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
-    }
 
     // ---------- 渲染快捷操作按钮 ----------
     const chipsBox = document.getElementById("chips");
@@ -157,11 +154,11 @@
         const data = await (await fetch("/api/persona")).json();
         const p = data.persona;
         document.getElementById("personaBox").innerHTML = `
-          <div class="nm">🎭 当前客服人格：${escapeHtml(p.name || "未命名")}<span class="tag">驿站/商户端</span></div>
-          <div class="rl">${escapeHtml(p.role || "（未设置角色定位）")}</div>
+          <div class="nm">🎭 当前客服人格：${esc(p.name || "未命名")}<span class="tag">驿站/商户端</span></div>
+          <div class="rl">${esc(p.role || "（未设置角色定位）")}</div>
           <div class="tm">
-            <div><b>语气：</b>${escapeHtml(p.tone || "（未设置）")}</div>
-            <div><b>准则：</b>${escapeHtml(p.rules || "（未设置）")}</div>
+            <div><b>语气：</b>${esc(p.tone || "（未设置）")}</div>
+            <div><b>准则：</b>${esc(p.rules || "（未设置）")}</div>
             <a href="/admin">← 去管理控制台改人设</a>
           </div>`;
       } catch (e) {
@@ -179,7 +176,7 @@
       const el = document.createElement("div");
       el.className = "msg " + (kind === "sys" ? "sys" : (who === "我" ? "user" : "bot"));
       let html = `<div class="who">${who}${module ? `<span class="tag">${module}</span>` : ""}</div>`;
-      html += `<div class="bubble">${escapeHtml(content)}</div>`;
+      html += `<div class="bubble">${esc(content)}</div>`;
       if (trace && trace.length) {
         // 把 Agent 的思考轨迹铺开：能看到它调用了什么工具、拿到什么结果
         const lines = trace.map(t => {
@@ -187,7 +184,7 @@
           if (t.answer) return `${t.phase || ""} ${t.answer}`;
           return t.phase || "";
         }).join("\n");
-        html += `<div class="trace">🧠 Agent 思考轨迹：\n${escapeHtml(lines)}</div>`;
+        html += `<div class="trace">🧠 Agent 思考轨迹：\n${esc(lines)}</div>`;
       }
       el.innerHTML = html;
       log.appendChild(el);

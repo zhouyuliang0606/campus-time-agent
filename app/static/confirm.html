@@ -121,6 +121,7 @@
   </div>
 </div>
 
+<script src="/static/esc.js"></script>
 <script>
 // ——————————————————————————————————————————————————————————
 // 这是**单独的一个 UI 页面**（/confirm），专门用来做变更确认。
@@ -162,11 +163,6 @@ if (inFrame && typeof ResizeObserver !== "undefined") {
 
 function params() { return new URLSearchParams(location.search); }
 function sid() { return (params().get("session") || params().get("session_id") || "").trim(); }
-
-function esc(s) {
-  return String(s == null ? "" : s).replace(/[&<>"]/g, c =>
-    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
-}
 
 const headEl = document.getElementById("cfTitle");
 const bodyEl = document.getElementById("cfBody");

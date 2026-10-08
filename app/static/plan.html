@@ -194,6 +194,7 @@
     </div>
   </div>
 
+  <script src="/static/esc.js"></script>
   <script>
     // ---------- 共用小工具 ----------
     const DAY_START = 7 * 60;   // 07:00
@@ -212,10 +213,6 @@
     // JS 的 getDay() 周日=0，我们要周一=1…周日=7
     const isoWd = d => d.getDay() === 0 ? 7 : d.getDay();
     function mondayOf(d) { const t = new Date(d); t.setDate(t.getDate() - (isoWd(d) - 1)); t.setHours(0, 0, 0, 0); return t; }
-    function esc(s) {
-      return String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
-    }
-
     let weekOffset = 0;    // 周表往前/往后翻几周
     let monthOffset = 0;   // 月表翻几个月
     let courses = [], todos = [];

@@ -868,6 +868,7 @@
     </div><!-- /main -->
   </div><!-- /shell -->
 
+  <script src="/static/esc.js"></script>
   <script>
     // 四个模块的配置：名字、图标、示例问题
     const MODULES = {
@@ -927,7 +928,7 @@
     }
 
     // 把后端给的 trace（[{step, phase, answer}]）画成一块可折叠的"我是这么想的"。
-    // ⚠️ 一律走 escapeHtml/richText —— phase 里有学生原话，直接塞 innerHTML 就是 XSS。
+    // ⚠️ 一律走 esc/richText —— phase 里有学生原话，直接塞 innerHTML 就是 XSS。
     //
     // 三处收拾（都是实测看到的噪声，不收拾的话这块比正文还长）：
     //   ① ReAct 的空流程标记（"🤔 思考""🔧 调用工具""📦 工具结果"）**没有内容**，
@@ -950,7 +951,7 @@
         if (an.length > 80) an = an.slice(0, 80) + "…";                   // ③
         // 步骤号只在**真有编号**时画：0 是"判定层"那条自加的说明，不是第 0 步，
         // 画个"0"出来只会让人以为少了一步。（JS 里 0 是假值，正好顺带垫掉。）
-        const st = t.step ? '<span class="st">' + escapeHtml(String(t.step)) + "</span>" : "";
+        const st = t.step ? '<span class="st">' + esc(String(t.step)) + "</span>" : "";
         rows.push('<div class="trace-row">' + st +
           richText(String(t.phase)) + (an ? " — " + richText(an) : "") +
           "</div>");
@@ -1147,7 +1148,7 @@
         wrap.appendChild(hint);
         const box = document.createElement("div");
         box.className = "opt-card";
-        box.innerHTML = `<div class="info"><b>${escapeHtml(card.title || "待办")}</b>
+        box.innerHTML = `<div class="info"><b>${esc(card.title || "待办")}</b>
           <div style="margin-top:6px;color:#6b7593;">先选一种，我再往下排。</div></div>`;
         wrap.appendChild(box);
         [["self", "🙋 时间我自己定（我列几段给你挑）"],
@@ -1208,11 +1209,11 @@
         const list = (card.slots || []).map((s, i) =>
           `<label class="slot-row" data-i="${i}">
              <input type="checkbox" class="slot-cb" value="${i}">
-             <span>${escapeHtml(s.label || "")}</span>
+             <span>${esc(s.label || "")}</span>
            </label>`).join("");
         const box = document.createElement("div");
         box.className = "opt-card";
-        box.innerHTML = `<div class="info"><b>${escapeHtml(card.title || "待办")}</b>${list}</div>`;
+        box.innerHTML = `<div class="info"><b>${esc(card.title || "待办")}</b>${list}</div>`;
         wrap.appendChild(box);
         const other = document.createElement("input");
         other.className = "slot-other";
@@ -1290,9 +1291,9 @@
         adds.forEach(card => {
           const box = document.createElement("div");
           box.className = "opt-card checked";
-          box.innerHTML = `<div class="info"><b>${escapeHtml(card.title || "待办")}</b>` +
-            `<div class="meta">${escapeHtml(card.date || "")}（${escapeHtml(card.weekday || "")}）` +
-            ` ${escapeHtml(card.start || "")}-${escapeHtml(card.end || "")}` +
+          box.innerHTML = `<div class="info"><b>${esc(card.title || "待办")}</b>` +
+            `<div class="meta">${esc(card.date || "")}（${esc(card.weekday || "")}）` +
+            ` ${esc(card.start || "")}-${esc(card.end || "")}` +
             ` · 约 ${card.minutes != null ? card.minutes : "?"} 分钟</div></div>`;
           wrap.appendChild(box);
 
@@ -1392,9 +1393,9 @@
         dels.forEach(card => {
           const box = document.createElement("div");
           box.className = "opt-card";
-          box.innerHTML = `<div class="info"><b>${escapeHtml(card.title || "待办")}</b>` +
-            `<div class="meta">${escapeHtml(card.date || "")}（${escapeHtml(card.weekday || "")}）` +
-            ` ${escapeHtml(card.start || "")}-${escapeHtml(card.end || "")}</div></div>`;
+          box.innerHTML = `<div class="info"><b>${esc(card.title || "待办")}</b>` +
+            `<div class="meta">${esc(card.date || "")}（${esc(card.weekday || "")}）` +
+            ` ${esc(card.start || "")}-${esc(card.end || "")}</div></div>`;
           wrap.appendChild(box);
 
           const del = document.createElement("button");
@@ -1471,9 +1472,9 @@
         dones.forEach(card => {
           const box = document.createElement("div");
           box.className = "opt-card";
-          box.innerHTML = `<div class="info"><b>${escapeHtml(card.title || "待办")}</b>` +
-            `<div class="meta">${escapeHtml(card.date || "")}（${escapeHtml(card.weekday || "")}）` +
-            ` ${escapeHtml(card.start || "")}-${escapeHtml(card.end || "")}</div></div>`;
+          box.innerHTML = `<div class="info"><b>${esc(card.title || "待办")}</b>` +
+            `<div class="meta">${esc(card.date || "")}（${esc(card.weekday || "")}）` +
+            ` ${esc(card.start || "")}-${esc(card.end || "")}</div></div>`;
           wrap.appendChild(box);
 
           const doneBtn = document.createElement("button");
@@ -1549,7 +1550,7 @@
           const info = document.createElement("div");
           info.className = "info";
           const n = (tt.courses || []).length;
-          info.innerHTML = `<b>${escapeHtml(tt.summary || "修改课表")}</b>` +
+          info.innerHTML = `<b>${esc(tt.summary || "修改课表")}</b>` +
             `<div class="meta">新课表共 ${n} 门课</div>`;
           card.appendChild(info);
           wrap.appendChild(card);
@@ -1613,7 +1614,7 @@
           card.className = "opt-card checked";
           const info = document.createElement("div");
           info.className = "info";
-          info.innerHTML = `<b>${escapeHtml(wo.summary || "上报管理端")}</b>`;
+          info.innerHTML = `<b>${esc(wo.summary || "上报管理端")}</b>`;
           card.appendChild(info);
           wrap.appendChild(card);
         });
@@ -1637,9 +1638,9 @@
         const info = document.createElement("div");
         info.className = "info";
         info.innerHTML =
-          `<b>${escapeHtml(o.title || "待办")}</b>` +
-          `<div class="meta">${escapeHtml(o.date)}（${escapeHtml(o.weekday || "")}）` +
-          ` ${escapeHtml(o.start)}-${escapeHtml(o.end)} · 约 ${o.minutes != null ? o.minutes : "?"} 分钟</div>`;
+          `<b>${esc(o.title || "待办")}</b>` +
+          `<div class="meta">${esc(o.date)}（${esc(o.weekday || "")}）` +
+          ` ${esc(o.start)}-${esc(o.end)} · 约 ${o.minutes != null ? o.minutes : "?"} 分钟</div>`;
         card.appendChild(cb);
         card.appendChild(info);
         wrap.appendChild(card);
@@ -1661,16 +1662,12 @@
       container.appendChild(wrap);
     }
 
-    function escapeHtml(s) {
-      return String(s).replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
-    }
-
     // 管家偶尔会用 **加粗** 强调一句重点（后端的确定性回复里也有）。
     // 聊天泡是"先转义再塞进 innerHTML"的，星号就被原样显示出来了——
     // 学生看到的是「要不要把 **游泳** 排进日程」，像 bug。
     // 所以转义之后再把 **x** 还原成 <b>x</b>（顺序不能反：先渲染再转义就等于开了 XSS 口子）。
     function richText(s) {
-      return escapeHtml(s).replace(/\*\*([^*\n]{1,60})\*\*/g, "<b>$1</b>");
+      return esc(s).replace(/\*\*([^*\n]{1,60})\*\*/g, "<b>$1</b>");
     }
 
     // 会话 id：按"左侧导航模块"区分，每个模块一条独立历史。
@@ -1769,9 +1766,6 @@
       "怎么申请奖学金？", "学生证丢了怎么补办？", "校园网 WiFi 怎么连？", "快递驿站几点关门？",
     ];
 
-    // title 属性里可能有引号，这里在 escapeHtml 基础上把双引号也转掉
-    const escQ = s => escapeHtml(String(s)).replace(/"/g, "&quot;");
-
     function showView(name) {
       document.querySelectorAll("#panel .view").forEach(v => { v.style.display = "none"; });
       if (name && name !== "view-default") document.getElementById(name).style.display = "block";
@@ -1838,8 +1832,8 @@
         });
 
         const inner = evts.map(x =>
-          `<div class="evt ${x.cls}${x.clash ? " clash" : ""}" title="${escQ(x.name)} ${x.tm}">` +
-          `<span class="tm">${x.tm}</span> ${escapeHtml(x.name)}${x.loc ? " · " + escapeHtml(x.loc) : ""}` +
+          `<div class="evt ${x.cls}${x.clash ? " clash" : ""}" title="${esc(x.name)} ${x.tm}">` +
+          `<span class="tm">${x.tm}</span> ${esc(x.name)}${x.loc ? " · " + esc(x.loc) : ""}` +
           `${x.clash ? '<span class="clash-tag" title="和其他安排时间重叠">撞</span>' : ""}</div>`).join("");
         html += `<div>
           <div class="wd ${dIso === todayIso ? "today" : ""}">${WD[wd - 1]}<br><span class="small">${d.getMonth() + 1}/${d.getDate()}</span></div>
@@ -1877,7 +1871,7 @@
           ...schCourses.filter(c => Number(c.day) === wd).map(c => ({ cls: "course", txt: `${c.start} ${c.course}` })),
         ];
         let inner = `<div>${d}${isT ? ' <span class="tdy">今天</span>' : ""}</div>`;
-        evts.slice(0, 2).forEach(e => { inner += `<div class="evt ${e.cls}" title="${escQ(e.txt)}">${escapeHtml(e.txt)}</div>`; });
+        evts.slice(0, 2).forEach(e => { inner += `<div class="evt ${e.cls}" title="${esc(e.txt)}">${esc(e.txt)}</div>`; });
         if (evts.length > 2) inner += `<div class="more">还有 ${evts.length - 2} 项…</div>`;
         html += `<div class="d ${isT ? "today" : ""} ${dIso === schSelDate ? "sel" : ""}" data-date="${dIso}">${inner}</div>`;
       }
@@ -1893,7 +1887,7 @@
       const list = schTodos.filter(t => t.date === schSelDate).sort((a, b) => a.start.localeCompare(b.start));
       box.innerHTML = list.length
         ? `<b style="font-size:13px;">${schSelDate} 的待办</b>` + list.map(t =>
-            `<div class="evt todo ${t.status === "done" ? "done" : ""}" style="font-size:12px;margin-top:6px;white-space:normal;">${t.start}-${t.end} ${escapeHtml(t.title)}</div>`).join("")
+            `<div class="evt todo ${t.status === "done" ? "done" : ""}" style="font-size:12px;margin-top:6px;white-space:normal;">${t.start}-${t.end} ${esc(t.title)}</div>`).join("")
         : `<div class="empty">${schSelDate} 还没有待办</div>`;
     }
 
@@ -1963,10 +1957,10 @@
           const overTop = s0 < H0, overBot = e0 > TL_END * 60;
           const rangeTxt = (overTop ? "◀" : "") + fmtHM(s0) + "–" + fmtHM(e0) + (overBot ? "▶" : "");
           const showTm = hpx >= 18;
-          const title = escQ((overTop ? "原 " + fmtHM(s0) + " 起 · " : "") + (overBot ? "至 " + fmtHM(e0) + " 截 · " : "") + ev.label);
-          blocks += `<div class="tl-evt ${ev.cls}"${ev.id ? ` data-tlid="${escQ(ev.id)}"` : ""} ` +
+          const title = esc((overTop ? "原 " + fmtHM(s0) + " 起 · " : "") + (overBot ? "至 " + fmtHM(e0) + " 截 · " : "") + ev.label);
+          blocks += `<div class="tl-evt ${ev.cls}"${ev.id ? ` data-tlid="${esc(ev.id)}"` : ""} ` +
             `style="top:${top}px;height:${hpx}px;left:${left}%;width:${width}%;" title="${title}">` +
-            (showTm ? `<span class="tl-tm">${rangeTxt}</span> ` : "") + escapeHtml(ev.label) + `</div>`;
+            (showTm ? `<span class="tl-tm">${rangeTxt}</span> ` : "") + esc(ev.label) + `</div>`;
         });
         html += `<div class="tl-daycol" data-date="${dIso}" style="grid-column:${i + 2};">${blocks}</div>`;
       });
@@ -2005,7 +1999,7 @@
       const noTime = schTodos.filter(t => !t.start || !t.end);
       box.innerHTML = noTime.length
         ? '<span class="small">没定时间的待办：</span>' + noTime.map(t =>
-            `<span class="tl-chip" data-tlid="${escQ(t.id)}">${escapeHtml(t.title)}</span>`).join("")
+            `<span class="tl-chip" data-tlid="${esc(t.id)}">${esc(t.title)}</span>`).join("")
         : "";
       box.querySelectorAll(".tl-chip").forEach(el =>
         el.addEventListener("click", () => {
@@ -2029,13 +2023,13 @@
         <div class="tl-form">
           <h4>${cur ? "✏️ 编辑待办" : "➕ 新增待办"}（直接写库，与对话/上传同一套数据）</h4>
           <div class="tl-frow">
-            <input id="tlTitle" placeholder="要做什么（如：去图书馆）" value="${escQ(t0)}" style="flex:1;min-width:160px;">
+            <input id="tlTitle" placeholder="要做什么（如：去图书馆）" value="${esc(t0)}" style="flex:1;min-width:160px;">
           </div>
           <div class="tl-frow">
-            <input id="tlDate" type="date" value="${escQ(d0)}">
-            <input id="tlStart" type="time" value="${escQ(s0)}">
+            <input id="tlDate" type="date" value="${esc(d0)}">
+            <input id="tlStart" type="time" value="${esc(s0)}">
             <span>→</span>
-            <input id="tlEnd" type="time" value="${escQ(e0)}">
+            <input id="tlEnd" type="time" value="${esc(e0)}">
           </div>
           <div class="tl-frow">
             <button class="tl-btn" id="tlSave">${cur ? "保存修改" : "加入日程"}</button>
@@ -2194,8 +2188,8 @@
           const stay = p.label === "滞留" ? `（已 ${p.stay_days} 天）` : "";
           return `<div class="row">
             <span class="st ${cls}">${p.label}${stay}</span>
-            <span class="code">${escapeHtml(p.pickup_code)}</span>
-            <span class="info">${escapeHtml(p.item)}<div class="sub">${escapeHtml(p.station)} · 到件 ${p.arrived_at}</div></span>
+            <span class="code">${esc(p.pickup_code)}</span>
+            <span class="info">${esc(p.item)}<div class="sub">${esc(p.station)} · 到件 ${p.arrived_at}</div></span>
           </div>`;
         }).join("") : '<div class="empty">暂无快递记录</div>';
       } catch (e) { box.innerHTML = '<div class="empty">快递数据加载失败</div>'; }
@@ -2212,8 +2206,8 @@
       box.innerHTML = list.length ? list.map(w => `
         <div class="wo-item">
           <span class="st wait">已提交</span>
-          <span class="t">${escapeHtml(w.type)}<div class="sub">${escapeHtml(w.desc || "（无补充描述）")} · ${w.ts}</div></span>
-          <button class="mini" data-wo="${escQ(w.id)}">让管家跟进</button>
+          <span class="t">${esc(w.type)}<div class="sub">${esc(w.desc || "（无补充描述）")} · ${w.ts}</div></span>
+          <button class="mini" data-wo="${esc(w.id)}">让管家跟进</button>
         </div>`).join("") : '<div class="empty">还没有提交过工单</div>';
       box.querySelectorAll(".mini").forEach(b => b.addEventListener("click", () => {
         const w = myWorkOrders().find(x => x.id === b.dataset.wo);
@@ -2257,9 +2251,9 @@
         box.innerHTML = orders.length ? orders.map(o => {
           const cls = o.status === "制作中" ? "cook" : (o.status === "配送中" ? "move" : "wait");
           return `<div class="row">
-            <span class="st ${cls}">${escapeHtml(o.status)}</span>
-            <span class="info"><b>${escapeHtml(o.shop)}</b> · ${escapeHtml(o.items)}
-              <div class="sub">预计 ${o.eta} · ${escapeHtml(o.pickup_point)}${o.pickup_code ? " · 取餐码 " + escapeHtml(o.pickup_code) : ""}</div></span>
+            <span class="st ${cls}">${esc(o.status)}</span>
+            <span class="info"><b>${esc(o.shop)}</b> · ${esc(o.items)}
+              <div class="sub">预计 ${o.eta} · ${esc(o.pickup_point)}${o.pickup_code ? " · 取餐码 " + esc(o.pickup_code) : ""}</div></span>
           </div>`;
         }).join("") : '<div class="empty">暂无外卖订单</div>';
       } catch (e) { box.innerHTML = '<div class="empty">外卖数据加载失败</div>'; }
@@ -2269,7 +2263,7 @@
     function renderFaq() {
       const g = document.getElementById("faqGrid");
       if (g.dataset.done) return; // 只渲染一次
-      g.innerHTML = FAQQS.map(q => `<button class="faq-btn">${escapeHtml(q)}</button>`).join("");
+      g.innerHTML = FAQQS.map(q => `<button class="faq-btn">${esc(q)}</button>`).join("");
       g.querySelectorAll(".faq-btn").forEach((b, i) => b.addEventListener("click", () => sendMsg(FAQQS[i])));
       g.dataset.done = "1";
     }
@@ -2288,11 +2282,11 @@
         }
         box.innerHTML = ns.map(n => {
           const att = n.attachment
-            ? `<div style="margin-top:6px;"><a class="chip" style="display:inline-block;text-decoration:none;" href="/api/uploads/${n.attachment.id}/download" target="_blank">📎 ${escapeHtml(n.attachment.name)}（下载）</a></div>`
+            ? `<div style="margin-top:6px;"><a class="chip" style="display:inline-block;text-decoration:none;" href="/api/uploads/${n.attachment.id}/download" target="_blank">📎 ${esc(n.attachment.name)}（下载）</a></div>`
             : "";
           return `<div class="notice-item">
-            <b>${escapeHtml(n.title || "(无标题)")}</b> <span class="small">${n.ts}</span>
-            <div class="body">${escapeHtml(n.content)}</div>${att}
+            <b>${esc(n.title || "(无标题)")}</b> <span class="small">${n.ts}</span>
+            <div class="body">${esc(n.content)}</div>${att}
           </div>`;
         }).join("");
       } catch (e) {
@@ -2378,12 +2372,12 @@
         }
         const dt = d.detail || {};
         out.innerHTML =
-          '<b>「' + escapeHtml(msg) + '」</b> → ' +
+          '<b>「' + esc(msg) + '」</b> → ' +
           (d.is_question ? "这是在<b>问</b>" : "这是让你<b>办事</b>") +
-          ' ｜ 类型 <code>' + escapeHtml(d.module || "-") + '</code>' +
-          ' ｜ 意图 <code>' + escapeHtml(d.intent || "还没判出来") + '</code>' +
+          ' ｜ 类型 <code>' + esc(d.module || "-") + '</code>' +
+          ' ｜ 意图 <code>' + esc(d.intent || "还没判出来") + '</code>' +
           ' ｜ 把握 ' + Number(d.confidence || 0).toFixed(2) +
-          ' ｜ 依据 ' + escapeHtml(dt.source_note || dt.source || "-") +
+          ' ｜ 依据 ' + esc(dt.source_note || dt.source || "-") +
           '<br /><span class="probe-note">这一下只看不办：既没写进日程，也没进聊天记录。</span>';
       } catch (e) {
         out.textContent = "诊断接口没通（后端起来了吗）：" + e;
@@ -2583,7 +2577,7 @@
       var gal=AVATARS.map(function(e,i){ return '<div class="av-opt" data-av="'+i+'" style="background:'+AV_BG[i%AV_BG.length]+'">'+e+'</div>'; }).join("");
       showModal("账号信息",
         '<div style="font-size:13px;color:#6a7388;margin-bottom:6px;">昵称</div>'+
-        '<input id="pfName" value="'+escapeHtml(cur)+'" maxlength="12" style="width:100%;padding:10px 12px;border:1px solid #d8def0;border-radius:10px;font-size:14px;outline:none;" />'+
+        '<input id="pfName" value="'+esc(cur)+'" maxlength="12" style="width:100%;padding:10px 12px;border:1px solid #d8def0;border-radius:10px;font-size:14px;outline:none;" />'+
         '<div style="font-size:13px;color:#6a7388;margin:14px 0 8px;">选个头像</div>'+
         '<div class="av-grid">'+gal+'</div>'+
         '<div style="font-size:13px;color:#6a7388;margin:14px 0 8px;">或上传一张</div>'+
@@ -2611,7 +2605,7 @@
       var sel=document.getElementById("modelSel"); if(!sel) return;
       var cfg=null; try{ cfg=JSON.parse(localStorage.getItem("ct_model_cfg")||"null"); }catch(e){ cfg=null; }
       var html='<option value="">默认模型（管理端配置）</option>';
-      if(cfg&&cfg.api_key) html+='<option value="__custom__" selected>我的 API：'+escapeHtml(cfg.model||"已配置")+'</option>';
+      if(cfg&&cfg.api_key) html+='<option value="__custom__" selected>我的 API：'+esc(cfg.model||"已配置")+'</option>';
       html+='<option value="__add__">⚙ 添加 / 修改 API</option>';
       sel.innerHTML=html;
     }
@@ -2619,11 +2613,11 @@
       var cfg=null; try{ cfg=JSON.parse(localStorage.getItem("ct_model_cfg")||"null"); }catch(e){ cfg=null; }
       showModal("添加 / 修改 API",
         '<div style="font-size:13px;color:#6a7388;margin-bottom:6px;">接口地址（Base URL，兼容 OpenAI 格式）</div>'+
-        '<input id="mBase" placeholder="https://api.deepseek.com" value="'+escapeHtml((cfg&&cfg.base_url)||"")+'" style="width:100%;padding:9px 11px;border:1px solid #d8def0;border-radius:9px;font-size:13px;outline:none;margin-bottom:10px;" />'+
+        '<input id="mBase" placeholder="https://api.deepseek.com" value="'+esc((cfg&&cfg.base_url)||"")+'" style="width:100%;padding:9px 11px;border:1px solid #d8def0;border-radius:9px;font-size:13px;outline:none;margin-bottom:10px;" />'+
         '<div style="font-size:13px;color:#6a7388;margin-bottom:6px;">模型名</div>'+
-        '<input id="mModel" placeholder="deepseek-chat" value="'+escapeHtml((cfg&&cfg.model)||"")+'" style="width:100%;padding:9px 11px;border:1px solid #d8def0;border-radius:9px;font-size:13px;outline:none;margin-bottom:10px;" />'+
+        '<input id="mModel" placeholder="deepseek-chat" value="'+esc((cfg&&cfg.model)||"")+'" style="width:100%;padding:9px 11px;border:1px solid #d8def0;border-radius:9px;font-size:13px;outline:none;margin-bottom:10px;" />'+
         '<div style="font-size:13px;color:#6a7388;margin-bottom:6px;">API Key</div>'+
-        '<input id="mKey" type="password" placeholder="sk-..." value="'+escapeHtml((cfg&&cfg.api_key)||"")+'" style="width:100%;padding:9px 11px;border:1px solid #d8def0;border-radius:9px;font-size:13px;outline:none;" />'+
+        '<input id="mKey" type="password" placeholder="sk-..." value="'+esc((cfg&&cfg.api_key)||"")+'" style="width:100%;padding:9px 11px;border:1px solid #d8def0;border-radius:9px;font-size:13px;outline:none;" />'+
         '<div style="font-size:12px;color:#8a93a6;margin-top:8px;">密钥仅保存在本机浏览器，不会上传服务器。</div>',
         [{label:"取消",ghost:true,on:function(){ closeModal(); }},
          {label:"保存",on:function(){
@@ -2649,8 +2643,8 @@
           var wd=""; try{ wd=WD[((new Date(t.date).getDay()+6)%7)]; }catch(e){}
           return '<div class="todo-row '+(done?"done":"")+'">'+
             '<input type="checkbox" '+(done?"checked":"")+' data-id="'+encodeURIComponent(t.id)+'" class="todo-done" />'+
-            '<div class="todo-main"><div class="todo-title">'+escapeHtml(t.title)+'</div>'+
-            '<div class="todo-sub">'+escapeHtml(t.date)+'（'+wd+'） '+escapeHtml(t.start||"")+'-'+escapeHtml(t.end||"")+'</div></div>'+
+            '<div class="todo-main"><div class="todo-title">'+esc(t.title)+'</div>'+
+            '<div class="todo-sub">'+esc(t.date)+'（'+wd+'） '+esc(t.start||"")+'-'+esc(t.end||"")+'</div></div>'+
             '<button class="todo-del" data-id="'+encodeURIComponent(t.id)+'">删除</button></div>';
         }).join("");
         box.querySelectorAll(".todo-done").forEach(function(cb){ cb.addEventListener("change", async function(){
@@ -2671,7 +2665,7 @@
       var cfg=null; try{ cfg=JSON.parse(localStorage.getItem("ct_model_cfg")||"null"); }catch(e){ cfg=null; }
       box.innerHTML=
         '<div class="card"><h2>助手名字</h2><div class="desc">给管家起个称呼，会显示在对话里。</div>'+
-        '<div style="display:flex;gap:10px;"><input id="setName" value="'+escapeHtml(name)+'" maxlength="12" style="flex:1;padding:10px 12px;border:1px solid #d8def0;border-radius:10px;font-size:14px;outline:none;"/><button class="btn" id="setNameBtn">保存</button></div></div>'+
+        '<div style="display:flex;gap:10px;"><input id="setName" value="'+esc(name)+'" maxlength="12" style="flex:1;padding:10px 12px;border:1px solid #d8def0;border-radius:10px;font-size:14px;outline:none;"/><button class="btn" id="setNameBtn">保存</button></div></div>'+
         '<div class="card"><h2>助手性格</h2><div class="desc">挑一个聊天腔调。</div><div id="setPersona" class="persona-list"></div></div>'+
         // 思考轨迹开关。**默认开**：它是学生核对"管家有没有听错"的唯一凭据
         // （学生报障原话：「没有展示思考过程」）。给个关掉的口子是为了
@@ -2695,11 +2689,11 @@
         var personas=[]; try{ personas=(await (await fetch("/api/student-personas")).json()).personas||[]; }catch(e){}
         var saved=localStorage.getItem("campustime_persona")||(personas[0]&&personas[0].key);
         var pl=document.getElementById("setPersona");
-        pl.innerHTML=personas.map(function(p){ return '<div class="persona '+(p.key===saved?"active":"")+'" data-key="'+p.key+'"><span class="em">'+escapeHtml(p.emoji||"")+'</span><span>'+escapeHtml(p.name)+'</span></div>'; }).join("");
+        pl.innerHTML=personas.map(function(p){ return '<div class="persona '+(p.key===saved?"active":"")+'" data-key="'+p.key+'"><span class="em">'+esc(p.emoji||"")+'</span><span>'+esc(p.name)+'</span></div>'; }).join("");
         pl.querySelectorAll(".persona").forEach(function(el){ el.addEventListener("click", function(){ localStorage.setItem("campustime_persona", el.dataset.key); pl.querySelectorAll(".persona").forEach(function(x){ x.classList.toggle("active", x.dataset.key===el.dataset.key); }); }); });
       })();
       var mi=document.getElementById("setModelInfo");
-      mi.innerHTML = cfg&&cfg.api_key ? ("当前自定义："+escapeHtml(cfg.model||cfg.base_url||"")) : "当前：使用管理端默认模型";
+      mi.innerHTML = cfg&&cfg.api_key ? ("当前自定义："+esc(cfg.model||cfg.base_url||"")) : "当前：使用管理端默认模型";
       document.getElementById("setModelBtn").addEventListener("click", function(){ openModelModal(); });
       var clr=document.getElementById("setModelClear"); if(clr) clr.addEventListener("click", function(){ localStorage.removeItem("ct_model_cfg"); loadModelSel(); loadSettingsView(); });
     }

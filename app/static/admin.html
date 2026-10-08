@@ -219,6 +219,7 @@
     </div>
   </div>
 
+  <script src="/static/esc.js"></script>
   <script>
     const MODULE_NAMES = { schedule: "我的日程", faq: "校园问答", express: "快递", takeout: "外卖", station: "驿站客服" };
     let editingKb = null;
@@ -286,7 +287,7 @@
         const d = await resp.json();
         if (d.ok) {
           noticeAttachment = { id: d.file.id, name: d.file.name };
-          st.innerHTML = `📎 已附加：<b>${escapeHtml(d.file.name)}</b>（${d.file.chars} 字） <button class="mini" onclick="clearAttachment()">移除</button>`;
+          st.innerHTML = `📎 已附加：<b>${esc(d.file.name)}</b>（${d.file.chars} 字） <button class="mini" onclick="clearAttachment()">移除</button>`;
         } else {
           noticeAttachment = null;
           st.textContent = "❌ 上传失败：" + (d.error || "未知原因");
@@ -329,9 +330,9 @@
       box.innerHTML = data.notices.map(n => {
         let att = "";
         if (n.attachment) {
-          att = `<div style="margin-top:6px;"><a class="mini" href="/api/uploads/${n.attachment.id}/download" target="_blank" style="text-decoration:none;">📎 ${escapeHtml(n.attachment.name)}（下载）</a></div>`;
+          att = `<div style="margin-top:6px;"><a class="mini" href="/api/uploads/${n.attachment.id}/download" target="_blank" style="text-decoration:none;">📎 ${esc(n.attachment.name)}（下载）</a></div>`;
         }
-        return `<div class="notice"><b>${escapeHtml(n.title || "(无标题)")}</b> <span class="small">${n.ts}</span><div>${escapeHtml(n.content)}</div>${att}</div>`;
+        return `<div class="notice"><b>${esc(n.title || "(无标题)")}</b> <span class="small">${n.ts}</span><div>${esc(n.content)}</div>${att}</div>`;
       }).join("");
     }
 
@@ -346,10 +347,10 @@
       const now = document.getElementById("apiNow");
       now.innerHTML = `
         <div class="kb-q">${d.configured ? "✅ 已配置" : "⚠️ 尚未配置密钥"}</div>
-        <div class="kb-a">当前密钥（打码）：<code>${escapeHtml(s.api_key || "（无）")}</code></div>
-        <div class="kb-a">接口地址：${escapeHtml(s.base_url)}</div>
-        <div class="kb-a">模型：${escapeHtml(s.model)}</div>
-        <div class="small">配置来源：${escapeHtml(d.source)}</div>`;
+        <div class="kb-a">当前密钥（打码）：<code>${esc(s.api_key || "（无）")}</code></div>
+        <div class="kb-a">接口地址：${esc(s.base_url)}</div>
+        <div class="kb-a">模型：${esc(s.model)}</div>
+        <div class="small">配置来源：${esc(d.source)}</div>`;
     }
     async function saveApi() {
       const st = document.getElementById("apistatus");
@@ -403,9 +404,9 @@
       if (!data.entries.length) { box.innerHTML = '<div class="empty">知识库还是空的</div>'; return; }
       box.innerHTML = data.entries.map((e, i) => `
         <div class="kb">
-          <div class="kb-q">${i}. ${escapeHtml(e.question)}</div>
-          <div class="kb-a">${escapeHtml(e.answer)}</div>
-          <div class="small">关键词：${escapeHtml((e.keywords || []).join("、"))}</div>
+          <div class="kb-q">${i}. ${esc(e.question)}</div>
+          <div class="kb-a">${esc(e.answer)}</div>
+          <div class="small">关键词：${esc((e.keywords || []).join("、"))}</div>
           <div style="margin-top:6px;">
             <button class="mini" onclick="editKB(${i})">编辑</button>
             <button class="mini danger" onclick="deleteKB(${i})">删除</button>
@@ -459,11 +460,11 @@
         if (!list.length) { box.innerHTML = '<div class="empty">暂无工单</div>'; return; }
         box.innerHTML = list.map(w => `
           <div class="msg">
-            <div class="top"><span class="tag">${escapeHtml(w.kind)}</span><span>${w.ts} · 来源：${w.source === "panel" ? "面板表单" : "聊天确认"}</span></div>
-            <div class="q">${escapeHtml(w.desc || "（无补充描述）")}</div>
-            <div class="a">状态：<b>${escapeHtml(w.status)}</b>
-              <button class="mini" data-wo="${escapeHtml(w.id)}" data-st="处理中">标为处理中</button>
-              <button class="mini" data-wo="${escapeHtml(w.id)}" data-st="已解决">标为已解决</button>
+            <div class="top"><span class="tag">${esc(w.kind)}</span><span>${w.ts} · 来源：${w.source === "panel" ? "面板表单" : "聊天确认"}</span></div>
+            <div class="q">${esc(w.desc || "（无补充描述）")}</div>
+            <div class="a">状态：<b>${esc(w.status)}</b>
+              <button class="mini" data-wo="${esc(w.id)}" data-st="处理中">标为处理中</button>
+              <button class="mini" data-wo="${esc(w.id)}" data-st="已解决">标为已解决</button>
             </div>
           </div>`).join("");
         box.querySelectorAll(".mini").forEach(b => b.addEventListener("click", async () => {
@@ -487,14 +488,10 @@
         const name = MODULE_NAMES[m.module] || m.module || "未指定";
         return `<div class="msg">
           <div class="top"><span class="tag">${name}</span><span>${m.ts}</span></div>
-          <div class="q">🎓 学生：${escapeHtml(m.message)}</div>
-          <div class="a">🤖 管家：${escapeHtml(m.answer || "（无回答）")}</div>
+          <div class="q">🎓 学生：${esc(m.message)}</div>
+          <div class="a">🤖 管家：${esc(m.answer || "（无回答）")}</div>
         </div>`;
       }).join("");
-    }
-
-    function escapeHtml(s) {
-      return String(s).replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
     }
 
     document.getElementById("publish").addEventListener("click", publish);
@@ -541,7 +538,7 @@
       document.getElementById("usageModels").innerHTML = models.length
         ? models.map(m => `
             <div class="bar-row">
-              <div class="bar-top"><span>${escapeHtml(m.model)}</span>
+              <div class="bar-top"><span>${esc(m.model)}</span>
                 <span>${m.calls} 次 · ${_num(m.tokens)} tokens · ${m.share}%</span></div>
               <div class="bar"><i style="width:${Math.max(m.share, 1)}%"></i></div>
             </div>`).join("")
@@ -554,14 +551,14 @@
              <th>时间</th><th>调用方</th><th>模型</th><th>提示</th><th>完成</th>
              <th>耗时</th><th>状态</th><th>错误</th></tr></thead><tbody>${
             rows.map(r => `<tr>
-              <td>${escapeHtml(r.ts || "")}</td>
-              <td>${escapeHtml(r.user || "")}</td>
-              <td>${escapeHtml(r.model || "")}</td>
+              <td>${esc(r.ts || "")}</td>
+              <td>${esc(r.user || "")}</td>
+              <td>${esc(r.model || "")}</td>
               <td>${_num(r.prompt_tokens)}</td>
               <td>${_num(r.completion_tokens)}</td>
               <td>${_num(r.latency_ms)} ms</td>
               <td><span class="pill ${r.status === "ok" ? "ok" : "err"}">${r.status === "ok" ? "成功" : "失败"}</span></td>
-              <td>${escapeHtml((r.error || "").slice(0, 40))}</td>
+              <td>${esc((r.error || "").slice(0, 40))}</td>
             </tr>`).join("")}</tbody></table>`
         : '<div class="empty">还没有调用记录</div>';
     }

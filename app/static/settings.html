@@ -92,11 +92,8 @@
     <div class="foot">设置都保存在本机浏览器，不会上传；清除浏览器数据后会回到默认。</div>
   </div>
 
+  <script src="/static/esc.js"></script>
   <script>
-    function escapeHtml(s) {
-      return String(s).replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
-    }
-
     // ---------- 助手名字 ----------
     const nameInput = document.getElementById("name");
     const nameSaved = document.getElementById("nameSaved");
@@ -126,8 +123,8 @@
         el.dataset.key = p.key;
         el.innerHTML =
           `<div class="em">${p.emoji || ""}</div>` +
-          `<div class="body"><div class="nm">${escapeHtml(p.name)}</div>` +
-          `<div class="meta">${escapeHtml(p.desc || "")} · ${escapeHtml(p.style || "")}</div></div>` +
+          `<div class="body"><div class="nm">${esc(p.name)}</div>` +
+          `<div class="meta">${esc(p.desc || "")} · ${esc(p.style || "")}</div></div>` +
           `<div class="tick">✓</div>`;
         el.addEventListener("click", () => {
           localStorage.setItem("campustime_persona", p.key);
