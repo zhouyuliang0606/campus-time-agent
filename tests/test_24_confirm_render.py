@@ -13,6 +13,8 @@
 
 import os
 
+import _utf8  # noqa: F401  中文 Windows 的 GBK 控制台打不出 ✅，会让本文件一跑就中断
+
 PROJ_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CONFIRM = os.path.join(PROJ_DIR, "app", "static", "confirm.html")
 

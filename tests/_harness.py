@@ -17,6 +17,8 @@ import sys
 import tempfile
 import warnings
 
+import _utf8  # noqa: F401  导入即把 stdout/stderr 固定成 UTF-8（中文 Windows 打不出 ✅ 的坑）
+
 # 关掉第三方库的过时警告，免得满屏噪声盖住真正的 ✅ / ❌ 结果。
 # 注意 starlette 这条虽然叫 StarletteDeprecationWarning，实际继承自 UserWarning，
 # 所以按类别过滤抓不到它，只能按消息内容过滤。

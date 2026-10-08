@@ -17,8 +17,13 @@ import os
 import subprocess
 import sys
 
+import _utf8  # noqa: F401  导入即生效：中文 Windows 的 GBK 控制台打不出 ✅/▶，会直接打断自测
+
 TESTS_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJ_DIR = os.path.dirname(TESTS_DIR)
+
+# 每个 test_*.py 是单独进程跑的，光固定父进程的流管不到它们 → 用环境变量传下去
+CHILD_ENV = {**os.environ, "PYTHONIOENCODING": "utf-8"}
 
 
 def main():
@@ -46,6 +51,7 @@ def main():
             text=True,
             encoding="utf-8",
             errors="replace",
+            env=CHILD_ENV,
         )
         out = (proc.stdout or "") + (proc.stderr or "")
         print(out.rstrip())
