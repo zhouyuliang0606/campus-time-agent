@@ -19,6 +19,20 @@ DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
 # DEBUG=true 时，Agent 的"思考轨迹"会打印出来，方便演示和排查问题
 DEBUG = os.getenv("DEBUG", "false").lower() in ("true", "1", "yes")
 
+# —— 管理接口口令 ——
+# 全项目只在这里拿，admin_guard 负责校验；代码里没有任何写死的口令。
+ADMIN_TOKEN_ENV = "CAMPUSTIME_ADMIN_TOKEN"
+
+
+def get_admin_token() -> str:
+    """管理接口的口令（人话：从 .env / 环境变量读，没配就是空串 = 管理接口全锁）。
+
+    为什么每次现读而不是像上面那样定成常量：
+      · 测试要在同一个进程里换口令、试"没配口令"那条路（改了 .env 得重启才生效很难用）；
+      · 读一次环境变量的开销可以忽略，但"没配 = 不开门"这个默认值必须随时算得出来。
+    """
+    return (os.getenv(ADMIN_TOKEN_ENV) or "").strip()
+
 
 def get_llm_config(override: dict | None = None) -> dict:
     """获取当前真正生效的大模型配置（人话：管理后台配了就听它的，没配就用 .env 的）。

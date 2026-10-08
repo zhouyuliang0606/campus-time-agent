@@ -11,10 +11,11 @@ import re
 import uuid
 from typing import Any
 
-from fastapi import FastAPI, File, Request, UploadFile
+from fastapi import Depends, FastAPI, File, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from app.admin_guard import verify_admin
 from app.agent.engine import AgentEngine
 from app.agent.intent import (
     DEFAULT_MODULE, INTENT_ADD_TODO, INTENT_CHAT, INTENT_CLEAR_TIMETABLE,
@@ -3319,6 +3320,14 @@ async def classify_probe(req: Request):
 
 
 # ============ 管理员侧接口（发布通知 + 接收学生消息） ============
+#
+# 这一段里凡是 `dependencies=[Depends(verify_admin)]` 的，都要带请求头
+# X-Admin-Token（口令在 .env 的 CAMPUSTIME_ADMIN_TOKEN，代码里没有写死值）。
+# 划界的原则只有一条：**管理员才做得到的事**才挂门。
+# 下面这两个不挂，是有意为之，不是漏了——
+#   · POST /api/student-message  学生端每轮自己存档对话，学生没有口令
+#   · POST /api/workorders       学生发现问题点【确认上报】，挂门等于把这条链掐了
+# GET /api/persona 也不挂（驿站页要显示客服名字），只有 POST 改人格的要挂。
 
 @app.post("/api/student-message")
 async def student_message(req: Request):
@@ -3328,7 +3337,7 @@ async def student_message(req: Request):
     return {"ok": True, "id": item["id"]}
 
 
-@app.get("/api/admin/messages")
+@app.get("/api/admin/messages", dependencies=[Depends(verify_admin)])
 async def admin_messages():
     """管理员端拉取学生消息收件箱（倒序，最新在前）。"""
     return {"messages": list_messages()}
@@ -3359,13 +3368,13 @@ async def workorder_create(req: Request):
     return {"ok": True, "workorder": item}
 
 
-@app.get("/api/workorders")
+@app.get("/api/workorders", dependencies=[Depends(verify_admin)])
 async def workorder_list():
     """管理端查看全部工单（倒序）。"""
     return {"workorders": list_workorders()}
 
 
-@app.post("/api/workorders/{wo_id}/status")
+@app.post("/api/workorders/{wo_id}/status", dependencies=[Depends(verify_admin)])
 async def workorder_set_status(wo_id: str, req: Request):
     """管理员处理工单后更新状态（待处理/处理中/已解决）。"""
     body = await req.json()
@@ -3378,7 +3387,7 @@ async def workorder_set_status(wo_id: str, req: Request):
     return {"ok": True, "workorder": item}
 
 
-@app.post("/api/admin/notify")
+@app.post("/api/admin/notify", dependencies=[Depends(verify_admin)])
 async def admin_notify(req: Request):
     """管理员发布一条通知，可以挂一个附件（人话：比如把放假安排表一起发出去）。"""
     body = await req.json()
@@ -3411,13 +3420,13 @@ async def notices():
 
 # ============ 管理控制台：知识库零代码维护 ============
 
-@app.get("/api/admin/kb")
+@app.get("/api/admin/kb", dependencies=[Depends(verify_admin)])
 async def admin_kb_list():
     """列出知识库全部条目（人话：管理台知识库表格的数据源）。"""
     return {"entries": list_kb()}
 
 
-@app.post("/api/admin/kb")
+@app.post("/api/admin/kb", dependencies=[Depends(verify_admin)])
 async def admin_kb_add(req: Request):
     """新增一条知识库条目。"""
     body = await req.json()
@@ -3430,7 +3439,7 @@ async def admin_kb_add(req: Request):
     return {"ok": True, "entry": item}
 
 
-@app.put("/api/admin/kb/{index}")
+@app.put("/api/admin/kb/{index}", dependencies=[Depends(verify_admin)])
 async def admin_kb_update(index: int, req: Request):
     """按序号修改一条知识库条目。"""
     body = await req.json()
@@ -3444,7 +3453,7 @@ async def admin_kb_update(index: int, req: Request):
     return {"ok": True, "entry": item}
 
 
-@app.delete("/api/admin/kb/{index}")
+@app.delete("/api/admin/kb/{index}", dependencies=[Depends(verify_admin)])
 async def admin_kb_delete(index: int):
     """按序号删除一条知识库条目。"""
     ok = delete_kb_entry(index)
@@ -3461,7 +3470,7 @@ async def persona_get():
     return {"persona": get_persona()}
 
 
-@app.post("/api/persona")
+@app.post("/api/persona", dependencies=[Depends(verify_admin)])
 async def persona_set(req: Request):
     """保存客服人格（人话：管理员改了客服人设，下次对话立即生效）。"""
     body = await req.json()
@@ -3555,7 +3564,7 @@ def _mask(key: str) -> str:
     return f"{key[:6]}{'*' * 8}{key[-4:]}"
 
 
-@app.get("/api/admin/settings")
+@app.get("/api/admin/settings", dependencies=[Depends(verify_admin)])
 async def settings_get():
     """读取当前生效的 API 配置。注意：密钥是**打码后**返回的。"""
     cfg = get_llm_config()
@@ -3570,7 +3579,7 @@ async def settings_get():
     }
 
 
-@app.post("/api/admin/settings")
+@app.post("/api/admin/settings", dependencies=[Depends(verify_admin)])
 async def settings_set(req: Request):
     """保存 API 配置（人话：管理员在线改，改完对话立即用新的，不用重启）。"""
     body = await req.json()
@@ -3596,7 +3605,7 @@ async def settings_set(req: Request):
     }
 
 
-@app.post("/api/admin/settings/test")
+@app.post("/api/admin/settings/test", dependencies=[Depends(verify_admin)])
 async def settings_test():
     """拿当前配置真的去问大模型一句（人话：配完点一下就知道通不通）。"""
     cfg = get_llm_config()
@@ -3620,7 +3629,7 @@ async def settings_test():
 # 这里只做"读 + 汇总 + 清空"，**不提供写接口**——账只能由网关记，
 # 免得哪天有人手改出一个跟真实调用对不上的漂亮数字。
 
-@app.get("/api/admin/usage")
+@app.get("/api/admin/usage", dependencies=[Depends(verify_admin)])
 async def usage_get(limit: int = 50):
     """用量汇总（人话：管理台那张"用量统计"卡片的数据源）。
 
@@ -3639,7 +3648,7 @@ async def usage_get(limit: int = 50):
     return data
 
 
-@app.post("/api/admin/usage/clear")
+@app.post("/api/admin/usage/clear", dependencies=[Depends(verify_admin)])
 async def usage_clear():
     """清空用量流水（人话：演示前想从零开始计数就点它）。
 
