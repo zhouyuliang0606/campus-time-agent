@@ -56,7 +56,6 @@ from app.modules.station import build_system_prompt as STATION_PROMPT, build_too
 # planner 也是"可调用提示"：每次对话都要把**今天的日期**动态拼进去，
 # 否则学生说"明天"，AI 根本算不出是哪一天
 from app.modules.planner import (
-    add_todo_tool,
     auto_todo_proposal,
     build_system_prompt as PLANNER_PROMPT,
     build_tools as planner_tools,
@@ -175,7 +174,7 @@ ASSISTANT_RULES = """
    修改课表走 propose_course_change / propose_timetable_change 提案
    （学生点确认条上的【确认】，或在聊天框回"确认添加/确认删除"这类确认文字，
    都由**系统**执行入库，不经过你）；
-   add_todo_tool 等写入工具必须等学生点头后才能调用。
+   **工具箱里没有任何写入工具**——落库不是你的活，你只出提案、如实转述系统的结果。
    ⛔ 日程修改只走提案这一条路。学生点确认条上的【确认】是优先方式，
       在聊天框回确认类文字是备选方式，两者都由**系统**写入。
    ⛔ 禁止说"自己办不到、权限不够、需要先上报管理端"这类话——

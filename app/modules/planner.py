@@ -912,7 +912,12 @@ def list_day_todos(date: str) -> list:
 
 
 def add_todo_tool(title: str, date: str, start: str, end: str, note: str = "") -> str:
-    """把待办正式写进日程（人话：学生点头之后，才调用这个落库）。
+    """把待办正式写进日程。
+
+    ⚠️ **这是系统侧函数，不再交给模型**：2026-10-08 起它已从 `build_tools()` 里摘掉，
+    模型工具箱里没有它，模型说什么都写不了库。调用方只有两处——
+    `planner.py:1037`（学生回确认类文字，系统解析后落库）和测试。
+    写入永远发生在"学生已经点头"之后，这一点由调用方保证，不由提示词保证。
 
     :param date: 日期 "2026-09-25"
     :param start / end: 起止时间 "14:00" / "15:30"
@@ -4356,8 +4361,9 @@ def build_system_prompt() -> str:
    把这些候选以结构化形式交给前端——学生会在界面上看到可勾选的卡片，
    **不要只在文字里罗列时间段**，否则学生没法点选。
 3. 文字里补一句"你点一下想要的时间就行"，然后**停下来等学生选** —— 这一步绝不能省。
-4. **只有学生明确同意之后**（比如"第一个可以""就用这个""好"），
-   才调用 add_todo_tool 真正写进日程。学生没确认前，**绝对不要写入**。
+4. **然后停在这里等学生**。学生点头（点确认条 / 回"就用这个"）之后，
+   **由系统落库**——你手上没有任何写入工具，这是设计如此，不是办不到。
+   ⛔ 学生确认前别说"已经加上了"；确认后也别承诺"我来帮你写入"。
 5. 学生提出调整（"太晚了""换个时间"），就重新查空档、再调用 propose_slots 提议，继续等。
 
 【学生要加一件事、但还没定时间 —— 直接敲定一段，主打效率】
@@ -4481,7 +4487,8 @@ def build_system_prompt() -> str:
 - **propose_todo_tool(title, date/when...)：你的第一站**——学生要加事、没定时间时
   就用它出**单条**"要不要排在这儿"的确认条（只给 date 也行，时间它会自己挑，
   并且会在卡片上写清"为什么排在这儿"）。
-- add_todo_tool(title, date, start, end, note)：**确认后**才写入
+- **你没有任何写入工具**：`add_todo` / `update_todo_status` 这类落库函数不在工具箱里。
+  学生点头之后由系统执行写入——这不是"办不到"，落库本来就不是你的活
 - **propose_clear_timetable()：清空整张课表**——只出确认弹窗，纯只读，写完就停手
 - **propose_course_change(op, day, ...)：删课/加课/改单节课的首选**——服务端算好新课表出确认卡
 - **propose_timetable_change(courses_json, change_summary)：整表重排/文件导入用**——
@@ -4527,7 +4534,7 @@ def build_tools() -> dict[str, Tool]:
             description=(
                 "把候选时间段交给前端展示成可勾选的卡片。**查好空档、准备问学生选哪个时调用**。"
                 "入参 options_json 是 JSON 数组，每条含 title(待办标题)、date(如2026-09-25)、"
-                "start、end、可选 note。学生没确认前不要调用 add_todo。"
+                "start、end、可选 note。学生没确认前不要声称已经排好（落库由系统做）。"
             ),
             parameters={
                 "type": "object",
@@ -4563,26 +4570,12 @@ def build_tools() -> dict[str, Tool]:
         "propose_todo_mode_tool": propose_todo_mode_tool_tool(),
         "propose_todo_tool": propose_todo_tool_tool(),
         "propose_todo_slots_tool": propose_todo_slots_tool_tool(),
-        "add_todo_tool": Tool(
-            name="add_todo_tool",
-            description=(
-                "把待办正式写进日程。**必须等学生明确确认之后才能调用**——"
-                "学生只是提出想法、还在商量阶段时不要调用。"
-                "如果时间跟课程冲突，工具会拒绝并说明原因。"
-            ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "title": {"type": "string", "description": "待办标题，如 复习高等数学第三章"},
-                    "date": {"type": "string", "description": "日期，格式如 2026-09-25"},
-                    "start": {"type": "string", "description": "开始时间，如 14:00"},
-                    "end": {"type": "string", "description": "结束时间，如 15:30"},
-                    "note": {"type": "string", "description": "可选备注"},
-                },
-                "required": ["title", "date", "start", "end"],
-            },
-            func=add_todo_tool,
-        ),
+        # ★ 这里**没有** add_todo_tool。
+        #   它是全项目唯一还挂在模型工具箱里的真写库函数（AST 扫过 6 个模块 29 个工具，只有它）。
+        #   老版本的"防线"是工具描述里那句"必须等学生明确确认之后才能调用"——
+        #   规矩写在提示里，模型口语一变就可能绕过去；同批收归系统的还有
+        #   update_todo_status（见 propose_todo_done_tool 的 docstring），当时唯独漏了它。
+        #   函数本体保留：确认卡路径 planner.py:1037 是**系统侧**在调用，写入照旧走那条。
         "propose_clear_timetable": Tool(
             name="propose_clear_timetable",
             description=(
