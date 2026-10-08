@@ -1556,7 +1556,10 @@
         Array.from(log.children).forEach(el => { if (el !== greetEl) el.remove(); });
       }
       applyGreeting(view);
-      restoreHistory();
+      // 先接回历史，再接回"上一轮没处理完的那张卡"——顺序不能反：
+      // 卡是画进聊天流的，抢在前面会插到恢复出来的历史消息**上面**，
+      // 学生看着像管家这一轮刚问的，而不是"那个还没点"。
+      restoreHistory().finally(restorePendingCard);
     }
 
     // 底部「正在思考…」指示器
@@ -2087,6 +2090,30 @@
         const who = m.role === "user" ? "我" : botName();
         addMsg(who, m.content || "", m.role === "user" ? "user" : "bot");
       }
+    }
+
+    // ---------- 未确认的提案：刷新 / 切模块之后把它接回聊天流 ----------
+    // 之前只有聊天回复那一刻画过卡（sendMsg 里 renderOptions），页面一刷新卡就没了，
+    // 可卡所对应的那件事**还挂在 pending 里没处理**：学生只能重新说一遍，
+    // 或者莫名其妙地"刚才那个确认条去哪儿了"。
+    // 读接口 `/api/pending/{sid}` 本来就只回**最后一张未 applied** 的卡（没有就回 null），
+    // 所以这里不需要任何判重逻辑：点过的不会再回来，写库路径一行都没碰。
+    // 一轮出了好几张时只接回最后一张——处理完这张，下一张自己会出来，不会丢。
+    let restoreSeq = 0;                // 连点两个模块时，只让最后那次画卡
+    async function restorePendingCard() {
+      const my = ++restoreSeq;
+      let data;
+      try {
+        const r = await fetch("/api/pending/" + encodeURIComponent(sessionId()));
+        data = await r.json();
+      } catch (e) { return; }
+      if (my !== restoreSeq) return;   // 期间又切了一次模块 → 这次作废，别叠两张
+      const p = data && data.pending;
+      if (!p || !p.kind) return;
+      addMsg(botName(),
+             "⏳ 这张卡是上一轮没处理完的，还挂着——直接点就行，不用重新说一遍。",
+             "bot", "planner");
+      renderOptions(log, [p]);
     }
 
     // ---------- 清空与管家的聊天记录 ----------
