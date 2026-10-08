@@ -170,6 +170,23 @@ def _tokens(usage) -> tuple[int, int, int]:
 
 # ============ 三、网关本体 ============
 
+def _redact(text: str, *secrets: str | None, limit: int = 300) -> str:
+    """把异常文本里可能夹带的密钥抹掉，**再**截断。
+
+    为什么要专门抹：失败时 `str(e)` 会被原样写进 `llm_usage.jsonl` 的 error 字段，
+    而那张账是管理台能读、也可能被贴进截图的。各家 SDK 的报错爱把请求上下文
+    （URL、甚至 header）拼进异常文本，一旦带上 `Authorization: Bearer sk-…`，
+    学生自带的密钥就永久躺在磁盘上了。
+    顺序不能反：**先抹再截**——先截 300 字符可能正好把密钥切一半，
+    剩下那半截既匹配不上原始串、又足够被人拼回去。
+    """
+    out = str(text or "")
+    for s in secrets:
+        if s and len(s) >= 8:
+            out = out.replace(s, "***密钥已隐去***")
+    return out[:limit]
+
+
 class ModelGateway:
     """模型出口（人话：谁想问模型，都得从这里过）。
 
@@ -233,7 +250,16 @@ class ModelGateway:
             status = "ok"
             return out
         except Exception as e:
-            err = str(e)[:300]
+            # 先隐去"这次真正用的那把 key"，再截断（见 _redact 的说明）。
+            # 取的是生效配置而不是 override 本身：学生没带 key 时泄露的可能是服务器那把。
+            student_key = (ov or {}).get("api_key")
+            try:
+                from app.config import get_llm_config
+
+                live = get_llm_config(override=ov).get("api_key")
+            except Exception:
+                live = student_key
+            err = _redact(str(e), live, student_key)
             raise
         finally:
             # 记账是旁路：这里再出任何问题都不许往上冒（store 里还有一层兜底）
