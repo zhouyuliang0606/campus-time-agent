@@ -70,6 +70,22 @@
     <h1>管理控制台 <a href="/">← 返回登录</a></h1>
   </header>
 
+  <!-- 管理口令条（app/admin_guard.py 校验，请求头 X-Admin-Token）
+       口令只存在这台浏览器这次的 sessionStorage 里：关标签就清、不落盘、不进请求体。
+       为什么要当面要：服务端 .env 里那串是唯一真相，页面不猜也不存历史，
+       换一台电脑打开控制台会重新问一次——这正是要的效果。 -->
+  <div class="card" style="margin:0 0 14px;padding:12px 14px;">
+    <div class="toolbar" style="align-items:center;">
+      <div class="small" style="flex:1;">
+        🔒 <b>管理口令</b>
+        <input id="adminToken" type="password" placeholder=".env 里的 CAMPUSTIME_ADMIN_TOKEN"
+               style="width:260px;margin:0 8px;" />
+        <button class="btn" id="saveToken" style="padding:4px 12px;font-size:12px;">用这个口令</button>
+      </div>
+      <div class="small" id="tokenStatus">还没填口令，管理类接口都是锁着的</div>
+    </div>
+  </div>
+
   <div class="wrap">
     <!-- 第一行：发布通知 + 客服人格配置 -->
     <div class="grid2">
@@ -207,6 +223,53 @@
     const MODULE_NAMES = { schedule: "我的日程", faq: "校园问答", express: "快递", takeout: "外卖", station: "驿站客服" };
     let editingKb = null;
 
+    // ---------- 管理口令（服务端 app/admin_guard.py 校验请求头 X-Admin-Token） ----------
+    // 只写这一份封装：全页十几个管理接口都从 adminFetch 走。
+    // 在每处 fetch 里各抄一遍 header 的写法，迟早有一处漏抄——漏的那处就是后门。
+    const TOKEN_KEY = "campustime_admin_token";
+    let adminLocked = false;   // 锁着时暂停 5 秒自动刷新，免得每五秒往控制台喷一次 401
+
+    function getAdminToken() { return sessionStorage.getItem(TOKEN_KEY) || ""; }
+
+    function setTokenStatus(text, bad) {
+      const el = document.getElementById("tokenStatus");
+      el.textContent = text;
+      el.style.color = bad ? "#e0414a" : "#8a93a6";
+    }
+
+    async function adminFetch(url, opts = {}) {
+      const headers = Object.assign({}, opts.headers || {});
+      const t = getAdminToken();
+      if (t) headers["X-Admin-Token"] = t;
+      const resp = await fetch(url, Object.assign({}, opts, { headers }));
+      if (resp.status === 401 || resp.status === 403) {
+        adminLocked = true;
+        // 服务端那句 detail 已经写清了该干什么，原样递给人看
+        const body = await resp.json().catch(() => ({}));
+        setTokenStatus(resp.status === 403
+          ? "🔒 服务器没设口令：在 .env 加一行 CAMPUSTIME_ADMIN_TOKEN 再重启服务"
+          : "🔒 口令不对（401）" + (body.detail ? "：" + body.detail : ""), true);
+        throw new Error("管理口令未通过");
+      }
+      adminLocked = false;
+      return resp;
+    }
+
+    function initTokenBar() {
+      const box = document.getElementById("adminToken");
+      const saved = getAdminToken();
+      if (saved) { box.value = saved; setTokenStatus("本次标签页已带口令"); }
+      document.getElementById("saveToken").addEventListener("click", () => {
+        const v = box.value.trim();
+        if (v) sessionStorage.setItem(TOKEN_KEY, v); else sessionStorage.removeItem(TOKEN_KEY);
+        adminLocked = false;
+        setTokenStatus(v ? "已用这个口令，正在重新拉取…" : "口令已清空", !v);
+        loadNotices(); loadPersona(); loadKB(); loadMessages(); loadWorkOrders();
+        loadApiSettings(); loadUsage();
+      });
+    }
+    initTokenBar();
+
     // ---------- 发布通知（支持附件） ----------
     let noticeAttachment = null; // 本次要随通知一起发出的附件 {id, name}
 
@@ -246,7 +309,7 @@
       if (!title && !content && !noticeAttachment) {
         status.textContent = "标题、内容、附件至少要填一个"; return;
       }
-      const resp = await fetch("/api/admin/notify", {
+      const resp = await adminFetch("/api/admin/notify", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ title, content, attachment: noticeAttachment }),
       });
@@ -274,7 +337,7 @@
 
     // ---------- API 配置 ----------
     async function loadApiSettings() {
-      const d = await (await fetch("/api/admin/settings")).json();
+      const d = await (await adminFetch("/api/admin/settings")).json();
       const s = d.settings;
       // 密码框里回填的是打码串：管理员不改就能原样留着，不会被当成新密钥
       document.getElementById("akey").value = s.api_key || "";
@@ -291,7 +354,7 @@
     async function saveApi() {
       const st = document.getElementById("apistatus");
       st.textContent = "⏳ 保存中…";
-      const r = await fetch("/api/admin/settings", {
+      const r = await adminFetch("/api/admin/settings", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           api_key: document.getElementById("akey").value.trim(),
@@ -306,7 +369,7 @@
     async function testApi() {
       const st = document.getElementById("apistatus");
       st.textContent = "⏳ 正在用当前配置问大模型一句…";
-      const d = await (await fetch("/api/admin/settings/test", { method: "POST" })).json();
+      const d = await (await adminFetch("/api/admin/settings/test", { method: "POST" })).json();
       st.textContent = (d.ok ? "✅ " : "❌ ") + (d.message || "");
     }
 
@@ -326,7 +389,7 @@
         tone: document.getElementById("ptone").value.trim(),
         rules: document.getElementById("prules").value.trim(),
       };
-      const r = await fetch("/api/persona", {
+      const r = await adminFetch("/api/persona", {
         method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(p),
       });
       const d = await r.json();
@@ -335,7 +398,7 @@
 
     // ---------- 知识库管理 ----------
     async function loadKB() {
-      const data = await (await fetch("/api/admin/kb")).json();
+      const data = await (await adminFetch("/api/admin/kb")).json();
       const box = document.getElementById("kbList");
       if (!data.entries.length) { box.innerHTML = '<div class="empty">知识库还是空的</div>'; return; }
       box.innerHTML = data.entries.map((e, i) => `
@@ -351,7 +414,7 @@
     }
     function editKB(i) {
       editingKb = i;
-      fetch("/api/admin/kb").then(r => r.json()).then(d => {
+      adminFetch("/api/admin/kb").then(r => r.json()).then(d => {
         const e = d.entries[i];
         document.getElementById("kq").value = e.question;
         document.getElementById("ka").value = e.answer;
@@ -374,16 +437,16 @@
       const k = document.getElementById("kk").value;
       if (!q || !a) { alert("问题和答案不能为空"); return; }
       if (editingKb === null) {
-        await fetch("/api/admin/kb", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ question: q, answer: a, keywords: k }) });
+        await adminFetch("/api/admin/kb", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ question: q, answer: a, keywords: k }) });
       } else {
-        await fetch("/api/admin/kb/" + editingKb, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ question: q, answer: a, keywords: k }) });
+        await adminFetch("/api/admin/kb/" + editingKb, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ question: q, answer: a, keywords: k }) });
       }
       cancelKB();
       loadKB();
     }
     async function deleteKB(i) {
       if (!confirm("确定删除这条知识库条目？")) return;
-      await fetch("/api/admin/kb/" + i, { method: "DELETE" });
+      await adminFetch("/api/admin/kb/" + i, { method: "DELETE" });
       loadKB();
     }
 
@@ -391,7 +454,7 @@
     async function loadWorkOrders() {
       const box = document.getElementById("woBox");
       try {
-        const data = await (await fetch("/api/workorders")).json();
+        const data = await (await adminFetch("/api/workorders")).json();
         const list = data.workorders || [];
         if (!list.length) { box.innerHTML = '<div class="empty">暂无工单</div>'; return; }
         box.innerHTML = list.map(w => `
@@ -404,7 +467,7 @@
             </div>
           </div>`).join("");
         box.querySelectorAll(".mini").forEach(b => b.addEventListener("click", async () => {
-          await fetch("/api/workorders/" + b.dataset.wo + "/status", {
+          await adminFetch("/api/workorders/" + b.dataset.wo + "/status", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ status: b.dataset.st }),
@@ -416,7 +479,7 @@
 
     // ---------- 学生消息收件箱 ----------
     async function loadMessages() {
-      const data = await (await fetch("/api/admin/messages")).json();
+      const data = await (await adminFetch("/api/admin/messages")).json();
       const box = document.getElementById("inbox");
       const msgs = data.messages || [];
       if (!msgs.length) { box.innerHTML = '<div class="empty">暂无学生消息</div>'; return; }
@@ -449,7 +512,7 @@
     async function loadUsage() {
       let d;
       try {
-        d = await (await fetch("/api/admin/usage?limit=50")).json();
+        d = await (await adminFetch("/api/admin/usage?limit=50")).json();
       } catch (e) {
         document.getElementById("usageMeta").textContent = "用量接口暂时读不到，5 秒后自动重试";
         return;
@@ -506,7 +569,7 @@
     async function clearUsage() {
       const st = document.getElementById("usageStatus");
       if (!confirm("确定清空全部用量记录吗？只清统计流水，不动任何待办/课表/会话。")) return;
-      const d = await (await fetch("/api/admin/usage/clear", { method: "POST" })).json();
+      const d = await (await adminFetch("/api/admin/usage/clear", { method: "POST" })).json();
       st.textContent = "✅ " + (d.message || "已清空");
       loadUsage();
       setTimeout(() => { st.textContent = ""; }, 4000);
@@ -518,9 +581,12 @@
     // 进入页面先拉一次，然后每 5 秒自动刷新收件箱和工单
     loadNotices(); loadPersona(); loadKB(); loadMessages(); loadWorkOrders(); loadApiSettings();
     loadUsage();
-    setInterval(loadMessages, 5000);
-    setInterval(loadWorkOrders, 5000);
-    setInterval(loadUsage, 5000);
+    // 口令没过时 adminFetch 会抛：这里吞掉，锁着的页面不该每 5 秒喷一次异常。
+    // 该说的都在口令条里说了（adminLocked 也会让下一次轮询直接跳过）。
+    const _poll = (fn) => () => { if (!adminLocked) fn().catch(() => {}); };
+    setInterval(_poll(loadMessages), 5000);
+    setInterval(_poll(loadWorkOrders), 5000);
+    setInterval(_poll(loadUsage), 5000);
   </script>
 </body>
 </html>
