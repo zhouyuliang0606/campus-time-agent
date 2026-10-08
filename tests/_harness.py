@@ -117,12 +117,33 @@ def data_path(*parts):
     return os.path.join(base, *parts)
 
 
-def make_client():
-    """造一个"假浏览器"（人话：不用真的 uvicorn 启服务，也能调接口试）。"""
+# 测试用的管理口令。真实环境里这串来自 .env 的 CAMPUSTIME_ADMIN_TOKEN，
+# 由 app/admin_guard.py 逐个请求校验；测试在这里定死一个，让那 40 处
+# 本来就合法的管理接口调用不必各自想起来带 header（"忘了带"和"该被拒"
+# 长得一模一样，那种测试自己就会骗自己）。真要验"没口令被拒"，
+# 像 test_32 那样显式传 admin_token=None，别改这里。
+ADMIN_TOKEN = "test-admin-token"
+
+
+def make_client(headers: dict | None = None, admin_token: str | None = ADMIN_TOKEN):
+    """造一个"假浏览器"（人话：不用真的 uvicorn 启服务，也能调接口试）。
+
+    默认带管理口令：`admin_token=None` 就一个头都不带，用来测"没口令进不进得去"。
+    """
+    import os
+
     from fastapi.testclient import TestClient
     from app.main import app
 
-    return TestClient(app)
+    if admin_token:
+        # 服务端每次请求现读环境变量，所以这里补上就行，不用重开进程
+        os.environ["CAMPUSTIME_ADMIN_TOKEN"] = admin_token
+        hdrs = {"X-Admin-Token": admin_token}
+    else:
+        os.environ.pop("CAMPUSTIME_ADMIN_TOKEN", None)
+        hdrs = {}
+    hdrs.update(headers or {})
+    return TestClient(app, headers=hdrs)
 
 
 class FakeLLM:
