@@ -266,11 +266,8 @@ ALLOWED_RAW = {
     "rows": "批量确认条的逐行 HTML，内部已 esc",
     "html": "showDone 的正文由 doneText 拼，只含数字与 <b>",
     "list": "候选时段的 label 列表，内部已 esc",
-    "inner": "月历/时间轴格子里先拼好的 HTML，内部已 esc/escQ",
-    "blocks": "时间轴事件块，label 走 escape→esc、title 已 esc",
+    "inner": "月历/周列表格子里先拼好的 HTML，内部已 esc",
     "title": "tooltip 文本，上一行已 esc(...)",
-    "rangeTxt": "起止时间字符串，由 fmtHM(分钟数) 拼出来",
-    "hours.join(\"\")": "小时标尺，内容是 String(h).padStart(2,'0'):00",
     # 页面自己的常量表
     "m.ico": "MODULES 是页面内写死的图标常量",
     "m.name": "MODULES 是页面内写死的模块名常量",
@@ -289,7 +286,6 @@ ALLOWED_RAW = {
     "r.status === \"ok\" ? \"成功\" : \"失败\"": "两个字面量",
     "t.status === \"done\" ? \"done\" : \"\"": "class 名",
     "t.status === \"done\" ? \"撤销完成\" : \"标记完成\"": "按钮文案字面量",
-    "cur ? \"保存修改\" : \"加入日程\"": "时间轴表单按钮的文案字面量",
     "x.clash ? \" clash\" : \"\"": "class 名",
 }
 DATE_MATH = re.compile(r"^\{?d\.get(Month|Date)\(\) \+? ?1?\}$")
