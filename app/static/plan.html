@@ -297,7 +297,7 @@
             const r = (i === lanes - 1) ? "3px" : `calc(${((lanes - 1 - i) * 100 / lanes).toFixed(2)}% + 3px)`;
             const title = `${it.lead}${it.title} ${it.tm}${it.loc ? " " + it.loc : ""}`;
             html += `<div class="blk ${it.cls}" style="top:${top}px;height:${hgt}px;--bl:${l};--br:${r};"
-                      title="${esc(title)}"><b>${it.lead}${esc(it.title)}</b><span class="tm">${it.tm}${it.loc ? " · " + esc(it.loc) : ""}</span></div>`;
+                      title="${esc(title)}"><b>${it.lead}${esc(it.title)}</b><span class="tm">${esc(it.tm)}${it.loc ? " · " + esc(it.loc) : ""}</span></div>`;
           });
         });
         html += `</div>`;
@@ -372,16 +372,25 @@
       if (!list.length) { box.innerHTML = html + `<div class="empty">这天还没有安排待办</div>`; return; }
       html += list.map(t => `
         <div class="titem ${t.status === "done" ? "done" : ""}">
-          <span class="tm">${t.start} - ${t.end}</span>
+          <span class="tm">${esc(t.start)} - ${esc(t.end)}</span>
           <span class="tt">${esc(t.title)}${t.note ? " <span class='small'>（" + esc(t.note) + "）</span>" : ""}</span>
-          <button class="mini" onclick="toggleTodo('${t.id}','${t.status}')">${t.status === "done" ? "撤销完成" : "标记完成"}</button>
-          <button class="mini danger" onclick="delTodo('${t.id}')">删除</button>
+          <button class="mini" data-act="toggle" data-id="${esc(t.id)}" data-status="${esc(t.status)}">${t.status === "done" ? "撤销完成" : "标记完成"}</button>
+          <button class="mini danger" data-act="del" data-id="${esc(t.id)}">删除</button>
         </div>`).join("");
       box.innerHTML = html;
+      // 这两个按钮**不写内联 onclick**：那种写法是把数据拼进 JS 字符串字面量，
+      // 而 `&#39;` 会先被 HTML 解码回 `'` 再交给 JS 解析——转义在这里救不了。
+      // 改成 data-* + 事件委托：属性值不经过 JS 解析，esc() 就够。
+      box.querySelectorAll("button[data-act]").forEach(b => {
+        b.addEventListener("click", () => {
+          if (b.dataset.act === "del") delTodo(b.dataset.id);
+          else toggleTodo(b.dataset.id, b.dataset.status);
+        });
+      });
     }
 
     async function toggleTodo(id, status) {
-      await fetch("/api/todos/" + id, {
+      await fetch("/api/todos/" + encodeURIComponent(id), {
         method: "PUT", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ status: status === "done" ? "planned" : "done" }),
       });
@@ -389,7 +398,7 @@
     }
     async function delTodo(id) {
       if (!confirm("确定删除这条待办？")) return;
-      await fetch("/api/todos/" + id, { method: "DELETE" });
+      await fetch("/api/todos/" + encodeURIComponent(id), { method: "DELETE" });
       loadAll();
     }
 

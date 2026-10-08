@@ -964,7 +964,7 @@
     function addMsg(who, content, kind, module, trace) {
       const el = document.createElement("div");
       el.className = "msg " + (kind === "sys" ? "sys" : (who === "我" ? "user" : "bot"));
-      let html = `<div class="who">${who}${module ? `<span class="tag">${module}</span>` : ""}</div>`;
+      let html = `<div class="who">${esc(who)}${module ? `<span class="tag">${esc(module)}</span>` : ""}</div>`;
       html += `<div class="bubble">${richText(content)}</div>`;
       // 思考轨迹跟着助手的回复一起出现（系统提示那类不挂，它不是"思考"）。
       // 默认展示：它是学生核对"它有没有听错"的唯一凭据（见 .trace 的注释）。
@@ -1294,7 +1294,7 @@
           box.innerHTML = `<div class="info"><b>${esc(card.title || "待办")}</b>` +
             `<div class="meta">${esc(card.date || "")}（${esc(card.weekday || "")}）` +
             ` ${esc(card.start || "")}-${esc(card.end || "")}` +
-            ` · 约 ${card.minutes != null ? card.minutes : "?"} 分钟</div></div>`;
+            ` · 约 ${esc(card.minutes != null ? card.minutes : "?")} 分钟</div></div>`;
           wrap.appendChild(box);
 
           const go = document.createElement("button");
@@ -1640,7 +1640,7 @@
         info.innerHTML =
           `<b>${esc(o.title || "待办")}</b>` +
           `<div class="meta">${esc(o.date)}（${esc(o.weekday || "")}）` +
-          ` ${esc(o.start)}-${esc(o.end)} · 约 ${o.minutes != null ? o.minutes : "?"} 分钟</div>`;
+          ` ${esc(o.start)}-${esc(o.end)} · 约 ${esc(o.minutes != null ? o.minutes : "?")} 分钟</div>`;
         card.appendChild(cb);
         card.appendChild(info);
         wrap.appendChild(card);
@@ -1832,8 +1832,8 @@
         });
 
         const inner = evts.map(x =>
-          `<div class="evt ${x.cls}${x.clash ? " clash" : ""}" title="${esc(x.name)} ${x.tm}">` +
-          `<span class="tm">${x.tm}</span> ${esc(x.name)}${x.loc ? " · " + esc(x.loc) : ""}` +
+          `<div class="evt ${x.cls}${x.clash ? " clash" : ""}" title="${esc(x.name)} ${esc(x.tm)}">` +
+          `<span class="tm">${esc(x.tm)}</span> ${esc(x.name)}${x.loc ? " · " + esc(x.loc) : ""}` +
           `${x.clash ? '<span class="clash-tag" title="和其他安排时间重叠">撞</span>' : ""}</div>`).join("");
         html += `<div>
           <div class="wd ${dIso === todayIso ? "today" : ""}">${WD[wd - 1]}<br><span class="small">${d.getMonth() + 1}/${d.getDate()}</span></div>
@@ -1887,7 +1887,7 @@
       const list = schTodos.filter(t => t.date === schSelDate).sort((a, b) => a.start.localeCompare(b.start));
       box.innerHTML = list.length
         ? `<b style="font-size:13px;">${schSelDate} 的待办</b>` + list.map(t =>
-            `<div class="evt todo ${t.status === "done" ? "done" : ""}" style="font-size:12px;margin-top:6px;white-space:normal;">${t.start}-${t.end} ${esc(t.title)}</div>`).join("")
+            `<div class="evt todo ${t.status === "done" ? "done" : ""}" style="font-size:12px;margin-top:6px;white-space:normal;">${esc(t.start)}-${esc(t.end)} ${esc(t.title)}</div>`).join("")
         : `<div class="empty">${schSelDate} 还没有待办</div>`;
     }
 
@@ -2185,11 +2185,11 @@
         const pkgs = d.packages || [];
         box.innerHTML = pkgs.length ? pkgs.map(p => {
           const cls = p.label === "滞留" ? "stay" : (p.label === "已取" ? "done" : "wait");
-          const stay = p.label === "滞留" ? `（已 ${p.stay_days} 天）` : "";
+          const stay = p.label === "滞留" ? `（已 ${esc(p.stay_days)} 天）` : "";
           return `<div class="row">
-            <span class="st ${cls}">${p.label}${stay}</span>
+            <span class="st ${cls}">${esc(p.label)}${stay}</span>
             <span class="code">${esc(p.pickup_code)}</span>
-            <span class="info">${esc(p.item)}<div class="sub">${esc(p.station)} · 到件 ${p.arrived_at}</div></span>
+            <span class="info">${esc(p.item)}<div class="sub">${esc(p.station)} · 到件 ${esc(p.arrived_at)}</div></span>
           </div>`;
         }).join("") : '<div class="empty">暂无快递记录</div>';
       } catch (e) { box.innerHTML = '<div class="empty">快递数据加载失败</div>'; }
@@ -2206,7 +2206,7 @@
       box.innerHTML = list.length ? list.map(w => `
         <div class="wo-item">
           <span class="st wait">已提交</span>
-          <span class="t">${esc(w.type)}<div class="sub">${esc(w.desc || "（无补充描述）")} · ${w.ts}</div></span>
+          <span class="t">${esc(w.type)}<div class="sub">${esc(w.desc || "（无补充描述）")} · ${esc(w.ts)}</div></span>
           <button class="mini" data-wo="${esc(w.id)}">让管家跟进</button>
         </div>`).join("") : '<div class="empty">还没有提交过工单</div>';
       box.querySelectorAll(".mini").forEach(b => b.addEventListener("click", () => {
@@ -2253,7 +2253,7 @@
           return `<div class="row">
             <span class="st ${cls}">${esc(o.status)}</span>
             <span class="info"><b>${esc(o.shop)}</b> · ${esc(o.items)}
-              <div class="sub">预计 ${o.eta} · ${esc(o.pickup_point)}${o.pickup_code ? " · 取餐码 " + esc(o.pickup_code) : ""}</div></span>
+              <div class="sub">预计 ${esc(o.eta)} · ${esc(o.pickup_point)}${o.pickup_code ? " · 取餐码 " + esc(o.pickup_code) : ""}</div></span>
           </div>`;
         }).join("") : '<div class="empty">暂无外卖订单</div>';
       } catch (e) { box.innerHTML = '<div class="empty">外卖数据加载失败</div>'; }
@@ -2282,10 +2282,10 @@
         }
         box.innerHTML = ns.map(n => {
           const att = n.attachment
-            ? `<div style="margin-top:6px;"><a class="chip" style="display:inline-block;text-decoration:none;" href="/api/uploads/${n.attachment.id}/download" target="_blank">📎 ${esc(n.attachment.name)}（下载）</a></div>`
+            ? `<div style="margin-top:6px;"><a class="chip" style="display:inline-block;text-decoration:none;" href="/api/uploads/${encodeURIComponent(n.attachment.id)}/download" target="_blank">📎 ${esc(n.attachment.name)}（下载）</a></div>`
             : "";
           return `<div class="notice-item">
-            <b>${esc(n.title || "(无标题)")}</b> <span class="small">${n.ts}</span>
+            <b>${esc(n.title || "(无标题)")}</b> <span class="small">${esc(n.ts)}</span>
             <div class="body">${esc(n.content)}</div>${att}
           </div>`;
         }).join("");
@@ -2642,19 +2642,20 @@
           var done=t.status==="done";
           var wd=""; try{ wd=WD[((new Date(t.date).getDay()+6)%7)]; }catch(e){}
           return '<div class="todo-row '+(done?"done":"")+'">'+
-            '<input type="checkbox" '+(done?"checked":"")+' data-id="'+encodeURIComponent(t.id)+'" class="todo-done" />'+
+            '<input type="checkbox" '+(done?"checked":"")+' data-id="'+esc(t.id)+'" class="todo-done" />'+
             '<div class="todo-main"><div class="todo-title">'+esc(t.title)+'</div>'+
             '<div class="todo-sub">'+esc(t.date)+'（'+wd+'） '+esc(t.start||"")+'-'+esc(t.end||"")+'</div></div>'+
-            '<button class="todo-del" data-id="'+encodeURIComponent(t.id)+'">删除</button></div>';
+            '<button class="todo-del" data-id="'+esc(t.id)+'">删除</button></div>';
         }).join("");
         box.querySelectorAll(".todo-done").forEach(function(cb){ cb.addEventListener("change", async function(){
-          var id=decodeURIComponent(cb.dataset.id);
-          try{ await fetch("/api/todos/"+id,{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({status:cb.checked?"done":"pending"})}); loadTodosView(); }catch(e){}
+          // dataset 里拿回来的是**原值**（HTML 转义在解析时已还原），所以拼 URL 前必须 encode
+          var id=cb.dataset.id;
+          try{ await fetch("/api/todos/"+encodeURIComponent(id),{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({status:cb.checked?"done":"pending"})}); loadTodosView(); }catch(e){}
         }); });
         box.querySelectorAll(".todo-del").forEach(function(b){ b.addEventListener("click", async function(){
-          var id=decodeURIComponent(b.dataset.id);
+          var id=b.dataset.id;
           if(!confirm("确定删除这条待办？删除后无法恢复。")) return;
-          try{ var r=await fetch("/api/todos/"+id,{method:"DELETE",headers:{"Content-Type":"application/json"},body:JSON.stringify({session_id:sessionId()})}); if(r.ok) loadTodosView(); }catch(e){}
+          try{ var r=await fetch("/api/todos/"+encodeURIComponent(id),{method:"DELETE",headers:{"Content-Type":"application/json"},body:JSON.stringify({session_id:sessionId()})}); if(r.ok) loadTodosView(); }catch(e){}
         }); });
       }catch(e){ box.innerHTML='<div class="empty">待办加载失败</div>'; }
     }
@@ -2689,7 +2690,7 @@
         var personas=[]; try{ personas=(await (await fetch("/api/student-personas")).json()).personas||[]; }catch(e){}
         var saved=localStorage.getItem("campustime_persona")||(personas[0]&&personas[0].key);
         var pl=document.getElementById("setPersona");
-        pl.innerHTML=personas.map(function(p){ return '<div class="persona '+(p.key===saved?"active":"")+'" data-key="'+p.key+'"><span class="em">'+esc(p.emoji||"")+'</span><span>'+esc(p.name)+'</span></div>'; }).join("");
+        pl.innerHTML=personas.map(function(p){ return '<div class="persona '+(p.key===saved?"active":"")+'" data-key="'+esc(p.key)+'"><span class="em">'+esc(p.emoji||"")+'</span><span>'+esc(p.name)+'</span></div>'; }).join("");
         pl.querySelectorAll(".persona").forEach(function(el){ el.addEventListener("click", function(){ localStorage.setItem("campustime_persona", el.dataset.key); pl.querySelectorAll(".persona").forEach(function(x){ x.classList.toggle("active", x.dataset.key===el.dataset.key); }); }); });
       })();
       var mi=document.getElementById("setModelInfo");

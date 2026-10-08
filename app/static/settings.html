@@ -122,7 +122,7 @@
         el.className = "persona" + (p.key === saved ? " active" : "");
         el.dataset.key = p.key;
         el.innerHTML =
-          `<div class="em">${p.emoji || ""}</div>` +
+          `<div class="em">${esc(p.emoji || "")}</div>` +
           `<div class="body"><div class="nm">${esc(p.name)}</div>` +
           `<div class="meta">${esc(p.desc || "")} · ${esc(p.style || "")}</div></div>` +
           `<div class="tick">✓</div>`;

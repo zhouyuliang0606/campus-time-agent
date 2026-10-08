@@ -287,7 +287,7 @@
         const d = await resp.json();
         if (d.ok) {
           noticeAttachment = { id: d.file.id, name: d.file.name };
-          st.innerHTML = `📎 已附加：<b>${esc(d.file.name)}</b>（${d.file.chars} 字） <button class="mini" onclick="clearAttachment()">移除</button>`;
+          st.innerHTML = `📎 已附加：<b>${esc(d.file.name)}</b>（${Number(d.file.chars)} 字） <button class="mini" onclick="clearAttachment()">移除</button>`;
         } else {
           noticeAttachment = null;
           st.textContent = "❌ 上传失败：" + (d.error || "未知原因");
@@ -330,9 +330,9 @@
       box.innerHTML = data.notices.map(n => {
         let att = "";
         if (n.attachment) {
-          att = `<div style="margin-top:6px;"><a class="mini" href="/api/uploads/${n.attachment.id}/download" target="_blank" style="text-decoration:none;">📎 ${esc(n.attachment.name)}（下载）</a></div>`;
+          att = `<div style="margin-top:6px;"><a class="mini" href="/api/uploads/${encodeURIComponent(n.attachment.id)}/download" target="_blank" style="text-decoration:none;">📎 ${esc(n.attachment.name)}（下载）</a></div>`;
         }
-        return `<div class="notice"><b>${esc(n.title || "(无标题)")}</b> <span class="small">${n.ts}</span><div>${esc(n.content)}</div>${att}</div>`;
+        return `<div class="notice"><b>${esc(n.title || "(无标题)")}</b> <span class="small">${esc(n.ts)}</span><div>${esc(n.content)}</div>${att}</div>`;
       }).join("");
     }
 
@@ -460,7 +460,7 @@
         if (!list.length) { box.innerHTML = '<div class="empty">暂无工单</div>'; return; }
         box.innerHTML = list.map(w => `
           <div class="msg">
-            <div class="top"><span class="tag">${esc(w.kind)}</span><span>${w.ts} · 来源：${w.source === "panel" ? "面板表单" : "聊天确认"}</span></div>
+            <div class="top"><span class="tag">${esc(w.kind)}</span><span>${esc(w.ts)} · 来源：${w.source === "panel" ? "面板表单" : "聊天确认"}</span></div>
             <div class="q">${esc(w.desc || "（无补充描述）")}</div>
             <div class="a">状态：<b>${esc(w.status)}</b>
               <button class="mini" data-wo="${esc(w.id)}" data-st="处理中">标为处理中</button>
@@ -468,7 +468,7 @@
             </div>
           </div>`).join("");
         box.querySelectorAll(".mini").forEach(b => b.addEventListener("click", async () => {
-          await adminFetch("/api/workorders/" + b.dataset.wo + "/status", {
+          await adminFetch("/api/workorders/" + encodeURIComponent(b.dataset.wo) + "/status", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ status: b.dataset.st }),
@@ -487,7 +487,7 @@
       box.innerHTML = msgs.map(m => {
         const name = MODULE_NAMES[m.module] || m.module || "未指定";
         return `<div class="msg">
-          <div class="top"><span class="tag">${name}</span><span>${m.ts}</span></div>
+          <div class="top"><span class="tag">${esc(name)}</span><span>${esc(m.ts)}</span></div>
           <div class="q">🎓 学生：${esc(m.message)}</div>
           <div class="a">🤖 管家：${esc(m.answer || "（无回答）")}</div>
         </div>`;

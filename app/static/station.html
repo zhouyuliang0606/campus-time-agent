@@ -175,7 +175,7 @@
     function addMsg(who, content, kind, trace, module) {
       const el = document.createElement("div");
       el.className = "msg " + (kind === "sys" ? "sys" : (who === "我" ? "user" : "bot"));
-      let html = `<div class="who">${who}${module ? `<span class="tag">${module}</span>` : ""}</div>`;
+      let html = `<div class="who">${esc(who)}${module ? `<span class="tag">${esc(module)}</span>` : ""}</div>`;
       html += `<div class="bubble">${esc(content)}</div>`;
       if (trace && trace.length) {
         // 把 Agent 的思考轨迹铺开：能看到它调用了什么工具、拿到什么结果
