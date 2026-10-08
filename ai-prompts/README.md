@@ -64,6 +64,7 @@
 - `2026-10-07-timeline-visual-refresh.md` — **用户反馈「两个日程表太丑了」**：仅改 CSS 不做功能改动。周时间轴改卡片式（渐变+阴影+hover 上浮、时间放右上角、today 药丸高亮、网格线淡化、表单/无时间块同步）；列表式周表/月表卡片也刷新为白底圆角阴影。`test_29` 22/0、真机探针 PASS、已截图 `timeline_visual.png`
 - `2026-10-07-schedule-timeline-tab-merge.md` — **「周时间轴和日程表放一起」第一轮**：把周时间轴、列表式周表、列表式月表整合进「我的日程」面板下同一组 tab（时间轴/周表/月表，默认时间轴），由 `setSchTab()` 统一显隐切换。根因是初始加载没调 `setSchTab()` 导致两表默认同时堆着
 - `2026-10-08-schedule-timeline-week-stacked.md` — **「上下」终态**：用户确认要上下排，周视图 tab = 周时间轴(上，整周概览) + 周列表(下，逐日明细) 同卡片一起滚动，月表独立 tab。工具条收敛为「周视图/月表」两 tab。`student.html` 纯前端，`test_29` 22/0、真机 Playwright 探针 PASS（时间轴 y≈233 在列表 y≈782 上方同屏可见、切月表隐藏、Console 无报错）
+- `2026-10-08-no-new-window-plan.md` — **完整日程/去问AI 不另开窗口**：用户回退布局重构后要求"改不另开"。根因是 student.html 顶栏「完整日程」带 `target="_blank"` 新开标签页；/plan 内「去问AI」本就同标签链接。删掉该 `_blank`，整条链路（学生端→/plan→/student）同标签、无 popup。真机 Playwright 探针 PASS
 - （后续每次开发会话追加新文件……）
 ## 评审怎么看
 
