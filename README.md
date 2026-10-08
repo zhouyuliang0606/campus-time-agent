@@ -205,6 +205,17 @@ pip install -r requirements.txt
 > 其中 `pypdf` / `python-docx` / `openpyxl` / `python-pptx` 只影响**文件上传解析**，
 > 不装也能跑，只是那几种格式传不了。
 
+> ⚠️ **`requirements.txt` 请存成「带 BOM 的 UTF-8」，别把开头那三个看不见的字节当垃圾清掉。**
+> pip 读依赖清单时：认出 BOM 才按 UTF-8 解，**没 BOM 就按你的系统码页解**。
+> 中文 Windows 的码页是 GBK，于是上面那些中文注释会让 `pip install -r requirements.txt`
+> 直接崩在这里 —— 这不是本项目的问题，是编码问题：
+> ```
+> UnicodeDecodeError: 'gbk' codec can't decode byte 0xab in position 6
+> ```
+> 同理，测试结果里的 ✅ / ❌ 打在 GBK 控制台上也会抛 `UnicodeEncodeError` 把自测打断，
+> 所以 `tests/_utf8.py` 会把输出流固定成 UTF-8（`run_all.py` 还会把
+> `PYTHONIOENCODING=utf-8` 传给每一个子进程）。这两处都由 `tests/test_30_requirements_bom.py` 钉住。
+
 ### 3. 配大模型 Key（**两种方式，任选一种**）
 
 | 方式 | 怎么做 | 生效时机 |
