@@ -997,6 +997,16 @@ async def _chat_impl(req: Request, meta: dict):
     前端可以显式带 module 字段（如 {"message": "...", "module": "express"}）直接锁定模块，
     方便主页四个模块各自独立对话；不带的则交给 router 自动判断意图。
     """
+    try:
+        body = await req.json()
+    except Exception:
+        # 请求体不是合法 JSON / 不是 UTF-8（实测 Windows 下 `curl -d` 发中文发的是 GBK，
+        # 直接抛到框架外面就是一个 500）。回 400 并说清是编码问题——
+        # 500 只会让前端显示"网络异常"，谁也看不出是这一句。
+        return JSONResponse({"error": "请求体不是合法的 JSON（请确认按 UTF-8 编码）"},
+                            status_code=400)
+    if not isinstance(body, dict):
+        return JSONResponse({"error": "请求体必须是一个 JSON 对象"}, status_code=400)
     message = (body.get("message") or "").strip()
     if not message:
         return JSONResponse({"error": "消息不能为空"}, status_code=400)

@@ -81,4 +81,16 @@ with sandbox():
     c.check("给出看得懂的中文提示", "⚠️" in answer and "DEEPSEEK_API_KEY" in answer, answer[:80])
     c.check("trace 里也记录了失败原因", bool(r.json().get("trace")) if ok else False)
 
+    # 同一节的另一条：请求体**读不出来**时也不能给裸 500。
+    # 实测 Windows 下 `curl -d` 发中文发的是 GBK，`await req.json()` 直接抛
+    # UnicodeDecodeError → 500，前端只会显示"网络异常"，看不出是自己编码错了。
+    gbk = client.post("/api/chat", content="{\"message\":\"你好\"}".encode("gbk"),
+                      headers={"Content-Type": "application/json"})
+    c.check("非 UTF-8 请求体 → 400，不是 500", gbk.status_code == 400, f"HTTP {gbk.status_code}")
+    c.check("400 里说清了是编码/JSON 的问题",
+            "JSON" in gbk.text or "UTF-8" in gbk.text, gbk.text[:80])
+    notobj = client.post("/api/chat", json=["一个数组，不是对象"])
+    c.check("请求体不是 JSON 对象 → 400，不是 500", notobj.status_code == 400,
+            f"HTTP {notobj.status_code}")
+
     sys.exit(c.summary("第一批（骨架）"))
