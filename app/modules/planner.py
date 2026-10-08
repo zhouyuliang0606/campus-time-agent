@@ -479,12 +479,15 @@ def span_only_proposal(text: str, title: str = "", fallback_date: str = "") -> d
     }
 
 
-def build_todo_slots(title: str, slots: list, hint: str = "") -> dict:
+def build_todo_slots(title: str, slots: list, hint: str = "", preselect: int = 0) -> dict:
     """把几个候选时段包成一张「挑时间」的提案（人话：弹框里那串能打勾的时间）。
 
     它的形状跟别的提案不一样：**一个提案里装着好几个时段**，学生勾哪个算哪个
     （还能在「其他」里自己补一个）。所以它不是"已经定好的安排"，
     而是"摊开来的备选"——真正写库要等学生勾完点确认，走 `/api/todos/batch`。
+
+    `preselect` = 前几段**默认替他勾上**（人话：他说"一周三次"，就别让他再点三下）。
+    0 = 一段都不预选，跟以前一样由他自己勾。
     """
     items = []
     for s in slots or []:
@@ -499,12 +502,15 @@ def build_todo_slots(title: str, slots: list, hint: str = "") -> dict:
             "label": f"{s.get('weekday', '')}（{_mmdd(s['date'])}）"
                      f"{s['start']}-{s['end']}",
         })
+    pre = max(0, min(int(preselect or 0), len(items)))
     return {
         "kind": "todo_slots",
         "title": title or "待办",
         "slots": items,
         "hint": hint,
-        "summary": f"{title or '待办'}｜{len(items)} 个候选时段",
+        "preselect": pre,
+        "summary": (f"{title or '待办'}｜{len(items)} 个候选时段"
+                    + (f"（已勾 {pre} 段）" if pre else "")),
     }
 
 
@@ -644,16 +650,37 @@ def todo_slots_proposal(text: str, max_slots: int = 3) -> dict | None:
     title = _pick_title(t)
     if not title or title == "待办":
         return None          # 连"要做什么事"都没说 → 由追问分支去问，别拿"待办"占位
-    slots = candidate_slots(t, max_slots=max_slots)
-    if not slots:
-        return None          # 那天的空档真排不下（或全是过去时段）
     day = _pick_date(t)
-    if day:
-        hint = (f"{day}（{_weekday_name(day)}）的空档都在这儿了——"
-                f"避开课和已有的安排，勾一个方便的。")
+    times = weekly_times(t) or 0
+    # 「一周三次」且**没指定哪天** → 按一周 N 段排，前 N 段替他勾上。
+    # 为什么要求"没指定哪天"：他要是说了「周四一周三次」，那两句本身就打架
+    # （候选全挤在周四 = 一天三练），这种矛盾句宁可退回老路子只排那天，
+    # 也别替他造出"周四连跑三趟健身房"这种谁也没说要的东西。
+    if times >= 2 and not day:
+        slots = candidate_slots(t, max_slots=times + 2, days_ahead=7)
+        if not slots:
+            return None
+        pre = min(times, len(slots))
+        if pre >= times:
+            hint = (f"你说一周 {times} 次，先按这一周给你挑了 {pre} 段"
+                    f"（一天一段、避开课和已有的安排），已经替你勾上了——"
+                    f"不合适的取消，或改勾后面 {len(slots) - pre} 段备选。")
+        else:
+            # 排不满 N 段（那几天真没空）→ 如实说排到几段，不假装凑齐了
+            hint = (f"你说一周 {times} 次，但这几天只排得出 {pre} 段空档"
+                    f"（避开课和已有的安排），先勾上这 {pre} 段；"
+                    f"剩下的过几天再说，或者你在「其他时间」里自己补。")
     else:
-        hint = "避开课和已有的安排，挑一个方便的勾上（可以勾好几个）。"
-    return build_todo_slots(title, slots, hint=hint)
+        slots = candidate_slots(t, max_slots=max_slots)
+        if not slots:
+            return None      # 那天的空档真排不下（或全是过去时段）
+        pre = 0
+        if day:
+            hint = (f"{day}（{_weekday_name(day)}）的空档都在这儿了——"
+                    f"避开课和已有的安排，勾一个方便的。")
+        else:
+            hint = "避开课和已有的安排，挑一个方便的勾上（可以勾好几个）。"
+    return build_todo_slots(title, slots, hint=hint, preselect=pre)
 
 
 def build_todo_mode(title: str, when: str = "", date: str = "",
@@ -858,6 +885,12 @@ def mode_to_card(card: dict, mode: str) -> dict | None:
     title = card.get("title") or "待办"
     text = card.get("when") or title
     if mode == "ai":
+        # 报了频次（"一周三次"）又说"你帮我安排" → 替他挑的就不该只有一段。
+        # 走同一张候选卡（前 N 段已勾上），比"替他敲定一个点"更贴合他这句话。
+        if (weekly_times(text) or 0) >= 2 and not _pick_date(text):
+            multi = todo_slots_proposal(text)
+            if multi is not None:
+                return multi
         return plan_todo_slot(title, text, card.get("minutes"))
     return todo_slots_proposal(text, max_slots=4)
 
@@ -1585,6 +1618,39 @@ _DURATION_RE = re.compile(
     r"(\d{1,3}(?:\.\d{1,2})?|[一二两三四五六七八九十半]{1,3})\s*(?:个)?\s*"
     r"(小时|钟头|分钟|分|h|min)"
 )
+# 「一周三次 / 每周 3 回 / 一星期跑两趟」——**频次**是排期条件，不是事情的名字。
+# 2026-10-08 之前它哪儿都没管：整句「我一周要去三次健身房」被原样当成待办名挂出去，
+# 而"三次"这个数量直接丢了（用户报障：「日程的长久代办没法实现」）。
+# 只认「周/星期/礼拜 + 次数」这一族。**「一天三次」（吃药那种）刻意不认**：
+# 待办模型是一条 = 一天一个时段，按天铺开等于替学生造 3 条他没说要的东西，
+# 宁可少认、回一句"这个我还排不了"，也别把兑现不了的承诺挂出去。
+# 「一周三次 / 每周 3 回 / 一星期跑两趟」——**频次**是排期条件，不是事情的名字。
+# 2026-10-08 之前它哪儿都没管：整句「我一周要去三次健身房」被原样当成待办名挂出去，
+# 而"三次"这个数量直接丢了（用户报障：「日程的长久代办没法实现」）。
+#
+# 两条正则分工，**别合成一条**：
+#   _FREQ_RE       认语境用（"周 + 次数"这一族确实出现了吗）——中间允许夹动词（"一周**要去**三次"）；
+#   _COUNT_UNIT_RE 擦除用（只擦「三次」这个数量）；
+#   _WEEK_SCOPE_RE 擦除用（只擦「一周/每星期」这个范围词）。
+# 为什么擦的时候要拆两段：整块一起擦会把句子吃光——「一星期跑两回」整块擦完一个字不剩，
+# 标题退回"待办"、候选卡直接出不来，学生只会被反问"要安排的是什么事"。
+#
+# 只认「周/星期/礼拜 + 次数」这一族。**「一天三次」（吃药那种）刻意不认**：
+# 待办模型是一条 = 一天一个时段，按天铺开等于替学生造 3 条他没说要的东西，
+# 宁可少认、回一句"这个我还排不了"，也别把兑现不了的承诺挂出去。
+_FREQ_RE = re.compile(
+    r"(?:一|每|这|本)?\s*(?:周|星期|礼拜)\s*(?:之?内|里)?"
+    r"[^，,。；;！!？?\d]{0,6}?"
+    r"(?<!第)(\d{1,2}|[一二两三四五六七八九十]{1,2})\s*(?:次|回|趟|遍|练)(?!课)"
+)
+# 数量本身（"三次"/"3 回"）。`(?<!第)` 挡「周四下午第一次上课」——
+# 那是节次不是频次；`(?!课)` 挡「这周还有两次课」——那是课，不是要排的待办。
+_COUNT_UNIT_RE = re.compile(
+    r"(?<!第)(\d{1,2}|[一二两三四五六七八九十]{1,2})\s*(?:次|回|趟|遍|练)(?!课)"
+)
+# 频次里的范围词（"一周"/"每星期"/"一礼拜"）。只在 _FREQ_RE 命中时才擦，
+# 所以「忙了一周」「下周三」这类不带次数的写法不受影响。
+_WEEK_SCOPE_RE = re.compile(r"(?:一|每|这|本)\s*(?:周|星期|礼拜)\s*(?:之?内|里)?")
 # 出现在"名字"里就说明抠到的不是事情，是时间/类别/动作残渣
 _TITLE_NOISE = (
     # 时间与时长残渣
@@ -1626,6 +1692,22 @@ def _num(s: str) -> int | None:
     if s.isdigit():
         return int(s)
     return _cn_num(s)
+
+
+def weekly_times(text: str) -> int | None:
+    """读出「一周 N 次」里的 N（人话：'我一周要去三次健身房'→3）。读不出返回 None。
+
+    上限 7：一周七次已经是每天一回，再多就是听错了，宁可不认。
+    **N=1 也照实回 1** —— 调用方拿它决定"要不要排多段"，
+    但"一周一次"里的频次字样仍然要从标题里擦掉（那是排期条件，不是事情名）。
+    """
+    m = _FREQ_RE.search(text or "")
+    if not m:
+        return None
+    n = _num(m.group(1))
+    if n is None or n < 1 or n > 7:
+        return None
+    return n
 
 
 def _normalize_clock(t: str) -> str:
@@ -1908,7 +1990,7 @@ def _fix_typo_time_words(text: str) -> str:
     return "".join(out)
 
 
-def _strip_title_noise(text: str) -> str:
+def _strip_title_noise(text: str, keep_freq: bool = False) -> str:
     """把一句人话里**不属于事情名字**的东西全擦掉（时间、日期、语气词、动作词…）。
 
     从 `_pick_title` 里抽出来的，为的是能**一句一句地**擦（见那边的"切段重试"）。
@@ -1920,6 +2002,11 @@ def _strip_title_noise(text: str) -> str:
     # 时长整块擦掉（"大概一个小时"）：它既是判真的依据，也不该粘进名字里。
     # 必须在抠日期/钟点之前擦——"一个小时"里的"一"会被后面的中文数字逻辑当成别的。
     t = _DURATION_RE.sub(" ", t)
+    # 频次：只擦「三次」这个数量和「一周」这个范围词，**中间的动词留着**。
+    # 必须在抠日期/钟点之前擦——"三次"里的"三"会被后面的中文数字逻辑当成别的。
+    if _FREQ_RE.search(t) and not keep_freq:
+        t = _COUNT_UNIT_RE.sub(" ", t)
+        t = _WEEK_SCOPE_RE.sub(" ", t)
     t = re.sub(r"(大概|大约|差不多|约|预计|估计|有个|差不多要)(?=\s|$)", " ", t)
     # 「改成周六」「换到晚上七点」这类话里，"改成/换到"是**动作**不是事情的名字。
     # 不擦的话，学生在候选卡下面回一句「改成周六」，标题就会变成「改成健身」。
@@ -2042,6 +2129,13 @@ def _pick_title(text: str) -> str:
         if not piece:
             continue
         cand = _strip_title_noise(piece)
+        if _title_ok(cand):
+            return cand
+    # 频次擦完什么都不剩了（「一星期跑两回」→ 只剩一个"跑"字，判真嫌短）
+    # → 退回**不擦频次**再抠一遍。名字丑（「星期跑两回」）也比没卡强：
+    # 学生明明说了要干什么，这时候反问一句"要安排的是什么事"最惹恼他。
+    if _FREQ_RE.search(t):
+        cand = _strip_title_noise(t, keep_freq=True)
         if _title_ok(cand):
             return cand
     return "待办"

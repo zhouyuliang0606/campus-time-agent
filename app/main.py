@@ -665,13 +665,24 @@ def _slots_answer(card: dict, lead: str = "") -> str:
     """
     title = card.get("title") or "待办"
     slots = card.get("slots") or []
+    pre = int(card.get("preselect") or 0)
     lines = "\n".join(f"　· {s.get('label', '')}" for s in slots)
+    if pre:
+        # 学生报了频次（"一周三次"）→ 前 pre 段已经替他勾上，话要说清，
+        # 否则他以为系统把整周的安排都定了、或者还得自己再点三下。
+        tail = (f"你说的是**一周 {pre} 次**，前面 {pre} 段我已经替你勾好了"
+                f"（一天一段），确认条里点【加入日程】就一次写 {pre} 条。\n"
+                f"想换日子：取消某一勾、改勾后面的备选段就行。\n"
+                f"⚠️ 这只管**这一周**——下周要接着练，下周说一声"
+                f"「还是一周三次」我再排一轮（现版本没有自动重复这回事）。")
+    else:
+        tail = ("下面的确认条里可以直接**打勾**——勾一个、或者勾几个都行，"
+                "勾好点【加入日程】我就写进去。")
     return (
         f"{lead}"
         f"📝 **{title}** 这件事我替你看了几个空着的时间段（都避开了课和已有的安排）：\n\n"
         f"{lines}\n\n"
-        f"下面的确认条里可以直接**打勾**——勾一个、或者勾几个都行，"
-        f"勾好点【加入日程】我就写进去。\n"
+        f"{tail}\n"
         f"这几段都不合适？在确认条的「其他时间」里自己写一个也行"
         f"（比如「周六下午三点到四点」）。"
     )
@@ -986,7 +997,6 @@ async def _chat_impl(req: Request, meta: dict):
     前端可以显式带 module 字段（如 {"message": "...", "module": "express"}）直接锁定模块，
     方便主页四个模块各自独立对话；不带的则交给 router 自动判断意图。
     """
-    body = await req.json()
     message = (body.get("message") or "").strip()
     if not message:
         return JSONResponse({"error": "消息不能为空"}, status_code=400)
@@ -1935,7 +1945,7 @@ async def _chat_impl(req: Request, meta: dict):
                     "options": [],
                     "awaiting_choice": False,
                 }
-            if mode == "ai":
+            if mode == "ai" and new_card.get("kind") != "todo_slots":
                 # **核心**：他让系统替他安排，那就真去规划——并把"为什么排在这儿"说清
                 ans = (f"🤖 好，我替你挑了：**{new_card['title']}** 排在 "
                        f"**{new_card['date']}（{new_card['weekday']}）"
@@ -1943,6 +1953,11 @@ async def _chat_impl(req: Request, meta: dict):
                        f"{new_card.get('reason') or ''}\n"
                        f"下面点一下【确认加入】我就写进去，回一句「确认」也一样。")
                 phase = "🤖 学生选了「你帮我挑」→ 系统规划出一段（单条确认条）"
+            elif mode == "ai":
+                # 报了"一周三次"又要系统替他挑 → 挑出来的不是一段而是 N 段，
+                # 走的还是候选卡（前 N 段已勾上）。文案不能写"时间你自己定"——那不是他选的。
+                ans = _slots_answer(new_card, lead="🤖 好，我按你说的次数替你挑好了——")
+                phase = "🤖 「你帮我挑」+ 报了频次 → 系统挑出 N 段（候选卡，已预选）"
             else:
                 ans = _slots_answer(new_card, lead="🙋 好，时间你自己定——")
                 phase = "🙋 学生选了「我自己定」→ 列出候选时段（让打勾）"

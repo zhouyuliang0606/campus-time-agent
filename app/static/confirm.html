@@ -479,9 +479,12 @@ const KIND = {
     icon: "📝", title: "挑个时间加入日程", confirm: "加入日程", danger: false,
     render(p) {
       const ss = Array.isArray(p.slots) ? p.slots : [];
+      // preselect：学生说了「一周三次」这类频次时，系统按次数挑够了段、**前 N 段替他勾上**
+      // （app/modules/planner.py: todo_slots_proposal）。0 = 一段都不预选，跟以前一样。
+      const pre = Math.max(0, Math.min(Number(p.preselect) || 0, ss.length));
       const rows = ss.map((s, i) => `
-        <label class="slot" data-i="${i}">
-          <input type="checkbox" class="slot-cb" value="${i}">
+        <label class="slot${i < pre ? " on" : ""}" data-i="${i}">
+          <input type="checkbox" class="slot-cb" value="${i}"${i < pre ? " checked" : ""}>
           <span class="slot-t">${esc(s.label || ((s.date || "") + " " + (s.start || "") + "-" + (s.end || "")))}</span>
           ${s.minutes ? `<span class="slot-m">约 ${Number(s.minutes)} 分钟</span>` : ""}
         </label>`).join("");
