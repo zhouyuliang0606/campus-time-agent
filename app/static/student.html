@@ -2618,7 +2618,13 @@
         '<input id="mModel" placeholder="deepseek-chat" value="'+esc((cfg&&cfg.model)||"")+'" style="width:100%;padding:9px 11px;border:1px solid #d8def0;border-radius:9px;font-size:13px;outline:none;margin-bottom:10px;" />'+
         '<div style="font-size:13px;color:#6a7388;margin-bottom:6px;">API Key</div>'+
         '<input id="mKey" type="password" placeholder="sk-..." value="'+esc((cfg&&cfg.api_key)||"")+'" style="width:100%;padding:9px 11px;border:1px solid #d8def0;border-radius:9px;font-size:13px;outline:none;" />'+
-        '<div style="font-size:12px;color:#8a93a6;margin-top:8px;">密钥仅保存在本机浏览器，不会上传服务器。</div>',
+        '<div style="font-size:12px;color:#8a93a6;margin-top:8px;line-height:1.6;">'+
+          'Key 存在这台浏览器的本地存储里。<b>每次对话都会把它发给服务器</b>——'+
+          '是服务器拿它去调用大模型（不是你直连），所以这一步省不掉。<br>'+
+          '服务器只在这一轮请求里用它，不会写进任何文件、也不会出现在管理后台的配置里；'+
+          '但请求走的是明文 HTTP，同一网络里有人抓包就看得见，'+
+          '<b>公共网络上别用你日常那把 Key</b>。不想上传就别填，走管理端默认模型。'+
+        '</div>',
         [{label:"取消",ghost:true,on:function(){ closeModal(); }},
          {label:"保存",on:function(){
            var c={ base_url:document.getElementById("mBase").value.trim(), model:document.getElementById("mModel").value.trim(), api_key:document.getElementById("mKey").value.trim() };
@@ -2673,7 +2679,7 @@
         // 演示/评委场景能回到"只看结果"的干净样子。
         '<div class="card"><h2>思考过程</h2><div class="desc">每条回复下面要不要展示"我是这么想的"（它把你的话听成了什么、依据是哪一档）。关掉之后只显示结果。</div>'+
         '<label style="display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;"><input type="checkbox" id="setTrace" '+(traceOn()?"checked":"")+' style="width:16px;height:16px;"> 展示思考过程</label></div>'+
-        '<div class="card"><h2>模型与 API</h2><div class="desc">默认用管理端配置的模型；也可填自己的 API Key（仅存本机）。</div>'+
+        '<div class="card"><h2>模型与 API</h2><div class="desc">默认用管理端配置的模型；也可填自己的 API Key（存在本机浏览器，每轮对话上传给服务器代你调模型——用完即弃，不落盘）。</div>'+
         '<div id="setModelInfo" style="font-size:13px;margin-bottom:10px;"></div>'+
         '<button class="btn" id="setModelBtn">'+(cfg&&cfg.api_key?"修改 API":"添加 API")+'</button> '+
         (cfg&&cfg.api_key?'<button class="btn ghost" id="setModelClear">清除</button>':'')+'</div>';

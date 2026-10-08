@@ -996,8 +996,10 @@ async def _chat_impl(req: Request, meta: dict):
     if not is_valid(persona_key):
         persona_key = None
 
-    # 学生端在对话框里自己填的 API（仅存本机浏览器）：{base_url, model, api_key}。
+    # 学生端在对话框里自己填的 API：存在浏览器 localStorage，**每轮对话随请求上传**
+    # （是服务器拿它去调模型，不是前端直连）。{base_url, model, api_key}。
     # 带了有效 key 就优先用它，连服务器没配密钥也能跑真模型；不带的走服务器默认配置。
+    # 用完即弃：只活在这一次请求里，不写 settings.json、不进任何数据文件（test_34 钉住）。
     model_config = body.get("model_config") or None
     if not isinstance(model_config, dict) or not model_config.get("api_key"):
         model_config = None

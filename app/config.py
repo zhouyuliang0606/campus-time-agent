@@ -39,7 +39,8 @@ def get_llm_config(override: dict | None = None) -> dict:
 
     优先级：学生端自定义 API（override）  >  管理控制台的 settings.json  >  .env 环境变量
 
-    override 是学生端在对话框里自己填的 {base_url, model, api_key}（仅存本机浏览器）。
+    override 是学生端在对话框里自己填的 {base_url, model, api_key}
+    （存在浏览器本地，**每轮对话随请求上传**——服务器拿它代学生调模型，用完即弃，不落盘）。
     一旦它带了有效 api_key，就直接用它，既不打扰管理后台配置，也不要求服务器配密钥——
     这样没有服务器密钥的演示环境，学生也能用自己的 Key 把真模型跑起来。
 
