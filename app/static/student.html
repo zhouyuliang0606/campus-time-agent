@@ -288,118 +288,6 @@
     .mcal .tdy { font-size: 10px; color: #4f7cff; font-weight: 700; }
     .mcal .more { font-size: 10px; color: #8a93a6; margin-top: 2px; }
 
-    /* ①-b 我的日程 · 周时间轴（第三种入口：不对话、不上传，直接点格子增/改/删待办）
-       为什么要有它：对话出卡最智能但要打字，上传课表是批量导入，/plan 是独立整页——
-       学生想"自己动手改一条"时，在聊天面板里没有落点。这里补一个左侧/上方的周网格。
-       命名一律加 tl_ 前缀（timeline），跟 loadScheduleView 等既有逻辑井水不犯河水。 */
-    .tl-wrap {
-      margin: 12px 0 6px; border-radius: 14px;
-      background: #f4f6fb; padding: 12px 14px 14px;
-      box-shadow: 0 2px 10px rgba(31, 39, 51, .06);
-    }
-    .tl-bar {
-      display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
-      margin-bottom: 10px; font-size: 12px; color: #6b7385;
-    }
-    .tl-bar b { color: #1f2733; font-size: 14px; font-weight: 700; }
-    .tl-bar span { color: #8a93a6; }
-    .tl-bar #tlRange {
-      margin-left: auto; background: #fff; border: 1px solid #e3e7f2;
-      padding: 2px 8px; border-radius: 12px; font-size: 11px; color: #6b7385;
-    }
-    .tl-grid {
-      display: grid; grid-template-columns: 42px repeat(7, minmax(0, 1fr));
-      grid-template-rows: auto repeat(14, 26px);
-      gap: 3px 2px; font-size: 12px;
-    }
-    .tl-grid .tl-corner { }
-    .tl-colh {
-      text-align: center; color: #6b7385; font-weight: 700; padding: 4px 0 2px;
-      white-space: nowrap; overflow: hidden; font-size: 12px; line-height: 1.2;
-    }
-    .tl-colh .small { display: block; font-size: 10px; color: #9aa3b5; font-weight: 500; margin-top: 1px; }
-    .tl-colh.today { color: #4f7cff; background: #eef2ff; border-radius: 10px; }
-    .tl-hour {
-      color: #8a93a6; text-align: right; padding-right: 6px; line-height: 26px; height: 26px;
-      font-variant-numeric: tabular-nums; font-size: 10px; font-weight: 500;
-    }
-    .tl-hours {
-      grid-row: 2 / span 14; display: flex; flex-direction: column; gap: 3px;
-    }
-    /* 空格：可点 → 新增。整行 26px 高，够点得着又不浪费纵向空间。 */
-    .tl-cell {
-      height: 26px; border: 1px dashed #e3e7f2; border-radius: 5px; background: #fff;
-      cursor: pointer; box-sizing: border-box;
-    }
-    .tl-cell:hover { border-color: #4f7cff; background: #f2f6ff; }
-    /* 已有安排色块：绝对定位覆盖在格子上，按 start/end 决定高度 */
-    .tl-evt {
-      position: absolute; box-sizing: border-box; border-left: 4px solid;
-      border-radius: 6px; padding: 4px 6px; cursor: pointer; overflow: hidden;
-      font-size: 12px; line-height: 1.25; overflow-wrap: anywhere;
-      box-shadow: 0 1px 3px rgba(31, 39, 51, .08);
-      transition: transform .08s, box-shadow .08s, filter .08s;
-    }
-    .tl-evt:hover {
-      transform: translateY(-1px);
-      box-shadow: 0 3px 7px rgba(31, 39, 51, .12);
-      filter: brightness(.99);
-      z-index: 2;
-    }
-    .tl-evt.todo {
-      background: linear-gradient(135deg, #fff8ed 0%, #fff0d6 100%);
-      border-color: #f0a03c; color: #7a5212;
-    }
-    .tl-evt.todo.done {
-      background: #eef7ef; border-color: #7dc48a; color: #3f6b48; text-decoration: line-through;
-      box-shadow: none;
-    }
-    .tl-evt.course {
-      background: linear-gradient(135deg, #eaf2ff 0%, #dfe8fd 100%);
-      border-color: #4f7cff; color: #1e3a66; cursor: default;
-    }
-    .tl-evt .tl-tm {
-      float: right; font-size: 10px; color: #5a6a85; opacity: .9;
-      margin-left: 4px; font-weight: 500;
-    }
-    /* 每列是一个相对定位的容器，色块靠 top/height 落位（1 小时 = 26px+3px gap） */
-    .tl-daycol {
-      position: relative; grid-row: 2 / span 14; min-height: 403px;
-      background: repeating-linear-gradient(to bottom, #e8ecf7 0 1px, transparent 1px 29px);
-    }
-    .tl-daycol.today { background: repeating-linear-gradient(to bottom, #dde6f9 0 1px, transparent 1px 29px); }
-    /* 新增/编辑用的轻量内联表单 */
-    .tl-form {
-      margin-top: 12px; border: 1px solid #dde3f0; border-radius: 12px;
-      background: #fff; padding: 14px; box-shadow: 0 2px 10px rgba(31,39,51,.06);
-    }
-    .tl-form h4 { margin: 0 0 10px; font-size: 14px; color: #1f2733; font-weight: 700; }
-    .tl-form .tl-frow {
-      display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 8px;
-    }
-    .tl-form input, .tl-form select {
-      border: 1px solid #d8def0; border-radius: 8px; padding: 7px 10px; font-size: 13px;
-      background: #fbfcff;
-    }
-    .tl-form .tl-btn {
-      padding: 7px 16px; border-radius: 8px; border: 1px solid #4f7cff;
-      background: #4f7cff; color: #fff; cursor: pointer; font-size: 13px; font-weight: 500;
-      transition: .1s;
-    }
-    .tl-form .tl-btn:hover { background: #3d6be0; border-color: #3d6be0; }
-    .tl-form .tl-btn.ghost { background: #fff; color: #4a5366; border-color: #d8def0; }
-    .tl-form .tl-btn.ghost:hover { background: #f4f6fb; }
-    .tl-form .tl-btn.danger { background: #fff; color: #e0414a; border-color: #f3c2c5; }
-    .tl-form .tl-btn.danger:hover { background: #fff5f5; }
-    .tl-note { font-size: 12px; color: #8a93a6; margin-top: 6px; }
-    .tl-notime { margin-top: 12px; }
-    .tl-notime .tl-chip {
-      display: inline-block; margin: 4px 6px 0 0; padding: 4px 10px; border-radius: 12px;
-      background: #fff8ed; border: 1px solid #f0d4a8; color: #7a5212; font-size: 11px; cursor: pointer;
-      box-shadow: 0 1px 2px rgba(31,39,51,.04);
-    }
-    .tl-notime .tl-chip:hover { background: #fff0d6; }
-
     /* ②③ 快递/外卖列表行 */
     .row {
       display: flex; align-items: center; gap: 10px; border: 1px solid #eef0f6;
@@ -627,26 +515,6 @@
   .evt.course { background: var(--brand-soft); border-color: var(--brand); color: var(--text-2); }
   .evt.todo { background: rgba(240,160,60,.14); border-color: #f0a03c; color: #e8c59b; }
   .evt.todo.done { background: rgba(125,196,138,.14); border-color: #7dc48a; color: #a8d8b1; }
-  /* 周时间轴（深色主题对齐既有排版变量） */
-  .tl-wrap { border-color: var(--line); background: rgba(255,255,255,.03); }
-  .tl-bar, .tl-hour, .tl-colh, .tl-note { color: var(--text-3); }
-  .tl-bar b, .tl-form h4 { color: var(--text-2); }
-  .tl-bar #tlRange { background: var(--surface); border-color: var(--line); color: var(--text-3); }
-  .tl-colh.today { color: var(--brand); background: var(--brand-soft); border-radius: 10px; }
-  .tl-cell { border-color: var(--line); background: var(--surface); }
-  .tl-cell:hover { border-color: var(--brand); background: var(--brand-soft-2); }
-  .tl-evt { box-shadow: 0 1px 3px rgba(0,0,0,.2); }
-  .tl-evt:hover { box-shadow: 0 3px 7px rgba(0,0,0,.3); }
-  .tl-evt.todo { background: rgba(240,160,60,.14); border-color: #f0a03c; color: #e8c59b; }
-  .tl-evt.todo.done { background: rgba(125,196,138,.14); border-color: #7dc48a; color: #a8d8b1; }
-  .tl-evt.course { background: var(--brand-soft); border-color: var(--brand); color: var(--text-2); }
-  .tl-evt .tl-tm { color: var(--text-3); opacity: .85; }
-  .tl-daycol { background: repeating-linear-gradient(to bottom, var(--line) 0 1px, transparent 1px 29px); }
-  .tl-form { border-color: var(--line); background: var(--surface); box-shadow: 0 2px 10px rgba(0,0,0,.15); }
-  .tl-form input, .tl-form select { border-color: var(--line); background: var(--surface); }
-  .tl-form .tl-btn { background: var(--brand); border-color: var(--brand); }
-  .tl-form .tl-btn.ghost { background: var(--surface); color: var(--text-2); border-color: var(--line); }
-  .tl-notime .tl-chip { background: rgba(240,160,60,.14); border-color: rgba(240,160,60,.4); color: #e8c59b; }
   .tag { background: var(--brand-soft); color: var(--brand); }
   .tb-link { background: var(--brand-soft); color: var(--brand); border-radius: var(--radius); }
   .tb-link:hover { background: var(--brand-soft-2); }
@@ -738,24 +606,8 @@
           </div>
           <div class="small" id="ttPanelStatus" style="margin:-4px 0 8px;min-height:14px;"></div>
 
-          <!-- ①-b 周时间轴：第三种入口。学生不对话、不上传，直接点格子增/改/删待办。
-               它与"列表式周表(schWeek)/月表(schMonth)"同源 /api/todos。"周视图"tab 下
-               两者上下同卡：时间轴在上做整周概览、周列表在下做逐日明细，一起滚动、互不干扰；
-               列表照旧只读展示，时间轴才允许动手。月表为独立 tab。 -->
-          <div class="tl-wrap" id="tlWrap">
-            <div class="tl-bar">
-              <b>🗓️ 周时间轴</b>
-              <span>点空格加待办 · 点色块改/删</span>
-              <span style="flex:1;"></span>
-              <span id="tlRange" class="small"></span>
-            </div>
-            <div class="tl-grid" id="tlGrid"></div>
-            <div class="tl-notime" id="tlNoTime"></div>
-            <div id="tlFormBox"></div>
-            <div class="tl-note" id="tlNote"></div>
-          </div>
 
-          <div class="small" id="schWeekHead" style="margin:14px 0 6px;display:none;">📋 逐日明细（时间轴下方）</div>
+          <div class="small" id="schWeekHead" style="margin:14px 0 6px;display:none;">📋 逐日明细</div>
           <div id="schWeek"></div>
           <div id="schMonth" style="display:none;"></div>
           <div id="schDayDetail" style="display:none;margin-top:10px;"></div>
@@ -1802,7 +1654,7 @@
         const td = await (await fetch("/api/todos")).json(); schTodos = td.todos || [];
       } catch (e) { /* 拉不到就按空数据渲染，不炸面板 */ }
       renderSchCurrent();
-      setSchTab();   // 时间轴/周表/月表同源，统一由 setSchTab 显隐切换并刷新当前 tab
+      setSchTab();   // 周表/月表同源，统一由 setSchTab 显隐切换并刷新当前 tab
     }
     function renderSchCurrent() { if (schTab === "week") renderSchWeek(); else renderSchMonth(); }
 
@@ -1891,220 +1743,18 @@
         : `<div class="empty">${schSelDate} 还没有待办</div>`;
     }
 
-    // ============ ①-b 周时间轴：不对话、不上传，直接点格子增/改/删待办（第三种入口） ============
-    //
-    // 定位：这条是"用户本人直接操作"，不是 AI 提案 —— 所以**不走 options 提案卡**，
-    // 直接调既有的确定性写库接口（POST/PUT/DELETE /api/todos，与 /plan 同一套）。
-    // 三条红线照守：① 破坏性操作（删）必须 confirm；② 写入权仍全在系统侧接口，前端只是
-    // 调用方；③ 不碰 todo_id 提案卡字段（那是 confirm 卡专用的，只在 loadTodosView 里取值）。
-    // 数据与列表同源：schCourses / schTodos 由 loadScheduleView() 一次性拉好，这里只负责画。
-    const TL_START = 8, TL_END = 22, TL_HOUR_H = 29;   // 08:00-22:00，1 小时一格（26px 高 + 3px gap）
-    let tlEditingId = null;                             // 非空=编辑态，空=新增态
-
-    // 2026-10-07 第二轮修复（spec §6）：改"逐格贴块"为"单块跨行（绝对定位覆盖）"。
-    // 一门跨小时课只在它那段画一条连续色块；同列撞车贪心分道，绝不 items[0] 静默吞；
-    // 点课程块不开新增表单；点空格按点击位置预填（含非整点）。
-    function tlRender() {
-      const grid = document.getElementById("tlGrid");
-      if (!grid) return;
-      const base = mondayOf(new Date()); base.setDate(base.getDate() + schWeekOffset * 7);
-      const days = []; for (let i = 0; i < 7; i++) { const d = new Date(base); d.setDate(d.getDate() + i); days.push(d); }
-      const todayIso = isoD(new Date());
-      const rng = document.getElementById("tlRange");
-      if (rng) rng.textContent = isoD(days[0]) + " ~ " + isoD(days[6]) + (schWeekOffset === 0 ? "（本周）" : "");
-
-      const PITCH = TL_HOUR_H;          // 1 小时像素高（26 + 3 gap），必须对齐 CSS
-      const H0 = TL_START * 60;         // 08:00
-      const fmtHM = m => String(Math.floor(m / 60)).padStart(2, "0") + ":" + String(m % 60).padStart(2, "0");
-
-      // —— 表头：左上角 + 7 个星期列头 ——
-      let html = '<div class="tl-corner"></div>';
-      days.forEach(d => {
-        const dIso = isoD(d);
-        html += `<div class="tl-colh ${dIso === todayIso ? "today" : ""}">` +
-          `${WD[isoWd(d) - 1]}<br><span class="small">${d.getMonth() + 1}/${d.getDate()}</span></div>`;
-      });
-      // —— 第二行：左列小时标尺（纵向 14 格）+ 7 个相对定位的日列容器 ——
-      const hours = [];
-      for (let h = TL_START; h < TL_END; h++) hours.push(`<div class="tl-hour">${String(h).padStart(2, "0")}:00</div>`);
-      html += `<div class="tl-hours" style="grid-column:1;">${hours.join("")}</div>`;
-      days.forEach((d, i) => {
-        const dIso = isoD(d);
-        const wd = isoWd(d);
-        // 收集这一天全部安排（课程 + 待办），统一绝对定位成"一整块"
-        const evs = [
-          ...schCourses.filter(c => Number(c.day) === wd)
-            .map(c => ({ cls: "course", label: c.course, start: c.start, end: c.end, id: null })),
-          ...schTodos.filter(t => t.date === dIso && t.start && t.end)
-            .map(t => ({ cls: t.status === "done" ? "todo done" : "todo", label: t.title, start: t.start, end: t.end, id: t.id })),
-        ];
-        // 同列撞车 → 贪心分道，保证每条都渲染（不静默吞）
-        const lanes = [];   // lanes[lane] = 该道已占用到的结束分钟
-        evs.forEach(ev => {
-          const s = Math.max(minsOf(ev.start), H0), e = Math.min(minsOf(ev.end), TL_END * 60);
-          let lane = lanes.findIndex(end => end <= s);
-          if (lane === -1) { lane = lanes.length; lanes.push(e); } else lanes[lane] = e;
-          ev._lane = lane;
-        });
-        const laneCnt = Math.max(lanes.length, 1);
-        let blocks = "";
-        evs.forEach(ev => {
-          const s0 = minsOf(ev.start), e0 = minsOf(ev.end);
-          const top = Math.max((s0 - H0) / 60, 0) * PITCH;
-          const hpx = Math.max((Math.min(e0, TL_END * 60) - Math.max(s0, H0)) / 60 * PITCH - 2, 14);
-          const lw = 100 / laneCnt;
-          const left = ev._lane * lw + 0.5, width = lw - 1;
-          const overTop = s0 < H0, overBot = e0 > TL_END * 60;
-          const rangeTxt = (overTop ? "◀" : "") + fmtHM(s0) + "–" + fmtHM(e0) + (overBot ? "▶" : "");
-          const showTm = hpx >= 18;
-          const title = esc((overTop ? "原 " + fmtHM(s0) + " 起 · " : "") + (overBot ? "至 " + fmtHM(e0) + " 截 · " : "") + ev.label);
-          blocks += `<div class="tl-evt ${ev.cls}"${ev.id ? ` data-tlid="${esc(ev.id)}"` : ""} ` +
-            `style="top:${top}px;height:${hpx}px;left:${left}%;width:${width}%;" title="${title}">` +
-            (showTm ? `<span class="tl-tm">${rangeTxt}</span> ` : "") + esc(ev.label) + `</div>`;
-        });
-        html += `<div class="tl-daycol" data-date="${dIso}" style="grid-column:${i + 2};">${blocks}</div>`;
-      });
-      grid.innerHTML = html;
-
-      // 点日列空白处 → 新增（按点击位置预填起止，支持非整点）
-      grid.querySelectorAll(".tl-daycol").forEach(dc => {
-        dc.addEventListener("click", (e) => {
-          if (e.target.closest(".tl-evt")) return;   // 点任何色块都不开新增表单（课程块也拦）
-          const dIso = dc.dataset.date;
-          const rect = dc.getBoundingClientRect();
-          let mins = Math.floor((e.clientY - rect.top) / PITCH * 60);
-          let h = TL_START + Math.floor(mins / 60), m = mins % 60;
-          if (h >= TL_END) { h = TL_END - 1; m = 0; }
-          const s0 = String(h).padStart(2, "0") + ":" + String(m).padStart(2, "0");
-          const e0 = String(Math.min(h + 1, TL_END)).padStart(2, "0") + ":" + String(m).padStart(2, "0");
-          tlOpenForm(null, dIso, s0, e0);
-        });
-      });
-      // 点待办色块 → 编辑（课程色块无 data-tlid，被上面守卫吞掉，不可编辑）
-      grid.querySelectorAll(".tl-evt[data-tlid]").forEach(el => {
-        el.addEventListener("click", (e) => {
-          e.stopPropagation();
-          const t = schTodos.find(x => x.id === el.dataset.tlid);
-          if (t) tlOpenForm(t.id, t.date, t.start, t.end);
-        });
-      });
-
-      tlRenderNoTime();
-    }
-
-    // 没有时间的待办（start/end 缺失）：不硬塞进时间轴，单独列在下面，点了照样能编辑
-    function tlRenderNoTime() {
-      const box = document.getElementById("tlNoTime");
-      if (!box) return;
-      const noTime = schTodos.filter(t => !t.start || !t.end);
-      box.innerHTML = noTime.length
-        ? '<span class="small">没定时间的待办：</span>' + noTime.map(t =>
-            `<span class="tl-chip" data-tlid="${esc(t.id)}">${esc(t.title)}</span>`).join("")
-        : "";
-      box.querySelectorAll(".tl-chip").forEach(el =>
-        el.addEventListener("click", () => {
-          const t = schTodos.find(x => x.id === el.dataset.tlid);
-          if (t) tlOpenForm(t.id, t.date, "09:00", "10:00");
-        }));
-    }
-
-    // 打开新增/编辑表单。todoId 为空=新增；date 为预填日期；s0/e0 为预填起止（编辑时取原值）
-    function tlOpenForm(todoId, date, s0, e0) {
-      const todos_ = schTodos;
-      const cur = todoId ? todos_.find(t => t.id === todoId) : null;
-      tlEditingId = cur ? cur.id : null;
-      const d0 = cur ? cur.date : date;
-      const st = cur && cur.start ? cur.start : (s0 || "09:00");
-      const en = cur && cur.end ? cur.end : (e0 || "10:00");
-      const t0 = cur ? cur.title : "";
-      const box = document.getElementById("tlFormBox");
-      if (!box) return;
-      box.innerHTML = `
-        <div class="tl-form">
-          <h4>${cur ? "✏️ 编辑待办" : "➕ 新增待办"}（直接写库，与对话/上传同一套数据）</h4>
-          <div class="tl-frow">
-            <input id="tlTitle" placeholder="要做什么（如：去图书馆）" value="${esc(t0)}" style="flex:1;min-width:160px;">
-          </div>
-          <div class="tl-frow">
-            <input id="tlDate" type="date" value="${esc(d0)}">
-            <input id="tlStart" type="time" value="${esc(s0)}">
-            <span>→</span>
-            <input id="tlEnd" type="time" value="${esc(e0)}">
-          </div>
-          <div class="tl-frow">
-            <button class="tl-btn" id="tlSave">${cur ? "保存修改" : "加入日程"}</button>
-            <button class="tl-btn ghost" id="tlCancel">取消</button>
-            ${cur ? '<button class="tl-btn danger" id="tlDel">删除这条</button>' : ""}
-          </div>
-          <div class="tl-note" id="tlFormMsg"></div>
-        </div>`;
-      document.getElementById("tlCancel").addEventListener("click", tlCloseForm);
-      document.getElementById("tlSave").addEventListener("click", () => tlSave(tlEditingId));
-      const del = document.getElementById("tlDel");
-      if (del) del.addEventListener("click", () => tlDelete(tlEditingId));
-    }
-
-    function tlCloseForm() {
-      tlEditingId = null;
-      const box = document.getElementById("tlFormBox");
-      if (box) box.innerHTML = "";
-    }
-
-    async function tlSave(editId) {
-      const msg = document.getElementById("tlFormMsg");
-      const title = (document.getElementById("tlTitle").value || "").trim();
-      const date = document.getElementById("tlDate").value;
-      const start = document.getElementById("tlStart").value;
-      const end = document.getElementById("tlEnd").value;
-      if (!title || !date || !start || !end) { if (msg) msg.textContent = "标题、日期、起止时间都要填。"; return; }
-      if (minsOf(end) <= minsOf(start)) { if (msg) msg.textContent = "结束时间要晚于开始时间。"; return; }
-      try {
-        let r;
-        if (editId) {
-          r = await fetch("/api/todos/" + encodeURIComponent(editId), {
-            method: "PUT", headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ title, date, start, end }),
-          });
-        } else {
-          r = await fetch("/api/todos", {
-            method: "POST", headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ title, date, start, end, session_id: sessionId() }),
-          });
-        }
-        if (!r.ok) { const d = await r.json().catch(() => ({})); if (msg) msg.textContent = "❌ 保存失败：" + (d.error || r.status); return; }
-        tlCloseForm();
-        await loadScheduleView();   // 与既有"确认完立刻刷新日程"惯例一致：时间轴+列表同步
-      } catch (e) { if (msg) msg.textContent = "❌ 网络异常，请重试"; }
-    }
-
-    async function tlDelete(editId) {
-      if (!editId) return;
-      // 破坏性操作沿用 /plan 的确认范式，绝不"一点就删"
-      if (!confirm("确定删除这条待办？")) return;
-      try {
-        const r = await fetch("/api/todos/" + encodeURIComponent(editId), {
-          method: "DELETE", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ session_id: sessionId() }),
-        });
-        if (!r.ok) { const d = await r.json().catch(() => ({})); const msg = document.getElementById("tlFormMsg"); if (msg) msg.textContent = "❌ 删除失败：" + (d.error || r.status); return; }
-        tlCloseForm();
-        await loadScheduleView();
-      } catch (e) { const msg = document.getElementById("tlFormMsg"); if (msg) msg.textContent = "❌ 网络异常，请重试"; }
-    }
-
     document.getElementById("tabWeek").addEventListener("click", () => { schTab = "week"; setSchTab(); });
     document.getElementById("tabMonth").addEventListener("click", () => { schTab = "month"; setSchTab(); });
     function setSchTab() {
       document.getElementById("tabWeek").classList.toggle("active", schTab === "week");
       document.getElementById("tabMonth").classList.toggle("active", schTab === "month");
-      // 周视图：时间轴(上) + 周列表(下) 同卡一起滚动；月表独立
+      // 周视图 = 逐日明细列表；月表独立
       const week = schTab === "week";
-      document.getElementById("tlWrap").style.display = week ? "block" : "none";
       document.getElementById("schWeek").style.display = week ? "block" : "none";
       document.getElementById("schWeekHead").style.display = week ? "block" : "none";
       document.getElementById("schMonth").style.display = schTab === "month" ? "block" : "none";
       document.getElementById("schDayDetail").style.display = schTab === "month" ? "block" : "none";
-      if (week) { tlRender(); renderSchWeek(); }
+      if (week) renderSchWeek();
       else if (schTab === "month") { renderSchMonth(); }
     }
     document.getElementById("schPrev").addEventListener("click", () => {
