@@ -1,4 +1,4 @@
-# 后端 Web 框架：负责把 Python 函数变成网页能调用的接口
+﻿# 后端 Web 框架：负责把 Python 函数变成网页能调用的接口
 fastapi>=0.110
 # 启动服务的工具：让你能用 uvicorn 把网站跑起来
 uvicorn>=0.27
