@@ -120,8 +120,33 @@ def batch_c_multi():
     return c
 
 
+def batch_g_one_stream():
+    c = Checker()
+    title("G 批 · 全站一条对话流（用户报「两者对话记录不在一起」的根因）")
+    src = open(SRC, encoding="utf-8").read()
+
+    seg = _seg(src, "function sessionId(", "\n    }")
+    c.check("sessionId 只认一个 key（不再按模块发号）",
+            '"campustime_session"' in seg and "currentView" not in seg, seg[:120])
+    c.check("源码里不再有 campustime_session_ + 模块后缀的拼接",
+            '"campustime_session_"' not in src)
+    c.check("sessionId 不再收 view 参数", "function sessionId()" in src)
+    nav = _seg(src, "function switchNav(view){", "switchNavRef = switchNav")
+    c.check("切模块不再重画聊天区（否则刚接回来的卡又被冲掉）",
+            "resetLogForModule" not in nav, "switchNav 里还在调 resetLogForModule")
+    c.check("resetLogForModule 只剩初始化那一处调用",
+            src.count("resetLogForModule(") == 2,   # 定义 1 + 初始化 1
+            f"实际 {src.count('resetLogForModule(')} 处")
+    # 【清空记录】必须跟着换那**一个** key。它以前换的是"当前模块的 key"，
+    # 合并成一条流之后若不同步改，在日程栏点清空就只换掉一个没人用的旧 key —— F5 一下全回来。
+    seg2 = _seg(src, "async function doClearChat()", "// 初始化语音输入")
+    c.check("【清空记录】换的是全局那一个 key",
+            'localStorage.setItem("campustime_session",' in seg2, seg2[:100])
+    return c
+
+
 def main():
-    results = [batch_a_wiring(), batch_b_contract(), batch_c_multi()]
+    results = [batch_a_wiring(), batch_b_contract(), batch_c_multi(), batch_g_one_stream()]
     total_pass = sum(r.passed for r in results)
     total_fail = sum(r.failed for r in results)
     print(f"\n===== 未确认卡刷新恢复总账：通过 {total_pass} 项，失败 {total_fail} 项 =====")

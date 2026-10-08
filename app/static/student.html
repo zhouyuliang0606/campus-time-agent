@@ -1522,12 +1522,16 @@
       return esc(s).replace(/\*\*([^*\n]{1,60})\*\*/g, "<b>$1</b>");
     }
 
-    // 会话 id：按"左侧导航模块"区分，每个模块一条独立历史。
-    // 校园问答(chat) 沿用全局 campustime_session —— 和日程/规划页、端到端测试共用，
-    // 保证跨页上下文与测试脚本兼容；其余带面板的模块各自独立 key，互不串味。
-    function sessionId(view) {
-      const v = view || currentView || "chat";
-      const key = (v === "chat") ? "campustime_session" : ("campustime_session_" + v);
+    // 会话 id：**全站就一条对话流**。
+    // 以前按左侧模块各发一个 key（campustime_session_schedule / _express …），
+    // 用户报「两者对话记录不在一起，在问答栏说待办的事会不弹卡」——根因就在这儿：
+    // 日程栏说的话存进 A，问答栏存进 B，两段历史、两份待确认卡，
+    // 切个栏就像换了个人在跟你说话，上一轮的卡自然也"丢"了。
+    // 合并之后：一条历史、一份暂存，卡片在哪儿出的都能在同一条流里接回来。
+    // ⚠️ 老的模块后缀 key 不迁移也不清理：它们的历史还在服务端 sessions.json 里，
+    //    只是这条流不再读它们了（要找回来看是运维的事，不该由页面替学生决定）。
+    function sessionId() {
+      const key = "campustime_session";
       let sid = localStorage.getItem(key);
       if (!sid) { sid = "s" + Math.random().toString(16).slice(2, 12); localStorage.setItem(key, sid); }
       return sid;
@@ -2157,12 +2161,13 @@
         if (greetEl) {
           Array.from(log.children).forEach(el => { if (el !== greetEl) el.remove(); });
         }
-        // 最关键的一步：换一个新的 session id。
+        // 最关键的一步：**换一个新的 session id**。
         // 不换的话，学生一按 F5，restoreHistory 又把旧记录一条条捞回来了，
         // 清了跟没清一个样——这正是"刷新后记录又冒出来"的老毛病。
-        localStorage.setItem(
-          (currentView === "chat") ? "campustime_session" : ("campustime_session_" + currentView),
-          "s" + Math.random().toString(16).slice(2, 12));
+        // ⚠️ 这里以前是按模块各换各的 key，合并成一条流之后必须换同一个，
+        //    否则在日程栏点【清空记录】只换掉一个没人用的旧 key，F5 一下记录全回来了。
+        localStorage.setItem("campustime_session",
+                             "s" + Math.random().toString(16).slice(2, 12));
         applyGreeting(currentView); // 清完回到该模块的开场白
         addMsg(botName(), "好的，我们已经开始一段新的对话，之前那段记录我帮你清掉了。", "bot");
         await loadScheduleView();          // 课表/日程不受影响，顺手确认一下还在
@@ -2191,7 +2196,6 @@
     var NAV_TITLE = {chat:"校园问答", schedule:"日程", todos:"代办事项", settings:"设置", express:"快递", takeout:"外卖"};
     function cap(x){ return x.charAt(0).toUpperCase()+x.slice(1); }
     function switchNav(view){
-      var oldView = currentView;
       currentView = view;
       // 只有"校园问答"和"日程"需要对话框（对话区+输入框）；其余模块纯查看，整体隐藏对话框
       var chatMod = (view==="chat" || view==="schedule");
@@ -2211,8 +2215,8 @@
       else if(view==="chat") showView("view-faq");
       else if(view==="todos") loadTodosView();
       else if(view==="settings") loadSettingsView();
-      // 仅"校园问答/日程"需要换各自的开场白与历史；其余纯查看模块不动聊天区
-      if (chatMod && view !== oldView) resetLogForModule(view);
+      // 切模块**不再重画聊天区**：既然全站一条对话流，"换个栏就把历史擦一遍再拉回来"
+      // 只会让流跳一下、并把刚接回来的待确认卡又冲掉一次。模块切换只换右侧面板。
     }
     switchNavRef = switchNav; // 暴露给上方卡片点击逻辑复用
     document.getElementById("sbNav").addEventListener("click", function(e){
