@@ -8,7 +8,7 @@ from typing import Any
 
 import httpx
 
-from app.config import DEBUG, get_llm_config
+from app.config import BaseUrlError, DEBUG, check_base_url_ssrf, get_llm_config
 
 
 class LLMError(Exception):
@@ -87,9 +87,22 @@ class DeepSeekClient:
             "Content-Type": "application/json",
         }
 
-        # 用异步 httpx 发 POST 请求到 /chat/completions
+        # 真要连接了，才做**第二层**校验：内网 / 回环 / 链路本地（含云元数据）/ 域名解析到内网。
+        # 放在这里而不是 get_llm_config 里，是因为取配置那条路必须对"本地 ollama"这类
+        # 合法配法保持可用（要放行就设 CAMPUSTIME_LLM_ALLOW_PRIVATE=1，见 config.py）。
         try:
-            async with httpx.AsyncClient(timeout=60.0) as client:
+            base_url = check_base_url_ssrf(base_url)
+        except BaseUrlError as e:
+            print(f"[LLM] 上游地址被 SSRF 闸门拦下：{e}")
+            raise LLMError("接口地址不合规（默认不允许指向内网/保留地址；确需本地模型请设环境变量"
+                           " CAMPUSTIME_LLM_ALLOW_PRIVATE=1），请到管理控制台检查 API 配置。") from e
+
+        # 用异步 httpx 发 POST 请求到 /chat/completions。
+        # 超时拆成两段是有原因的：connect 3 秒足够判断"这台机器连不连得上那个地址"，
+        # 而 SSRF 探测的代价主要就在 connect（连不上要等 60 秒 = 一次探测慢到没人愿意扫）；
+        # read 留 30 秒是因为带工具的长回答真的会慢（17 门课那种），一刀切几秒会误杀正常对话。
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=3.0)) as client:
                 resp = await client.post(
                     f"{base_url}/chat/completions",
                     json=payload,
@@ -100,16 +113,27 @@ class DeepSeekClient:
                 data = resp.json()
         except httpx.HTTPStatusError as e:
             code = e.response.status_code
+            # ⚠️ 不把 `e` 原样拼进消息：httpx 的这句里带着**完整 URL**，
+            # 而这句话会回到请求方眼前。等于告诉他"你塞进来的地址我们连到了、回了 404"。
             if code in (401, 403):
-                raise LLMError(f"大模型拒绝了请求（HTTP {code}）：API Key 无效或已过期，请到管理控制台「API 配置」重新填写。") from e
+                raise LLMError(f"大模型拒绝了请求（HTTP {code}）：API Key 无效或已过期，请检查你填的密钥。") from e
             if code == 429:
                 raise LLMError(f"大模型限流了（HTTP 429）：请求太密或额度用尽，稍等一会儿再试。") from e
-            raise LLMError(f"大模型接口出错（HTTP {code}）：{e}") from e
+            raise LLMError(f"大模型接口出错（HTTP {code}）。") from e
         except httpx.RequestError as e:
-            raise LLMError(f"连不上大模型服务（{base_url}），请检查网络、代理或接口地址是否写对：{e}") from e
+            # 完整原因（含地址、含底层异常）只进服务端日志；回给请求方的不反射地址。
+            print(f"[LLM] 连不上上游 {base_url}：{type(e).__name__}: {e}")
+            raise LLMError("连不上大模型服务，请检查网络，或到管理控制台确认接口地址是否可用。") from e
 
-        # DeepSeek 返回结构里，回答在 choices[0].message
-        message = data["choices"][0]["message"]
+        # DeepSeek 返回结构里，回答在 choices[0].message。
+        # ⚠️ 但"连上了"不等于"连到的是模型服务"：地址填错、或指到别家 API 时，
+        # 拿回来的可能是任意 JSON。这里不兜住就是 KeyError → 500，
+        # 而且 500 的排查线索比一句人话更难拿。
+        try:
+            message = data["choices"][0]["message"]
+        except (TypeError, KeyError, IndexError, AttributeError) as e:
+            print(f"[LLM] 上游返回不是模型应答：{type(data).__name__}，键={list(data)[:6] if isinstance(data, dict) else ''}")
+            raise LLMError("大模型服务的返回内容不是预期的应答格式（接口地址可能填错了）。") from e
 
         # 把这次的用量露给网关（人话：花了多少 token，网关拿去记账）。
         # 有的厂商不回 usage，那就是 None，记账按 0 处理，不影响对话。
