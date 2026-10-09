@@ -178,11 +178,19 @@ def batch_no_store(ck):
     ck.check("B4 账本本次有新增行（说明这条链路真的记了账，B5 不是空过）",
              len(rows) > 0, f"新增 {len(rows)} 行")
     ALLOWED_FIELDS = {"ts", "user", "model", "prompt_tokens", "completion_tokens",
-                      "total_tokens", "status", "latency_ms", "error"}
+                      "total_tokens", "status", "latency_ms", "error", "key_source"}
     extra = sorted({k for r in rows for k in r} - ALLOWED_FIELDS)
     ck.check("B5 账本行的字段集合没有越界（多一个字段就是多一个泄密面）",
              not extra, "｜多出：" + ", ".join(extra) + "｜现有：" +
              ", ".join(sorted({k for r in rows for k in r})))
+    # key_source 是 2026-10-09 加的一列（管理员要能看出这笔账花的是谁的 Key）。
+    # 加字段必须有对价：它的**取值**只能是这两个词，任何别的内容都当泄密处理。
+    ck.check("B5b key_source 只能是 server/student 两个标签（它不许带出 key 的任何片段）",
+             all(r.get("key_source") in ("server", "student") for r in rows),
+             "｜实际：" + ", ".join(sorted({str(r.get("key_source")) for r in rows})))
+    ck.check("B5c 学生自带 key 的那几行，来源标的就是 student（不然后来人对不上账）",
+             any(r.get("key_source") == "student" for r in rows),
+             "｜全都没标 student")
     ck.check("B6 账本行的**值**里也不含 canary（字段名干净不等于内容干净）",
              not [r for r in rows if CANARY in json.dumps(r, ensure_ascii=False)])
     ok7, why7 = _failsafe_clean()

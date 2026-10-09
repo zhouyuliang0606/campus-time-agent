@@ -1,4 +1,4 @@
-"""base_url 的 SSRF 闸门：连接目标不许由请求方决定。
+"""base_url 的 SSRF 闸门：请求方可以自带连接目标，但**必须真过闸**，且不外泄地址。
 
 起因（2026-10-09 审计）：`/api/chat` 与 `/api/classify` 都接受请求体里的
 `model_config.base_url`，而 `llm/client.py` 把它直接拼成 POST 目标 —— 实测
@@ -7,18 +7,25 @@
 完整 URL 回显给请求方。带出去的 key 是请求者自己的，所以这洞的本质不是"密钥泄露"，
 是**这台服务器被当成任意内网 HTTP 客户端**。
 
-本文件钉的是修完之后必须成立的六件事：
+⚠️ 同日改过一次口，别再改回去：中午那版是"彻底不收请求方的 base_url"，
+安全但把"学生自带 Key"做成了假功能（Key 是他的、地址是管理端的，两家不配套只会
+吃一个看不懂的 401，实测把人逼到以为数据丢了）。现在收，但连接前那道闸对他一样。
+所以本文件钉的重点从"字段有没有被丢掉"变成"**内网到底连不连得上**"——
+丢字段是一种假的安全，拦连接才是。
+
+本文件钉的是修完之后必须成立的七件事：
   A 校验函数本身（协议 / 内网 IP 字面量 / 保留域名 / 单标签名 / IPv6 回环）；
-  B 两个入口都不再接受 base_url（**漏一个等于没关**，所以两处都钉）；
+  B 两个入口都只留 {key, model, base_url}，多余字段不带过来；地址过不了第一层就整个作废；
   C 管理端写入也过同一道闸（这里填错会把**管理员的 key** 寄出去，比学生端严重）；
   D 回给请求方的错误文本不反射地址（完整原因只进服务端日志）；
-  E 学生端能看到"key 会被送到哪台机器"（关掉自带端点之后的诚实义务）；
+  E 学生端能填地址、也能看见自己的 key 会被送到哪台机器；
   F 端到端：settings.json 里真躺着内网地址时（模拟闸门上线前的存量配置），
-    连接前那一档要拦下，且响应里不出现那个地址。
-
-⚠️ 空断言防护：每条都先确认"真的走到了这一步"，再核字段。
+    连接前那一档要拦下，且响应里不出现那个地址；
+  H 端到端（学生侧）：请求体里塞内网地址 → 一样拦下、不回显、不落盘他的 key；
+    塞公网地址 → 真发到他的地址（用假 transport 取证，不碰网）。
 """
 import io
+import os
 
 from _harness import Checker, make_client, sandbox, title
 from app.store import set_settings
@@ -73,13 +80,23 @@ def batch_a_validator():
 
 def batch_b_entry_points():
     c = Checker()
-    title("B 批 · 两个入口都不接受请求方的 base_url")
+    title("B 批 · 两个入口都只留 {key, model, base_url}，多余的字段不带过来")
+    # ⚠️ 2026-10-09 这一批改过一次口。原先钉的是"override 的 base_url 被丢掉"，
+    # 那让"学生自带 Key"变成假功能（Key 是他的、地址是管理端的，不配套就吃 401）。
+    # 现在的契约：地址**收下**，但内网那一层在 client.py 真要发请求之前判 ——
+    # 拦得住内网这件事由 F 批和 H 批用真执行来证，不是靠这里删字段来证。
     from app.config import get_llm_config, sanitize_override
 
     o = sanitize_override({"base_url": "http://127.0.0.1:8000", "model": "glm-4-flash",
-                           "api_key": " sk-test-1 "})
-    c.check("sanitize_override 丢掉 base_url、trim key、保留 model",
-            o == {"api_key": "sk-test-1", "model": "glm-4-flash"}, str(o))
+                           "api_key": " sk-test-1 ", "evil_field": "x"})
+    c.check("sanitize_override 收 base_url、trim key、保留 model、多余字段丢掉",
+            o == {"api_key": "sk-test-1", "model": "glm-4-flash",
+                  "base_url": "http://127.0.0.1:8000"}, str(o))
+    c.check("地址缺协议按 https 补全（人都是这么省略的）",
+            sanitize_override({"api_key": "k", "base_url": "api.deepseek.com"})["base_url"]
+            == "https://api.deepseek.com")
+    c.check("地址过不了第一层（file://）→ 整个 override 作废，不留半成品",
+            sanitize_override({"api_key": "sk-x", "base_url": "file:///c:/windows/win.ini"}) is None)
     c.check("没带 key 的 override 整个作废（不留下半成品）",
             sanitize_override({"base_url": "http://x.example"}) is None)
     c.check("垃圾输入不炸（字符串/None/列表）",
@@ -87,18 +104,21 @@ def batch_b_entry_points():
             and sanitize_override([]) is None)
     c.check("只有空串 key 也算没带", sanitize_override({"api_key": "   "}) is None)
 
-    # 真正的判据：把内网地址塞进 override，生效的 base_url 必须是服务器侧那一个
+    # 生效配置的三层优先级：学生的地址 > 管理后台 > .env；他没填的那项回落
     with sandbox():
         set_settings({"api_key": "sk-admin-fake", "base_url": "https://api.deepseek.com",
                       "model": "deepseek-chat"})
         cfg = get_llm_config(override={"api_key": "sk-student",
                                        "base_url": "http://127.0.0.1:8000"})
-        c.check("override 里的 base_url 对最终结果毫无影响",
-                cfg["base_url"] == "https://api.deepseek.com", cfg["base_url"])
+        c.check("override 的 base_url 会进到生效配置（内网由连接前那道闸拦，不在这层）",
+                cfg["base_url"] == "http://127.0.0.1:8000", cfg["base_url"])
         c.check("但学生的 key 与模型名照旧生效",
                 cfg["api_key"] == "sk-student", cfg["api_key"])
-        c.check("source 里说清了地址来自服务器配置",
-                "地址走服务器配置" in cfg["source"], cfg["source"])
+        c.check("学生只填 key 不填地址时，地址回落服务器配置",
+                get_llm_config(override={"api_key": "sk-student"})["base_url"]
+                == "https://api.deepseek.com")
+        c.check("source 说的是「这笔账花的是谁的 Key」，不再谎称地址来自服务器",
+                cfg["source"] == "学生端自定义 API", cfg["source"])
 
     src = io.open(MAIN, encoding="utf-8").read()
     c.check("main.py 里两处入口过的都是 sanitize_override",
@@ -144,19 +164,25 @@ def batch_d_no_reflection():
 
 def batch_e_upstream_visible():
     c = Checker()
-    title("E 批 · 学生看得见「我的 key 会被送到哪台机器」")
+    title("E 批 · 学生既能自己填地址，也看得见 key 会被送到哪台机器")
     with sandbox():
         set_settings({"api_key": "sk-admin-fake", "base_url": "https://api.deepseek.com/v1"})
         d = make_client().get("/api/upstream").json()
-        c.check("只回主机名", d.get("host") == "api.deepseek.com", str(d))
+        c.check("接口只回主机名（不整串地址回给任意请求方）",
+                d.get("host") == "api.deepseek.com", str(d))
         c.check("不含 key、不含路径", "sk-" not in str(d) and "/v1" not in str(d), str(d))
     src = io.open(STUDENT, encoding="utf-8").read()
-    c.check("学生端 API 弹窗里已经没有 Base URL 输入框", 'id="mBase"' not in src)
-    c.check("弹窗改成显示上游主机", "/api/upstream" in src and "mUpstream" in src)
-    c.check("文案明说 key 会送到那个上游、且学生改不了",
-            "你的 Key 会被送到上面那个上游地址" in src)
-    c.check("旧记录里残留的 base_url 不再被显示成「还在生效」",
-            "cfg.base_url" not in src)
+    c.check("API 弹窗里有「接口地址」输入框（自带端点这条路是真通的，不是假的）",
+            'id="mBase"' in src)
+    c.check("保存时把 base_url 一起写回本地（只存 key 会让地址永远为空）",
+            'base_url:document.getElementById("mBase").value.trim()' in src)
+    c.check("文案明说内网/链路本地地址会被拒（把闸门的边界讲给学生听，别让他瞎试）",
+            "169.254" in src and "会被直接拒掉" in src)
+    c.check("服务器默认上游仍然显示出来（留空=用它）", "/api/upstream" in src and "mUpstream" in src)
+    c.check("设置页显示「当前自定义发到哪个 host」——不显示就是替他把钥匙寄出去",
+            src.count("cfg.base_url") >= 2 and "发到 " in src)
+    c.check("不许再留「学生端不能改」这种已经不成立的文案",
+            "学生端不能改" not in src)
     return c
 
 
@@ -212,6 +238,133 @@ def batch_g_two_tiers():
     return c
 
 
+def batch_h_override_route():
+    c = Checker()
+    title("H 批 · 学生自带地址：内网真拦得住，公网真发得出去")
+    # 这一批是这次改口的**正证**。B 批只证明"字段收下了"，那不等于安全；
+    # 安全与否只能看"请求实际发到哪儿"，所以这里塞一个假的 httpx 把目标地址取出来。
+    # 假 transport 同时是空断言防护：闸门被人删掉时，这里会记录到内网 URL → 立刻红，
+    # 而不是"测试通过但洞还在"。
+    import asyncio
+
+    import app.llm.client as client_mod
+    from app.llm.client import DeepSeekClient, LLMError
+
+    sent = {}
+
+    class _Resp:
+        status_code = 200
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"choices": [{"message": {"role": "assistant", "content": "ok"}}],
+                    "usage": {"total_tokens": 7}}
+
+    class _FakeAsyncClient:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def post(self, url, json=None, headers=None):
+            sent["url"] = url
+            sent["auth"] = (headers or {}).get("Authorization", "")
+            return _Resp()
+
+    real = client_mod.httpx.AsyncClient
+    client_mod.httpx.AsyncClient = _FakeAsyncClient
+    try:
+        with sandbox():
+            set_settings({"api_key": "sk-admin-fake",
+                          "base_url": "https://open.bigmodel.cn/api/paas/v4",
+                          "model": "glm-4-flash"})
+            # ① 公网：必须发到学生填的那家，用学生的 key
+            sent.clear()
+            cli_pub = DeepSeekClient()
+            asyncio.run(cli_pub.chat(
+                [{"role": "user", "content": "x"}],
+                override={"api_key": "sk-student-pub",
+                          "base_url": "https://api.deepseek.com", "model": "deepseek-chat"}))
+            c.check("学生填的公网地址=实际请求地址（自带端点不是假的）",
+                    str(sent.get("url", "")).startswith("https://api.deepseek.com/chat/completions"),
+                    str(sent.get("url")))
+            c.check("花的是他的 key，不是管理员那把",
+                    sent.get("auth", "").endswith("sk-student-pub"), sent.get("auth"))
+            c.check("模型名也是他填的（不是管理端那个 glm-4-flash）",
+                    cli_pub.last_model == "deepseek-chat", str(cli_pub.last_model))
+
+            # ② 内网：闸门要在**建连接之前**拦掉，所以假 client 一次都不该被调到
+            sent.clear()
+            msg = ""
+            try:
+                asyncio.run(DeepSeekClient().chat(
+                    [{"role": "user", "content": "x"}],
+                    override={"api_key": "sk-student-evil",
+                              "base_url": "http://127.0.0.1:8000/api/admin/settings"}))
+                msg = "竟然发出去了"
+            except LLMError as e:
+                msg = str(e)
+            c.check("override 塞内网地址 → 请求根本没发出（不是发了再报错）",
+                    "url" not in sent, f"假 client 记录到：{sent.get('url')}")
+            c.check("给的是闸门那句（不是泛泛的「连不上」）", "不合规" in msg, msg[:100])
+            c.check("错误文本不回显内网地址", "127.0.0.1" not in msg, msg[:100])
+
+            # ③ 域名解析不到的地址也不该被当成"连不上就算了"放过去
+            sent.clear()
+            try:
+                asyncio.run(DeepSeekClient().chat(
+                    [{"role": "user", "content": "x"}],
+                    override={"api_key": "sk-x", "base_url": "https://no-such-host.invalid/v1"}))
+                out = "竟然发出去了"
+            except LLMError as e:
+                out = str(e)
+            c.check("解析不了的域名同样不发（闸门那句，且不含主机名）",
+                    "不合规" in out and "no-such-host" not in out, out[:100])
+    finally:
+        client_mod.httpx.AsyncClient = real
+
+    # ④ 端到端 + 落盘检查：canary key 不许出现在任何文件里
+    canary = "sk-CANARY-H37-8f2b"
+    with sandbox():
+        set_settings({"api_key": "sk-admin-fake", "base_url": "https://api.deepseek.com",
+                      "model": "deepseek-chat"})
+        cli = make_client()
+        r = cli.post("/api/chat", json={"message": "你好呀", "session_id": "t37-h",
+                                        "module": "chat",
+                                        "model_config": {"api_key": canary,
+                                                         "base_url": "http://127.0.0.1:9/v1"}})
+        body = str(r.json())
+        c.check("走学生自带地址时接口没被打挂（200 + 一句人话）",
+                r.status_code == 200, f"{r.status_code} {r.text[:80]}")
+        c.check("响应里出现的是闸门那句", "不合规" in body, body[:120])
+        c.check("响应不反射内网地址", "127.0.0.1" not in body and ":9" not in body, body[:120])
+
+        # 落盘面：沙箱里**每一个**文件都扫一遍（只扫 llm_usage 会漏进会话/消息那种地方）
+        root = os.environ["CAMPUSTIME_DATA_DIR"]
+        dirty, usage_lines = [], ""
+        for dir_, _dirs, files in os.walk(root):
+            for fn in files:
+                try:
+                    txt = io.open(os.path.join(dir_, fn), encoding="utf-8", errors="replace").read()
+                except OSError:
+                    continue
+                if canary in txt:
+                    dirty.append(fn)
+                if fn == "llm_usage.jsonl":
+                    usage_lines += txt
+        c.check("沙箱里没有任何文件留下他的 key", not dirty, f"出现在：{dirty}")
+        c.check("响应体里也没回显他的 key", canary not in body, body[:120])
+        c.check("流水记下了来源=student（管理员能看见这笔账花的是谁的 Key）",
+                '"key_source": "student"' in usage_lines, usage_lines[-160:])
+    return c
+
+
 def _raises(fn, *a):
     try:
         fn(*a)
@@ -223,7 +376,7 @@ def _raises(fn, *a):
 def main():
     results = [batch_a_validator(), batch_b_entry_points(), batch_c_admin_write(),
                batch_d_no_reflection(), batch_e_upstream_visible(), batch_f_end_to_end(),
-               batch_g_two_tiers()]
+               batch_g_two_tiers(), batch_h_override_route()]
     total_pass = sum(r.passed for r in results)
     total_fail = sum(r.failed for r in results)
     print(f"\n===== base_url SSRF 闸门总账：通过 {total_pass} 项，失败 {total_fail} 项 =====")
