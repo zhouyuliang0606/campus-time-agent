@@ -197,6 +197,26 @@ def test_student_page_markup():
         c.check("学生端不再渲染思考轨迹文案", "🧠 Agent 思考轨迹" not in html)
         c.check("页面带 no-store 防缓存", "no-store" in (r.headers.get("cache-control", "") or "")
                 or "no-store" in (r.headers.get("Cache-Control", "") or ""))
+        # ---- 三端分流归登录页管（2026-10-09）----
+        # 学生端顶栏原先挂着「🛠 管理端」「🏪 驿站」两颗直达链接（新标签页打开），
+        # 一边讲"身份分开"一边把控制台入口递到学生手边。拿掉之后这两条钉的是：
+        # 学生页里没有它们，而登录页上三颗都在（少一颗就是某端没人能进）。
+        c.check("学生端顶栏不再发「管理端」直达入口", 'href="/admin"' not in html,
+                "学生页里还能一键点开管理台")
+        c.check("学生端顶栏不再发「驿站」直达入口", 'href="/station"' not in html)
+        c.check("学生端自己的「完整日程」入口还在", 'href="/plan"' in html)
+        login = client.get("/")
+        lhtml = login.text or ""
+        # 三颗入口是 `<button onclick="location.href='/admin'">` 这种写法，不是 <a href>
+        # ——所以这里钉的判据必须按真实形状来（第一版我按 href= 断言，红了才发现）。
+        c.check("登录页还在，三端入口都在它上面",
+                login.status_code == 200
+                and all(f"location.href='{p}'" in lhtml
+                        for p in ("/student", "/admin", "/station")),
+                f"HTTP {login.status_code}")
+        # 落地页是「日程」，静态标题不能还写着"校园问答"——那会先闪一下错的标题
+        c.check("静态标题与落地模块一致（不再闪一下「校园问答」）",
+                '<div class="t" id="navTitle">日程</div>' in html)
     return c.summary("第五批（学生端页面 UI）")
 
 

@@ -565,11 +565,14 @@
     </aside>
     <main class="main">
       <div class="topbar">
-        <div class="t" id="navTitle">校园问答</div>
+        <div class="t" id="navTitle">日程</div>
         <span class="grow"></span>
         <a class="tb-link" href="/plan">📅 完整日程</a>
-        <a class="tb-link" href="/admin" target="_blank">🛠 管理端</a>
-        <a class="tb-link" href="/station" target="_blank">🏪 驿站</a>
+        <!-- 顶栏原先还挂着「🛠 管理端」「🏪 驿站」两颗直达链接（新标签页打开）。
+             2026-10-09 拿掉：三端分流是登录页的职责，学生端里放这两颗，
+             等于一边讲"身份分开"一边把控制台入口递到学生手边。
+             真要说防线，那是 `CAMPUSTIME_ADMIN_TOKEN`（没口令时 /admin 读不到任何东西），
+             不是这两行链接——但演示时"学生能顺手点开管理台"这件事本身就该避免。 -->
       </div>
       <div class="stage">
         <div id="chatStage" class="nav-view active">
