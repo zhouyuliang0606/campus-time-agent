@@ -127,9 +127,13 @@ def check_base_url_ssrf(url: str, *, allow_private: bool | None = None, resolve:
     ⚠️ 已知残余风险（写清楚，别以为已经防全）：
       · **DNS rebinding 没完全防住**。这里是"先解析校验、再由 httpx 自己解析一次连接"，
         两次解析之间可以换答案（TOCTOU）。真要钉死得把已校验的 IP 固定进连接层
-        （自定义 transport，或 host 换成 IP + 带 Host/SNI 头）。本轮不做：
-        能配地址的只剩管理员本人，威胁模型已经从"任意请求方"缩到"管理员自己"。
+        （自定义 transport，或 host 换成 IP + 带 Host/SNI 头）。本轮没做，但威胁模型
+        要说准：2026-10-09 放开学生自带 base_url 之后，能往这里填地址的人**已经从
+        "管理员本人"扩大到"任何能连到端口的人"**，这一条的分量比当初写下的时候重。
+        当前可接受的唯一理由是本项目只在局域网/本机演示；一旦对外网暴露，这条必须补上。
       · 不挡非常规端口（`http://公网IP:6379/` 这类过闸），同上理由。
+      · 闸门在"真要发请求之前"这一处，不在取配置那一层 —— 所以任何**新的**发请求路径
+        都必须记得过它；漏了就是内网直通。
     """
     s = check_base_url_shape(url)
     parts = urlsplit(s)
@@ -182,11 +186,16 @@ def validate_base_url(url: str, *, resolve: bool = True) -> str:
 
 
 def sanitize_override(raw) -> dict | None:
-    """把请求方递来的"自定义 API"收敛成**只可能影响 key 与模型名**的那部分。
+    """把请求方递来的"自定义 API"收敛成 {api_key, model, base_url} 三样，多余的字段一律不带过来。
 
-    丢掉 `base_url` 是这个函数的全部意义：连到哪儿由服务器决定（见上面那段 SSRF 说明）。
     没带 api_key 的一律当没这回事——既不该生效，也不该被留在任何结构里。
     所有读请求体里 override 的地方都必须过这个函数，别在调用点各抄一份字段挑选。
+
+    `base_url` 这里**只做第一层**（协议 + 有主机名），内网那一层不在这里判：
+    本函数在请求入口跑，抛错会把整轮对话打断；`llm/client.py` 在真要发请求之前
+    对最终生效的地址过 `check_base_url_ssrf`，那一处才是闸门（学生传来的地址同样躲不过）。
+    地址缺协议时按 `https://` 补全（人都是这么省略的），补完仍不合法就**整个 override 作废**：
+    连地址都写不对的那份配置，里面的 key 和模型名一样不值得信。
     """
     if not isinstance(raw, dict) or not raw.get("api_key"):
         return None
@@ -196,50 +205,52 @@ def sanitize_override(raw) -> dict | None:
     model = str(raw.get("model") or "").strip()
     if model:
         out["model"] = model[:64]
+    url = str(raw.get("base_url") or "").strip()
+    if url:
+        if "://" not in url:
+            url = "https://" + url
+        try:
+            out["base_url"] = check_base_url_shape(url)
+        except BaseUrlError:
+            return None
     return out
 
 
 def get_llm_config(override: dict | None = None) -> dict:
     """获取当前真正生效的大模型配置（人话：管理后台配了就听它的，没配就用 .env 的）。
 
-    优先级：**连到哪儿（base_url）只由服务器侧决定**——管理后台的 settings.json > .env；
-    学生端自定义的 override 只能决定**用哪把 key、用哪个模型名**。
+    优先级：学生自带配置（key / 模型名 / 地址）> 管理后台 settings.json > .env。
+    学生没带某一项时，那一项回落到服务器侧的值——所以只填 Key 也能跑。
 
-    ⚠️ 2026-10-09 改：以前 override 里的 `base_url` 也生效（"学生自带端点"），
-    那等于把"这台服务器往哪儿发 HTTP 请求"交给请求方 —— 实测能被用来打内网
-    （SSRF，细节见 `validate_base_url` 上面那段）。现在这条路彻底关掉：
-    **override 里的 base_url 看都不看**。入口层（main.sanitize_override）先丢一次，
-    这里再丢一次，是为了将来有人新写一个调用方直接构造 override 时，闸门还在。
+    ⚠️ `base_url` 这一天改过两次，别再改回第三次的半途状态：
+      · 早上之前：override 的 base_url 直接生效，等于把"这台服务器往哪儿发 HTTP 请求"
+        交给任意请求方 → 实测能拿去打内网（SSRF，细节见 `check_base_url_ssrf` 上面那段）。
+      · 中午：彻底关掉，override 里的 base_url 看都不看。安全了，但"学生自带 Key"这个功能
+        **当场变成假的**——Key 是他的、地址是服务器的，两家不配套就只会吃 401，
+        而且页面不告诉他为什么（2026-10-09 实测就是这么把使用者逼到以为数据丢了）。
+      · 现在：地址重新收下，但**必须在真要发请求之前过第二层闸门**（`llm/client.py` 里那句
+        `check_base_url_ssrf`）。这一版才同时满足两条：自带端点能用，内网仍然连不上。
 
-    带来的可见后果（必须让学生知道，所以学生端要把当前上游域名显示出来）：
-    学生自带 key 时，这把 key 会被发到**管理端配的那个地址**。
-    管理端配的是智谱、学生拿 DeepSeek 的 key，就会吃一个 401 —— 这是设计如此，
-    不是 bug；反过来若不显示上游，就等于替学生把 key 寄到没跟他说过的那台机器。
-
-    为什么做成一个函数而不是几个常量？
-    因为管理员在后台改完配置希望立刻生效。每次调用重新读一次文件，
-    开销可以忽略，但换来了"改完不用重启服务"这个很值钱的体验。
+    为什么这里只过第一层（协议 + 有主机名）：本函数被二十来处调用，包括启动自检和管理台读
+    配置。在"取配置"的路径上拦内网 = 存量脏配置、或"本地 ollama + localhost"这种**完全合法
+    的配法**会让每一次对话直接抛错（实测把 test_34 打崩过）。内网那一层放在"管理端写入时"
+    与"真要发请求之前"两处判。
     """
     # 放在函数内导入：避免 config 这个底层模块在启动时就依赖 store
     from app.store import get_settings
 
     s = get_settings()
     # base_url / model 允许只覆盖其中一个，另一个回落到默认值。
-    # ⚠️ 这里只过**第一层**（协议 + 有主机名），不过内网那一层。
-    # 原因不是偷懒：本函数被二十来处调用，包括启动自检和管理台读配置。
-    # 在取配置的路径上拦内网 = 存量脏配置、或"本地 ollama + localhost"这种
-    # **完全合法的配法**会让每一次对话直接抛错（实测把 test_34 打崩过）。
-    # 内网那一层放在"管理端写入时"与"真要发请求之前"两处判（见 check_base_url_ssrf）。
     base = check_base_url_shape(s.get("base_url") or DEEPSEEK_BASE_URL)
     model_default = s.get("model") or DEEPSEEK_MODEL
 
-    # 学生自带 key：用他的 key 与模型名，但地址仍是服务器这一侧的
+    # 学生自带 key：用他的 key、模型名和地址；他没填的那几项回落服务器配置
     if override and override.get("api_key"):
         return {
             "api_key": override["api_key"],
-            "base_url": base,
+            "base_url": check_base_url_shape(override["base_url"]) if override.get("base_url") else base,
             "model": override.get("model") or model_default,
-            "source": "学生端自定义 API（地址走服务器配置）",
+            "source": "学生端自定义 API",
         }
 
     key = s.get("api_key") or DEEPSEEK_API_KEY

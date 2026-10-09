@@ -1037,9 +1037,11 @@ async def _chat_impl(req: Request, meta: dict):
     # 学生端在对话框里自己填的 API：存在浏览器 localStorage，**每轮对话随请求上传**
     # （是服务器拿它去调模型，不是前端直连）。用完即弃：只活在这一次请求里，
     # 不写 settings.json、不进任何数据文件（test_34 钉住）。
-    # ⚠️ 2026-10-09：这里过 `sanitize_override` —— **只认 model 与 api_key，base_url 直接丢**。
-    # "连到哪儿"由服务器侧（管理后台 / .env）决定。以前请求方能自带端点，
-    # 等于把这台机器当成任意内网 HTTP 客户端用（SSRF，细节见 config.validate_base_url）。
+    # ⚠️ 这里过 `sanitize_override`：只留 {api_key, model, base_url} 三个字段，其余一概不带过来。
+    # base_url 在这一层只判"能不能用"（协议 + 有主机名）；**内网那一层不在这里判**，
+    # 判它在 `llm/client.py` 真要发请求之前（config.check_base_url_ssrf），
+    # 学生传来的地址和管理后台填的地址走的是同一个闸门。为什么不在这里判：
+    # 抛错会把整轮对话打断，而"填了个没法用的地址"应该是退回服务器配置，不是 500。
     model_config = sanitize_override(body.get("model_config"))
 
     # 会话 id：前端带上，服务端就能把几轮对话串起来。
