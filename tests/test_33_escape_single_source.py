@@ -146,12 +146,9 @@ def batch_single_source(ck):
             late.append(f)
     ck.check("A6 引入位置在自己的内联脚本**之前**（否则一进来就 esc is not defined）",
              not late, "｜晚了：" + ",".join(late))
-    # 2026-10-09：登录页（三颗按钮、零认证）删掉了，`/` 直接 302 到学生端。
-    # 这条改钉"没有页面还指向那个不存在的文件"——死链不会报错，只会在评委点下去时白屏。
-    dead = [f for f in PAGES if 'href="/"' in read(f)]
-    ck.check("A7 没有页面还指向已删除的登录页（href=\"/\" 死链）",
-             not dead and not os.path.exists(os.path.join(STATIC, "login.html")),
-             "｜还指着：" + ",".join(dead))
+    # login.html 没有内联脚本，也不渲染任何外部数据 → 不该被"每页都要引入"误伤
+    ck.check("A7 login.html 不引入 esc.js（它没有内联脚本，规则不误伤）",
+             'src="/static/esc.js"' not in read("login.html"))
 
 
 # ============ C 批：审计点位回归 ============
@@ -318,7 +315,7 @@ def allowed(expr):
 def batch_scan(ck):
     title("E 批 · 属性/文本上下文里的裸插值（新出现的一律红）")
     fresh = []
-    for f in PAGES:
+    for f in PAGES + ["login.html"]:
         s = read(f)
         for rx in (ATTR, ATTR_CONCAT, TEXT):
             for m in rx.finditer(s):

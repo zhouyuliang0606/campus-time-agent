@@ -12,7 +12,7 @@ import uuid
 from typing import Any
 
 from fastapi import Depends, FastAPI, File, Request, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.admin_guard import verify_admin
@@ -4089,18 +4089,10 @@ def _render(name: str) -> HTMLResponse:
         return HTMLResponse(f.read(), headers={"Cache-Control": "no-store"})
 
 
-@app.get("/", include_in_schema=False)
+@app.get("/", response_class=HTMLResponse)
 async def login_page():
-    """根路径：直接进学生端。
-
-    这里原来是一张"选择身份"的登录页（三颗按钮：学生 / 管理端 / 驿站）。
-    它没有任何认证——不填名字、不校验口令，点了只是换个 URL，
-    却挡在每个演示的第一屏，评委第一眼看到的就是一个"点了没反应"的假登录。
-    2026-10-09 用户「还要这个登录页面」→ 删掉，`/` 只做一件事：转到学生端。
-    管理端与驿站端的入口本来就在学生端顶栏上（完整日程 / 管理端 / 驿站），
-    没丢东西；两个页面的"返回登录"链接也跟着改回学生端。
-    """
-    return RedirectResponse(url="/student", status_code=302)
+    """登录页：选择身份（学生 / 管理员）。"""
+    return _render("login.html")
 
 
 @app.get("/student", response_class=HTMLResponse)

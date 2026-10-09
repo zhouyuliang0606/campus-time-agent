@@ -559,6 +559,7 @@
       <div class="sb-pop" id="sbPop">
         <div class="pi" id="sbPiProfile">账号信息</div>
         <div class="pi" id="sbPiSettings">设置</div>
+        <div class="pi" id="sbPiLogout">退出登录</div>
       </div>
       <div class="sb-foot">校园时间管家 · 学生端</div>
     </aside>
@@ -2242,8 +2243,7 @@
     sbPop.addEventListener("click", function(e){ e.stopPropagation(); });
     document.getElementById("sbPiProfile").addEventListener("click", function(){ sbPop.classList.remove("show"); openProfileModal(); });
     document.getElementById("sbPiSettings").addEventListener("click", function(){ sbPop.classList.remove("show"); switchNav("settings"); });
-    // 「退出登录」这一项跟着登录页一起删了：系统没有账号体系，
-    // 它以前做的事只是把人跳回那张三颗按钮的假登录页——退出个寂寞。
+    document.getElementById("sbPiLogout").addEventListener("click", function(){ sbPop.classList.remove("show"); location.href="/"; });
 
     var AVATARS=["🐱","🐶","🦊","🐼","🐯","🦁","🐸","🐵","🐧","🦄","🌟","🍀"];
     var AV_BG=["#4f7cff","#17b8a6","#f0a03c","#e24b4a","#8a6fe8","#3b6d11","#ff5c8a","#185fa5","#7dc48a","#ba7517","#6a5cff","#0f6e56"];
