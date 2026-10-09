@@ -2306,9 +2306,12 @@
     }
     function openModelModal(){
       var cfg=null; try{ cfg=JSON.parse(localStorage.getItem("ct_model_cfg")||"null"); }catch(e){ cfg=null; }
+      // 2026-10-09：**去掉了"接口地址（Base URL）"这一栏**。
+      // 服务器不再接受请求方指定的连接目标（那是 SSRF 的入口，细节见 app/config.py 的
+      // validate_base_url）。以前填过的人，本地还留着 base_url —— 保存时一并清掉，
+      // 留着它只会让人以为还在生效。
       showModal("添加 / 修改 API",
-        '<div style="font-size:13px;color:#6a7388;margin-bottom:6px;">接口地址（Base URL，兼容 OpenAI 格式）</div>'+
-        '<input id="mBase" placeholder="https://api.deepseek.com" value="'+esc((cfg&&cfg.base_url)||"")+'" style="width:100%;padding:9px 11px;border:1px solid #d8def0;border-radius:9px;font-size:13px;outline:none;margin-bottom:10px;" />'+
+        '<div id="mUpstream" style="font-size:13px;color:#6a7388;margin-bottom:10px;line-height:1.6;">正在确认上游地址…</div>'+
         '<div style="font-size:13px;color:#6a7388;margin-bottom:6px;">模型名</div>'+
         '<input id="mModel" placeholder="deepseek-chat" value="'+esc((cfg&&cfg.model)||"")+'" style="width:100%;padding:9px 11px;border:1px solid #d8def0;border-radius:9px;font-size:13px;outline:none;margin-bottom:10px;" />'+
         '<div style="font-size:13px;color:#6a7388;margin-bottom:6px;">API Key</div>'+
@@ -2318,14 +2321,24 @@
           '是服务器拿它去调用大模型（不是你直连），所以这一步省不掉。<br>'+
           '服务器只在这一轮请求里用它，不会写进任何文件、也不会出现在管理后台的配置里；'+
           '但请求走的是明文 HTTP，同一网络里有人抓包就看得见，'+
-          '<b>公共网络上别用你日常那把 Key</b>。不想上传就别填，走管理端默认模型。'+
+          '<b>公共网络上别用你日常那把 Key</b>。不想上传就别填，走管理端默认模型。<br>'+
+          '<b>你的 Key 会被送到上面那个上游地址</b>——它由管理端配置、这里改不了。'+
+          '不是你家那台机器认识的地址，就别把 Key 填进来。'+
         '</div>',
         [{label:"取消",ghost:true,on:function(){ closeModal(); }},
          {label:"保存",on:function(){
-           var c={ base_url:document.getElementById("mBase").value.trim(), model:document.getElementById("mModel").value.trim(), api_key:document.getElementById("mKey").value.trim() };
+           var c={ model:document.getElementById("mModel").value.trim(), api_key:document.getElementById("mKey").value.trim() };
            if(!c.api_key){ alert("请填写 API Key"); return; }
            localStorage.setItem("ct_model_cfg", JSON.stringify(c)); loadModelSel(); closeModal();
          }}]);
+      // 上游主机名单独拉一次：这页是静态文件，配置在服务器那边，只能问它
+      fetch("/api/upstream").then(function(r){ return r.json(); }).then(function(d){
+        var box=document.getElementById("mUpstream"); if(!box) return;
+        box.innerHTML='请求会发到这个上游：<b>'+(esc((d&&d.host)||"（读不到）"))+'</b>'+
+          '<span style="color:#8a93a6;">（由管理端配置，学生端不能改）</span>';
+      }).catch(function(){
+        var box=document.getElementById("mUpstream"); if(box) box.textContent="上游地址：暂时读不到";
+      });
     }
     document.getElementById("modelSel").addEventListener("change", function(){
       var v=document.getElementById("modelSel").value;
@@ -2395,7 +2408,9 @@
         pl.querySelectorAll(".persona").forEach(function(el){ el.addEventListener("click", function(){ localStorage.setItem("campustime_persona", el.dataset.key); pl.querySelectorAll(".persona").forEach(function(x){ x.classList.toggle("active", x.dataset.key===el.dataset.key); }); }); });
       })();
       var mi=document.getElementById("setModelInfo");
-      mi.innerHTML = cfg&&cfg.api_key ? ("当前自定义："+esc(cfg.model||cfg.base_url||"")) : "当前：使用管理端默认模型";
+      // 只显示模型名：base_url 已经不是学生能填的东西了（旧本地记录里残留的也不该再显示，
+      // 否则会让他以为那个地址还在生效）
+      mi.innerHTML = cfg&&cfg.api_key ? ("当前自定义模型："+esc(cfg.model||"（未填模型名，用管理端默认）")) : "当前：使用管理端默认模型";
       document.getElementById("setModelBtn").addEventListener("click", function(){ openModelModal(); });
       var clr=document.getElementById("setModelClear"); if(clr) clr.addEventListener("click", function(){ localStorage.removeItem("ct_model_cfg"); loadModelSel(); loadSettingsView(); });
     }
