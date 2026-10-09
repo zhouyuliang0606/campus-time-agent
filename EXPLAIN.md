@@ -19,7 +19,7 @@
 | `requirements.txt` | 购物清单：项目用到哪些第三方库，一键安装 |
 | `EXPLAIN.md` | 本文件：每个关键文件的「人话作用」 |
 | `app/__init__.py`<br>`app/agent/__init__.py`<br>`app/llm/__init__.py`<br>`app/modules/__init__.py` | 文件夹标记：告诉 Python 这些是可以被导入的代码包 |
-| `app/config.py` | 读配置：`.env` 是底座，`get_llm_config()` 决定最终谁生效（**管理后台 > .env**；学生自带 key 只换 key 与模型名，**不换连接目标**）。这里也是 base_url 的 SSRF 闸门所在：`check_base_url_shape`（协议/主机名）+ `check_base_url_ssrf`（内网/回环/云元数据/解析后复核）。做成函数而不是常量，换来"后台改完不用重启" |
+| `app/config.py` | 读配置：`.env` 是底座，`get_llm_config()` 决定最终谁生效（**学生自带 > 管理后台 > .env**；自带时 key、模型名、连接目标都可以是他的）。这里也是 base_url 的 SSRF 闸门所在：`check_base_url_shape`（协议/主机名，取配置时判）+ `check_base_url_ssrf`（内网/回环/云元数据/解析后复核，只在管理端写入与真要发请求之前判）。`sanitize_override()` 是所有读请求体 override 的必经收口，地址过不了第一层就整份作废。做成函数而不是常量，换来"后台改完不用重启" |
 | `app/llm/client.py` | 大模型电话：把我们的话发给大模型，把回答拿回来。**并且负责把失败说成人话**——没配 Key / Key 无效（401）/ 限流（429）/ 网络不通，会统一抛出 `LLMError`，上层再转成友好提示，绝不给前端一个裸 500。密钥每次发请求前现取，不在构造时缓存 |
 | `app/agent/engine.py` | Agent 大脑：ReAct 循环（想→做→看结果→再想） |
 | `app/agent/intent.py` | **★ 判定层（2026-09-26 新增）**：把「听懂人话」从正则手里接过来。内含三样东西：① **意图白名单**（`add_todo` / `remove_todo` / `list_todo` / `find_card` / `retime_todo` / `clear_timetable` / `chat`）+ 问句识别 `looks_like_question`；② **样本库**——拿历史成功原话做 Dice 模糊匹配（阈值 0.42），零成本、离线可跑，兼作 ③ 的缓存；③ **语义层**——问一次大模型，只要一个 JSON `{module, intent}`，置信度 <0.6 直接丢弃。白名单之外不收、阈值不够不认、没配 Key 就安静返回 `None`，一律**宁漏不误** |
