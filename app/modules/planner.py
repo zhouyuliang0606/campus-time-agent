@@ -2281,6 +2281,15 @@ def wants_add_todo(text: str) -> bool:
             and not any(k in t for k in ("吗", "？", "?"))
             and re.search(r"(去|到|来)", t)):
         return True
+    # 「我一周要去三次健身房」这类**只报了频次**的句子：没有"加/安排"这类意图词，
+    # 也没有具体日期钟点，以前整句漏给模型 —— 模型有时判成"问事"，回一句
+    # 「好的，请问您希望每次健身的具体时间是什么时候呢？」（2026-10-09 实测），
+    # 学生的原话当场不弹卡。而"一周 N 次"本身就是"请把这周排上 N 场"的硬信号。
+    # ⚠️ 带疑问样的照旧不接：「一周三次健身够吗」是在问强度，不是在下单。
+    # 也不接 N=1（"一周一次大扫除"更像随口说一句，交给原路去追问）。
+    if ((weekly_times(t) or 0) >= 2 and _title_ok(_pick_title(t))
+            and not any(k in t for k in ("吗", "？", "?", "多少", "够不", "是不是", "怎么样"))):
+        return True
     return bool(_pick_date(t) and _pick_span(t)[0]
                 and not any(k in t for k in ("吗", "？", "?")))
 

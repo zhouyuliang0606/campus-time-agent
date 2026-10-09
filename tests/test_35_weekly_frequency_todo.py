@@ -251,10 +251,40 @@ def batch_f_semantic_route():
     return c
 
 
+def batch_h_rule_layer():
+    c = Checker()
+    title("H 批 · 频次句必须由**规则层**接住（不能靠模型心情或样本库）")
+    from app.modules.planner import wants_add_todo
+
+    for t in ["我一周要去三次健身房", "每周去三次健身房", "一周跑四次步", "每礼拜两趟游泳"]:
+        c.check(f"规则层接住：{t!r}", wants_add_todo(t), "漏给模型了 → 会不会出卡全看它心情")
+    for t in ["一周三次健身够吗", "我一周要去三次健身房吗", "一天吃三次药",
+              "这周还有两次课", "一周一次大扫除"]:
+        c.check(f"不该接：{t!r}", not wants_add_todo(t), "问句/非周频次也被接成下单了")
+
+    # 端到端：裸句（没有"加/安排"这类意图词）在两个栏目都必须出卡。
+    # 真机踩过：删掉探针学到的样本之后，同一句话回的是
+    # 「好的，请问您希望每次健身的具体时间是什么时候呢？」—— trace 写着"听成 问事"。
+    with sandbox():
+        cli = make_client()
+        for mod in ("planner", "faq"):
+            d = cli.post("/api/chat", json={"message": "我一周要去三次健身房",
+                                            "session_id": f"p35-h-{mod}", "module": mod}
+                         ).json()
+            cards = [o for o in d.get("options") or [] if o.get("kind") == "todo_slots"]
+            c.check(f"{mod} 栏裸句也出候选卡（预选 3 段）",
+                    bool(cards) and int(cards[0].get("preselect") or 0) == 3,
+                    str(d.get("answer"))[:70])
+            ph = " ".join(str(t.get("phase")) for t in d.get("trace") or [])
+            c.check(f"{mod} 栏这句走的是规则层，不是模型判出来的",
+                    "规则层" in ph or "样本库" in ph, ph[:110])
+    return c
+
+
 def main():
     results = [batch_a_parse(), batch_b_title(), batch_c_card_shape(),
                batch_c2_shortfall(), batch_d_e2e(), batch_e_frontend(),
-               batch_f_semantic_route()]
+               batch_f_semantic_route(), batch_h_rule_layer()]
     total_pass = sum(r.passed for r in results)
     total_fail = sum(r.failed for r in results)
     print(f"\n===== 频次待办（一周 N 次）总账：通过 {total_pass} 项，失败 {total_fail} 项 =====")
