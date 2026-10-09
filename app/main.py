@@ -1100,38 +1100,15 @@ async def _chat_impl(req: Request, meta: dict):
     #    那条（学生报障那类句子的必经之路）。记在 meta 里、出口补一次，覆盖全部。
     meta["read"] = _read_step(_sem, _sem_intent, _rule_hit)
 
-    # 1.5) **问答栏（校园问答）说"删 / 改 / 标记完成待办" → 给「前往我的日程」按钮**，
-    #      而不是静默失败。根因：学生在这个栏目说话，_explicit_module == "faq"，
-    #      路由把它交给 faq 模块去做知识库检索，可删/改/标记完成是**写日程**的操作，
-    #      faq 既不会办、也不会报错，学生只看到一句答非所问（就是"静默失败"）。
-    #      正确做法：识别出来就给一个跳转按钮，把他带到真正能操作（且有确认条兜底）
-    #      的「我的日程」栏目。⚠️ 只在 faq 栏目触发——"我的日程"本身就在 planner 语境，
-    #      删/改待办由下面的确定性三分支直接接管，不该弹这个按钮。
-    _in_qa_column = _explicit_module == "faq"
-    _todo_mutation = (
-        _rule_hit in (INTENT_REMOVE_TODO, INTENT_DONE)
-        or _sem_intent in (INTENT_REMOVE_TODO, INTENT_RETIME, INTENT_DONE)
-        or wants_remove_todo(message) or wants_remove_todo_loose(message)
-        or wants_retime_todo(message)
-        or wants_done_todo(message)
-    )
-    if _in_qa_column and not is_confirmation(message) and _todo_mutation:
-        append_conversation(session_id, "user", message)
-        append_conversation(session_id, "assistant", "提示：待办操作请到「我的日程」")
-        return {
-            "module": "faq",
-            "session_id": session_id,
-            "answer": (
-                "这件事要在「我的日程」里办哦～ 删待办 / 改待办 / 标记完成，"
-                "都得到那个栏目去操作（那里有确认条兜底，不会误操作）。\n"
-                "点下面的按钮就能直接过去 👇"
-            ),
-            "trace": [{"step": 1,
-                       "phase": "问答栏检测到待办操作 → 给『前往我的日程』按钮（不再静默失败）",
-                       "answer": message}],
-            "options": [{"kind": "goto_schedule", "label": "前往我的日程"}],
-            "awaiting_choice": False,
-        }
+    # （这里曾经有一道"问答栏不许办待办"的拦截：学生在校园问答里说删/改/标记完成，
+    #  系统只回一句『这件事要在「我的日程」里办哦』+ 一颗跳转按钮。）
+    # 2026-10-09 拆掉。它的前提已经不成立：
+    #  · 前提一"卡片和确认条只在日程栏目才有"——全站合成一条对话流之后（student.html
+    #    sessionId 只认一个 key），卡片在哪儿出的都显示在同一条流里，也都有确认条；
+    #  · 前提二"在问答栏办了会误操作"——写库永远要学生点确认条，跟他在哪个栏目说话无关，
+    #    这条红线由 test_31（模型没有写工具）+ 提案/执行分离保证，不靠拦学生。
+    # 结果：同一句"把看牙医那个待办删了"，之前在问答栏被挡、在日程栏能办——
+    # 而学生说话时**心里没有"栏目"这个概念**。下面的确定性分支不分模块，照原样接管。
 
     # 1) 归哪个模块管：**显式栏目 > 语义层 > 关键词兜底**。
     #    学生在哪个栏目说话，本身就是最强的类型信号；他没指定时才轮到判定层。

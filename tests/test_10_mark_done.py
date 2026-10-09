@@ -6,8 +6,8 @@
        · 没说清是哪条 → 列清单问是哪一条，列完就停，绝不猜；
        · 一条都没命中 → 如实说，绝不编一条出来标记；
        · 模型手里只剩只读的 propose_todo_done，真改状态只发生在学生点【确认完成】之后。
-  B) 问答栏（校园问答）说"删 / 改 / 标记完成待办" → 不再静默失败，
-       给一个「前往我的日程」按钮，把他带到真正能操作、且有确认条兜底的栏目。
+  B) 问答栏说"删 / 标记完成待办" → 与日程栏**同样**出确认条（2026-10-09：
+       原先的"只给一颗前往我的日程按钮"已随全站一条对话流拆掉，不再拦学生。
   C) 删待办在「我的日程」栏的端到端回归（系统接管那套规矩不能被改坏）。
 """
 import datetime as _dt
@@ -220,8 +220,14 @@ def batch_c_mark_done_e2e():
 
 
 def batch_d_qa_goto_schedule():
-    """B 问答栏：说删 / 改 / 标记完成待办 → 给「前往我的日程」按钮，不再静默失败。"""
-    title("D. 问答栏（校园问答）待办操作 → 「前往我的日程」按钮")
+    """D 问答栏：说删 / 标记完成待办 → **和日程栏一模一样地出确认条**（不再拦、不再跳转）。
+
+    2026-10-09 改口径。这里原来钉的是"问答栏不办待办，只给一颗『前往我的日程』按钮"，
+    理由是"确认条只在日程栏目才有"。那个前提随着全站合成一条对话流已经不成立了：
+    卡片显示在同一条流里、走的也是同一套确认条，而**学生说话时心里没有"栏目"这个概念**。
+    拦截拆掉之后这批改钉"不分栏目一致"——③ 那条 kind 相等才是这条改动的正身。
+    """
+    title("D. 问答栏待办操作 → 与日程栏同样出确认条（不拦截、不静默失败、不真写）")
     c = Checker()
     from app.store import list_todos
 
@@ -232,46 +238,39 @@ def batch_d_qa_goto_schedule():
         client = make_client()
         _seed_todos(today, d_near, d_near)
 
-        # ① 问答栏说"删待办" → goto_schedule，且**真的没删**
-        sid1 = "qa-del"
-        r1 = client.post("/api/chat", json={
-            "message": "把游泳的待办删掉", "module": "faq", "session_id": sid1,
-        })
-        d1 = r1.json()
-        opts1 = d1.get("options") or []
-        c.check("问答栏说删待办 → 返回「前往我的日程」按钮",
-                d1.get("module") == "faq"
-                and any(o.get("kind") == "goto_schedule" for o in opts1),
-                _json.dumps(opts1, ensure_ascii=False)[:120])
+        def kinds(msg, module, sid):
+            d = client.post("/api/chat", json={"message": msg, "module": module,
+                                               "session_id": sid}).json()
+            return [o.get("kind") for o in (d.get("options") or [])], d
+
+        # ① 问答栏说"删待办" → 出删除确认条，且**真的没删**
+        k1, d1 = kinds("把游泳的待办删掉", "faq", "qa-del")
+        c.check("问答栏说删待办 → 回删除确认条（不再是跳转按钮）",
+                "todo_remove" in k1 or "todo_remove_batch" in k1, str(k1)[:120])
+        c.check("问答栏不再出现「前往我的日程」按钮",
+                "goto_schedule" not in k1, str(k1)[:120])
         c.check("问答栏说删待办 → **没有静默失败，也没有真删**（待办还在）",
                 any(t["title"] == "游泳" for t in list_todos(d_near)),
                 [t["title"] for t in list_todos(d_near)])
 
-        # ② 问答栏说"标记完成" → 同样给 goto_schedule，且**没改状态**
-        sid2 = "qa-done"
-        r2 = client.post("/api/chat", json={
-            "message": "把游泳标记完成", "module": "faq", "session_id": sid2,
-        })
-        d2 = r2.json()
-        opts2 = d2.get("options") or []
-        c.check("问答栏说标记完成 → 返回「前往我的日程」按钮",
-                d2.get("module") == "faq"
-                and any(o.get("kind") == "goto_schedule" for o in opts2),
-                _json.dumps(opts2, ensure_ascii=False)[:120])
+        # ② 问答栏说"标记完成" → 同样出确认条，且**没改状态**
+        k2, d2 = kinds("把游泳标记完成", "faq", "qa-done")
+        c.check("问答栏说标记完成 → 回确认条而不是跳转",
+                "todo_done" in k2 or "todo_done_batch" in k2, str(k2)[:120])
         swim = next((t for t in list_todos(d_near) if t["title"] == "游泳"), None)
         c.check("问答栏说标记完成 → 状态没被动（还是 pending）",
                 swim is not None and swim.get("status") != "done")
 
-        # ③ 普通问答不该被误伤：正常问句还是走 faq 答，不该弹按钮
-        sid3 = "qa-ok"
-        r3 = client.post("/api/chat", json={
-            "message": "图书馆几点关门", "module": "faq", "session_id": sid3,
-        })
-        d3 = r3.json()
-        c.check("普通问答（图书馆几点关门）不弹「前往我的日程」",
-                not any(o.get("kind") == "goto_schedule"
-                        for o in (d3.get("options") or [])),
-                _json.dumps(d3.get("options"), ensure_ascii=False)[:80])
+        # ③ 同一句话在两个栏目必须走同一条路 —— 这才叫"语境打通了"
+        k_pl, _ = kinds("把游泳的待办删掉", "planner", "qa-del-planner")
+        c.check("「把游泳的待办删掉」问答栏与日程栏回同一种卡",
+                k1 == k_pl, f"faq={k1} planner={k_pl}")
+
+        # ④ 普通问答不该被误伤：正常问句还是走 faq 答，不该弹待办操作卡
+        k3, d3 = kinds("图书馆几点关门", "faq", "qa-ok")
+        c.check("普通问答（图书馆几点关门）不弹待办操作卡",
+                not any(k in ("todo_remove", "todo_done", "goto_schedule") for k in k3),
+                str(k3)[:80] + " | " + str(d3.get("answer"))[:60])
     return c
 
 
