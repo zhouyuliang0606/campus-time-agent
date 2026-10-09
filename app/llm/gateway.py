@@ -267,6 +267,11 @@ class ModelGateway:
                 log_llm_usage({
                     # ts 不写：store.log_llm_usage 会用当前时间补上（写了空串反而占位）
                     "user": self.user,
+                    # 这次花的是谁的 Key：student = 学生自带，server = 服务器/管理后台那把。
+                    # ⚠️ 只记来源标签，**绝不记 Key 本身** —— 用量流水是要给管理员看的，
+                    # 而学生那把钥匙的承诺就是"用完即弃、不落任何文件"（test_34 钉这条）。
+                    # 有了这一列，管理员才能回答"这台机器今天替别人打了多少请求"。
+                    "key_source": "student" if (ov or {}).get("api_key") else "server",
                     "model": model or "unknown",
                     "prompt_tokens": p,
                     "completion_tokens": c,

@@ -175,7 +175,10 @@
       </div>
       <div class="small" style="margin-top:8px;">
         流水文件：<code>app/data/llm_usage.jsonl</code>（一行一次调用，已排除入库）。
-        「调用方」一列：学生对话记<b>会话 id</b>，内部链路（语义判定 / 话术润色 / 后台测连通）记<b>功能名</b>。
+        「调用方」一列：学生对话记<b>会话 id</b>，内部链路（语义判定 / 话术润色 / 后台测连通）记<b>功能名</b>。<br />
+        「来源」一列：<b>学生自带</b> = 这一次花的是学生在对话框里填的那把 Key（服务器只替他转发，
+        <b>Key 本身不进这个文件、也不进任何数据文件</b>，见 test_34）；<b>服务器</b> = 用管理后台或 .env 那把。
+        这一列是 2026-10-09 才加的，之前的记录没有这个字段，显示 —。
       </div>
     </div>
 
@@ -548,11 +551,12 @@
       const rows = d.recent || [];
       document.getElementById("usageRecent").innerHTML = rows.length
         ? `<table class="utab"><thead><tr>
-             <th>时间</th><th>调用方</th><th>模型</th><th>提示</th><th>完成</th>
+             <th>时间</th><th>调用方</th><th>来源</th><th>模型</th><th>提示</th><th>完成</th>
              <th>耗时</th><th>状态</th><th>错误</th></tr></thead><tbody>${
             rows.map(r => `<tr>
               <td>${esc(r.ts || "")}</td>
               <td>${esc(r.user || "")}</td>
+              <td>${esc(r.key_source === "student" ? "学生自带" : r.key_source === "server" ? "服务器" : "—")}</td>
               <td>${esc(r.model || "")}</td>
               <td>${_num(r.prompt_tokens)}</td>
               <td>${_num(r.completion_tokens)}</td>
