@@ -28,7 +28,8 @@ from app.agent.pending import (
     clear_pending, is_confirmation, peek_pending, save_pending, take_pending,
 )
 from app.agent.router import Router
-from app.config import DEBUG, check_config, get_llm_config
+from app.config import (DEBUG, BaseUrlError, check_base_url_ssrf, check_config, get_llm_config,
+                        sanitize_override)
 from app.llm.client import LLMError
 from app.llm.gateway import ModelGateway
 from app.upload import UploadError, extract_text, ext_supported, unsupported_reason
@@ -908,6 +909,22 @@ async def health():
     return {"status": "ok", "modules": list(REGISTRY.keys())}
 
 
+@app.get("/api/upstream")
+async def upstream_info():
+    """学生端要显示的一句话：**你的请求会被送到哪台服务器**。
+
+    只回主机名——不回 key，也不回完整 URL（路径里可能带租户/部署信息）。
+    为什么必须给：2026-10-09 关掉"学生自带 base_url"之后，学生填的 key 会被发到
+    **管理端配的那个上游**。不告诉他发到哪儿，等于让他把 key 寄给一台没跟他说过的主机。
+    """
+    try:
+        base = get_llm_config()["base_url"]
+        host = (base.split("//", 1)[-1].split("/", 1)[0] or "").split("@")[-1]
+    except Exception:
+        host = ""          # 读不到就不显示，别拿一个猜出来的地址骗学生
+    return {"host": host}
+
+
 def _read_step(sem: dict | None, sem_intent: str | None,
                rule_hit: str | None) -> dict:
     """把"判定层是怎么理解这句话的"做成一条思考轨迹（人话）。
@@ -1018,12 +1035,12 @@ async def _chat_impl(req: Request, meta: dict):
         persona_key = None
 
     # 学生端在对话框里自己填的 API：存在浏览器 localStorage，**每轮对话随请求上传**
-    # （是服务器拿它去调模型，不是前端直连）。{base_url, model, api_key}。
-    # 带了有效 key 就优先用它，连服务器没配密钥也能跑真模型；不带的走服务器默认配置。
-    # 用完即弃：只活在这一次请求里，不写 settings.json、不进任何数据文件（test_34 钉住）。
-    model_config = body.get("model_config") or None
-    if not isinstance(model_config, dict) or not model_config.get("api_key"):
-        model_config = None
+    # （是服务器拿它去调模型，不是前端直连）。用完即弃：只活在这一次请求里，
+    # 不写 settings.json、不进任何数据文件（test_34 钉住）。
+    # ⚠️ 2026-10-09：这里过 `sanitize_override` —— **只认 model 与 api_key，base_url 直接丢**。
+    # "连到哪儿"由服务器侧（管理后台 / .env）决定。以前请求方能自带端点，
+    # 等于把这台机器当成任意内网 HTTP 客户端用（SSRF，细节见 config.validate_base_url）。
+    model_config = sanitize_override(body.get("model_config"))
 
     # 会话 id：前端带上，服务端就能把几轮对话串起来。
     # 没带就服务端生成一个并在响应里返回，前端存起来下次继续用。
@@ -3289,7 +3306,9 @@ async def classify_probe(req: Request):
 
     history = body.get("history")
     history = history if isinstance(history, list) else []
-    override = body.get("model") if isinstance(body.get("model"), dict) else None
+    # 第二个能注入 override 的入口（/api/chat 是第一个）。**两个都得过 sanitize_override**，
+    # 漏一个等于闸门没关——这条就是当初只改一处会踩的坑。
+    override = sanitize_override(body.get("model"))
 
     # ① 语义层 / 样本库（一次调用，同时给 module + intent；没 key 会自动跳过）
     sem = await classify(message, history=history, override=override)
@@ -3596,7 +3615,14 @@ async def settings_set(req: Request):
     if key and "*" not in key:
         patch["api_key"] = key
     if "base_url" in body:
-        patch["base_url"] = (body.get("base_url") or "").strip()
+        # 管理端这条也要过同一道闸门。理由比学生端那条更硬：
+        # 这里填进去的地址会拿**管理员自己的 key** 去连，填错一个内网地址
+        # 就是把主密钥寄到那台机器上。存之前先判，别等第一次对话才炸。
+        want = (body.get("base_url") or "").strip()
+        try:
+            patch["base_url"] = check_base_url_ssrf(want) if want else ""
+        except BaseUrlError as e:
+            return JSONResponse({"ok": False, "error": f"接口地址不合规矩：{e}"}, status_code=400)
     if "model" in body:
         patch["model"] = (body.get("model") or "").strip()
 
