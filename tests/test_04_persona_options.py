@@ -201,7 +201,7 @@ def test_student_page_markup():
 
 
 def test_settings_page_markup():
-    title("6. 设置页：助手名字 + 性格选项 + 返回登录/返回学生端")
+    title("6. 设置页：助手名字 + 性格选项 + 返回学生端（登录页已删）")
     c = Checker()
     with sandbox():
         client = make_client()
@@ -212,8 +212,13 @@ def test_settings_page_markup():
         c.check("名字存到 localStorage(campustime_name)", "campustime_name" in html)
         c.check("有「助手性格」设置项", "助手性格" in html)
         c.check("从 /api/student-personas 拉性格", "/api/student-personas" in html)
-        c.check("含「返回登录」入口", "返回登录" in html and 'href="/"' in html)
+        c.check("不再指向已删除的登录页（href=\"/\" 是死链）",
+                "返回登录" not in html and 'href="/"' not in html)
         c.check("含「返回学生端」入口", "返回学生端" in html and 'href="/student"' in html)
+        # 2026-10-09：登录页删了。这一对断言以前钉的是"页面同时有返回登录+返回学生端"，
+        # 现在钉的是"只剩返回学生端，且没有一条指向已经不存在的 /"。
+        c.check("返回入口只有一个（别改出两条一模一样的链接）",
+                html.count("返回学生端") == 1, f"实际 {html.count('返回学生端')} 条")
         c.check("设置页也带 no-store", "no-store" in (r.headers.get("cache-control", "") or "")
                 or "no-store" in (r.headers.get("Cache-Control", "") or ""))
     return c.summary("第六批（设置页 UI）")

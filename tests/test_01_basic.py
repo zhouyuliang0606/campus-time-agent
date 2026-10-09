@@ -21,7 +21,13 @@ with sandbox():
     c.check("健康检查", r.status_code == 200 and body["status"] == "ok", f"模块={body['modules']}")
     c.check("注册表中含 station 模块", "station" in body["modules"])
     c.check("注册表中含 planner 模块", "planner" in body["modules"])
-    c.check("登录页", client.get("/").status_code == 200)
+    c.check("登录页已删：/ 直接 302 到学生端",
+            client.get("/", follow_redirects=False).status_code == 302
+            and client.get("/", follow_redirects=False).headers.get("location") == "/student",
+            str(client.get("/", follow_redirects=False).headers.get("location")))
+    r_home = client.get("/")          # TestClient 默认跟着跳
+    c.check("跟随后拿到的是学生端页面", r_home.status_code == 200 and "我的日程" in r_home.text,
+            f"HTTP {r_home.status_code}")
     c.check("学生端页", client.get("/student").status_code == 200)
     c.check("管理员端页", client.get("/admin").status_code == 200)
     c.check("驿站端页", client.get("/station").status_code == 200)
