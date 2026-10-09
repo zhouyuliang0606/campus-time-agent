@@ -90,12 +90,15 @@ class DeepSeekClient:
         # 真要连接了，才做**第二层**校验：内网 / 回环 / 链路本地（含云元数据）/ 域名解析到内网。
         # 放在这里而不是 get_llm_config 里，是因为取配置那条路必须对"本地 ollama"这类
         # 合法配法保持可用（要放行就设 CAMPUSTIME_LLM_ALLOW_PRIVATE=1，见 config.py）。
+        # ⚠️ `base_url` 这一行拿的是**最终生效**的地址：管理后台填的、或学生自己在对话页
+        # 填的都算。所以新写发请求的路径时，别绕过这里自己去拼 URL。
         try:
             base_url = check_base_url_ssrf(base_url)
         except BaseUrlError as e:
             print(f"[LLM] 上游地址被 SSRF 闸门拦下：{e}")
             raise LLMError("接口地址不合规（默认不允许指向内网/保留地址；确需本地模型请设环境变量"
-                           " CAMPUSTIME_LLM_ALLOW_PRIVATE=1），请到管理控制台检查 API 配置。") from e
+                           " CAMPUSTIME_LLM_ALLOW_PRIVATE=1）。管理端请检查「API 配置」，"
+                           "学生端请在「添加 / 修改 API」里把接口地址改成公网地址或留空。") from e
 
         # 用异步 httpx 发 POST 请求到 /chat/completions。
         # 超时拆成两段是有原因的：connect 3 秒足够判断"这台机器连不连得上那个地址"，
