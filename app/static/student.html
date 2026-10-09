@@ -731,7 +731,9 @@
     };
 
     let currentModule = null; // 当前选中的模块；null 表示让后端自动识别
-    let currentView = "chat";  // 当前左侧导航模块（校园问答/日程/快递/外卖/…）；聊天历史与开场白按它区分，做到"每个模块一条历史"
+    let currentView = "schedule";  // 当前左侧导航模块（日程/校园问答/快递/…）。
+    // ⚠️ 它只决定"右边显示哪个面板"，**不再决定聊天历史**——2026-10-09 起全站一条对话流
+    // （sessionId 只认一个 key），切模块不擦不重画，见 switchNav 与 sessionId 的注释。
     let switchNavRef = null;   // 由下方三栏外壳(IIFE)赋值，供上方卡片点击复用同一套导航逻辑
 
     const log = document.getElementById("log");
@@ -1563,7 +1565,16 @@
       // 先接回历史，再接回"上一轮没处理完的那张卡"——顺序不能反：
       // 卡是画进聊天流的，抢在前面会插到恢复出来的历史消息**上面**，
       // 学生看着像管家这一轮刚问的，而不是"那个还没点"。
-      restoreHistory().finally(restorePendingCard);
+      // 最后 settleLanding()：面板在聊天区**上方**，而 addMsg 每恢复一条消息
+      // 都把外层容器滚到底（聊天时是对的，落地时就把日程顶出视野了——
+      // 屏幕上只剩一段聊天记录，标题却写着"日程"）。
+      restoreHistory().finally(restorePendingCard).finally(settleLanding);
+    }
+
+    function settleLanding() {
+      if (!document.getElementById("chatStage").classList.contains("panel-mode")) return;
+      const stage = document.querySelector(".stage");
+      if (stage) stage.scrollTop = 0;
     }
 
     // 底部「正在思考…」指示器
@@ -2414,9 +2425,14 @@
 
     loadProfile();
     loadModelSel();
-    currentView = "chat";
-    resetLogForModule("chat"); // 应用校园问答开场白 + 拉回该模块历史
-    switchNav("chat");         // 设置高亮/面板（view 相同，不再重置）
+    // 落地页：**日程**（2026-10-09 用户「主用的是日程这个板块，校园问答是一个小模块」）。
+    // 顺序不能乱：先定 currentView → 用它应用开场白并拉历史 → 再 switchNav 摆面板。
+    // 为什么不再从"校园问答"开场：学生打开这个产品想看的是"我今天有什么安排"，
+    // 问答是顺手问一句的东西；让次要的那件占住第一屏，就得在两个栏目之间来回跳，
+    // 而"来回跳"正是「对话记录不在一起」被感知到的地方。
+    currentView = "schedule";
+    resetLogForModule("schedule"); // 应用日程开场白 + 拉回那条唯一的对话流
+    switchNav("schedule");         // 面板模式：日程面板在上，聊天流在下方常驻
   })();
 
   </script>
