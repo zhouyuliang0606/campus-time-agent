@@ -56,6 +56,19 @@ def batch_a_period_boundary():
                  "这周六去爬山", "今晚八点排练"):
         c.check(f"{text} → 不拦（这是能表达的：每周几 / 这一周N次 / 就这一天）",
                 unsupported_period(text) == "", unsupported_period(text))
+    # 词表抄不完 → 结构性判据（2026-10-11 一批真机句子打出来的漏网之鱼）
+    for text, word in (("两周去一次健身房", "两周去一次"),
+                       ("三周练一回琴", "三周练一回"),
+                       ("一个月剪两次头发", "一个月剪两次"),
+                       ("每周两次开会", "每周两次"),
+                       ("隔两天洗一次车", "隔两天")):
+        c.check(f"结构性判据认得出「{text}」（词表里没有这个语序）",
+                unsupported_period(text) == word, unsupported_period(text))
+    # 反向：**具体日子**不是周期，误伤就等于把正常下单拦死了
+    for text in ("10月20日下午三点看电影", "下周三三点开会", "9月1号到9月5号有课",
+                 "这周六下午三点游泳", "一周三次健身房"):
+        c.check(f"{text} → 不算周期（那是具体日子/现有能力，拦了就是误伤）",
+                unsupported_period(text) == "", unsupported_period(text))
     # 边界本身也要钉：判据里混进「平时/工作日」就等于把 workday_mode 那条能用的路打死
     c.check("判据里不许有「平时」「工作日」（跨工作日摊开列是现有功能）",
             not any(w in ("平时", "工作日") for w in _UNSUPPORTED_PERIOD),
@@ -139,8 +152,18 @@ def batch_c_shape_pinned():
         seg = _src(period_ifs[0])
         c.check("这条分支**不叫 `_sem_done`**（那个函数就是 remember 学样本的入口）",
                 "_sem_done(" not in seg, seg[:120])
-        c.check("这条分支不出卡：返回里 `options` 是空列表",
-                '"options": []' in seg, seg[-160:])
+        # 2026-10-11：回话与响应组装抽成了 `_period_reject_response`（三个出口共用一份话术），
+        # 所以"不出卡"这件事要钉在**它**身上，而不是钉分支里那几行字面量。
+        c.check("这条分支走 `_period_reject_response`（话术只有一份，别处不许另写一套）",
+                "_period_reject_response(" in seg, seg[:120])
+        helper = [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)
+                  and n.name == "_period_reject_response"]
+        c.check("`_period_reject_response` 的返回里 `options` 是空列表（真不出卡）",
+                bool(helper) and '"options": []' in _src(helper[0]),
+                _src(helper[0])[-120:] if helper else "没找到这个函数")
+        c.check("它也不挂暂存（函数体里不许出现 save_pending）",
+                bool(helper) and "save_pending" not in _src(helper[0]),
+                _src(helper[0])[:120] if helper else "")
     # 否决的驱动条件也要钉：必须同时看规则层和语义层，只看一层就是"各读各的"
     assign = [n for n in body if isinstance(n, ast.Assign)
               and any(getattr(t, "id", "") == "_period_block" for t in n.targets)]
@@ -238,9 +261,72 @@ def batch_e_e2e_carry():
     return c
 
 
+def batch_f_funnel_gates():
+    c = Checker()
+    title("F 批 · 出口漏斗：判定层没出声时，**出卡的地方**也得再判一次")
+    # 为什么要有这一批（2026-10-11 一批真机句子打出来的）：判定层那条否决要求
+    # "某一档判成 add_todo"，可「以后每天晨跑」两档都没出声，却被"报了事名没定时间"
+    # 那一档接走，挂出一张**把"每天"扔掉**的二选一卡；模型那一路更离谱 ——
+    # 工具里的 `period_reject` 只看模型自己传的参数，它换个说法就绕过了。
+    import app.main as M
+    from app.agent.pending import peek_pending
+
+    card = {"kind": "todo_mode", "title": "晨跑", "summary": "晨跑｜还没定时间"}
+    with sandbox():
+        _no_key_settings()
+        r1 = M._offer_response("t42-f1", dict(card), "以后每天晨跑", "原话术", "🙋 二分卡")
+        c.check("学生原话里有「每天」→ `_offer_response` 把卡撤了（options 空）",
+                r1.get("options") == [], r1.get("options"))
+        c.check("回话换成如实说明，而不是原来那句「时间你自己定还是我帮你挑」",
+                "记不了" in (r1.get("answer") or ""), (r1.get("answer") or "")[:80])
+        c.check("暂存里**没挂上**这张卡（学生点不到，就写不了库）",
+                peek_pending("t42-f1") is None, peek_pending("t42-f1"))
+        r2 = M._offer_response("t42-f2", dict(card), "周六早上七点晨跑", "原话术", "🙋 二分卡")
+        c.check("对照：能表达的说法照常出卡（这道闸不是一刀切拒绝）",
+                len(r2.get("options") or []) == 1, r2.get("options"))
+        c.check("对照：卡真挂进暂存了", peek_pending("t42-f2") is not None)
+
+        # 判定层没出声、却由模型/兜底那一段自己摊卡 —— 真机上「以后每天晨跑」就是这么
+        # 挂出一张三段的候选卡的（无密钥时这段由 mock planner 走，形状一样，正好可测）。
+        cli = make_client()
+        r3 = cli.post("/api/chat", json={"message": "以后每天晨跑",
+                                         "session_id": "t42-f3", "module": "planner"})
+        d3 = r3.json()
+        opts3 = [o for o in (d3.get("options") or []) if isinstance(o, dict)]
+        c.check("两档都没判成 add_todo 的那一句，模型/兜底出口也**一张卡都不留**",
+                not opts3, [(o.get("kind"), o.get("title")) for o in opts3])
+        c.check("这一句同样要说清为什么办不了（不许默默回一句'帮你挑了三段'）",
+                "记不了" in (d3.get("answer") or ""), (d3.get("answer") or "")[:90])
+
+    tree = ast.parse(io.open(MAIN, encoding="utf-8").read())
+    impl = [n for n in ast.walk(tree) if isinstance(n, ast.AsyncFunctionDef)
+            and n.name == "_chat_impl"][0]
+    body = ast.unparse(impl).replace("'", '"')
+    calls = sum(1 for n in ast.walk(impl) if isinstance(n, ast.Call)
+                and isinstance(n.func, ast.Name) and n.func.id == "unsupported_period")
+    c.check("判定层之外，出口那一段也按**学生原话**复核（同一函数里≥3 处：模型出口 + Mock 出口 + 判定层）",
+            calls >= 3, f"_chat_impl 里调了 {calls} 次")
+    # 撤卡的动作要钉住，而且**不能钉成"清空所有 options"**：课表那几种卡必须留着
+    # （兜底/mock 摊出来的候选**没有 kind 字段**，所以判"是不是待办"只能反着写白名单）。
+    c.check("撤卡用白名单反写：只留 timetable_change / timetable_clear / course_add",
+            '_non_todo = ("timetable_change", "timetable_clear", "course_add")' in body
+            and "model_opts = _keep" in body,
+            body[body.find("_non_todo"):][:150] if "_non_todo" in body else "没找到 _non_todo")
+    c.check("Mock 那条出口自己 return（走不到下面的漏斗），所以它单独判了一次",
+            "_per_mock = unsupported_period(message)" in body
+            and "return _period_reject_response(session_id, message, _per_mock)" in body,
+            "见 main.py 里 mock_planner 那一支")
+    whole = sum(1 for n in ast.walk(tree) if isinstance(n, ast.Call)
+                and isinstance(n.func, ast.Name) and n.func.id == "unsupported_period")
+    c.check("判定层 + `_offer_response` + 模型出口，全模块至少三处用同一道判据",
+            whole >= 3, f"main 里调了 {whole} 次")
+    return c
+
+
 def main():
     results = [batch_a_period_boundary(), batch_b_veto_no_card_no_learning(),
-               batch_c_shape_pinned(), batch_d_title_carry(), batch_e_e2e_carry()]
+               batch_c_shape_pinned(), batch_d_title_carry(), batch_e_e2e_carry(),
+               batch_f_funnel_gates()]
     tp = sum(r.passed for r in results)
     tf = sum(r.failed for r in results)
     print(f"\n===== 周期否决 + 事名不串味总账：通过 {tp} 项，失败 {tf} 项 =====")

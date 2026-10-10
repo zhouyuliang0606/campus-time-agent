@@ -270,9 +270,44 @@ def batch_e_bare_clock():
     return c
 
 
+def batch_g_evening_words():
+    c = Checker()
+    title("G 批 · 「明晚/半夜/凌晨」这类时间词，别再被笔误闸门擦掉（2026-10-11 真机）")
+    from app.modules.planner import _fix_typo_time_words, _pick_date, parse_time_spec
+
+    # 病根：`_TIME_WORDS`（笔误闸门第①道"本来就是时间词就别动"的名单）里没登记「明晚/半夜」，
+    # 于是「明晚七点」被纠成「明天七点」（晚上信息擦掉 → 07:00，本该 19:00），
+    # 「半夜12点」被纠成「半夜里2点」→ 14:00。**静默排错时间**比排不进更坑学生。
+    for s, want in (("明晚八点看直播", "20:00"), ("明晚七点到九点", "19:00"),
+                    ("昨晚八点自习", "20:00"), ("周五半夜12点赶车", "00:00"),
+                    ("周六凌晨1点接人", "01:00"), ("夜里11点收衣服", "23:00")):
+        sp = parse_time_spec(s)
+        c.check(f"{s} → 起点 {want}（晚上就是晚上，不许掉到早上）",
+                sp["start"] == want, (sp["start"], _fix_typo_time_words(s)))
+    tomorrow = (datetime.date.today() + datetime.timedelta(days=1)).isoformat()
+    c.check("「明晚/明早」也算得出日子（+1 天），不用靠把「晚」字擦掉来蒙对",
+            _pick_date("明晚八点看直播") == tomorrow
+            and _pick_date("明早九点升旗") == tomorrow,
+            (_pick_date("明晚八点看直播"), _pick_date("明早九点升旗"), tomorrow))
+    c.check("「昨晚」不算是日子（那是过去，排出来学生也错过）",
+            _pick_date("昨晚八点自习") is None, _pick_date("昨晚八点自习"))
+    c.check("「凌晨1点」是报了档，不是裸钟点（clock_ok=True，别再问一句上下午）",
+            parse_time_spec("周六凌晨1点接人")["clock_ok"] is True,
+            parse_time_spec("周六凌晨1点接人"))
+    # 反向：笔误闸门本身不许被我这次补的名单带坏
+    for s, want in (("中文12点的车", "中午"), ("下物三点开会", "下午"), ("上物十点上课", "上午")):
+        fixed = _fix_typo_time_words(s)
+        c.check(f"笔误「{s}」照旧纠成带「{want}」的写法", want in fixed, fixed)
+    c.check("没有钟点语境的正经词一个字都不动（「加个上班的提醒」）",
+            _fix_typo_time_words("加个上班的提醒") == "加个上班的提醒",
+            _fix_typo_time_words("加个上班的提醒"))
+    return c
+
+
 def main():
     results = [batch_a_spec_fields(), batch_b_clock_must_be_used(),
-               batch_c_no_split_reading(), batch_d_e2e(), batch_e_bare_clock()]
+               batch_c_no_split_reading(), batch_d_e2e(), batch_e_bare_clock(),
+               batch_g_evening_words()]
     tp = sum(r.passed for r in results)
     tf = sum(r.failed for r in results)
     print(f"\n===== 时间解析收口（TimeSpec）总账：通过 {tp} 项，失败 {tf} 项 =====")
