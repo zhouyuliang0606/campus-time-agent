@@ -336,7 +336,17 @@ def test_timetable_import_entry():
         })
         c.check("导入请求返回 200", rc.status_code == 200)
         d = rc.json() or {}
-        c.check("无密钥时明确提示需要密钥", "密钥" in d.get("answer", ""), d.get("answer", "")[:40])
+        # ⚠️ 2026-10-09 改口：旧断言是「答案里必须出现"密钥"」，与后来定的
+        # "对话中不暴露技术底座"直接冲突。这条批的初衷其实是两件事 ——
+        # 别把失败说成成功、别让学生对着一个空面板猜原因 —— 现在按初衷重钉：
+        ans = d.get("answer", "")
+        c.check("无密钥时如实说明这条通道没接通（而不是假装办成或给个空面板）",
+                "没接通" in ans and "⚠️" not in ans[:1], ans[:46])
+        c.check("并且给了下一步（找管理员 / 手动安排）",
+                "管理员" in ans or "手动" in ans, ans[:46])
+        c.check("这句话不带技术内脏（密钥/模型/后台入口都不提）",
+                not [w for w in ("密钥", "模型", "API", "/admin", "管理控制台") if w in ans],
+                ans[:46])
         c.check("不会误给候选时间段", d.get("options") == [])
     return c.summary("第六批（课表导入入口）")
 

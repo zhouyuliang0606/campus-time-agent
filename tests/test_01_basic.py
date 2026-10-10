@@ -78,8 +78,20 @@ with sandbox():
     ok = r.status_code == 200
     answer = (r.json().get("answer") or "") if ok else ""
     c.check("对话不再返回 500", ok, f"HTTP {r.status_code}")
-    c.check("给出看得懂的中文提示", "⚠️" in answer and "DEEPSEEK_API_KEY" in answer, answer[:80])
-    c.check("trace 里也记录了失败原因", bool(r.json().get("trace")) if ok else False)
+    # ⚠️ 2026-10-09 改口：这条以前要求答案里出现 "DEEPSEEK_API_KEY"（"这样学生才知道缺什么"）。
+    # 后来定的规矩是**对话里不暴露技术底座**（模型/厂商/密钥/后台入口都不行），
+    # 所以判据换成"说清了现在答不了 + 下一步找谁"，并且**反过来**钉技术词不许出现。
+    # 技术原文并没丢：日志与用量流水（管理员侧）照旧写 str(e)，见 test_38 D 批。
+    _TECH = ("DEEPSEEK_API_KEY", "密钥", "大模型", "模型", "/admin", "管理控制台", "API")
+    c.check("给出看得懂的中文提示（认得出失败 + 给了下一步）",
+            "⚠️" in answer and ("答不上来" in answer or "答不了" in answer)
+            and ("再问" in answer or "再试" in answer or "管理员" in answer), answer[:80])
+    c.check("这句里不带技术内脏（用户提的要求：对话中不暴露使用模型）",
+            not [w for w in _TECH if w in answer], answer[:80])
+    c.check("trace 里也记录了失败这一步", bool(r.json().get("trace")) if ok else False)
+    c.check("trace 的文案同样不带技术内脏",
+            not [w for w in _TECH if w in str(r.json().get("trace"))]
+            if ok else False, str(r.json().get("trace"))[:80])
 
     # 同一节的另一条：请求体**读不出来**时也不能给裸 500。
     # 实测 Windows 下 `curl -d` 发中文发的是 GBK，`await req.json()` 直接抛
