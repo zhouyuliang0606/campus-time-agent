@@ -366,14 +366,73 @@ def save_timetable(courses: list) -> dict:
 
 # ---- 待办：被安排进具体日期和时间段的任务 ----
 
+# 重复待办的三个新字段（2026-10-10 加，用户选了"真·长期"这条路线）：
+#   repeat    : "" = 一次性（老数据全是这个）；"weekly" = 每周重复
+#   weekday   : 1..7（周一=1）。只在 repeat != "" 时有意义，是"每周落在哪一天"
+#   done_dates: ["2026-10-11", ...] 已经完成过的那些日子
+#
+# ⚠️ 为什么"完成"要按天记、而不是复用 status：
+#    一条每周日的待办，勾掉本周**不等于**以后都不用做。整条 status=done 会让它
+#    第二周就消失 —— 那是最容易被当成 bug 的行为。所以：
+#      一次性待办 → 看 status（planned/done，老逻辑一字未动）
+#      重复待办   → 看 done_dates 里有没有那一天
+#    这也是为什么 repeat/weekday/done_dates 都给了"空默认值"：老记录少这三个键
+#    照样跑，不需要迁移数据文件（app/data 是真实演示数据，不迁移就是最好的处理）。
+
+REPEAT_NONE = ""
+REPEAT_WEEKLY = "weekly"
+REPEAT_VALUES = (REPEAT_NONE, REPEAT_WEEKLY)
+
+
+def iso_weekday_of(date: str) -> int | None:
+    """把 "2026-10-11" 换成 1..7（周一=1）。解析不了回 None，不抛错。"""
+    from datetime import date as _date
+
+    try:
+        y, m, d = (int(x) for x in str(date).split("-"))
+        return _date(y, m, d).isoweekday()
+    except (ValueError, TypeError):
+        return None
+
+
+def todo_occurs_on(t: dict, date: str) -> bool:
+    """这条待办**在不在这一天**（人话：重复的事每个周期都会再出现一次）。
+
+    判据只有一处，前端/撞档/面板都该是同一套逻辑的翻译，别在别处再抄一遍 `t.date == date`。
+    """
+    if not t:
+        return False
+    if str(t.get("repeat") or "") != REPEAT_WEEKLY:
+        return str(t.get("date") or "") == str(date)
+    wd = t.get("weekday") or iso_weekday_of(t.get("date") or "")
+    if iso_weekday_of(date) != wd:
+        return False
+    # 锚点之前不算出现：学生说"从下周日开始"，不该把已经过去的周日也算进去
+    return str(date) >= str(t.get("date") or "")
+
+
+def todo_done_on(t: dict, date: str) -> bool:
+    """这一天它算不算已经完成（重复待办按天判，一次性待办看 status）。"""
+    if not t:
+        return False
+    if str(t.get("repeat") or "") != REPEAT_WEEKLY:
+        return str(t.get("status") or "") == "done"
+    return str(date) in [str(x) for x in (t.get("done_dates") or [])]
+
+
 def add_todo(title: str, date: str, start: str, end: str,
-             note: str = "", category: str = "") -> dict:
+             note: str = "", category: str = "",
+             repeat: str = REPEAT_NONE, weekday: int = 0) -> dict:
     """新增一条待办（人话：把商量好的安排写进日程）。
 
-    :param date: 日期，形如 "2026-09-25"
+    :param date: 日期，形如 "2026-09-25"；repeat=weekly 时它是**第一次出现**的那天（锚点）
     :param start / end: 起止时间，形如 "14:00" / "15:30"
+    :param repeat: "" 一次性 / "weekly" 每周重复（老调用方不传就是 ""，行为不变）
+    :param weekday: 1..7；不传就从 date 推出来（"每个周天"这类话里日子已经定了）
     """
     data = _sread("todos.json", {"todos": []})
+    if str(repeat or "") not in REPEAT_VALUES:
+        repeat = REPEAT_NONE
     item = {
         "id": uuid.uuid4().hex[:8],
         "title": title,
@@ -382,33 +441,51 @@ def add_todo(title: str, date: str, start: str, end: str,
         "end": end,
         "note": note,
         "category": category,
-        "status": "planned",       # planned（待办） / done（已完成）
+        "status": "planned",       # planned（待办） / done（已完成）—— 一次性待办用这个
         "created_at": _now(),
     }
+    if repeat == REPEAT_WEEKLY:
+        wd = int(weekday) if weekday else (iso_weekday_of(date) or 0)
+        item["repeat"] = repeat
+        item["weekday"] = wd if 1 <= wd <= 7 else 0
+        item["done_dates"] = []
     data.setdefault("todos", []).append(item)
     _swrite("todos.json", data)
     return item
 
 
 def list_todos(date: str | None = None) -> list:
-    """列出待办；给了 date 就只看那一天，自动按开始时间排序。"""
+    """列出待办；给了 date 就只看那一天（**含每周重复落到那天的**），按开始时间排序。"""
     todos = _sread("todos.json", {"todos": []}).get("todos", [])
     if date:
-        todos = [t for t in todos if t.get("date") == date]
+        todos = [t for t in todos if todo_occurs_on(t, date)]
     return sorted(todos, key=lambda t: (t.get("date", ""), t.get("start", "")))
 
 
 def list_todos_in_month(prefix: str) -> dict:
     """按日期聚合某个月的待办（人话：给月视图算每天的待办数量）。
 
-    :param prefix: 形如 "2026-09"，按日期字符串前缀匹配
+    :param prefix: 形如 "2026-09"
     :return: {"2026-09-24": [待办1, 待办2], ...}
+    ⚠️ 2026-10-10 改：原来按 `date.startswith(prefix)` 分桶，那条写法**装不下重复待办**
+    （一条记录只有一个 date，却要在月里出现 4~5 次）。现在改成"逐天问在不在"，
+    一次性待办的归属跟以前完全一样。
     """
+    from datetime import date as _date, timedelta
+
     grouped: dict[str, list] = {}
-    for t in list_todos():
-        d = t.get("date", "")
-        if d.startswith(prefix):
-            grouped.setdefault(d, []).append(t)
+    try:
+        y, m = (int(x) for x in str(prefix).split("-")[:2])
+        day = _date(y, m, 1)
+    except (ValueError, TypeError):
+        return grouped
+    todos = list_todos()
+    while day.month == m:
+        iso = day.isoformat()
+        hit = [t for t in todos if todo_occurs_on(t, iso)]
+        if hit:
+            grouped[iso] = sorted(hit, key=lambda t: t.get("start", ""))
+        day += timedelta(days=1)
     return grouped
 
 
@@ -429,6 +506,37 @@ def update_todo(tid: str, patch: dict) -> dict | None:
             data["todos"][i] = t
             _swrite("todos.json", data)
             return t
+    return None
+
+
+def set_todo_done_on(tid: str, date: str, done: bool = True) -> dict | None:
+    """把"完成/撤销完成"**落到具体某一天**。
+
+    为什么单独一个函数而不是让调用方直接 patch status：
+    重复待办的"这周做完了"和"以后都不做了"是两件事，前者只能记在那一天上
+    （见 `done_dates`）；一次性待办没有"哪一天"的概念，仍旧翻 status。
+    传了 date 就按重复语义走，没传就按整条走 —— 老调用方一字不改照样对。
+    """
+    data = _sread("todos.json", {"todos": []})
+    for i, t in enumerate(data.get("todos", [])):
+        if t.get("id") != tid:
+            continue
+        if str(t.get("repeat") or "") == REPEAT_WEEKLY and date:
+            days = [str(x) for x in (t.get("done_dates") or [])]
+            d = str(date)
+            if done and d not in days:
+                days.append(d)
+            elif not done:
+                days = [x for x in days if x != d]
+            t["done_dates"] = sorted(days)
+            # 整条 status 对重复待办没有意义，但别让它留着"done"骗人：
+            # 只要还有没完成过的周，这条就该是 planned。这里不做"是否全做过"的推断，
+            # 判完成一律走 todo_done_on(t, date)。
+        else:
+            t["status"] = "done" if done else "planned"
+        data["todos"][i] = t
+        _swrite("todos.json", data)
+        return t
     return None
 
 
