@@ -373,6 +373,9 @@
   #panel { display: none; }
   .panel-mode #panel { display: block; }
   .view { display: none; }
+  /* 校园问答现在是日程页里的**抽屉**，不再是一栏：panel-mode 下先藏着，
+     由 faqBtn 用内联 display 打开（showView 就是这套机制，别另起一套 CSS）。
+     问答网格本身一行没改，点一条仍然把那句问题问管家。 */
   .panel-mode #view-faq { display: none; }
   /* 面板模式下：只隐藏首页级组件（通知/模块卡/提示），保留聊天区（#log/#chips/正在思考）。
      这样"日程/快递/外卖"既能看面板，又能继续和管家对话并看到对话内容。
@@ -544,8 +547,11 @@
         </div>
       </div>
       <nav class="sb-nav" id="sbNav">
-        <div class="sb-item active" data-nav="chat"><span class="ico">💬</span>校园问答</div>
-        <div class="sb-item" data-nav="schedule"><span class="ico">🗓️</span>日程</div>
+        <!-- 2026-10-10：「💬 校园问答」这一栏摘掉了。日程面板本来就固定在对话流上方，
+             问答和日程其实是同一个页面的两种视线，并列成两栏反而让学生先做"选栏目"这道题。
+             问答改成日程页里的一个按钮（见 faqBtn），点开是抽屉。
+             ⚠️ 「🗓️ 日程」这一项**不能一起摘**：它是从「设置/代办」回主页的唯一入口。 -->
+        <div class="sb-item active" data-nav="schedule"><span class="ico">🗓️</span>日程</div>
         <div class="sb-item" data-nav="todos"><span class="ico">✅</span>代办事项</div>
         <div class="sb-item" data-nav="settings"><span class="ico">⚙️</span>设置</div>
       </nav>
@@ -599,6 +605,8 @@
           <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;flex-wrap:wrap;">
             <button class="tab active" id="tabWeek">周视图</button>
             <button class="tab" id="tabMonth">月表</button>
+            <button class="tab" id="faqBtn" title="打开校园问答：点一条就直接把这个问题问管家">❓ 校园问答</button>
+            <button class="tab" id="schExpand" title="默认只列今天起四天，展开看整周">展开整周 ▾</button>
             <span class="small" id="schRange" style="margin-left:4px;"></span>
             <span style="flex:1;"></span>
             <input type="file" id="ttFilePanel" style="display:none;" accept=".docx,.xlsx,.pptx,.pdf,.txt,.csv,.json,.md" />
@@ -653,7 +661,7 @@
 
       <!-- ④ 校园问答：高频问题按钮墙（点按钮直接问管家） -->
       <div class="view" id="view-faq">
-        <div class="view-head"><span>❓ 校园问答</span><span class="small" style="font-weight:400;">点按钮直接问管家</span><span class="grow"></span><button class="close">收起面板 ✕</button></div>
+        <div class="view-head"><span>❓ 校园问答</span><span class="small" style="font-weight:400;">点一条就直接问管家</span><span class="grow"></span><button class="tab" id="faqClose">收起问答 ✕</button></div>
         <div class="view-body"><div class="faq-grid" id="faqGrid"></div></div>
       </div>
     </div>
@@ -774,7 +782,9 @@
       });
       // 卡片与左侧导航同源：点卡片 = 切到对应模块（含各自的开场白与聊天历史），
       // faq 卡片对应左侧"校园问答"(chat)
-      if (typeof switchNavRef === "function") switchNavRef(key === "faq" ? "chat" : key);
+      // 「校园问答」不再是一栏，所以点它时落在主页（日程在对话上方），
+      // 问答网格由主页那颗「❓ 校园问答」按钮当抽屉打开。
+      if (typeof switchNavRef === "function") switchNavRef(key === "faq" ? "schedule" : key);
       else showView(VIEW_OF[key]);
     }
 
@@ -1597,11 +1607,12 @@
         const body = { message: msg, session_id: sessionId() };
         // moduleOverride：个别动作（如导入课表）必须走 planner 模块，不受当前面板影响
         if (moduleOverride || currentModule) body.module = moduleOverride || currentModule;
-        // 「校园问答」这一栏 = 知识库问答（按钮墙写着"答案从知识库检索"）：默认锁 faq，
-        // 学生的问题直接进知识库检索。不锁的话会走通用路由——而通用路由/加待办的
-        // 确定性分支会把「我要去哪里取快递」这种问句当成"要加一件事"去排时间
-        // （实测截屏：出了张「哪取快递」的候选时段卡，学生要的是知识库答案）。
-        else if (currentView === "chat") body.module = "faq";
+        // 这里以前还有一句「currentView === "chat" 时把 module 锁成 faq」：
+        // 那是「校园问答」还是一栏的时候加的 stopgap，防止「我要去哪里取快递」这种问句
+        // 被通用路由当成"要加一件事"去排时段（真出过那张卡）。
+        // 2026-10-10 这一栏没了、分支也就死了 —— 删掉。防误判的活儿现在**在服务端**：
+        // 知识库直答那条分支排在前面，实测不带 module 问那三句都拿回台账答案、零张时段卡
+        // （tests/test_29 第 4 批把这三句钉住了，别再往客户端加锁）。
         // 随对话带上学生自选的助手性格（本地记住的 key）
         const pk = localStorage.getItem("campustime_persona");
         if (pk) body.persona = pk;
@@ -1645,6 +1656,13 @@
     function showView(name) {
       document.querySelectorAll("#panel .view").forEach(v => { v.style.display = "none"; });
       if (name && name !== "view-default") document.getElementById(name).style.display = "block";
+      // 「收起面板」是真的全收，连问答抽屉一起关；
+      // 但只是切到快递/外卖那种面板时，开着问答不该被顺手关掉（一边看问答一边看日程是常态）。
+      if (name === "view-default") faqDrawerOpen = false;
+      else if (faqDrawerOpen && name !== "view-faq") {
+        var fq = document.getElementById("view-faq");
+        if (fq) fq.style.display = "block";
+      }
       // 每次切进来都重新拉数据（比如刚在聊天里确认了待办，切回面板就能看到新的）
       if (name === "view-schedule") loadScheduleView();
       if (name === "view-express") loadExpressView();
@@ -1662,6 +1680,24 @@
     }
     document.querySelectorAll("#panel .close").forEach(b => b.addEventListener("click", collapsePanel));
 
+    // ---- 校园问答抽屉（2026-10-10）----
+    // 它不再是一栏：侧栏那个入口已经摘了，问答网格原封不动搬进日程页的一个按钮里。
+    // 开合走 showView 那套**内联 display**，不另起 CSS —— 两处机制并存迟早对不上。
+    var faqDrawerOpen = false;   // 故意不进 localStorage：每次进主页都从收起开始
+    function setFaqDrawer(open) {
+      faqDrawerOpen = !!open;
+      var f = document.getElementById("view-faq");
+      if (f) f.style.display = faqDrawerOpen ? "block" : "none";
+      var b = document.getElementById("faqBtn");
+      if (b) {
+        b.classList.toggle("active", faqDrawerOpen);
+        b.textContent = faqDrawerOpen ? "❓ 收起问答 ▴" : "❓ 校园问答";
+      }
+      if (faqDrawerOpen) renderFaq();
+    }
+    document.getElementById("faqBtn").addEventListener("click", function(){ setFaqDrawer(!faqDrawerOpen); });
+    document.getElementById("faqClose").addEventListener("click", function(){ setFaqDrawer(false); });
+
     // ---- ① 我的日程：精简版周表 + 月表（数据与 /plan 同源，只读展示；管理去完整版） ----
     const WD = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"];
     const isoD = d => d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
@@ -1670,6 +1706,11 @@
     function mondayOf(d) { const t = new Date(d); t.setDate(t.getDate() - (isoWd(d) - 1)); t.setHours(0, 0, 0, 0); return t; }
 
     let schTab = "week", schWeekOffset = 0, schMonthOffset = 0, schSelDate = null;
+    // 逐日明细默认只列「今天起四天」。真测过（2026-10-10，530px 宽的窗口）：
+    // 七天在这种情况下排成 2 列 × 4 行、整块 862px 高，而面板体又限高 430px 自己滚 ——
+    // 学生的原话「日程看着很累，要上下翻」就是这一屏。展开状态记本机。
+    // ⚠️ 翻到别周（schWeekOffset≠0）时自动按整周显示：那时"今天"根本不在这个窗口里。
+    let schWholeWeek = localStorage.getItem("ct_sch_week") === "1";
     let schCourses = [], schTodos = [];
 
     async function loadScheduleView() {
@@ -1684,11 +1725,24 @@
 
     function renderSchWeek() {
       const base = mondayOf(new Date()); base.setDate(base.getDate() + schWeekOffset * 7);
-      const days = []; for (let i = 0; i < 7; i++) { const d = new Date(base); d.setDate(d.getDate() + i); days.push(d); }
-      const todayIso = isoD(new Date());
+      const today = new Date();
+      // 本周 + 收起态 → 只列今天起四天；其余情况（翻到别周、或学生点了展开）列整周。
+      const collapsed = (schWeekOffset === 0 && !schWholeWeek);
+      const n = collapsed ? 4 : 7;
+      const days = []; for (let i = 0; i < n; i++) { const d = collapsed ? new Date(today) : new Date(base); d.setDate(d.getDate() + i); days.push(d); }
+      const todayIso = isoD(today);
       document.getElementById("schRange").textContent =
-        isoD(days[0]) + " ~ " + isoD(days[6]) + (schWeekOffset === 0 ? "（本周）" : "");
-      let html = '<div class="wk">';
+        isoD(days[0]) + " ~ " + isoD(days[days.length - 1]) +
+        (collapsed ? "（今天起 " + days.length + " 天）" : (schWeekOffset === 0 ? "（本周）" : ""));
+      // 展开/收起那颗按钮：文案跟着状态走，月表下没这概念就藏掉（见 setSchTab）
+      const xb = document.getElementById("schExpand");
+      if (xb) {
+        xb.textContent = schWholeWeek ? "只看四天 ▴" : "展开整周 ▾";
+        xb.title = schWholeWeek ? "收回成「今天起四天」" : "展开看这一周七天";
+      }
+      // 列数跟着天数走（CSS 那条 .wk 是固定 7 列，只显示四天的话会留三个空列、
+      // 每张卡还窄一半 —— 那反而更难看）。minmax(0,1fr) 的写法原样保留，别退回 1fr。
+      let html = '<div class="wk" style="grid-template-columns:repeat(' + days.length + ',minmax(0,1fr));">';
       days.forEach(d => {
         const dIso = isoD(d), wd = isoWd(d);
         // 一天的事件 = 课程（按星期匹配）+ 待办（按日期精确匹配），按开始时间排序
@@ -1776,6 +1830,8 @@
       const week = schTab === "week";
       document.getElementById("schWeek").style.display = week ? "block" : "none";
       document.getElementById("schWeekHead").style.display = week ? "block" : "none";
+      // 「展开整周/只看四天」只对周视图有意义，月表下藏掉（留着会让学生以为月表也能收）
+      document.getElementById("schExpand").style.display = week ? "" : "none";
       document.getElementById("schMonth").style.display = schTab === "month" ? "block" : "none";
       document.getElementById("schDayDetail").style.display = schTab === "month" ? "block" : "none";
       if (week) renderSchWeek();
@@ -1788,6 +1844,12 @@
     document.getElementById("schNext").addEventListener("click", () => {
       if (schTab === "month") schMonthOffset++; else schWeekOffset++;
       setSchTab();
+    });
+    // 展开/收起整周：状态记本机（学生多半每周都看同一屏，不该每次回来都重按一次）
+    document.getElementById("schExpand").addEventListener("click", () => {
+      schWholeWeek = !schWholeWeek;
+      localStorage.setItem("ct_sch_week", schWholeWeek ? "1" : "0");
+      renderSchCurrent();
     });
 
     // 给管家的导入指令（面板上传与聊天上传共用同一段话）：
