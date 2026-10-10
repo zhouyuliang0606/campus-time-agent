@@ -595,6 +595,13 @@ def span_only_proposal(text: str, title: str = "", fallback_date: str = "") -> d
         return None
     if day == datetime.date.today().isoformat() and to_minutes(begin) <= _now_minutes():
         day = (datetime.date.today() + datetime.timedelta(days=1)).isoformat()
+    # 说了「平时/工作日」却没报哪天：兜底那天落在周末就得往后挪到工作日。
+    # （`candidate_slots` 的 workday_mode 早就这么做，但**单条卡这一路以前不看星期几** ——
+    #  真机「工作日晚上七点背单词」就排到了周日 19:00。）
+    if any(w in (text or "") for w in ("平时", "工作日")):
+        while _iso_weekday(day) >= 6:
+            day = (datetime.date.fromisoformat(day)
+                   + datetime.timedelta(days=1)).isoformat()
     name = _pick_title(text or "")
     if not name or name == "待办":
         name = (title or "").strip() or "待办"
