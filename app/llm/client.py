@@ -17,7 +17,17 @@ class LLMError(Exception):
     为什么要专门定义一个错误类型？
     因为调用失败的"原因"有很多种，但上层（网页接口）只想做一件事：
     给用户一句看得懂的提示。统一成一种类型，上层就只需要 catch 一次。
+
+    `kind` 是给**上层挑话**用的机器标签（见 main._say_llm_error）。
+    为什么要有它： message 是写给管理员看的（要带 HTTP 码、带"API Key"这种行话，
+    他才知道去后台哪一格改），而学生那一句必须不带这些字 ——
+    同一个异常要同时喂两种听众，就得出一个跟文案无关的判据。
+    按 message 关键字猜是脆的（改一个字就漏），所以做成字段。
     """
+
+    def __init__(self, message: str, kind: str = "unknown") -> None:
+        super().__init__(message)
+        self.kind = kind
 
 
 class DeepSeekClient:
@@ -79,7 +89,8 @@ class DeepSeekClient:
             raise LLMError(
                 "还没配置大模型密钥。两种办法任选其一："
                 "① 在项目根目录复制 .env.example 为 .env，填入 DEEPSEEK_API_KEY 后重启；"
-                "② 进管理控制台的「API 配置」卡片在线填写（不用重启）。"
+                "② 进管理控制台的「API 配置」卡片在线填写（不用重启）。",
+                kind="no_key",
             )
 
         headers = {
@@ -98,7 +109,8 @@ class DeepSeekClient:
             print(f"[LLM] 上游地址被 SSRF 闸门拦下：{e}")
             raise LLMError("接口地址不合规（默认不允许指向内网/保留地址；确需本地模型请设环境变量"
                            " CAMPUSTIME_LLM_ALLOW_PRIVATE=1）。管理端请检查「API 配置」，"
-                           "学生端请在「添加 / 修改 API」里把接口地址改成公网地址或留空。") from e
+                           "学生端请在「添加 / 修改 API」里把接口地址改成公网地址或留空。",
+                           kind="blocked_address") from e
 
         # 用异步 httpx 发 POST 请求到 /chat/completions。
         # 超时拆成两段是有原因的：connect 3 秒足够判断"这台机器连不连得上那个地址"，
@@ -119,14 +131,17 @@ class DeepSeekClient:
             # ⚠️ 不把 `e` 原样拼进消息：httpx 的这句里带着**完整 URL**，
             # 而这句话会回到请求方眼前。等于告诉他"你塞进来的地址我们连到了、回了 404"。
             if code in (401, 403):
-                raise LLMError(f"大模型拒绝了请求（HTTP {code}）：API Key 无效或已过期，请检查你填的密钥。") from e
+                raise LLMError(f"大模型拒绝了请求（HTTP {code}）：API Key 无效或已过期，请检查你填的密钥。",
+                                 kind="auth") from e
             if code == 429:
-                raise LLMError(f"大模型限流了（HTTP 429）：请求太密或额度用尽，稍等一会儿再试。") from e
-            raise LLMError(f"大模型接口出错（HTTP {code}）。") from e
+                raise LLMError(f"大模型限流了（HTTP 429）：请求太密或额度用尽，稍等一会儿再试。",
+                                 kind="rate_limited") from e
+            raise LLMError(f"大模型接口出错（HTTP {code}）。", kind="upstream") from e
         except httpx.RequestError as e:
             # 完整原因（含地址、含底层异常）只进服务端日志；回给请求方的不反射地址。
             print(f"[LLM] 连不上上游 {base_url}：{type(e).__name__}: {e}")
-            raise LLMError("连不上大模型服务，请检查网络，或到管理控制台确认接口地址是否可用。") from e
+            raise LLMError("连不上大模型服务，请检查网络，或到管理控制台确认接口地址是否可用。",
+                           kind="unreachable") from e
 
         # DeepSeek 返回结构里，回答在 choices[0].message。
         # ⚠️ 但"连上了"不等于"连到的是模型服务"：地址填错、或指到别家 API 时，
@@ -136,7 +151,8 @@ class DeepSeekClient:
             message = data["choices"][0]["message"]
         except (TypeError, KeyError, IndexError, AttributeError) as e:
             print(f"[LLM] 上游返回不是模型应答：{type(data).__name__}，键={list(data)[:6] if isinstance(data, dict) else ''}")
-            raise LLMError("大模型服务的返回内容不是预期的应答格式（接口地址可能填错了）。") from e
+            raise LLMError("大模型服务的返回内容不是预期的应答格式（接口地址可能填错了）。",
+                           kind="bad_format") from e
 
         # 把这次的用量露给网关（人话：花了多少 token，网关拿去记账）。
         # 有的厂商不回 usage，那就是 None，记账按 0 处理，不影响对话。
