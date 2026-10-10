@@ -488,8 +488,13 @@ const KIND = {
           <span class="slot-t">${esc(s.label || ((s.date || "") + " " + (s.start || "") + "-" + (s.end || "")))}</span>
           ${s.minutes ? `<span class="slot-m">约 ${Number(s.minutes)} 分钟</span>` : ""}
         </label>`).join("");
-      return `<p class="summary">${esc(p.title || "待办")}</p>
+      // repeat=weekly：这张卡勾出来的是**一条每周重复**的待办，不是"只排这一天"。
+      // 后端在卡片上带这个字段（planner.build_todo_slots），前端必须显出来——
+      // 不显示的话学生勾完发现日程里每周都冒出一件事，那就是 surprise。
+      const weekly = (p.repeat === "weekly");
+      return `<p class="summary">${weekly ? "🔁 " : ""}${esc(p.title || "待办")}</p>
         <div class="meta">${esc(p.hint || "避开了课和已有的安排，挑一个方便的勾上（可以勾好几个）。")}</div>
+        ${weekly ? '<div class="meta" style="color:#4f7cff;">每周重复 · 勾中的时段会**每周都出现**（只建一条，勾完成只算当周）</div>' : ""}
         <div class="slots">${rows || '<div class="empty">没有可用的空档。</div>'}</div>
         <div class="other">
           <label class="other-l" for="cfOther">其他时间（自己写一个）</label>
@@ -519,6 +524,9 @@ const KIND = {
       }
       return api("POST", "/api/todos/batch", {
         session_id: sid(), title: p.title, slots: picked, other,
+        // 这个字段一路传到 add_todo(repeat=...)。中间任何一处白名单漏了它，
+        // 学生看到的就还是"只排了这一周"—— 所以它必须显式出现在这里。
+        repeat: p.repeat || "",
       });
     },
     doneText(p, r) {

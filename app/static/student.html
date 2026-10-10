@@ -1705,6 +1705,23 @@
     const minsOf = hhmm => { const [h, m] = String(hhmm).split(":").map(Number); return h * 60 + m; };
     function mondayOf(d) { const t = new Date(d); t.setDate(t.getDate() - (isoWd(d) - 1)); t.setHours(0, 0, 0, 0); return t; }
 
+    // ==== 每周重复（2026-10-10）：这两条判据是后端 store.todo_occurs_on / todo_done_on
+    // 的**同一套规则**，两处必须一起改 —— 只改一边就会出现"接口说有、日程上画不出"。
+    // 一条 repeat=weekly 的记录只有一个锚点 date，但它每个同星期几都算出现一次。
+    const wdOfIso = iso => isoWd(new Date(iso + "T00:00:00"));
+    function todoOccurs(t, dIso) {
+      if (t.repeat === "weekly") {
+        const wd = t.weekday || wdOfIso(t.date);
+        return wdOfIso(dIso) === wd && dIso >= t.date;   // 锚点之前不算出现
+      }
+      return t.date === dIso;
+    }
+    function todoDoneOn(t, dIso) {
+      // 重复待办的"完成"按天记：勾掉本周 ≠ 以后都不用做
+      if (t.repeat === "weekly") return (t.done_dates || []).indexOf(dIso) >= 0;
+      return t.status === "done";
+    }
+
     let schTab = "week", schWeekOffset = 0, schMonthOffset = 0, schSelDate = null;
     // 逐日明细默认只列「今天起四天」。真测过（2026-10-10，530px 宽的窗口）：
     // 七天在这种情况下排成 2 列 × 4 行、整块 862px 高，而面板体又限高 430px 自己滚 ——
@@ -1745,12 +1762,13 @@
       let html = '<div class="wk" style="grid-template-columns:repeat(' + days.length + ',minmax(0,1fr));">';
       days.forEach(d => {
         const dIso = isoD(d), wd = isoWd(d);
-        // 一天的事件 = 课程（按星期匹配）+ 待办（按日期精确匹配），按开始时间排序
+        // 一天的事件 = 课程（按星期匹配）+ 待办（**按"这天算不算出现"匹配**，
+        // 一次性待办就是日期相等，每周重复的落在他点名的那个星期几上），按开始时间排序
         const evts = [
           ...schCourses.filter(c => Number(c.day) === wd).map(c =>
             ({ s: minsOf(c.start), e: minsOf(c.end), cls: "course", name: c.course, tm: c.start + "-" + c.end, loc: c.location || "" })),
-          ...schTodos.filter(t => t.date === dIso).map(t =>
-            ({ s: minsOf(t.start), e: minsOf(t.end), cls: t.status === "done" ? "todo done" : "todo", name: t.title, tm: t.start + "-" + t.end, loc: "" })),
+          ...schTodos.filter(t => todoOccurs(t, dIso)).map(t =>
+            ({ s: minsOf(t.start), e: minsOf(t.end), cls: todoDoneOn(t, dIso) ? "todo done" : "todo", name: (t.repeat === "weekly" ? "🔁 " : "") + t.title, tm: t.start + "-" + t.end, loc: "" })),
         ].filter(x => x.e > x.s).sort((a, b) => a.s - b.s);
 
         // 面板是**列表式**排版（没有时间轴），同一时段的两条只能上下排。
@@ -1779,14 +1797,15 @@
       const y = v.getFullYear(), m = v.getMonth();
       document.getElementById("schRange").textContent = y + " 年 " + (m + 1) + " 月";
       const first = new Date(y, m, 1), startIdx = isoWd(first) - 1, dim = new Date(y, m + 1, 0).getDate();
-      const byDate = {}; schTodos.forEach(t => { (byDate[t.date] = byDate[t.date] || []).push(t); });
+      // 以前这里按 `t.date` 分桶（一条记录只进一个格子），那个写法装不下每周重复：
+      // 一条记录要在月里出现 4~5 次。改成"逐天问在不在"，一次性待办的归属跟以前一样。
       const todayIso = isoD(now);
       let html = '<div class="mcal">' + WD.map(w => `<div class="wd">${w}</div>`).join("");
       for (let i = 0; i < startIdx; i++) html += '<div class="d out"></div>';
       for (let d = 1; d <= dim; d++) {
         const date = new Date(y, m, d);
         const dIso = isoD(date), wd = isoWd(date);
-        const list = byDate[dIso] || [], isT = dIso === todayIso;
+        const list = schTodos.filter(t => todoOccurs(t, dIso)), isT = dIso === todayIso;
         // 与 /plan 月表同规则：像系统日历一样，每天格子直接列出**待办 + 课程**
         // （面板格子窄，最多 2 条）。
         //
@@ -1814,10 +1833,10 @@
     function renderSchDay() {
       const box = document.getElementById("schDayDetail");
       if (!schSelDate) { box.innerHTML = '<div class="empty">点月历里任意一天，看当天安排</div>'; return; }
-      const list = schTodos.filter(t => t.date === schSelDate).sort((a, b) => a.start.localeCompare(b.start));
+      const list = schTodos.filter(t => todoOccurs(t, schSelDate)).sort((a, b) => a.start.localeCompare(b.start));
       box.innerHTML = list.length
         ? `<b style="font-size:13px;">${schSelDate} 的待办</b>` + list.map(t =>
-            `<div class="evt todo ${t.status === "done" ? "done" : ""}" style="font-size:12px;margin-top:6px;white-space:normal;">${esc(t.start)}-${esc(t.end)} ${esc(t.title)}</div>`).join("")
+            `<div class="evt todo ${todoDoneOn(t, schSelDate) ? "done" : ""}" style="font-size:12px;margin-top:6px;white-space:normal;">${esc(t.start)}-${esc(t.end)} ${t.repeat === "weekly" ? "🔁 " : ""}${esc(t.title)}</div>`).join("")
         : `<div class="empty">${schSelDate} 还没有待办</div>`;
     }
 
@@ -2421,21 +2440,40 @@
       try{
         var d=await (await fetch("/api/todos")).json();
         var list=d.todos||[];
-        if(!list.length){ box.innerHTML='<div class="empty">还没有待办。在「校园问答」里跟管家说“提醒我周五交作业”就能加上。</div>'; return; }
+        if(!list.length){ box.innerHTML='<div class="empty">还没有待办。直接跟我说“提醒我周五交作业”就能加上。</div>'; return; }
         var WD=["周一","周二","周三","周四","周五","周六","周日"];
+        // 重复待办没有"整条完成"这回事 —— 面板上那一勾对应的是**最近该出现的那一天**，
+        // 所以每行都要带着那个日期（data-on），点勾时一起发给后端记进 done_dates。
+        function nextOccur(t){
+          if(t.repeat!=="weekly"){ return t.date; }
+          var d=new Date(); d.setHours(0,0,0,0);
+          for(var i=0;i<60;i++){
+            var iso=isoD(d);
+            if(todoOccurs(t,iso)) return iso;
+            d.setDate(d.getDate()+1);
+          }
+          return t.date;
+        }
         box.innerHTML=list.slice().sort(function(a,b){ return (a.date+a.start).localeCompare(b.date+b.start); }).map(function(t){
-          var done=t.status==="done";
-          var wd=""; try{ wd=WD[((new Date(t.date).getDay()+6)%7)]; }catch(e){}
+          var on=nextOccur(t), done=todoDoneOn(t,on);
+          var wd=""; try{ wd=WD[((new Date(on+"T00:00:00").getDay()+6)%7)]; }catch(e){}
+          var when = t.repeat==="weekly"
+            ? ("🔁 每周"+(WD[((new Date(t.date+"T00:00:00").getDay()+6)%7)]||"")+" · 下次 "+esc(on)+"（"+wd+"）")
+            : (esc(t.date)+"（"+wd+"）");
           return '<div class="todo-row '+(done?"done":"")+'">'+
-            '<input type="checkbox" '+(done?"checked":"")+' data-id="'+esc(t.id)+'" class="todo-done" />'+
+            '<input type="checkbox" '+(done?"checked":"")+' data-id="'+esc(t.id)+'" data-on="'+esc(on)+'" class="todo-done" />'+
             '<div class="todo-main"><div class="todo-title">'+esc(t.title)+'</div>'+
-            '<div class="todo-sub">'+esc(t.date)+'（'+wd+'） '+esc(t.start||"")+'-'+esc(t.end||"")+'</div></div>'+
+            '<div class="todo-sub">'+when+' '+esc(t.start||"")+'-'+esc(t.end||"")
+              +(t.repeat==="weekly" ? ' <span style="color:#8a93a6;">勾掉只算本周</span>' : '')+'</div></div>'+
             '<button class="todo-del" data-id="'+esc(t.id)+'">删除</button></div>';
         }).join("");
         box.querySelectorAll(".todo-done").forEach(function(cb){ cb.addEventListener("change", async function(){
           // dataset 里拿回来的是**原值**（HTML 转义在解析时已还原），所以拼 URL 前必须 encode
-          var id=cb.dataset.id;
-          try{ await fetch("/api/todos/"+encodeURIComponent(id),{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({status:cb.checked?"done":"pending"})}); loadTodosView(); }catch(e){}
+          var id=cb.dataset.id, on=cb.dataset.on||"";
+          var body={status:cb.checked?"done":"planned"};
+          // 带上 on：重复待办按天记完成（不带就是老行为，整条翻 status）
+          if(on) body.on=on;
+          try{ await fetch("/api/todos/"+encodeURIComponent(id),{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)}); loadTodosView(); }catch(e){}
         }); });
         box.querySelectorAll(".todo-del").forEach(function(b){ b.addEventListener("click", async function(){
           var id=b.dataset.id;

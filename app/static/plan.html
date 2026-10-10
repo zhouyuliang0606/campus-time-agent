@@ -212,6 +212,20 @@
     const mins = hhmm => { const [h, m] = String(hhmm).split(":").map(Number); return h * 60 + m; };
     // JS 的 getDay() 周日=0，我们要周一=1…周日=7
     const isoWd = d => d.getDay() === 0 ? 7 : d.getDay();
+    // 每周重复（2026-10-10）：与后端 store.todo_occurs_on / 学生端 student.html
+    // 同一套规则，三处必须一起改 —— 只改一边就会出现"接口里有、这一页画不出"。
+    const wdOfIso = s => isoWd(parseISO(s));
+    function todoOccurs(t, dIso) {
+      if (t.repeat === "weekly") {
+        const wd = t.weekday || wdOfIso(t.date);
+        return wdOfIso(dIso) === wd && dIso >= t.date;
+      }
+      return t.date === dIso;
+    }
+    function todoDoneOn(t, dIso) {
+      if (t.repeat === "weekly") return (t.done_dates || []).indexOf(dIso) >= 0;
+      return t.status === "done";
+    }
     function mondayOf(d) { const t = new Date(d); t.setDate(t.getDate() - (isoWd(d) - 1)); t.setHours(0, 0, 0, 0); return t; }
     let weekOffset = 0;    // 周表往前/往后翻几周
     let monthOffset = 0;   // 月表翻几个月
@@ -269,11 +283,11 @@
           items.push({ s, e, cls: "course", title: c.course, tm: c.start + "-" + c.end,
                        loc: c.location || "", lead: "" });
         });
-        todos.filter(t => t.date === dIso).forEach(t => {
+        todos.filter(t => todoOccurs(t, dIso)).forEach(t => {
           const s = mins(t.start), e = mins(t.end);
           if (e <= s) return;
-          items.push({ s, e, cls: t.status === "done" ? "todo done" : "todo",
-                       title: t.title, tm: t.start + "-" + t.end, loc: "", lead: "📌 " });
+          items.push({ s, e, cls: todoDoneOn(t, dIso) ? "todo done" : "todo",
+                       title: (t.repeat === "weekly" ? "🔁 " : "") + t.title, tm: t.start + "-" + t.end, loc: "", lead: "📌 " });
         });
         items.sort((a, b) => a.s - b.s);
 
@@ -324,9 +338,8 @@
       const startIdx = isoWd(first) - 1;             // 前面要空几格（按周一开始）
       const daysInMonth = new Date(y, m + 1, 0).getDate();
 
-      const byDate = {};
-      todos.forEach(t => { (byDate[t.date] = byDate[t.date] || []).push(t); });
-
+      // 不再按 t.date 分桶：一条每周重复的记录要在月里出现 4~5 次，
+      // 分桶那种写法（一条记录只进一个格子）装不下它。改成逐天问"在不在"。
       const todayIso = iso(now);
       let html = WD.map(w => `<div class="wd">${w}</div>`).join("");
       for (let i = 0; i < startIdx; i++) html += `<div class="day out"></div>`;
@@ -334,7 +347,7 @@
         const date = new Date(y, m, d);
         const dIso = iso(date);
         const wd = isoWd(date);
-        const list = byDate[dIso] || [];
+        const list = todos.filter(t => todoOccurs(t, dIso));
         const isToday = dIso === todayIso;
         const isSel = dIso === selectedDate;
         // 像系统日历一样排：每天格子里直接列出**待办（按日期）+ 课程（按星期复现）**，
@@ -365,18 +378,21 @@
         box.innerHTML = `<div class="empty">点上面任意一天，查看当天安排了什么</div>`;
         return;
       }
-      const list = todos.filter(t => t.date === selectedDate)
+      const list = todos.filter(t => todoOccurs(t, selectedDate))
         .sort((a, b) => a.start.localeCompare(b.start));
       const d = parseISO(selectedDate);
       let html = `<h3>${selectedDate}（${WD[isoWd(d) - 1]}）的待办</h3>`;
       if (!list.length) { box.innerHTML = html + `<div class="empty">这天还没有安排待办</div>`; return; }
-      html += list.map(t => `
-        <div class="titem ${t.status === "done" ? "done" : ""}">
+      html += list.map(t => {
+        const done = todoDoneOn(t, selectedDate);
+        return `
+        <div class="titem ${done ? "done" : ""}">
           <span class="tm">${esc(t.start)} - ${esc(t.end)}</span>
-          <span class="tt">${esc(t.title)}${t.note ? " <span class='small'>（" + esc(t.note) + "）</span>" : ""}</span>
-          <button class="mini" data-act="toggle" data-id="${esc(t.id)}" data-status="${esc(t.status)}">${t.status === "done" ? "撤销完成" : "标记完成"}</button>
+          <span class="tt">${t.repeat === "weekly" ? "🔁 " : ""}${esc(t.title)}${t.note ? " <span class='small'>（" + esc(t.note) + "）</span>" : ""}${t.repeat === "weekly" ? " <span class='small'>每周重复 · 完成只算这天</span>" : ""}</span>
+          <button class="mini" data-act="toggle" data-id="${esc(t.id)}" data-on="${esc(selectedDate)}" data-done="${done ? "1" : "0"}">${done ? "撤销本周完成" : "标记本周完成"}</button>
           <button class="mini danger" data-act="del" data-id="${esc(t.id)}">删除</button>
-        </div>`).join("");
+        </div>`;
+      }).join("");
       box.innerHTML = html;
       // 这两个按钮**不写内联 onclick**：那种写法是把数据拼进 JS 字符串字面量，
       // 而 `&#39;` 会先被 HTML 解码回 `'` 再交给 JS 解析——转义在这里救不了。
@@ -384,15 +400,19 @@
       box.querySelectorAll("button[data-act]").forEach(b => {
         b.addEventListener("click", () => {
           if (b.dataset.act === "del") delTodo(b.dataset.id);
-          else toggleTodo(b.dataset.id, b.dataset.status);
+          else toggleTodo(b.dataset.id, b.dataset.done === "1", b.dataset.on || "");
         });
       });
     }
 
-    async function toggleTodo(id, status) {
+    async function toggleTodo(id, done, on) {
+      const body = { status: done ? "planned" : "done" };
+      // 带上 on → 后端把完成记到**那一天**（每周重复的勾一次只算这周）；
+      // 一次性待办带不带都一样，仍旧整条翻 status。
+      if (on) body.on = on;
       await fetch("/api/todos/" + encodeURIComponent(id), {
         method: "PUT", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ status: status === "done" ? "planned" : "done" }),
+        body: JSON.stringify(body),
       });
       loadAll();
     }
