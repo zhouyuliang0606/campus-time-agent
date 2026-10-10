@@ -199,9 +199,80 @@ def batch_d_e2e():
     return c
 
 
+def batch_e_bare_clock():
+    c = Checker()
+    title("E 批 · 裸钟点（只说「三点」没报上下午）不许当成凌晨排")
+    from app.modules import planner as P
+
+    # ① 判据本身：1..6 点标"没听清"，0/7/8/12 点照旧认（中文裸说七点八点几乎都是早上）。
+    #    ⚠️ 句子写法有讲究：「周X + 中文数字点」（周五四点）现在**整句读不出钟点**
+    #    （`_normalize_clock` 为了不把「周五」的"五"读成钟点而整体让路，是另一处存量缺口），
+    #    所以这里用「三点开始」这种读得出钟点的写法 —— 只有读出来了，才谈得上"认不认"。
+    for bad in ("周日三点开始写作业", "明天四点开始跑步", "周六5点晨练"):
+        sp = P.parse_time_spec(bad)
+        c.check(f"{bad} → 读得到钟点但 clock_ok=False（不认这个点）",
+                bool(sp["clock"]) and sp["clock_ok"] is False,
+                (sp["start"], sp["clock_ok"]))
+    for good in ("明天下午三点开会", "周六早上七点晨跑", "今晚八点排练",
+                 "中午12点吃饭", "下周一 09:00 开会"):
+        sp = P.parse_time_spec(good)
+        c.check(f"{good} → clock_ok=True（报了档、或本来就是可信的点）",
+                sp["clock_ok"] is True, (sp["start"], sp["part"], sp["clock_ok"]))
+
+    # ② 四条出卡的路共用同一条判据 —— 一处认、一处不认就是这次重构的老毛病。
+    #    关键反证：**解析器读得出 03:00**，卡片却没有 03:00 ——
+    #    挡住它的不是"读不出"，也不是"那天排不进"（`parse_add_todo`/`span_only_proposal`
+    #    这些路**根本不查空档**），只有 clock_ok 这一条。
+    c.check("_pick_span 确实读出了 03:00（否则下面几条都是假绿）",
+            P._pick_span("周日三点开始写作业")[0] == "03:00",
+            P._pick_span("周日三点开始写作业"))
+    c.check("parse_add_todo：日期+钟点都齐也照样拦",
+            P.parse_add_todo("周日三点开始写作业") is None,
+            P.parse_add_todo("周日三点开始写作业"))
+    c.check("parse_add_todo 对报了档的不误伤",
+            (P.parse_add_todo("周日晚上七点开始写作业") or {}).get("start") == "19:00",
+            P.parse_add_todo("周日晚上七点开始写作业"))
+    day = _first_free_span("15:00", "16:30")
+    if day:
+        held = {"kind": "todo_add", "title": "写作业", "date": day,
+                "start": "20:00", "end": "21:30"}
+        c.check(f"span_only_proposal：{day} 的「三点开始」不出单条卡",
+                P.span_only_proposal("三点开始大约三个小时", "写作业", day) is None,
+                P.span_only_proposal("三点开始大约三个小时", "写作业", day))
+        c.check("span_only_proposal：「下午三点」照旧出 15:00 那条（不是把钟点全扔了）",
+                (P.span_only_proposal("下午三点开始大约三个小时", "写作业", day) or {})
+                .get("start") == "15:00",
+                P.span_only_proposal("下午三点开始大约三个小时", "写作业", day))
+        c.check("retime_todo_proposal：「改成三点」不换成凌晨三点（宁可不改）",
+                P.retime_todo_proposal(held, "改成三点") is None,
+                P.retime_todo_proposal(held, "改成三点"))
+        c.check("retime_todo_proposal：「改成下午三点」照旧换成 15:00",
+                (P.retime_todo_proposal(held, "改成下午三点") or {}).get("start") == "15:00",
+                P.retime_todo_proposal(held, "改成下午三点"))
+    else:
+        c.check("环境里找不到一个 15:00-16:30 空着的日子（②的后半无法验）", False, "看课表")
+
+    card = P.todo_slots_proposal("周日三点开始写作业") or {}
+    hint = card.get("hint", "")
+    c.check("候选卡摊得开（03:00 在找空档的时间窗之外，退回常规几档）",
+            bool(card.get("slots")) and all(s["start"] != "03:00"
+                                            for s in card["slots"]),
+            [(s["start"], s["end"]) for s in card.get("slots") or []])
+    c.check("但必须说一句「没说是上午还是下午」（不许什么都不说就摊档）",
+            "上午还是下午" in hint, hint[:140])
+    c.check("这一句**不许**说成「排不进去」—— 那是编理由，等于第二回骗学生",
+            "排不进去" not in hint, hint[:140])
+
+    # ③ 排进去了就不许再多嘴问一句
+    c.check("报了档就不该出现「没说是上午还是下午」这句",
+            P._bare_clock_note("下午三点开始写作业") == "",
+            P._bare_clock_note("下午三点开始写作业"))
+    return c
+
+
 def main():
     results = [batch_a_spec_fields(), batch_b_clock_must_be_used(),
-               batch_c_no_split_reading(), batch_d_e2e()]
+               batch_c_no_split_reading(), batch_d_e2e(), batch_e_bare_clock()]
     tp = sum(r.passed for r in results)
     tf = sum(r.failed for r in results)
     print(f"\n===== 时间解析收口（TimeSpec）总账：通过 {tp} 项，失败 {tf} 项 =====")
