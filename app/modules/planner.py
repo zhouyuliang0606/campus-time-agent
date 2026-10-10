@@ -479,7 +479,8 @@ def span_only_proposal(text: str, title: str = "", fallback_date: str = "") -> d
     }
 
 
-def build_todo_slots(title: str, slots: list, hint: str = "", preselect: int = 0) -> dict:
+def build_todo_slots(title: str, slots: list, hint: str = "", preselect: int = 0,
+                     repeat: str = "") -> dict:
     """把几个候选时段包成一张「挑时间」的提案（人话：弹框里那串能打勾的时间）。
 
     它的形状跟别的提案不一样：**一个提案里装着好几个时段**，学生勾哪个算哪个
@@ -488,6 +489,10 @@ def build_todo_slots(title: str, slots: list, hint: str = "", preselect: int = 0
 
     `preselect` = 前几段**默认替他勾上**（人话：他说"一周三次"，就别让他再点三下）。
     0 = 一段都不预选，跟以前一样由他自己勾。
+
+    `repeat="weekly"` = 这张卡勾出来的每一段都要写成**一条每周重复**的待办
+    （2026-10-10 加，服务「每个周天都写作业」这类说法）。它必须一路传到
+    `/api/todos/batch`，中途任何一处把它丢了，学生看到的就还是"只排这一周"。
     """
     items = []
     for s in slots or []:
@@ -509,7 +514,9 @@ def build_todo_slots(title: str, slots: list, hint: str = "", preselect: int = 0
         "slots": items,
         "hint": hint,
         "preselect": pre,
-        "summary": (f"{title or '待办'}｜{len(items)} 个候选时段"
+        "repeat": repeat or "",
+        "summary": (f"{'每周重复 · ' if repeat == 'weekly' else ''}"
+                    f"{title or '待办'}｜{len(items)} 个候选时段"
                     + (f"（已勾 {pre} 段）" if pre else "")),
     }
 
@@ -685,6 +692,22 @@ def todo_slots_proposal(text: str, max_slots: int = 3) -> dict | None:
     # 于是频次模式被"他指定了哪天"这道闸误拦，候选还全挤到那一天去。
     # 所以判"有没有点名哪天"、以及去找空档，都用**去掉频次短语之后**的那句话。
     plain = _FREQ_RE.sub(" ", t)
+    # ==== 「每个周天都写作业」：固定星期几 + 无限重复（2026-10-10 加）====
+    # 与「一周三次」是两回事：那种没有固定日子，只能在这一周里铺 N 条（下一条分支）；
+    # 这种点名的就是"每周的某一天"，所以勾中一段只写**一条** repeat=weekly 的记录，
+    # 以后每个那天自动出现（读侧展开在 store.todo_occurs_on）。
+    # 候选只落在被点名的那个星期几 —— 给学生一堆别的日子的空档，等于没听懂他说的话。
+    wd = weekly_repeat_day(t)
+    if wd:
+        slots = [s for s in candidate_slots(_REPEAT_PHRASE_RE.sub(" ", plain),
+                                            max_slots=max_slots + 6, days_ahead=28)
+                 if _iso_weekday(s.get("date") or "") == wd]
+        if not slots:
+            return None      # 那两天真排不下 → 如实说排不出，不硬凑一个别的日子
+        wd_name = "周" + "一二三四五六日"[wd - 1]
+        hint = (f"这是**每周{wd_name}**都要做的事，不是只排这一周："
+                f"勾一个固定的时间段，以后每个{wd_name}都会出现在日程里"
+                f"（从 {slots[0]['date']} 起，勾完点【加入日程】我只建一条）。")        return build_todo_slots(title, slots, hint=hint, preselect=0, repeat="weekly")
     # 「一周三次」且**没指定哪天** → 按一周 N 段排，前 N 段替他勾上。
     # 为什么要求"没指定哪天"：他要是说了「周四一周三次」，那两句本身就打架
     # （候选全挤在周四 = 一天三练），这种矛盾句宁可退回老路子只排那天，
@@ -1690,6 +1713,30 @@ _WEEK_SCOPE_RE = re.compile(r"(?:一|每|这|本)\s*(?:周|星期|礼拜)\s*(?:�
 # 语义层爱替学生"补"一个日子（实测样本库里存着 day_hint="周一至周日"）。
 # 学生原话没点名哪天的时候，这种补出来的日子要能摘掉 —— 见 `carry_freq`。
 _DAY_WORD_RE = re.compile(r"(?:下|本|这|上)?(?:周|星期|礼拜)[一二三四五六日天]")
+
+# ==== 每周重复（2026-10-10 加）：与上面的「一周 N 次」是两回事 ====
+#   「一周三次」= 数量频次，**没有固定日子** → 只能在这一周里铺 N 条（test_35 那条路，不动它）。
+#   「每个周天」= 固定星期几 + 无限重复   → 落成**一条** repeat=weekly 的记录，每周都出现。
+# 判据必须带「每/所有/全部」这类**周期冠词**：少了它，「周日去健身」这种单日说法
+# 会被判成永久重复 —— 那是替学生造了几十件他没说要的事，比漏判严重得多。
+_WEEKDAY_NUM = {"一": 1, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6, "日": 7, "天": 7}
+_REPEAT_WEEKDAY_RE = re.compile(
+    r"(?:每|所有|全部)(?:一个|一|个)?\s*(?:周|星期|礼拜)([一二三四五六日天])")
+# 擦标题时用这条：整串周期说法（含「以后/一直」这类前缀和「都/都要」这类尾巴）一起擦。
+# 星期几那个字**可选** —— 「每周都写作业」里没点具体周几，标题照样不该留「每周都」。
+_REPEAT_PHRASE_RE = re.compile(
+    r"(?:以后|从今以后|今后|长期|一直|始终)?\s*(?:每|所有|全部)(?:一个|一|个)?\s*"
+    r"(?:周|星期|礼拜)(?:[一二三四五六日天末])?(?:都|都要|都会|得|会)?")
+
+
+def weekly_repeat_day(text: str) -> int | None:
+    """这句话点名了「每周固定某一天」吗？回了 1..7（周一=1）就是重复，None 就是没说。
+
+    ⚠️ 故意**不认**「每个周末」（那是周六+周日两天，一条记录表达不了）和
+    「每周都…」（没点哪天 —— 替他挑一个周日，等于替他做主）。宁可少认。
+    """
+    m = _REPEAT_WEEKDAY_RE.search(text or "")
+    return _WEEKDAY_NUM.get(m.group(1)) if m else None
 # 出现在"名字"里就说明抠到的不是事情，是时间/类别/动作残渣
 _TITLE_NOISE = (
     # 时间与时长残渣
@@ -2046,6 +2093,10 @@ def _strip_title_noise(text: str, keep_freq: bool = False) -> str:
     if _FREQ_RE.search(t) and not keep_freq:
         t = _COUNT_UNIT_RE.sub(" ", t)
         t = _WEEK_SCOPE_RE.sub(" ", t)
+    # 每周重复的整串说法一起擦掉。漏了它，「每个周天都加一个写作业的代办」的标题就会
+    # 剩成「每个都写作业」（2026-10-10 用户截图里原样出现，很难看）——
+    # 重复这件事现在由 repeat/weekday 字段承载，标题里没有它的位置。
+    t = _REPEAT_PHRASE_RE.sub(" ", t)
     t = re.sub(r"(大概|大约|差不多|约|预计|估计|有个|差不多要)(?=\s|$)", " ", t)
     # 「改成周六」「换到晚上七点」这类话里，"改成/换到"是**动作**不是事情的名字。
     # 不擦的话，学生在候选卡下面回一句「改成周六」，标题就会变成「改成健身」。
@@ -2183,7 +2234,25 @@ def _pick_title(text: str) -> str:
 def _title_ok(t: str) -> bool:
     """擦完的这串能不能当待办名用（没内容 / 只剩类别词 / 只是心情感叹 → 不行）。"""
     return (bool(t) and t not in _EMPTY_TITLES
+            and not _looks_like_correction(t)
             and not looks_like_chitchat(t) and looks_like_thing(t))
+
+
+# 学生在**纠正上一句**、不是在下单。2026-10-10 用户截图里的原话：
+#   「你没理解我的画，每一个周天，所有周天」
+# 老代码把这句擦成「没理解我的画每所有」并**判真通过**，于是卡片标题成了
+# 「没理解我的画每所有每个都写作业」—— 越纠正越离谱。
+# 这里不试图"听懂纠错"（那是上下文修复，另一个量级的活），只做一件事：
+# **拒绝把吐槽写成待办名**。宁可回一句问清楚，也不给他造一条看不懂的日程。
+_CORRECTION_RE = re.compile(
+    r"(没(有)?(理解|听懂|明白|看懂|看清)|我(说|讲)的(是|意思)|你(听|说|理解|搞|弄)(错|歪)"
+    r"|答非所问|不(是|对)这(样|个|件)|重新(来|说|讲|排|弄|改)"
+    r"|每(?:个|一)?(?:周|星期|礼拜)|所有(?:周|星期|礼拜))")
+
+
+def _looks_like_correction(t: str) -> bool:
+    """这串读起来像"你没听懂我刚才那句"，而不像一件事的名字。"""
+    return bool(_CORRECTION_RE.search(t or ""))
 
 
 # ── 极小的"闲聊"黑名单（2026-09-30 补）──────────────────────────────────────
@@ -2289,6 +2358,13 @@ def wants_add_todo(text: str) -> bool:
     # 也不接 N=1（"一周一次大扫除"更像随口说一句，交给原路去追问）。
     if ((weekly_times(t) or 0) >= 2 and _title_ok(_pick_title(t))
             and not any(k in t for k in ("吗", "？", "?", "多少", "够不", "是不是", "怎么样"))):
+        return True
+    # 「每周日都写作业」「以后每个周天晚上写作业」：点名了星期几 + 周期冠词，
+    # 本身就是"以后每周都要办"的硬信号，可它既没有"加/安排"这类动作词、也没有具体日期，
+    # 老规则一律不接（实测 2026-10-10：这两句 wants_add_todo 都是 False，
+    # 学生只能看着系统回一句通用废话）。疑问样照样不接（「每周日写作业来得及吗」是问句）。
+    if (weekly_repeat_day(t) and _title_ok(_pick_title(t))
+            and not any(k in t for k in ("吗", "？", "?", "够不", "是不是", "怎么样", "来得及"))):
         return True
     return bool(_pick_date(t) and _pick_span(t)[0]
                 and not any(k in t for k in ("吗", "？", "?")))

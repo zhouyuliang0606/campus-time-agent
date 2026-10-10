@@ -45,6 +45,7 @@ from app.store import (
     get_conversation, append_conversation, clear_conversation,
     get_timetable_data, list_todos, list_todos_in_month,
     add_todo, update_todo, delete_todo, get_todo, save_timetable,
+    set_todo_done_on, REPEAT_NONE, REPEAT_WEEKLY,
     add_workorder, list_workorders, update_workorder_status,
 )
 from app.modules.faq import SYSTEM_PROMPT as FAQ_PROMPT, build_tools as faq_tools
@@ -672,6 +673,19 @@ def _slots_answer(card: dict, lead: str = "") -> str:
     slots = card.get("slots") or []
     pre = int(card.get("preselect") or 0)
     lines = "\n".join(f"　· {s.get('label', '')}" for s in slots)
+    if (card.get("repeat") or "") == "weekly":
+        # 「每个周天都写作业」这张卡勾出来的是**一条每周重复**的待办，
+        # 话必须跟"一周三次铺 N 条"划清：那一句在下面（"现版本没有自动重复这回事"）
+        # 只对 preselect 那种情况成立，重复卡要是念它就成了假话。
+        tail = ("勾一个固定的时间段，点【加入日程】我**只建一条**——"
+                "以后每个那天它都会自己出现在日程里，不用你每周说一次。\n"
+                "⚠️ 勾「完成」只算**当周**：这周做完了，下周它还在。不想要了就删掉那一条。")
+        return (
+            f"🔁 **每周重复** · **{title}**：{lead}"
+            f"我在接下来的日子里挑了几个空着的时间段（避开了课和已有的安排），都落在同一个星期几：\n\n"
+            f"{lines}\n\n{tail}\n"
+            f"想换个钟点：在确认条的「其他时间」里自己写一个也行（比如「周日下午三点到四点」）。"
+        )
     if pre:
         # 学生报了频次（"一周三次"）→ 前 pre 段已经替他勾上，话要说清，
         # 否则他以为系统把整周的安排都定了、或者还得自己再点三下。
@@ -899,10 +913,18 @@ def _todo_card(pick: dict, parsed: dict) -> dict:
 
 
 def _write_todo(card: dict) -> dict:
-    """把一张待办确认卡真正写进日程（人话：系统落库，模型碰不到）。"""
+    """把一张待办确认卡真正写进日程（人话：系统落库，模型碰不到）。
+
+    `repeat` 从卡上带过来（「每个周天都写作业」那张候选卡是 weekly）。
+    这条路径以前只挑 5 个字段、连 category 都丢，所以**新字段必须在这里也接一次**，
+    否则聊天里点【确认】写进去的就还是普通一次性待办。
+    """
+    rep = (card.get("repeat") or "").strip()
+    if rep not in (REPEAT_NONE, REPEAT_WEEKLY):
+        rep = REPEAT_NONE
     return add_todo(
         card.get("title") or "待办", card.get("date") or "", card.get("start") or "",
-        card.get("end") or "", note=card.get("note", ""),
+        card.get("end") or "", note=card.get("note", ""), repeat=rep,
     )
 
 
@@ -3827,9 +3849,13 @@ async def todo_add(req: Request):
     title = (body.get("title") or "").strip()
     if not (date and start and end and title):
         return JSONResponse({"error": "标题、日期、开始与结束时间都要填"}, status_code=400)
+    rep = (body.get("repeat") or "").strip()
+    if rep not in (REPEAT_NONE, REPEAT_WEEKLY):
+        rep = REPEAT_NONE
     item = add_todo(title, date, start, end,
                     note=(body.get("note") or "").strip(),
-                    category=(body.get("category") or "").strip())
+                    category=(body.get("category") or "").strip(),
+                    repeat=rep, weekday=int(body.get("weekday") or 0))
     # 改期经按钮确认：写新之前先把旧的那条挪走（删旧 + 加新）。
     # old_todo_id 只在改期提案里带着，普通加待办不会传，不影响别的路径。
     _old_id = (body.get("old_todo_id") or "").strip()
@@ -3917,6 +3943,12 @@ async def todo_add_batch(req: Request):
     sid = (body.get("session_id") or "").strip()
     title = (body.get("title") or "").strip() or "待办"
     note = (body.get("note") or "").strip()
+    # 「每个周天都写作业」这类卡勾出来的段，要写成**一条每周重复**的待办（2026-10-10）。
+    # 白名单在这里、也在 store.add_todo 里各挡一次：认不得的值一律退回一次性，
+    # 免得前端哪天传个 "daily" 进来，库里就躺着一个没人会读的字段。
+    repeat = (body.get("repeat") or "").strip()
+    if repeat not in (REPEAT_NONE, REPEAT_WEEKLY):
+        repeat = REPEAT_NONE
     raw_slots = body.get("slots") if isinstance(body.get("slots"), list) else []
     other = (body.get("other") or "").strip()
 
@@ -3950,7 +3982,7 @@ async def todo_add_batch(req: Request):
                 "reason": "这段时间已经被课或别的安排占了",
             })
             return False
-        added.append(add_todo(t or title, d, st, en, note=note))
+        added.append(add_todo(t or title, d, st, en, note=note, repeat=repeat))
         return True
 
     # 2) 逐条写他勾中的那几段（后一条能看见前一条，所以不会自己撞自己）
@@ -4026,8 +4058,23 @@ async def todo_add_batch(req: Request):
 
 @app.put("/api/todos/{tid}")
 async def todo_update(tid: str, req: Request):
-    """改一条待办（目前主要用来标记完成 / 取消完成）。"""
+    """改一条待办（目前主要用来标记完成 / 取消完成）。
+
+    ⚠️ "完成"有两种问法，别混着用：
+      · **带 `on`（哪天）** —— 把完成落到那一天上：每周重复的待办记进 `done_dates`，
+        一次性待办仍旧翻 status。这是给"这周做完了"用的。
+      · 不带 `on` —— 老行为，整条翻 status。
+      为什么必须有前者：一条每周日的待办，学生勾掉本周**不等于以后都不用做**；
+      整条 done 会让它第二周就从日程里消失，那是最容易被当成 bug 的行为。
+    """
     body = await req.json()
+    on = (body.get("on") or "").strip()
+    if on and "status" in body:
+        done = str(body.get("status") or "").lower() in ("done", "true", "1")
+        item = set_todo_done_on(tid, on, done)
+        if not item:
+            return JSONResponse({"error": "待办不存在"}, status_code=404)
+        return {"ok": True, "todo": item, "on": on}
     patch = {k: v for k, v in body.items() if k in ("title", "date", "start", "end", "note", "status")}
     item = update_todo(tid, patch)
     if not item:
