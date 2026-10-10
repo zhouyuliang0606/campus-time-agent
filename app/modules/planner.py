@@ -319,7 +319,24 @@ def parse_time_spec(text: str) -> dict:
     }
     spec["repeat"] = REPEAT_WEEKLY if spec["weekday"] else REPEAT_NONE
     spec["clock"] = bool(start)
+    # ⚠️ 裸钟点（只说"三点"、没说上午下午）不可信：`_pick_span('三点开始')` 会给出 03:00，
+    # 而 03:00 那段**真空着**（凌晨没课），pinned 逻辑就会把学生的作业排到凌晨三点。
+    # 7/8 点例外 —— 中文里裸说"七点/八点"几乎都是早上（晨跑、早八）。
+    # 1..6 点一律标记为"没听清"：不 pin、不猜，回一句问清楚。
+    hour = int(start.split(":")[0]) if start else -1
+    spec["clock_ok"] = bool(start) and (bool(spec["part"]) or not (1 <= hour <= 6))
     return spec
+
+
+def _bare_clock_note(text: str) -> str:
+    """裸钟点没听清时那句问话（人话：我不敢替你决定是凌晨还是下午）。"""
+    sp = parse_time_spec(text)
+    if not (sp.get("clock") and not sp.get("clock_ok")):
+        return ""
+    hour = int(sp["start"].split(":")[0])
+    return (f"⚠️ 你说的「{hour} 点」没说是上午还是下午，我不敢替你定 —— "
+            f"照着字面排就成了凌晨 {sp['start']}，那多半不是你的意思。\n"
+            f"补两个字（「下午{hour}点」或「早上{hour}点」），我就照你点的那个时间排。")
 
 
 _PART_WORDS = (("上午", ("上午", "早上", "早晨", "一早", "清晨")),
@@ -369,7 +386,7 @@ def _day_slots(date: str, prefer: str = "", limit: int = 3,
     out = []
     # ① 先摆学生点死的那个钟点（如果有），它排第一，后面才是"像样的几档"
     pinned = []
-    if spec and spec.get("start"):
+    if spec and spec.get("start") and spec.get("clock_ok", True):
         s0 = to_minutes(spec["start"])
         e0 = (to_minutes(spec["end"]) if spec.get("end")
               else s0 + int(spec.get("minutes") or length))
@@ -554,6 +571,13 @@ def span_only_proposal(text: str, title: str = "", fallback_date: str = "") -> d
     """
     begin, finish = _pick_span(text or "")
     if not begin:
+        return None
+    # ⚠️ 裸钟点（1..6 点、没上下午）不出这张卡：这里给的是**单条确认条**，
+    # 一旦出条就是"照你说的点排"，而 _pick_span('三点开始') 给的是 03:00 ——
+    # 学生要的多半是下午三点，凌晨三点这条他绝不会想到我读成了什么。
+    # 判据与 `_day_slots` 的 pinned 同一条（`clock_ok`），两条路不会一处认一处不认。
+    sp = parse_time_spec(text or "")
+    if sp.get("clock") and not sp.get("clock_ok"):
         return None
     day = (fallback_date or datetime.date.today().isoformat()).strip()
     if _iso_weekday(day) == 0:
@@ -779,7 +803,10 @@ def _clock_note(text: str, slots: list) -> str:
     """
     sp = parse_time_spec(text)
     day = sp.get("date") or (slots[0]["date"] if slots else "")
-    if not sp.get("clock") or not day:
+    # ⚠️ `clock_ok` 为假时**不许走这里**：那句"那个时间有课或已有安排"是假话 ——
+    # 凌晨三点通常空得很，我们没排它是因为它没说是凌晨还是下午（判据见 `_bare_clock_note`）。
+    # 两条注记各管一种"没照你点的排"，叠在一起就成了编造理由。
+    if not sp.get("clock") or not day or not sp.get("clock_ok", True):
         return ""
     if any(s.get("start") == sp["start"] for s in slots or []):
         return ""
@@ -808,6 +835,9 @@ def todo_slots_proposal(text: str, max_slots: int = 3) -> dict | None:
     title = _pick_title(t)
     if not title or title == "待办":
         return None          # 连"要做什么事"都没说 → 由追问分支去问，别拿"待办"占位
+    # 裸钟点（只说"三点"）先记一句"没听清"：下面的候选段一律按常规档排，
+    # 但**不能什么都不说** —— 学生会以为自己报的钟点被听见了。
+    bare_clock = _bare_clock_note(t)
     day = _pick_date(_FREQ_RE.sub(" ", t))
     times = weekly_times(t) or 0
     # 「一周三次」里的"一周"会被 `_pick_date` 当成相对日期（一周后 = 2026-10-14），
@@ -833,6 +863,8 @@ def todo_slots_proposal(text: str, max_slots: int = 3) -> dict | None:
         _note = _clock_note(_REPEAT_PHRASE_RE.sub(" ", t), slots)
         if _note:
             hint = _note + "\n" + hint
+        if bare_clock:
+            hint = bare_clock + "\n" + hint
         return build_todo_slots(title, slots, hint=hint, preselect=0, repeat="weekly")
     # 「一周三次」且**没指定哪天** → 按一周 N 段排，前 N 段替他勾上。
     # 为什么要求"没指定哪天"：他要是说了「周四一周三次」，那两句本身就打架
@@ -866,6 +898,8 @@ def todo_slots_proposal(text: str, max_slots: int = 3) -> dict | None:
         _note = _clock_note(t, slots)
         if _note:
             hint = _note + "\n" + hint
+    if bare_clock:
+        hint = bare_clock + "\n" + hint
     return build_todo_slots(title, slots, hint=hint, preselect=pre)
 
 
@@ -2537,6 +2571,15 @@ def parse_add_todo(text: str) -> dict | None:
     start, end = _pick_span(t)
     if not date or not start:
         return None
+    # ⚠️ 裸钟点（只说"三点"、没报上午下午）**不出这张单条卡**：卡上写的是"就排在这个点"，
+    # 而 `_pick_span('周日三点')` 给的是 03:00 —— 2026-10-11 真机就是这么漏的：
+    # 「周日三点开始写作业」直接成了一张 03:00-04:00 的凌晨卡。
+    # 判据跟 `_day_slots` 的 pinned、`span_only_proposal`、`retime_todo_proposal` **同一条**
+    # （`clock_ok`），四条路不会一处认、一处不认。
+    # 返回 None 不等于"没听懂这句"：调用方会转去摊候选时段，
+    # 那一路的 hint 里会明说"你说的 3 点没讲上下午，我不敢替你定"。
+    if not parse_time_spec(t).get("clock_ok"):
+        return None
     if not end:                    # 只给了开始时间，默认排 1 小时
         end = to_hhmm(to_minutes(start) + 60)
     title = _pick_title(t)
@@ -3102,6 +3145,11 @@ def retime_todo_proposal(card: dict, text: str) -> dict | None:
     if not t:
         return None
     begin, finish = _pick_span(t)
+    # 裸钟点不猜（判据与 `_day_slots` 的 pinned、`span_only_proposal` 同一条）：
+    # 「改成三点」换出来的是 03:00 的凌晨条，而学生说的大多是下午三点。
+    # 返回 None 不算失败 —— 调用方会照旧走"没认出来"，顶多让他补一句上下午。
+    if begin and not parse_time_spec(t).get("clock_ok"):
+        return None
     new_date = _pick_date(t)
     old_date = card.get("date") or ""
     date = new_date or old_date
