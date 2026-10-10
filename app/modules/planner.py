@@ -1089,8 +1089,8 @@ def mock_planner(message: str, history: list | None = None, persona_key: str = N
             "导入", "上传", "写进", "整理", "import_timetable",
             "删除", "删掉", "去掉", "修改", "换课", "加一门")):
         return {
-            "answer": "导入课表需要我真的读到你上传的文件内容，这要用到大模型——目前还没配置密钥。"
-                      "请进管理控制台（/admin）的「API 配置」填好 Key 再传一次；"
+            "answer": "课表导入要我真读到你上传的文件内容才行，这条通道现在还没接通。"
+                      "麻烦叫管理员在后台检查一下；"
                       "也可以先到「我的日程」里手动安排。",
             "options": [], "awaiting_choice": False,
         }

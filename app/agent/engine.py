@@ -191,7 +191,7 @@ class AgentEngine:
                 continue
 
             # 5) 模型没调工具，说明它觉得可以直接回答了
-            answer = msg.get("content") or "（模型没有返回内容，请稍后再试）"
+            answer = msg.get("content") or "（我这会儿没拿到回答，稍后再问我一次）"
             self.trace.append({"step": step, "phase": "💡 最终回答", "answer": answer})
             return self._finish(answer)
 
