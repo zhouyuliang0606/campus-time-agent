@@ -91,6 +91,7 @@ from app.modules.planner import (
     todo_mode_proposal,
     todo_slots_proposal,
     carry_freq,
+    unsupported_period,
     todo_remove_batch_proposal,
     todo_done_batch_proposal,
     wants_remove_todo,
@@ -1162,6 +1163,13 @@ async def _chat_impl(req: Request, meta: dict):
     # 而否决一张**本来就该出**的卡（"帮我安排周二的游泳"）比漏判更让学生恼火。
     _rule_veto = bool(_need_review and _sem_intent and _sem_intent != _rule_hit
                       and (_asks or _sem_intent == INTENT_CHAT))
+    # ★ 「每天 / 每月 / 每个周末 / 下个月」这类周期的**不分层否决**（判据见 planner.unsupported_period）。
+    #   规则层从来不接它，可**样本库/语义层能单独判成 add_todo**并出卡、还把这句学进样本库；
+    #   于是学生说"以后每天"，拿到的是一条"某一天一次"的待办（实测就是这么翻车的）。
+    #   这里只算"拦不拦"，怎么如实跟他说、给哪两种能办的说法，在下面那条确定性分支里。
+    _period = unsupported_period(message)
+    _period_block = bool(_period) and (
+        _rule_hit == INTENT_ADD_TODO or _sem_intent == INTENT_ADD_TODO)
     # 「我把这句听成什么」——交给外面的 `chat()` 统一插进思考轨迹（见 `_read_step`）。
     # 在这儿只**记下结论**，不重新判定：`_sem` / `_sem_intent` / `_rule_hit` 就是判定层
     # 刚算出来的那三个，照抄即可。
@@ -2368,6 +2376,38 @@ async def _chat_impl(req: Request, meta: dict):
             "options": [],
             "awaiting_choice": False,
         })
+
+    # ★ 「每天 / 每月 / 每个周末 / 下个月」这一类周期说法：**任何一档判成加待办都不许出卡**
+    #   （2026-10-11 补，判据在 planner.unsupported_period）。
+    #   病根不是规则层读错了 —— 规则层从来不接这一类，是**样本库/语义层能绕过它单独接单**：
+    #   用户原话「在下个月的每个周末三点开始大约三个小时」被样本库判成 add_todo、
+    #   事名学成「活动」，最后排出一条 15:00-18:00 的孤零零待办。
+    #   他要的是"以后每个周末"，拿到的却是"某一天一次"，而且这条还**学进样本库**了，
+    #   以后每次近似说法都照着错。所以这里做两件事：
+    #   ① 一处不分层的否决（规则/样本库/语义层哪档判的都拦）；
+    #   ② 这条分支**不走 `_sem_done`**（它就是 `remember()` 学样本的那一步），
+    #      否掉的句子绝不许再学进去 —— 否则同一个错会自己繁殖。
+    #   只做这两件，不去"听懂每天/每月"：一条日程只能落**某一天**或**每周固定某天**，
+    #   硬扩表达等于替学生造他没说要的几十条安排（判据同 `weekly_repeat_day` 的取舍）。
+    if _period_block:
+        append_conversation(session_id, "user", message)
+        _answer = (
+            f"🚫 「{_period}」这种安排我**记不了**——一条日程只能落在**某一天**，"
+            f"或者**每周固定的某一天**（那样的话以后每个那天都会自己出现）。\n"
+            f"换这两种说法我马上就能办：\n"
+            f"· 「每周一背单词」→ 只建一条，以后每个周一自己冒出来；\n"
+            f"· 「这一周要背三次」→ 在这一周里给你铺三段，你打勾。\n"
+            f"只想排一次的话，说个日子（比如「今天背单词」），我立刻出确认条。")
+        append_conversation(session_id, "assistant", _answer)
+        return {
+            "module": "planner",
+            "session_id": session_id,
+            "answer": _answer,
+            "trace": [{"step": 1, "phase": f"🚫 「{_period}」这种周期接不了 → 如实说并给两种能办的说法",
+                       "answer": "没出卡，也没把这句学进去"}],
+            "options": [],
+            "awaiting_choice": False,
+        }
 
     # ⚠️ 末尾的 `and not wants_add_course(message)` 是「加课优先于加待办」的硬闸门：
     # 学生说"周一早上加一节高数课"时，语义层（样本库/大模型）很可能把它判成 add_todo，

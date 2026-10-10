@@ -1901,6 +1901,54 @@ def weekly_repeat_day(text: str) -> int | None:
     """
     m = _REPEAT_WEEKDAY_RE.search(text or "")
     return _WEEKDAY_NUM.get(m.group(1)) if m else None
+
+
+# ==== 明确不支持的周期说法（2026-10-10）====
+# 这些表达**规则层从来不接**（`wants_add_todo` 一律 False），但真机实测发现：
+# 样本库/语义层可以绕过规则层单独接单 —— 用户那句
+# 「在下个月的每个周末三点开始大约三个小时」被**样本库**判成 add_todo、
+# 事名学成了「活动」，排出一条 15:00-18:00 的孤零零待办。
+# 所以判据要有一处**不分层**的收口：只要句子里出现下面这些说法，
+# 任何一档说"这是加待办"都不许出卡 —— 因为待办模型表达不了它
+# （每天/工作日=多个星期几、周末=两天、每两周/每月=非周周期、下个月=范围边界）。
+# ⚠️ 不含「平时/工作日」：`candidate_slots` 的 workday_mode 早就支持"跨工作日摊开列"，
+#    把它们列进来会打掉现有能用的功能（test_28 那一类）。
+_UNSUPPORTED_PERIOD = (
+    "每天", "天天", "每日", "每个周末", "每周末", "每个星期末", "隔一天", "隔天",
+    "每两周", "两周一次", "每月", "每个月", "一月一次", "下个月", "上个月", "每个月末",
+)
+
+
+def unsupported_period(text: str) -> str:
+    """这句话要的是不是一种**当前模型表达不了**的周期？要到了就把词原样交回去。"""
+    t = text or ""
+    for w in _UNSUPPORTED_PERIOD:
+        if w in t:
+            return w
+    return ""
+
+
+def period_reject(text: str) -> str:
+    """三件提案工具共用的**拒单回话**（不是周期就回空串，调用方照旧往下走）。
+
+    为什么单列一份：`propose_todo_tool` / `propose_todo_mode_tool` / `propose_todo_slots_tool`
+    是模型手里直接出卡的三条路，**它们绕得过判定层、绕不过这里**。
+    少这一道，学生说「每天背30个单词」，模型就能自己替他挑一天出确认条 ——
+    跟样本库单独接单是同一类翻车（判据同 `unsupported_period`，别各写一套）。
+    """
+    word = unsupported_period(text)
+    if not word:
+        return ""
+    return json.dumps({
+        "error": f"「{word}」这种周期安排不了",
+        "hint": ("一条日程只能落**某一天**，或**每周固定的某一天**（repeat=weekly）。"
+                 f"学生说了「{word}」→ ⛔ **不要替他挑一天出确认条**，"
+                 "回一句跟他说清能接的两种说法：「每周几」建一条以后每周都出现、"
+                 "「这一周N次」在这一周里铺N段；想只排一次就让他报个日子。"),
+        "got": (text or "").strip(),
+    }, ensure_ascii=False)
+
+
 # 出现在"名字"里就说明抠到的不是事情，是时间/类别/动作残渣
 _TITLE_NOISE = (
     # 时间与时长残渣
@@ -2738,6 +2786,10 @@ def propose_todo_tool(title: str, when: str = "", date: str = "",
             "got": _raw,
         }, ensure_ascii=False)
     day = _pick_date(blob) or _pick_date(f"{date} {when}")
+    # ★ 同一条不分层否决：模型直调也不许替学生把「每天/每月」挑成某一天一次
+    _rej = period_reject(_raw)
+    if _rej:
+        return _rej
     begin, finish = _pick_span(blob)
     if not begin and start:
         begin, _ = _pick_span(start)
@@ -5186,6 +5238,9 @@ def propose_todo_mode_tool(title: str, when: str = "") -> str:
                      "**走问答/知识库去答他**，别替他排日程。"),
             "got": blob,
         }, ensure_ascii=False)
+    _rej = period_reject(blob)
+    if _rej:
+        return _rej
     card = todo_mode_proposal(blob)
     if card is None:
         return json.dumps({
@@ -5258,6 +5313,9 @@ def propose_todo_slots_tool(title: str, when: str = "") -> str:
                      "真要加待办，等他把「要加哪件事」说清楚再说。"),
             "got": blob,
         }, ensure_ascii=False)
+    _rej = period_reject(blob)
+    if _rej:
+        return _rej
     card = todo_slots_proposal(blob)
     if card is None:
         return json.dumps({
