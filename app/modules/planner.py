@@ -503,17 +503,30 @@ def parse_slot_text(text: str, title: str = "", fallback_date: str = "") -> dict
         不补这一档，「其他」里最自然的写法会直接掉进"没认出来"，学生白填一行。
     认不出来返回 None —— 由调用方如实告诉他"这行没认出来"，**不瞎猜一个时间**。
     标题缺省用外面传进来的那件事（他说的是"其他时间"，不是"其他事情"）。
+    ⚠️ 但**这句自己报了事名时必须只用这句的**：以前无条件拼上 `title` 一起解析，
+    实测候选卡挂着「写作业」时学生说「周五晚上七点到九点值日」，
+    拼成「…值日 写作业」→ `_pick_title` 抠出 **「值日写作业」** 挂上确认条。
+    他换了事情，系统却把上一轮的事情缝进名字里（2026-10-10 真机复现）。
     """
     t = (text or "").strip()
     if not t:
         return None
-    prop = parse_add_todo(f"{t} {title}".strip())
+    mine = _pick_title(t)
+    keep = mine if (mine and mine != "待办" and _title_ok(mine)) else ""
+    # 拼过去的那半句只在"这句没报名"时才用；报了名就不许再借上一轮的名字
+    blob = t if keep else f"{t} {title}".strip()
+    prop = parse_add_todo(blob)
     if prop is None:
-        prop = auto_todo_proposal(f"{t} {title}".strip())
+        prop = auto_todo_proposal(blob)
     if prop is None:
         prop = span_only_proposal(t, title, fallback_date)
     if prop is None:
         return None
+    if keep:
+        # 这句自己报了名 → 名字就以它为准，卡片/摘要一起改口，别留拼出来的串味名
+        prop["title"] = keep
+        prop["summary"] = (f"{keep}｜{prop['date']}（{prop.get('weekday', '')}）"
+                           f"{prop['start']}-{prop['end']}")
     if title and prop.get("title") in ("", "待办"):
         prop["title"] = title
         prop["summary"] = (f"{title}｜{prop['date']}（{prop.get('weekday', '')}）"
