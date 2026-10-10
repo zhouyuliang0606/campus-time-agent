@@ -21,6 +21,7 @@ from app.agent.pending import is_confirmation
 from app.store import (
     add_todo, get_timetable, list_todos,
     save_timetable, update_todo,
+    REPEAT_NONE, REPEAT_WEEKLY,
 )
 from app.modules.student_persona import mock_phrase
 
@@ -281,8 +282,68 @@ def _span_free(date: str, span) -> bool:
     return False
 
 
+def parse_time_spec(text: str) -> dict:
+    """**一次**把一句话里的时间信息读全，交给所有下游（人话：别再各读各的）。
+
+    为什么要有这个结构（2026-10-10 重构）：`_pick_date` / `_pick_span` /
+    `wanted_minutes` / `weekly_repeat_day` 每一样**单独都能读对**，
+    但 `candidate_slots` 只挑了其中一部分用 —— 结果就是学生说「周五晚上七点到九点值日」，
+    钟点被丢掉、给他排了 15:40-17:10；说「每周三下午两点开会」，给的 19:00。
+    分了层却不合起来用，比不分层更难查：单测每个函数都是对的。
+    现在下游一律吃这个 spec，**要么整体传下去，要么整体不用**，
+    不再可能出现"日期用了、钟点没用"。
+
+    字段（读不出来一律 None / 空串，不猜）：
+      date     点名了具体哪天（ISO）
+      weekday  点名了"每周几"（1..7）
+      repeat   "" 一次性 / "weekly" 每周重复
+      start    点名的开始钟点 "14:00"
+      end      点名的结束钟点 "21:00"（「七点到九点」才有）
+      minutes  点名的时长（「大概三个小时」=180；有 start+end 时按差算）
+      part     只说了档没说钟点："上午" / "下午" / "晚上"
+      clock    有没有点名钟点（start 非空就是 True）
+    """
+    t = (text or "").strip()
+    # 周期说法要先摘掉：「每周三下午两点」里的"三"会被日期解析读成"周三"以外的东西，
+    # 而"每周"更常被 `_pick_date` 当成相对日期（一周后）。摘完剩下的才是"哪天几点"。
+    rest = _REPEAT_PHRASE_RE.sub(" ", t)
+    start, end = _pick_span(t)
+    minutes = wanted_minutes(t)
+    if start and end:
+        minutes = to_minutes(end) - to_minutes(start)
+    spec = {
+        "date": _pick_date(rest),
+        "weekday": weekly_repeat_day(t),
+        "start": start, "end": end, "minutes": minutes,
+        "part": _part_said(t),
+    }
+    spec["repeat"] = REPEAT_WEEKLY if spec["weekday"] else REPEAT_NONE
+    spec["clock"] = bool(start)
+    return spec
+
+
+_PART_WORDS = (("上午", ("上午", "早上", "早晨", "一早", "清晨")),
+               ("下午", ("下午", "午后", "傍晚")),
+               ("晚上", ("晚上", "夜里", "今晚", "今夜", "晚间")))
+# 「中午」单独处理：它落在 11:00-13:00，跨在上午档和下午档中间，
+# 归到"上午"还是"下午"都会让学生觉得"我说的不是这个意思"，所以只认三档本名。
+_NOON_WORDS = ("中午", "正午", "午间")
+
+
+def _part_said(text: str) -> str:
+    """学生点的是哪一档（对齐 DAY_PARTS 的三个名字）；没点或说"中午"都回 ""。"""
+    t = text or ""
+    if any(w in t for w in _NOON_WORDS):
+        return ""
+    for name, words in _PART_WORDS:
+        if any(w in t for w in words):
+            return name
+    return ""
+
+
 def _day_slots(date: str, prefer: str = "", limit: int = 3,
-               rotate: int = 0, length: int = AUTO_SLOT_LENGTH) -> list:
+               rotate: int = 0, length: int = AUTO_SLOT_LENGTH,
+               spec: dict | None = None) -> list:
     """那一天里"像样的几段"（人话：上午/下午/晚上各给一段塞得进的）。
 
     排序按 _part_order：学生点名了哪一档，那一档排第一个；没说就下午优先。
@@ -295,6 +356,10 @@ def _day_slots(date: str, prefer: str = "", limit: int = 3,
         「明天下午 / 周六上午 / 周日晚上」，一眼看出有的挑。
     :param length: 这一段要排多久。学生说了「大概三小时」就按 180 分钟找，
         没说才用默认 90 分钟。空档不够长就跳过，绝不硬凑。
+    :param spec: `parse_time_spec` 的结果。**学生点名了钟点，那一天就得先给那个钟点**
+        ——这是 2026-10-10 修的那个洞：以前 prefer 只用来给三档排序，
+        说「周五晚上七点到九点」照样排成 15:40-17:10。排不进（有课/已过点）时
+        仍旧退回三档候选，不硬塞，也不偷偷换日子。
     """
     not_before = (_now_minutes() + 30
                   if date == datetime.date.today().isoformat() else None)
@@ -302,6 +367,19 @@ def _day_slots(date: str, prefer: str = "", limit: int = 3,
     free = [s for s in find_free_slots(date, min_minutes=min_needed)
             if s.get("start")]
     out = []
+    # ① 先摆学生点死的那个钟点（如果有），它排第一，后面才是"像样的几档"
+    pinned = []
+    if spec and spec.get("start"):
+        s0 = to_minutes(spec["start"])
+        e0 = (to_minutes(spec["end"]) if spec.get("end")
+              else s0 + int(spec.get("minutes") or length))
+        if e0 > s0 and (not_before is None or s0 >= not_before) \
+                and _span_free(date, (spec["start"], to_hhmm(e0))):
+            pinned.append({"part": _part_of_minute(s0), "date": date,
+                           "weekday": _weekday_name(date),
+                           "start": spec["start"], "end": to_hhmm(e0),
+                           "minutes": e0 - s0,
+                           "label": f"你定的 {spec['start']}-{to_hhmm(e0)}"})
     for name, plo, phi in DAY_PARTS:
         for s in free:
             begin = max(to_minutes(s["start"]), plo)
@@ -320,7 +398,16 @@ def _day_slots(date: str, prefer: str = "", limit: int = 3,
         rotate %= len(order)
         order = order[rotate:] + order[:rotate]
     out.sort(key=lambda s: order.index(s["part"]) if s["part"] in order else 9)
-    return out[:limit]
+    # 学生点死的钟点永远排第一（它不是"候选"，是他自己说的），后面才是替他挑的档
+    return (pinned + out)[:limit]
+
+
+def _part_of_minute(m: int) -> str:
+    """某个时刻属于哪一档（跟 DAY_PARTS 同一套名字，别自己另分一段）。"""
+    for name, lo, hi in DAY_PARTS:
+        if lo <= m < hi:
+            return name
+    return "上午" if m < 12 * 60 else ("下午" if m < 18 * 60 else "晚上")
 
 
 def _said_part(text: str) -> bool:
@@ -359,7 +446,11 @@ def candidate_slots(text: str = "", max_slots: int = 3, days_ahead: int = 5) -> 
     picked_day = None if workday_mode else _pick_date(t)
     # 学生说了时长（"大概三小时"）→ 候选段就按 3 小时找；没说才回落 90 分钟。
     # 这里必须认，不然候选卡上全是 90 分钟，学生会拿到「不是我想要的 3 小时」。
-    want = wanted_minutes(t) or AUTO_SLOT_LENGTH
+    # 2026-10-10：钟点/时长/档统一从 `parse_time_spec` 一次读出来（日期仍按老样子
+    # 由 _pick_date 判 —— 那一条链路上有 test_28/test_35 的既有行为要保，不在这个
+    # 补丁的范围里，混在一起改出事很难归因）。
+    spec = parse_time_spec(t)
+    want = spec.get("minutes") or wanted_minutes(t) or AUTO_SLOT_LENGTH
     want = max(5, min(int(want), 8 * 60))
     out = []
 
@@ -386,7 +477,7 @@ def candidate_slots(text: str = "", max_slots: int = 3, days_ahead: int = 5) -> 
             break
 
     if picked_day:
-        for s in _day_slots(picked_day, prefer, limit=max_slots, length=want):
+        for s in _day_slots(picked_day, prefer, limit=max_slots, length=want, spec=spec):
             _push(s)
         return out[:max_slots]
 
@@ -396,7 +487,7 @@ def candidate_slots(text: str = "", max_slots: int = 3, days_ahead: int = 5) -> 
         day = (today + datetime.timedelta(days=off)).isoformat()
         if workday_mode and _iso_weekday(day) >= 6:
             continue          # 「平时 / 工作日」不排周末，周六周日直接跳过
-        for s in _day_slots(day, prefer, limit=1, rotate=off, length=want):
+        for s in _day_slots(day, prefer, limit=1, rotate=off, length=want, spec=spec):
             _push(s)
     return out[:max_slots]
 
@@ -666,6 +757,24 @@ def carry_freq(blob: str, message: str) -> str:
     return f"{blob} 一周{m.group(1)}次"
 
 
+def _clock_note(text: str, slots: list) -> str:
+    """学生点了钟点、但那一段排不进去时，**必须说一句为什么**。
+
+    为什么不许默默换：学生说「周五晚上七点到九点值日」，卡片给 15:40-17:40，
+    他只会认为"你没听懂我的话"（实测就是这么被投诉的）。而真实原因是
+    那晚 19:00-20:40 有《班会》—— 这是**该说的事实**，不是错误。
+    """
+    sp = parse_time_spec(text)
+    day = sp.get("date") or (slots[0]["date"] if slots else "")
+    if not sp.get("clock") or not day:
+        return ""
+    if any(s.get("start") == sp["start"] for s in slots or []):
+        return ""
+    want = f"{sp['start']}-{sp['end']}" if sp.get("end") else f"{sp['start']} 开始"
+    return (f"⚠️ 你说的 {want}（{day}）排不进去——那个时间有课或已有安排，"
+            f"下面给的是别的时间段，不是你点的那个。")
+
+
 def todo_slots_proposal(text: str, max_slots: int = 3) -> dict | None:
     """学生只说了"加个健身"（没说几点）→ 摊开几个候选时段，让他自己打勾。
 
@@ -708,6 +817,9 @@ def todo_slots_proposal(text: str, max_slots: int = 3) -> dict | None:
         hint = (f"这是**每周{wd_name}**都要做的事，不是只排这一周："
                 f"勾一个固定的时间段，以后每个{wd_name}都会出现在日程里"
                 f"（从 {slots[0]['date']} 起，勾完点【加入日程】我只建一条）。")
+        _note = _clock_note(_REPEAT_PHRASE_RE.sub(" ", t), slots)
+        if _note:
+            hint = _note + "\n" + hint
         return build_todo_slots(title, slots, hint=hint, preselect=0, repeat="weekly")
     # 「一周三次」且**没指定哪天** → 按一周 N 段排，前 N 段替他勾上。
     # 为什么要求"没指定哪天"：他要是说了「周四一周三次」，那两句本身就打架
@@ -737,6 +849,10 @@ def todo_slots_proposal(text: str, max_slots: int = 3) -> dict | None:
                     f"避开课和已有的安排，勾一个方便的。")
         else:
             hint = "避开课和已有的安排，挑一个方便的勾上（可以勾好几个）。"
+        # 点了钟点却没排进去 → 说一句为什么（默默换成别的时间，学生只会认为没听懂）
+        _note = _clock_note(t, slots)
+        if _note:
+            hint = _note + "\n" + hint
     return build_todo_slots(title, slots, hint=hint, preselect=pre)
 
 
