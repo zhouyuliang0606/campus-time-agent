@@ -87,12 +87,12 @@ def main():
             # ---------- ③ 开关：关掉之后不再画 ----------
             # 走真实路径：点左侧「⚙️ 设置」→ 渲染出开关 → 取消勾选。
             # （不直接写 localStorage —— 那样测的是脚本自己，不是页面上的开关。）
-            # ⚠️ 用 nth(4) 而不是 click：`.sb-item` 同时被侧栏和手机底部栏使用，
-            #    选择器会命中两个元素，严格模式下必然报"resolved to 2 elements"。
-            _navs = page.locator(".sb-item")
-            assert _navs.nth(4).inner_text().strip().endswith("设置"), \
-                f"第 5 个导航不是「设置」：{_navs.nth(4).inner_text()[:20]}"
-            _navs.nth(4).click()
+            # ⚠️ 不按序号点（nth）：`.sb-item` 同时被侧栏和手机底部栏使用，序号既会撞
+            #    "resolved to 2 elements"，也会**因为侧栏增减条目而整体错位**
+            #    （2026-10-10 摘掉「校园问答」那一栏就把它绊倒了）。按 data-nav 定位。
+            _settings = page.locator('.sb-item[data-nav="settings"]')
+            assert _settings.count() >= 1, "侧栏里没有「设置」这一项"
+            _settings.first.click()
             page.wait_for_timeout(600)
             cb = page.locator("#setTrace")
             assert cb.count() == 1, "设置页里没有「展示思考过程」这个开关"
@@ -101,7 +101,7 @@ def main():
             page.wait_for_timeout(200)
             assert page.evaluate("() => localStorage.getItem('campustime_trace')") == "0", \
                 "开关没写进本机设置"
-            _navs.nth(0).click()          # 回到「校园问答」，输入框才在
+            page.locator('.sb-item[data-nav="schedule"]').first.click()  # 回主页（日程 + 对话）
             page.wait_for_timeout(500)
             n1 = last_msg_count(page)
             send(page, "我都有啥待办来着")

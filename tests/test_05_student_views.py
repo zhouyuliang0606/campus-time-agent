@@ -97,8 +97,13 @@ def test_student_panel_markup():
         c.check("旧版「已切换到」纯文本提示已移除", "已切换到" not in html)
         c.check("selectModule 走 showView 切面板", "showView(VIEW_OF[key])" in html)
         c.check("再点一次卡片可收起面板（collapsePanel）", "collapsePanel" in html)
-        c.check("每个视图都有收起按钮", html.count('class="close"') == 4,
-                f"共 {html.count('class=' + chr(34) + 'close' + chr(34))} 个")
+        # 三个**面板**各有一个通用收起键；问答现在是抽屉，收起键是专用的。
+        # ⚠️ 它不能挂 class="close"：那个类绑的是 collapsePanel，
+        #    一点就会把上方的日程面板一起收掉（学生只想关问答）。2026-10-10 改版后按此拆分。
+        c.check("日程/快递/外卖三个面板都仍有收起按钮", html.count('class="close"') == 3,
+                f"通用 close 共 {html.count('class=' + chr(34) + 'close' + chr(34))} 个")
+        c.check("问答抽屉有专用收起键（没绑到 collapsePanel）",
+                'id="faqClose"' in html and 'class="close"' not in html[html.find('id="view-faq"'):html.find('id="view-faq"') + 400])
         # 数据源引用
         c.check("前端拉 /api/express 与 /api/takeout",
                 "/api/express" in html and "/api/takeout" in html)

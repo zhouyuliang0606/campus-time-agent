@@ -118,10 +118,72 @@ def batch_c_api_roundtrip():
     return c
 
 
+def batch_d_faq_drawer_and_week_collapse():
+    c = Checker()
+    title("4. 问答改抽屉 + 日程默认收四天（2026-10-10 布局改版）")
+    src = open(SRC, encoding="utf-8").read()
+
+    # —— 「校园问答」不再是并列的一栏 ——
+    c.check("侧栏没有「校园问答」这一栏了", 'data-nav="chat"' not in src)
+    c.check("侧栏保留「日程」，且落地就是它（从设置/代办回主页的唯一入口）",
+            'data-nav="schedule"' in src and 'let currentView = "schedule";' in src
+            and 'switchNav("schedule")' in src)
+    # 问答抽屉：按钮 + 开合函数 + 那个 ✕ 不能再走通用 .close
+    c.check("日程页工具条上有「❓ 校园问答」按钮", 'id="faqBtn"' in src)
+    c.check("抽屉开合走 showView 那套内联 display，没另起一套 CSS 状态",
+            "function setFaqDrawer(" in src and "#view-faq.open" not in src)
+    c.check("问答的关闭键是专用的（用通用 .close 会把日程面板一起收掉）",
+            '<button class="tab" id="faqClose">' in src
+            and 'class="close" id="faqClose"' not in src)
+    seg_show = _seg(src, "function showView(", "function collapsePanel(")
+    # 两条行为各自钉一句（合成一句会漏：以前者只查"出现过 faqDrawerOpen"，
+    # 变异把其中一条删掉照样绿 —— 实测假红过一次才拆开）。
+    c.check("切到别的面板时，开着的问答抽屉不被顺手关掉",
+            'faqDrawerOpen && name !== "view-faq"' in seg_show
+            and 'fq.style.display = "block"' in seg_show)
+    c.check("「收起面板」仍然真的全收（连问答抽屉一起关）",
+            "faqDrawerOpen = false" in seg_show)
+
+    # —— 逐日明细默认只列今天起四天 ——
+    seg = _seg(src, "function renderSchWeek()", "function renderSchMonth()")
+    # 钉**驱动逻辑**而不是关键词：把 collapsed 硬写成 false，词还在、行为已经退回七天，
+    # 只查"seg 里有 collapsed"就会假绿（这条是变异实测出来的）。
+    c.check("收起窗口由状态决定（本周且没展开 → 四天），不是写死的",
+            "schWeekOffset === 0 && !schWholeWeek" in seg and "collapsed ? 4 : 7" in seg)
+    c.check("周列表按窗口天数渲染（不再有硬写的 days[6]）",
+            "days[days.length - 1]" in seg and "days[6]" not in seg)
+    c.check("网格列数跟着天数走（固定 7 列会留三个空列、卡片还窄一半）",
+            "grid-template-columns:repeat(' + days.length" in seg)
+    c.check("翻到别周自动按整周显示（那时「今天」不在这个窗口里）",
+            "schWeekOffset === 0" in seg)
+    c.check("有展开/收起按钮，状态记本机",
+            'id="schExpand"' in src and 'localStorage.setItem("ct_sch_week"' in src)
+    seg_tab = _seg(src, "function setSchTab()", 'document.getElementById("schPrev")')
+    c.check("月表下把「展开整周」藏掉（月表没这个概念）",
+            'schExpand' in seg_tab)
+    # 死代码不许留着说谎。
+    # ⚠️ 判据钉的是**代码形状**而不是那句字符串：源码注释里合法地引用了旧写法做说明
+    # （上一轮就因为"注释里抄原话"绊红过一次，这次学乖了）。
+    c.check("客户端那个 faq 模块锁分支已删（锁栏子的活儿归服务端）",
+            ') body.module = "faq"' not in src and 'currentView === "chat") body' not in src)
+
+    # —— 真发：没有客户端锁之后，知识库问句仍然必须拿回答案、不许冒时段卡 ——
+    with sandbox():
+        cli = make_client()
+        for q in ("我要去哪里取快递", "图书馆几点开门", "校车在哪里坐"):
+            d = cli.post("/api/chat", json={"message": q, "session_id": "t29-d"}).json()
+            c.check(f"不带 module 问「{q}」→ 给的是答案不是排时段",
+                    not (d.get("options") or []) and not d.get("awaiting_choice")
+                    and len(d.get("answer") or "") > 10,
+                    f"module={d.get('module')} options={len(d.get('options') or [])}")
+    return c
+
+
 def main():
     results = [batch_a_removed_clean_and_week_view_intact(),
                batch_b_panel_contract_unchanged(),
-               batch_c_api_roundtrip()]
+               batch_c_api_roundtrip(),
+               batch_d_faq_drawer_and_week_collapse()]
     total_pass = sum(r.passed for r in results)
     total_fail = sum(r.failed for r in results)
     print(f"\n===== 我的日程（逐日明细 + 待办接口）总账：通过 {total_pass} 项，失败 {total_fail} 项 =====")
