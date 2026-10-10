@@ -703,11 +703,12 @@ def todo_slots_proposal(text: str, max_slots: int = 3) -> dict | None:
                                             max_slots=max_slots + 6, days_ahead=28)
                  if _iso_weekday(s.get("date") or "") == wd]
         if not slots:
-            return None      # 那两天真排不下 → 如实说排不出，不硬凑一个别的日子
+            return None      # 往后四周里那个星期几真排不下 → 如实说排不出，不硬凑别的日子
         wd_name = "周" + "一二三四五六日"[wd - 1]
         hint = (f"这是**每周{wd_name}**都要做的事，不是只排这一周："
                 f"勾一个固定的时间段，以后每个{wd_name}都会出现在日程里"
-                f"（从 {slots[0]['date']} 起，勾完点【加入日程】我只建一条）。")        return build_todo_slots(title, slots, hint=hint, preselect=0, repeat="weekly")
+                f"（从 {slots[0]['date']} 起，勾完点【加入日程】我只建一条）。")
+        return build_todo_slots(title, slots, hint=hint, preselect=0, repeat="weekly")
     # 「一周三次」且**没指定哪天** → 按一周 N 段排，前 N 段替他勾上。
     # 为什么要求"没指定哪天"：他要是说了「周四一周三次」，那两句本身就打架
     # （候选全挤在周四 = 一天三练），这种矛盾句宁可退回老路子只排那天，
