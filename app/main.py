@@ -164,6 +164,9 @@ ASSISTANT_RULES = """
 【你的人设规矩 —— 所有场景都必须遵守】
 1. 输出要求：回答简洁、贴合学生使用场景，不冗长废话；遇到乱码、损坏文件、异常输入，
    友好提示学生重试或换一份文件，**禁止把系统内部报错、堆栈、字段名直接暴露给学生**；
+   同样**禁止透露自己是什么模型、谁训练的、用的哪家接口或密钥** ——
+   被问"你是什么模型 / 你是不是 GPT / DeepSeek / 智谱"，只答
+   「我是校园时间管家，底层的实现我不清楚」，既不编厂商也不编型号，也不反过来强调"我很先进"；
    绝不输出暴力、低俗、煽动类内容。
 2. 上报工单：不是学生的每句话都上报管理端。**只有**学生提出快递丢失、外卖遗失这类
    需要管理员协助处理的问题时，才走这个流程，且必须两步：
@@ -983,6 +986,32 @@ def _schedule_tools_allowed(module_key: str, sem_intent: str | None, message: st
     return wants_add_todo(message)
 
 
+# ============ 学生侧话术（同一件故障，两种听众） ============
+# 后台那套话（"HTTP 401 / API Key 无效 / 去管理控制台改「API 配置」"）是给管理员看的，
+# 他知道去哪儿修；**学生不需要、也不该在对话里看到这套字** —— 那是把产品拆开给人看内脏。
+# 所以异常带 `kind`（机器标签），这里按 kind 挑一句人话，全项目就这一处映射。
+# ⚠️ 两条纪律：
+#   1. 别用 message 关键字猜 kind（改一个字就漏），要加新错就顺手补 kind + 这里补一行；
+#   2. 翻译只发生在**发给学生的这一刻**，用量流水（app/data/llm_usage.jsonl）里
+#      照旧存技术原文 —— 管理员看不见真实原因，这道门就白设了。
+_STUDENT_LLM_WORDS = {
+    "no_key": "我这边现在答不上来——负责回答的服务还没接通。稍后再问一次，或者叫管理员看一下。",
+    "auth": "负责回答的服务说这次的授权不对（可能过期了）。这句我答不了，叫管理员核对一下。",
+    "rate_limited": "负责回答的服务这会儿太忙，被限流了。稍等十几秒再问我一次。",
+    "unreachable": "我联系不上负责回答的服务，可能是网络问题。稍后再试，或者叫管理员看一下。",
+    "blocked_address": "回答服务的地址配置不合规（默认不允许指向内网地址），这句我答不了。",
+    "bad_format": "回答服务给我的东西不对劲（地址可能填错了），这句我答不了。",
+    "upstream": "回答服务出了点状况，这句我答不了。稍后再问我一次。",
+    "unknown": "我这会儿答不上这句，稍后再问我一次。",
+}
+
+
+def _say_llm_error(e: Exception) -> str:
+    """把一次调用失败翻成**学生能懂、且不带技术内脏**的一句话。"""
+    kind = getattr(e, "kind", "unknown")
+    return "⚠️ " + _STUDENT_LLM_WORDS.get(kind, _STUDENT_LLM_WORDS["unknown"])
+
+
 @app.post("/api/chat")
 async def chat(req: Request):
     """对话入口。
@@ -1203,7 +1232,7 @@ async def _chat_impl(req: Request, meta: dict):
                 # （也才能带上「（清单来自文件原文）」这句出处）。
                 "answer": _tt_confirm_answer(len(_tt_direct), "文件原文"),
                 "trace": [{"step": 1,
-                           "phase": "📄 课表导入：系统直接读文件出卡（第一句话就出，不等模型）",
+                           "phase": "📄 课表导入：系统直接读文件出卡（第一句话就出，不用二次判断）",
                            "answer": f"文件原文抠出 {len(_tt_direct)} 门课"}],
                 "options": [_tt_card],
                 "awaiting_choice": True,
@@ -1246,7 +1275,7 @@ async def _chat_impl(req: Request, meta: dict):
                 "点【取消】就不上报，数据一点都不会动。"
             ),
             "trace": [{"step": 1,
-                       "phase": "📮 上报工单：系统直接出卡（不等模型判断）",
+                       "phase": "📮 上报工单：系统直接出卡（不走语义判断）",
                        "answer": f"问题类型 = {_wo_kind}"}],
             "options": [_wo_card],
             "awaiting_choice": True,
@@ -3058,7 +3087,7 @@ async def _chat_impl(req: Request, meta: dict):
             "module": module_key,
             "session_id": session_id,
             "answer": "📚 " + search_kb(message),
-            "trace": [{"step": 1, "phase": "📚 问的是校园信息 → 翻知识库（不交给模型现编）",
+            "trace": [{"step": 1, "phase": "📚 问的是校园信息 → 翻知识库（按台账答，不现编）",
                        "answer": "知识库命中"}],
             "options": [],
             "awaiting_choice": False,
@@ -3096,22 +3125,25 @@ async def _chat_impl(req: Request, meta: dict):
     try:
         result = await engine.run(message, history=history)
     except LLMError as e:
-        # 已知原因：密钥或网络问题，提示用户怎么补救
+        # 已知原因：密钥或网络问题。**日志和管理台留技术原文，学生只看到一句人话**
+        print(f"[LLM] 本轮对话没答成（kind={getattr(e, 'kind', '?')}）：{e}")
         return {
             "module": module_key,
             "session_id": session_id,
-            "answer": f"⚠️ {e}",
-            "trace": [{"step": 1, "phase": "❌ 调用大模型失败", "answer": str(e)}],
+            "answer": _say_llm_error(e),
+            "trace": [{"step": 1, "phase": "❌ 没能联系上负责回答的服务",
+                       "answer": _say_llm_error(e)}],
         }
     except Exception as e:  # 兜底：任何意外都不该让演示现场崩掉
         if DEBUG:
             import traceback
             traceback.print_exc()  # 开了 DEBUG 就打印完整堆栈，方便排查
+        print(f"[ERROR] /api/chat 兜底捕获：{type(e).__name__}: {e}")
         return {
             "module": module_key,
             "session_id": session_id,
-            "answer": f"⚠️ 助手处理时出了点问题：{type(e).__name__}：{e}",
-            "trace": [{"step": 1, "phase": "❌ 内部错误", "answer": f"{type(e).__name__}: {e}"}],
+            "answer": _say_llm_error(e),
+            "trace": [{"step": 1, "phase": "❌ 这一步没办成", "answer": _say_llm_error(e)}],
         }
 
     # 模型这轮**没调工具**、只在文字里念了方案（甚至自称"提案已发出"）→ 系统替它补条。
@@ -3140,7 +3172,7 @@ async def _chat_impl(req: Request, meta: dict):
         _tt_diag.append({
             "step": 1,
             "phase": "🔍 课表导入探测：命中（识别成「读课表文件导入」）",
-            "answer": f"模型自带 options 数 = {len(model_opts)}",
+            "answer": f"这轮回答里带了 {len(model_opts)} 个候选",
         })
     elif "课表" in (message or ""):
         # 提了"课表"却没命中正则 → 典型"说法逃过探测"，单独留痕提醒
@@ -3162,7 +3194,7 @@ async def _chat_impl(req: Request, meta: dict):
         tt_from_file = _tt_file_courses(message, session_id)
         _tt_diag.append({
             "step": 2,
-            "phase": "🔍 从模型回话抠课",
+            "phase": "🔍 从这轮回答里抠课程",
             "answer": f"回话里抠出 {len(tt_courses or [])} 门可识别课程",
         })
         _tt_diag.append({
@@ -3187,7 +3219,7 @@ async def _chat_impl(req: Request, meta: dict):
             tt_source = tt_src
             _tt_diag.append({
                 "step": 4,
-                "phase": "🛟 模型没调课表提案工具 → 系统从它的话里补出「确认修改」卡",
+                "phase": "🛟 这轮回答没给结构化课表 → 系统从话里补出「确认修改」卡",
                 "answer": f"最终采用：{tt_src}，共 {len(tt_courses)} 门 → 出卡",
             })
         else:
@@ -3195,13 +3227,13 @@ async def _chat_impl(req: Request, meta: dict):
             _tt_diag.append({
                 "step": 4,
                 "phase": "⚠️ 课表导入没出卡 → 如实说明，绝不挂假卡",
-                "answer": "回话和文件两路都抠不出可识别课程：检查模型是否真读了文件 / 文件是否为图片PDF / 排版是否为表格或纯文本行",
+                "answer": "回答和文件两路都读不出课程：可能是文件没被真读到、是图片型 PDF、或排版不是表格/纯文本行",
             })
     elif tt_detected and model_opts:
         # 模型自己调了 propose_timetable_change，引擎已给出卡，这里只统一回话
         _tt_diag.append({
             "step": 2,
-            "phase": "✅ 模型自己调了 propose_timetable_change，引擎已出卡（只统一回话）",
+            "phase": "✅ 引擎自己出了「确认修改」卡（系统只统一回话）",
             "answer": f"timetable_change 卡数 = {len([o for o in model_opts if o.get('kind') == 'timetable_change'])}",
         })
     elif not model_opts:
@@ -3214,7 +3246,7 @@ async def _chat_impl(req: Request, meta: dict):
             final_answer = _rescue_answer(rescued)
             final_trace = list(result["trace"] or []) + [{
                 "step": 1,
-                "phase": "🛟 模型没调工具 → 系统从它的话里补出确认条",
+                "phase": "🛟 这轮回答没给结构化结果 → 系统从话里补出确认条",
                 "answer": rescued.get("summary", ""),
             }]
         elif claims_proposal_sent(result["answer"]) and (
@@ -3231,7 +3263,7 @@ async def _chat_impl(req: Request, meta: dict):
             final_answer = _no_card_answer()
             final_trace = list(result["trace"] or []) + [{
                 "step": 1,
-                "phase": "⚠️ 模型自称已提交但系统补不出卡 → 如实纠正，不让学生空等",
+                "phase": "⚠️ 回话说已提交但系统补不出卡 → 如实纠正，不让学生空等",
             }]
 
     # 把出卡环节的诊断拼回 trace（学生端「我是这么想的」面板可见，即使没出卡也能定位）
