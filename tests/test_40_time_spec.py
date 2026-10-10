@@ -267,6 +267,26 @@ def batch_e_bare_clock():
     c.check("报了档就不该出现「没说是上午还是下午」这句",
             P._bare_clock_note("下午三点开始写作业") == "",
             P._bare_clock_note("下午三点开始写作业"))
+    # ④ 「没排上」有两种真话，混着说就成了编理由：
+    #    窗口之内被课占了 → "有课或已有安排"；找空档的时间窗之外（07:00-22:00）→ 必须说"排不了"
+    win = P.todo_slots_proposal("明天早上六点半跑步") or {}
+    hint = win.get("hint", "")
+    c.check("窗口外的钟点（06:30）要说「排不了」并报出真正的时间窗",
+            bool(hint) and "排不了" in hint and "07:00-22:00" in hint, hint[:160])
+    c.check("这句**不许**说成「那个时间有课」—— 清早操场空得很，那是编理由",
+            "有课或已有安排" not in hint, hint[:160])
+    in_win = P.todo_slots_proposal("明天上午七点开会") or {}
+    c.check("对照：07:00 在窗口内，照旧**照他点的排**（这道闸不是把早课全拒了）",
+            any(s["start"] == "07:00" for s in in_win.get("slots") or []),
+            [(s["start"], s["end"]) for s in in_win.get("slots") or []])
+    occ = _first_busy_evening()
+    if occ:
+        busy = P.todo_slots_proposal(f"{occ} 晚上七点到九点值日") or {}
+        c.check(f"对照组：窗口内、真被课占了（{occ} 19:00-21:00）才说「有课或已有安排」",
+                "有课或已有安排" in (busy.get("hint") or ""),
+                (busy.get("hint") or "")[:120])
+    else:
+        c.check("环境里找不到一个 19:00-21:00 被占的日子（④的对照组无法验）", False, "看课表")
     return c
 
 

@@ -21,6 +21,7 @@ A 组 10 句、E 组 7 句全过；剩下的红项查下去是**四个不同的�
 """
 import ast
 import io
+import json
 
 from _harness import Checker, make_client, sandbox, title
 from app.store import set_settings
@@ -166,7 +167,7 @@ def batch_e_period_carry():
     title("E 批 · 语义层重拼不许把「每周几 / 平时」丢掉（B3·B5·F5·F7 那一组的根因）")
     from app.modules.planner import (candidate_slots, carry_period, parse_add_todo,
                                      retime_todo_proposal, span_only_proposal,
-                                     weekly_repeat_day)
+                                     todo_slots_proposal, weekly_repeat_day)
 
     # 病根先复刻：重拼出来的那句里周期字样没了 → 判据一律判不出
     c.check("病根复刻：只拼槽位的规范话里「每个周六」蒸发了（weekly 判不出）",
@@ -210,6 +211,19 @@ def batch_e_period_carry():
     s2 = span_only_proposal("晚上七点背单词", "背单词", sat)
     c.check("对照：没说「工作日」的照旧用兜底那天（不许无端往后挪）",
             bool(s2) and s2["date"] == sat, s2 and s2["date"])
+    # ★ 同一天 H 组还打出一条更阴的：「每周一次」的"一"是**次数**，不是星期几。
+    #   老正则 `([一二三四五六日天])` 会把它吃掉 → 系统替学生挑了个周一、还挂成"每周重复"。
+    c.check("「每周一次大扫除」不许被读成「每周一」（次数不是星期几）",
+            weekly_repeat_day("每周一次大扫除") is None,
+            weekly_repeat_day("每周一次大扫除"))
+    c.check("「每周三」「每周一升旗」照旧认（前瞻不能把真星期几也挡掉）",
+            weekly_repeat_day("每周三下午两点开会") == 3
+            and weekly_repeat_day("每周一升旗") == 1,
+            (weekly_repeat_day("每周三下午两点开会"), weekly_repeat_day("每周一升旗")))
+    _h4 = todo_slots_proposal("每周一次大扫除") or {}
+    c.check("这张卡也不许带 repeat=weekly（他没点过哪天）",
+            (_h4.get("repeat") or "") != "weekly",
+            (_h4.get("repeat"), [(s.get("weekday")) for s in _h4.get("slots") or []]))
     return c
 
 
@@ -325,11 +339,63 @@ def batch_h_model_exit_gate_behaviour():
     return c
 
 
+def batch_i_no_internal_note():
+    c = Checker()
+    title("I 批 · 系统自己写进会话的挂卡标记，不许被当成回话念给学生")
+    # 真机现场：连着两次说「那就周六吧」，第二次的回答整句就是
+    #   「已生成待办确认：健身｜2026-10-17（周六）08:00-09:30」，而且一张卡都没有。
+    # 那句是系统往**会话历史**里记的账（给"读历史"那几支认"这条挂过卡"用），
+    # 模型读到就原样复读 —— 学生看到的是一句没人话的账目。
+    import app.main as M
+
+    class _EchoEngine:
+        def __init__(self, *a, **kw):
+            pass
+
+        async def run(self, message, history=None):
+            last = [m.get("content") or "" for m in (history or []) if m.get("role") == "assistant"]
+            return {"answer": (last[-1] if last else "（没历史可读）"),
+                    "trace": [{"step": 1, "phase": "💡 最终回答", "answer": "复读上一句"}],
+                    "options": [], "awaiting_choice": False}
+
+    async def quiet_sem(text, conv=None, override=None, **kw):
+        return {"intent": "chat", "module": "planner"}
+
+    real_sem, real_engine = M.classify, M.AgentEngine
+    with sandbox():
+        set_settings({"api_key": "fake-key-for-test-only",
+                      "base_url": "https://api.deepseek.com", "model": "m"})
+        cli = make_client()
+        try:
+            M.classify = quiet_sem
+            M.AgentEngine = _EchoEngine
+            cli.post("/api/chat", json={"message": "帮我加个游泳在周六",
+                                        "session_id": "t43-i", "module": "planner"})
+            # 第二句故意不含任何时间/事项线索，确定性地走不到别处（不会被"补挂确认条"
+            # 那一支截走）—— 上一版我拿「周六」当第二句，它被 3c-pre2 接走了，
+            # 于是这条断言根本没碰到保险本身，是个假绿的测试。
+            r = cli.post("/api/chat", json={"message": "你刚才说的那是什么话",
+                                            "session_id": "t43-i", "module": "planner"})
+            ans = r.json().get("answer") or ""
+            c.check("这一句确实走到了引擎（否则下面两条测不到东西）",
+                    "复读上一句" in json.dumps(r.json().get("trace") or [], ensure_ascii=False),
+                    json.dumps(r.json().get("trace") or [], ensure_ascii=False)[:120])
+            c.check("回话里不许出现「已生成待办确认：」这种系统记账句",
+                    not ans.startswith("已生成待办确认") and "已生成待办确认" not in ans,
+                    ans[:80])
+            c.check("换掉之后仍要有一句人话（不许回空串）",
+                    bool(ans.strip()) and "已生成" not in ans, ans[:80])
+        finally:
+            M.classify, M.AgentEngine = real_sem, real_engine
+    return c
+
+
 def main():
     results = [batch_a_time_words_registered(), batch_b_title_has_no_tail(),
                batch_c_tool_echo_never_shown(), batch_d_bare_clock_asked_in_place(),
                batch_e_period_carry(), batch_f_weekly_e2e(),
-               batch_g_slot_answer_shape(), batch_h_model_exit_gate_behaviour()]
+               batch_g_slot_answer_shape(), batch_h_model_exit_gate_behaviour(),
+               batch_i_no_internal_note()]
     tp = sum(r.passed for r in results)
     tf = sum(r.failed for r in results)
     print(f"\n===== 真机批次查出的四个缺口总账：通过 {tp} 项，失败 {tf} 项 =====")
