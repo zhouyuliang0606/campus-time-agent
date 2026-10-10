@@ -165,7 +165,8 @@ def batch_e_period_carry():
     c = Checker()
     title("E 批 · 语义层重拼不许把「每周几 / 平时」丢掉（B3·B5·F5·F7 那一组的根因）")
     from app.modules.planner import (candidate_slots, carry_period, parse_add_todo,
-                                     retime_todo_proposal, weekly_repeat_day)
+                                     retime_todo_proposal, span_only_proposal,
+                                     weekly_repeat_day)
 
     # 病根先复刻：重拼出来的那句里周期字样没了 → 判据一律判不出
     c.check("病根复刻：只拼槽位的规范话里「每个周六」蒸发了（weekly 判不出）",
@@ -197,6 +198,18 @@ def batch_e_period_carry():
     c.check("换时间不许顺手把「每周」换没（上一张是 weekly，改完还得是）",
             (kept or {}).get("repeat") == "weekly" and (kept or {}).get("start") == "10:00",
             (kept or {}).get("repeat"))
+    # 「工作日」+ 报了准点：以前单条卡这一路**根本不看星期几**，
+    # 真机那句「工作日晚上七点背单词」就排到了周日 19:00。
+    import datetime
+    today = datetime.date.today()
+    sat = (today + datetime.timedelta(days=(6 - today.isoweekday()) % 7)).isoformat()
+    s1 = span_only_proposal("工作日晚上七点背单词", "背单词", sat)
+    c.check(f"兜底那天是周末（{sat}）时，说了「工作日」就要挪到工作日",
+            bool(s1) and _wd(s1["date"]) < 6 and s1["start"] == "19:00",
+            s1 and (s1["date"], _wd(s1["date"]), s1["start"]))
+    s2 = span_only_proposal("晚上七点背单词", "背单词", sat)
+    c.check("对照：没说「工作日」的照旧用兜底那天（不许无端往后挪）",
+            bool(s2) and s2["date"] == sat, s2 and s2["date"])
     return c
 
 
