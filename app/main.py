@@ -83,6 +83,8 @@ from app.modules.planner import (
     render_todo_remove_list,
     render_todo_done_list,
     rescue_proposal_from_reply,
+    looks_like_tool_echo,
+    textual_tool_card,
     resolve_todo_remove,
     resolve_todo_done,
     resolve_todo_remove_reply,
@@ -91,7 +93,9 @@ from app.modules.planner import (
     todo_mode_proposal,
     todo_slots_proposal,
     carry_freq,
+    carry_period,
     unsupported_period,
+    _bare_clock_note,
     todo_remove_batch_proposal,
     todo_done_batch_proposal,
     wants_remove_todo,
@@ -778,15 +782,55 @@ def _slots_lead(persona_key: str | None) -> str:
     return (phrase + "\n\n") if phrase else ""
 
 
+def _period_reject_answer(word: str) -> str:
+    """「每天/每月/每个周末…」这类周期的那句回话（**只写一份**）。
+
+    三个出口都要用它（判定层的早退、`_offer_response` 这道漏斗、模型那一路的出口），
+    抄三份迟早走样 —— 一处改了另一处没改，学生就会看到两种说法。
+    """
+    return (
+        f"🚫 「{word}」这种安排我**记不了**——一条日程只能落在**某一天**，"
+        f"或者**每周固定的某一天**（那样的话以后每个那天都会自己出现）。\n"
+        f"换这两种说法我马上就能办：\n"
+        f"· 「每周一背单词」→ 只建一条，以后每个周一自己冒出来；\n"
+        f"· 「这一周要背三次」→ 在这一周里给你铺三段，你打勾。\n"
+        f"只想排一次的话，说个日子（比如「今天背单词」），我立刻出确认条。")
+
+
+def _period_reject_response(session_id: str, message: str, word: str) -> dict:
+    """把上面那句话组装成响应：**不出卡、不挂暂存、不写库**。"""
+    answer = _period_reject_answer(word)
+    append_conversation(session_id, "user", message)
+    append_conversation(session_id, "assistant", answer)
+    return {
+        "module": "planner",
+        "session_id": session_id,
+        "answer": answer,
+        "trace": [{"step": 1, "phase": f"🚫 「{word}」这种周期接不了 → 如实说并给两种能办的说法",
+                   "answer": "没出卡，也没把这句学进去"}],
+        "options": [],
+        "awaiting_choice": False,
+    }
+
+
 def _offer_response(session_id: str, card: dict, message: str,
                     answer: str, phase: str) -> dict:
     """把一张待办提案挂进暂存 + 组装响应（人话：出条这件事只写一遍）。
 
     抽出来是因为现在有**三个出口**都要挂条：学生说「加个健身」（3c）、
     学生在候选卡下面报了准点（3c-pre）、系统刚问过一轮而学生答了"确认"（3a-c 兜底）。
-    抄三份迟早走样——比如有一处忘了写 `save_pending`，
+    抄三份迟早走样——比如一处忘了写 `save_pending`，
     学生点了按钮后端找不到提案，现象又是"点了没反应"。
+
+    ⚠️ 这里同时是**所有确定性出卡路径的唯一漏斗**，所以"表达不了的周期"这道否决
+    必须在这儿再收一次口（2026-10-11 真机补）：判定层那条否决要求"某一档判成 add_todo"，
+    可「以后每天晨跑」这句两档都没出声、却照样被"学生报了事名没定时间"那一档接走，
+    挂出了一张**把"每天"扔掉**的二选一卡。判据看的是**学生原话**（`message`），
+    不是卡片字段 —— 语义层重拼之后周期字样早没了。
     """
+    _per = unsupported_period(message or "")
+    if _per:
+        return _period_reject_response(session_id, message, _per)
     save_pending(session_id, [card])
     append_conversation(session_id, "user", message)
     append_conversation(session_id, "assistant", f"已生成待办确认：{card.get('summary', '')}")
@@ -1979,6 +2023,23 @@ async def _chat_impl(req: Request, meta: dict):
                  f"**{one['date']}（{one['weekday']}）{one['start']}-{one['end']}**。\n"
                  f"下面点一下【确认加入】我就写进去，回一句「确认」也一样。"),
                 "🕘 学生在候选卡下面自己报了时间 → 出单条确认条")
+        # 报的是 1..6 点又没说上下午 → **在这儿就把这句问清楚**，别掉回模型。
+        # 掉回去的代价实测过（2026-10-11）：模型自己"替他挑了下午三点"，
+        # 还顺手把 `propose_todo_tool {json}` 当成回话打出来 —— 一次错时间 + 一次内脏外露。
+        # 候选卡留着不撤：他补一句「下午三点」照样走上面那条正路。
+        _ask = _bare_clock_note(message)
+        if _ask:
+            append_conversation(session_id, "user", message)
+            append_conversation(session_id, "assistant", _ask)
+            return {
+                "module": "planner",
+                "session_id": session_id,
+                "answer": _ask,
+                "trace": [{"step": 1, "phase": "🕐 这个钟点没报上下午 → 问清楚，不替他猜",
+                           "answer": "候选卡照旧挂着"}],
+                "options": [],
+                "awaiting_choice": False,
+            }
 
     # 3c-pre3) **学生在聊天里回"你自己定 / 你帮我挑"** → 就着他选的那条路出卡。
     #     为什么必须有这一支：两选一卡上的按钮是最好走的路（前端直接打
@@ -2390,24 +2451,7 @@ async def _chat_impl(req: Request, meta: dict):
     #   只做这两件，不去"听懂每天/每月"：一条日程只能落**某一天**或**每周固定某天**，
     #   硬扩表达等于替学生造他没说要的几十条安排（判据同 `weekly_repeat_day` 的取舍）。
     if _period_block:
-        append_conversation(session_id, "user", message)
-        _answer = (
-            f"🚫 「{_period}」这种安排我**记不了**——一条日程只能落在**某一天**，"
-            f"或者**每周固定的某一天**（那样的话以后每个那天都会自己出现）。\n"
-            f"换这两种说法我马上就能办：\n"
-            f"· 「每周一背单词」→ 只建一条，以后每个周一自己冒出来；\n"
-            f"· 「这一周要背三次」→ 在这一周里给你铺三段，你打勾。\n"
-            f"只想排一次的话，说个日子（比如「今天背单词」），我立刻出确认条。")
-        append_conversation(session_id, "assistant", _answer)
-        return {
-            "module": "planner",
-            "session_id": session_id,
-            "answer": _answer,
-            "trace": [{"step": 1, "phase": f"🚫 「{_period}」这种周期接不了 → 如实说并给两种能办的说法",
-                       "answer": "没出卡，也没把这句学进去"}],
-            "options": [],
-            "awaiting_choice": False,
-        }
+        return _period_reject_response(session_id, message, _period)
 
     # ⚠️ 末尾的 `and not wants_add_course(message)` 是「加课优先于加待办」的硬闸门：
     # 学生说"周一早上加一节高数课"时，语义层（样本库/大模型）很可能把它判成 add_todo，
@@ -2437,7 +2481,7 @@ async def _chat_impl(req: Request, meta: dict):
         #    信息会整段丢掉——"帮我安排周二的游泳"里的"周二"就不在语义字段里，一替下去
         #    候选时段会摊到一整周（实测踩过）。所以只在规则读不出来时才用规范话兜。
         if _sem_intent == INTENT_ADD_TODO and _sem and not wants_add_todo(message):
-            blob = carry_freq(to_canonical(message, _sem), message)
+            blob = carry_period(carry_freq(to_canonical(message, _sem), message), message)
         else:
             blob = (prev_user + "，" + message) if (asking_add and prev_user) else message
         proposal = None
@@ -2463,16 +2507,25 @@ async def _chat_impl(req: Request, meta: dict):
             # ★ 架构升级 · 试点 2：确认卡字段 / 暂存 / 写库路径**一个字节都不改**，
             #   只把下面那段模板话术交给模型润色（超时/失败/没 key → 原样退回模板）。
             #   模型只复述事实，不许新增、不许说"已办好"（承诺词守卫在 polish 里）。
+            _wd_bare = (proposal.get("weekday") or "").replace("周", "") or "那天"
             _card_fallback = (
                 f"📝 要不要把 **{proposal['title']}** 排进日程？"
                 f"{proposal['date']}（{proposal['weekday']}）"
                 f"{proposal['start']}-{proposal['end']}。\n"
-                f"下面点一下【确认加入】我就写进去，回一句「确认」也一样。")
+                # 学生说了"每个周六"就得在回话里把这件事确认一遍 —— 只报一个日子，
+                # 他会以为就排这一天，下周那天不再出现（2026-10-11 真机就是这么掉的）。
+                + (f"这是**每周{_wd_bare}**都要做的事，我只建一条："
+                   f"以后每个周{_wd_bare}它自己会出现在日程里。\n"
+                   if proposal.get("repeat") == "weekly" else "")
+                + f"下面点一下【确认加入】我就写进去，回一句「确认」也一样。")
             from app.agent.polish import polish_reply
             _card_answer = await polish_reply(
                 {"intent": "add_todo", "title": proposal["title"],
                  "date": proposal["date"], "weekday": proposal.get("weekday", ""),
                  "start": proposal["start"], "end": proposal["end"],
+                 # 润色只许复述事实，所以"每周"这个事实也得给它 —— 少了这一格，
+                 # 它照着上面那段模板改写到"下一次"就没了，学生看不出来自己那条是长期的。
+                 "repeat": proposal.get("repeat") or "",
                  "executed": False},
                 _card_fallback, override=model_config)
             return _sem_done(_offer_response(
@@ -3169,6 +3222,12 @@ async def _chat_impl(req: Request, meta: dict):
     # 评委没看到密钥也不影响看效果。
     # 注意：若学生端自带了有效 API（model_config 有 key），就跳过 Mock，走真模型。
     if module_key == "planner" and not get_llm_config(override=model_config)["api_key"]:
+        # ⚠️ 这条 Mock 出口**自己 return**，走不到下面那道出口复核 ——
+        # 但它恰恰是评委没配密钥时看到的那一幕：「每天背30个单词」在这儿会摊出三段
+        # 候选，等于当着人面前把"每天"扔掉。判据跟别处同一道（`unsupported_period`）。
+        _per_mock = unsupported_period(message)
+        if _per_mock:
+            return _period_reject_response(session_id, message, _per_mock)
         result = mock_planner(message, history, persona_key)
         append_conversation(session_id, "user", message)
         append_conversation(session_id, "assistant", result["answer"])
@@ -3300,33 +3359,74 @@ async def _chat_impl(req: Request, meta: dict):
         })
     elif not model_opts:
         recent_add_req = _recent_add_request(session_id)
-        rescued = rescue_proposal_from_reply(result["answer"], recent_add_req)
-        if rescued is not None:
-            model_opts = [rescued]
-            # 它那段文字在这一刻是自相矛盾的（前面说"还没生成出来"、后面说"已发出"），
-            # 整段换成系统话术，别让学生去猜哪句是真的。
-            final_answer = _rescue_answer(rescued)
-            final_trace = list(result["trace"] or []) + [{
+        # ★ 模型有时**不调工具，而是把工具调用当文本打出来**（2026-10-11 真机：学生看到
+        #   `propose_todo_tool / {"title": "写作业", "when": "2024-01-05 15:00~18:00"}`）。
+        #   这一幕同时踩两条线：卡没出来（学生白等），而且把内部机制端到了学生面前。
+        #   两步一起做：① 认出这个形状就**替它执行这一次调用**（同一件函数，参数校验、
+        #   空档检查、周期否决一道不少 —— "打成字"和"真调用"结果必须一致）；
+        #   ② 无论执行得出执行不出，**那段文本都不许回显给学生**（换成系统话术）。
+        _echo = looks_like_tool_echo(result["answer"] or "")
+        if _echo:
+            echoed = textual_tool_card(result["answer"])
+            if echoed is not None:
+                model_opts = [echoed]
+                final_answer = _rescue_answer(echoed)
+            else:
+                final_answer = _no_card_answer()
+            final_trace = list(result.get("trace") or []) + [{
                 "step": 1,
-                "phase": "🛟 这轮回答没给结构化结果 → 系统从话里补出确认条",
-                "answer": rescued.get("summary", ""),
+                "phase": "🛟 它把工具调用打成了字 → 系统替它执行这一次（那段文本不回显）",
+                "answer": (echoed or {}).get("summary") or "那段调用没能变成卡片，已如实说明",
             }]
-        elif claims_proposal_sent(result["answer"]) and (
-                has_concrete_span(result["answer"]) or recent_add_req):
-            # 它自称"已经提交/已经加入"了，可方案**捞不出来**（正文里没有可认的
-            # 任务名或时间），系统补不出卡。这句话留着比没有更坏 ——
-            # 学生会以为安排好了、跑去等，而库里一条都没有。
-            # 删不掉这份假话，那就**如实纠正**并告诉他下一步怎么说。
-            #
-            # 两道闸门（纠正是有代价的——会把一段本来没问题的回答换掉）：
-            #   · 它这段话里得带**具体时段**（`08:00~09:00`），
-            #     否则"你点确认后系统才会入库"这种流程解释也会被误伤；
-            #   · 或者学生最近确实说过要加什么（那这句"提交了"多半是在说他那件事）。
-            final_answer = _no_card_answer()
-            final_trace = list(result["trace"] or []) + [{
+        else:
+            rescued = rescue_proposal_from_reply(result["answer"], recent_add_req)
+            if rescued is not None:
+                model_opts = [rescued]
+                # 它那段文字在这一刻是自相矛盾的（前面说"还没生成出来"、后面说"已发出"），
+                # 整段换成系统话术，别让学生去猜哪句是真的。
+                final_answer = _rescue_answer(rescued)
+                final_trace = list(result["trace"] or []) + [{
+                    "step": 1,
+                    "phase": "🛟 这轮回答没给结构化结果 → 系统从话里补出确认条",
+                    "answer": rescued.get("summary", ""),
+                }]
+            elif claims_proposal_sent(result["answer"]) and (
+                    has_concrete_span(result["answer"]) or recent_add_req):
+                # 它自称"已经提交/已经加入"了，可方案**捞不出来**（正文里没有可认的
+                # 任务名或时间），系统补不出卡。这句话留着比没有更坏 ——
+                # 学生会以为安排好了、跑去等，而库里一条都没有。
+                # 删不掉这份假话，那就**如实纠正**并告诉他下一步怎么说。
+                #
+                # 两道闸门（纠正是有代价的——会把一段本来没问题的回答换掉）：
+                #   · 它这段话里得带**具体时段**（`08:00~09:00`），
+                #     否则"你点确认后系统才会入库"这种流程解释也会被误伤；
+                #   · 或者学生最近确实说过要加什么（那这句"提交了"多半是在说他那件事）。
+                final_answer = _no_card_answer()
+                final_trace = list(result["trace"] or []) + [{
+                    "step": 1,
+                    "phase": "⚠️ 回话说已提交但系统补不出卡 → 如实纠正，不让学生空等",
+                }]
+
+    # ★ 模型这一路出口再收一次口（判据同 `_offer_response`、同 `unsupported_period`）。
+    #   工具里那道 `period_reject` 看的是**模型自己传的参数** —— 它把「每个月剪一次头发」
+    #   改写成"剪头发 + 某个日子"就绕过去了（2026-10-11 真机实测：卡照样挂出来）。
+    #   这里拿**学生原话**判：句子要的周期表达不了，这一路生成的待办卡**一张都不留**，
+    #   回话换成那句如实说明（暂存里也就没有卡，学生点不到、也就不会写库）。
+    _per_out = unsupported_period(message)
+    if _per_out:
+        # ⚠️ 判"是不是待办卡"不能只看 `kind`：无密钥时那段兜底（`mock_planner`）摊出来的
+        # 候选**根本没有 kind 字段**（真机上这一段是模型跑的，形状也一样），
+        # 只挑 `kind.startswith("todo")` 就等于放过了这条路 —— 2026-10-11 一批真机句子打出来的。
+        # 所以反过来写：**只留课表那几种明确的非待办卡**，其余一律撤下。
+        _non_todo = ("timetable_change", "timetable_clear", "course_add")
+        _keep = [o for o in model_opts if str(o.get("kind") or "") in _non_todo]
+        if len(_keep) != len(model_opts):
+            model_opts = _keep
+            final_answer = _period_reject_answer(_per_out)
+            final_trace = final_trace + [{
                 "step": 1,
-                "phase": "⚠️ 回话说已提交但系统补不出卡 → 如实纠正，不让学生空等",
-            }]
+                "phase": f"🚫 出口复核：「{_per_out}」这种周期接不了 → 撤下这一路生成的待办卡",
+                "answer": "没挂卡，也没写库"}]
 
     # 把出卡环节的诊断拼回 trace（学生端「我是这么想的」面板可见，即使没出卡也能定位）
     final_trace = final_trace + _tt_diag
@@ -3340,6 +3440,12 @@ async def _chat_impl(req: Request, meta: dict):
         if _tt_opts:
             _n = len(_tt_opts[-1].get("courses") or [])
             final_answer = _tt_confirm_answer(_n, tt_source)
+
+    # 最后一道"不端内脏上桌"的保险（红线 8）：上面的分支都处理过了，但模型想法随时会变——
+    # 只要**最终要发给学生的这句话**里还留着"工具名 + JSON"那个形状，就换掉它。
+    # 宁可回一句"这一步没办成"，也不能让学生看见系统内部怎么调用的。
+    if looks_like_tool_echo(final_answer or ""):
+        final_answer = _no_card_answer()
 
     # 写进会话历史的是**学生最终看到的那一句**（补条之后的话术）。
     # 以前这一步在补条之前，结果刷新页面看到的是模型那句"提案已发出"（底下没按钮），

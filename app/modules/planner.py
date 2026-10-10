@@ -341,7 +341,12 @@ def _bare_clock_note(text: str) -> str:
 
 _PART_WORDS = (("上午", ("上午", "早上", "早晨", "一早", "清晨")),
                ("下午", ("下午", "午后", "傍晚")),
-               ("晚上", ("晚上", "夜里", "今晚", "今夜", "晚间")))
+               ("晚上", ("晚上", "夜里", "今晚", "今夜", "晚间", "明晚", "后晚", "昨晚")))
+# 「凌晨/半夜/午夜」算**报了档**：学生说「凌晨1点赶火车」就是 01:00，不是"没听清"。
+# 归到"晚上"这一档只是为了给三档排序（DAY_PARTS 里没有凌晨档），
+# 钟点本身走 pinned —— 它不看档的上下界，只看那段排不排得进。
+# （0 点/12 点不用列：`clock_ok` 那条本来就只怀疑 1..6 点。）
+_AMPM_EXTRA = ("晚上", ("凌晨", "半夜", "午夜"))
 # 「中午」单独处理：它落在 11:00-13:00，跨在上午档和下午档中间，
 # 归到"上午"还是"下午"都会让学生觉得"我说的不是这个意思"，所以只认三档本名。
 _NOON_WORDS = ("中午", "正午", "午间")
@@ -352,7 +357,7 @@ def _part_said(text: str) -> str:
     t = text or ""
     if any(w in t for w in _NOON_WORDS):
         return ""
-    for name, words in _PART_WORDS:
+    for name, words in _PART_WORDS + (_AMPM_EXTRA,):
         if any(w in t for w in words):
             return name
     return ""
@@ -530,8 +535,11 @@ def parse_slot_text(text: str, title: str = "", fallback_date: str = "") -> dict
         return None
     mine = _pick_title(t)
     keep = mine if (mine and mine != "待办" and _title_ok(mine)) else ""
-    # 拼过去的那半句只在"这句没报名"时才用；报了名就不许再借上一轮的名字
-    blob = t if keep else f"{t} {title}".strip()
+    # 拼过去的那半句只在"这句没报名"时才用；报了名就不许再借上一轮的名字。
+    # ⚠️ 拼接符用顿号而不是空格（2026-10-11 真机）：空格粘出来是一整串，
+    # 「那就周六吧」+「健身」→ 擦掉"那就/周六"之后剩「吧健身」当名字；
+    # 用标点切开，`_pick_title` 的"逐句重试"那一档才会分别判：前半句不算名字、后半句是「健身」。
+    blob = t if keep else f"{t}，{title}".strip("， ")
     prop = parse_add_todo(blob)
     if prop is None:
         prop = auto_todo_proposal(blob)
@@ -539,14 +547,13 @@ def parse_slot_text(text: str, title: str = "", fallback_date: str = "") -> dict
         prop = span_only_proposal(t, title, fallback_date)
     if prop is None:
         return None
-    if keep:
-        # 这句自己报了名 → 名字就以它为准，卡片/摘要一起改口，别留拼出来的串味名
-        prop["title"] = keep
-        prop["summary"] = (f"{keep}｜{prop['date']}（{prop.get('weekday', '')}）"
-                           f"{prop['start']}-{prop['end']}")
-    if title and prop.get("title") in ("", "待办"):
-        prop["title"] = title
-        prop["summary"] = (f"{title}｜{prop['date']}（{prop.get('weekday', '')}）"
+    # 名字**只认这两个来源**：这句自己报的（`keep`），或者外面传进来的那件事（`title`）。
+    # 不许用 `parse_*` 从拼出来的整串里抠的名字 —— 2026-10-11 真机：学生回「那就周六吧」，
+    # 拼上「健身」擦干净之后剩 **「吧健身」** 当卡片标题，语气词的尾巴粘在事名上。
+    want_name = keep or (title or "").strip()
+    if want_name and prop.get("title") != want_name:
+        prop["title"] = want_name
+        prop["summary"] = (f"{want_name}｜{prop['date']}（{prop.get('weekday', '')}）"
                            f"{prop['start']}-{prop['end']}")
     return prop
 
@@ -603,6 +610,8 @@ def span_only_proposal(text: str, title: str = "", fallback_date: str = "") -> d
         "end": finish,
         "weekday": wd,
         "minutes": to_minutes(finish) - to_minutes(begin),
+        # 同 `parse_add_todo`：说了"每周几"就要带上 repeat，不然这条只出现一次
+        "repeat": REPEAT_WEEKLY if weekly_repeat_day(text or "") else REPEAT_NONE,
         "summary": f"{name}｜{day}（{wd}）{begin}-{finish}",
     }
 
@@ -792,6 +801,30 @@ def carry_freq(blob: str, message: str) -> str:
     # 差别的代价实测过：把原话整段拼上去，擦频次时「一周」「三次」各自被擦掉，
     # 中间的"要去"没人擦，标题就成了「健身房锻炼要去」——卡片名字带尾巴。
     return f"{blob} 一周{m.group(1)}次"
+
+
+def carry_period(blob: str, message: str) -> str:
+    """语义层重拼那句话时，把**周期字样**（每周几 / 平时·工作日）也带过去。
+
+    跟 `carry_freq` 是同一个病：`to_canonical` 只按语义层给的槽位重拼，
+    槽位里没有的字样就整段蒸发。2026-10-11 一批真机句子实测到三种后果：
+      · 「每个周六上午九点爬山」→ 拼出来没有"每周"，`weekly_repeat_day` 判不出，
+        学生要的每周重复落成了一条**一次性**待办；
+      · 「我平时想去跑步」→ 拼出来没有"平时"，`candidate_slots` 的 workday_mode 关掉，
+        候选里赫然排着**周日**；
+      · 「工作日晚上七点背单词」→ 同上，只能反问一句"每周几"。
+    补的是**规范写法**（「每周六」「工作日」），不是原话那一段 —— 原话可能是「每个礼拜六」，
+    下游 `_REPEAT_PHRASE_RE` / workday_mode 认的就是这两串，标题也照样擦得干净
+    （实测「加个跑步 工作日」擦完剩「跑步」，不会把"工作日"黏进事名）。
+    """
+    blob, msg = blob or "", message or ""
+    add = []
+    wd = weekly_repeat_day(msg)
+    if wd and not weekly_repeat_day(blob):
+        add.append("每周" + "一二三四五六日天"[wd - 1])
+    if any(w in msg for w in ("平时", "工作日")) and not any(w in blob for w in ("平时", "工作日")):
+        add.append("工作日")
+    return (blob + " " + " ".join(add)).strip() if add else blob
 
 
 def _clock_note(text: str, slots: list) -> str:
@@ -1145,6 +1178,15 @@ def is_slot_answer(text: str) -> bool:
     if any(k in t for k in ("吗", "？", "?")):
         return False
     if any(w in t for w in _ADD_INTENT) or _ADD_TALK_RE.search(t):
+        return False
+    # ★ 「纯时间/纯日期」才算挑时间：把时间词、日期词、语气字都擦干净之后**只剩两三个字以内**
+    #   才算数。老写法只要求"句子里有钟点或有日子"，真机那句
+    #   「我现在没有看见日程显示周二游泳代办项目啊」（里面有"周二"）就被当成挑时间，
+    #   系统回了一句「好，那 游泳 就定在 11:40-13:10」—— 学生的报障被听成了下单，就此蒸发。
+    #   用"擦完剩多少字"而不是"再列一张报障词表"：词表抄不完，这一条是这句话的**形状**。
+    residue = _strip_title_noise(t) or ""
+    residue = re.sub(r"[\s，,。.、！!？?；;：:_\-~～]|就|那|吧|啦|呀|啊|呢|嘛|了|的|好|嗯|改|换|到|个|来|再", "", residue)
+    if len(residue) > 2:
         return False
     return _pick_span(t)[0] is not None or _pick_date(t) is not None
 
@@ -1917,6 +1959,20 @@ _UNSUPPORTED_PERIOD = (
     "每天", "天天", "每日", "每个周末", "每周末", "每个星期末", "隔一天", "隔天",
     "每两周", "两周一次", "每月", "每个月", "一月一次", "下个月", "上个月", "每个月末",
 )
+# 「跨度 + 次数」的**结构**判据（词表抄不完：2026-10-11 真机就漏了「两周去一次」这种语序，
+# 漏了还被样本库学进去，以后每次近似说法都照着错）。三条一起用：
+#   ① 单位是「月」→ 一律表达不了（一个月两次也不行 —— 一条记录落不了"每个月"）；
+#   ② 单位是「周/星期/礼拜」且**跨度不止一周** → 表达不了；
+#      正好一周（「一周三次」）是现有能力：在这一周里铺 N 条，别拦。
+#   ③ 「隔 N 天/日」这种跳过几天的 → 也表达不了（词表里只有「隔天/隔一天」）。
+# 次数必须跟在跨度后面、六个字以内，免得「10月20号那周我还有三次课」被误伤。
+_SPAN_UNIT_RE = re.compile(r"([一两二三四五六七八九十]{1,2}|\d{1,2})\s*(个?周|星期|礼拜|个?月)")
+_TIMES_RE = re.compile(r"([一两二三四五六七八九十]{1,2}|\d{1,2})\s*(?:次|回|趟|遍)(?!课)")
+_SKIP_RE = re.compile(r"隔\s*([一两二三四五六七八九十]{1,2}|\d{1,2})\s*(?:天|日|周|星期|个月|月)")
+# 「每周两次」这种"一周好几回 + 长期"也表达不了：一条记录落不了长期，铺 N 条只管这一周。
+# ⚠️ 后面紧跟星期几的（「每周三开一次会」）是**现有能力**（repeat=weekly），必须让路 ——
+#    少了这个前瞻，"每周三…一次"就被当成"每周一次以上"拦掉了。
+_EVERY_UNIT_RE = re.compile(r"(?:每|所有|整)\s*(?:个|一)?\s*(周|星期|礼拜|个月|月)(?![一二三四五六日天])")
 
 
 def unsupported_period(text: str) -> str:
@@ -1925,6 +1981,26 @@ def unsupported_period(text: str) -> str:
     for w in _UNSUPPORTED_PERIOD:
         if w in t:
             return w
+    skip = _SKIP_RE.search(t)
+    if skip:
+        return skip.group(0).strip()
+    ev = _EVERY_UNIT_RE.search(t)
+    if ev:
+        tm = _TIMES_RE.search(t[ev.end():ev.end() + 5])
+        if tm and _num(tm.group(1)):
+            return ev.group(0) + t[ev.end():ev.end() + tm.end()]
+    sp = _SPAN_UNIT_RE.search(t)
+    if not sp:
+        return ""
+    n = _num(sp.group(1))
+    unit = sp.group(2)
+    month = "月" in unit
+    if n in (None, 1) and not month:
+        return ""                      # 「一周三次」= 现有能力，不拦
+    rest = t[sp.end():sp.end() + 6]
+    tm = _TIMES_RE.search(rest)
+    if tm and _num(tm.group(1)):
+        return sp.group(0) + rest[:tm.end()]
     return ""
 
 
@@ -2040,8 +2116,10 @@ def _normalize_clock(t: str) -> str:
 
 
 # 时段词表：决定一个 12 小时制的钟点该不该 +12（人话：下午/晚上 = 加，上午/早上 = 不加）。
-_PM_WORDS = ("下午", "午后", "傍晚", "晚上", "夜里", "晚间", "今晚", "今夜")
-_AM_WORDS = ("上午", "早上", "早晨", "一早", "凌晨", "清晨")
+_PM_WORDS = ("下午", "午后", "傍晚", "晚上", "夜里", "晚间", "今晚", "今夜",
+             "明晚", "后晚", "昨晚")     # 「明晚八点」少这三个词就会被当成早上 08:00（2026-10-11 真机查到）
+_AM_WORDS = ("上午", "早上", "早晨", "一早", "凌晨", "清晨", "半夜", "午夜")
+_MIDNIGHT_WORDS = ("凌晨", "半夜", "午夜")
 _SPAN_PERIOD_WORDS = _AM_WORDS + ("中午",) + _PM_WORDS
 
 
@@ -2055,6 +2133,10 @@ def _period_hour(ctx: str, whole: str, hour: int | None) -> int | None:
     """
     if hour is None or hour > 12:
         return hour
+    # 「半夜12点」「凌晨12点」是**当天 0 点**，不是中午 12 点（2026-10-11 真机读成了 14:00）。
+    # 只在这一处特判 12，别的钟点照旧走下面的时段词判断。
+    if hour == 12 and any(w in (ctx or "") for w in _MIDNIGHT_WORDS):
+        return 0
     if any(w in (ctx or "") for w in _PM_WORDS):
         return hour + 12 if hour < 12 else hour
     if any(w in (ctx or "") for w in _AM_WORDS):
@@ -2134,7 +2216,12 @@ def _pick_date(text: str):
             return (f"{datetime.date.today().year}-"
                     f"{mo:02d}-{da:02d}")
     today = datetime.date.today()
-    for word, off in (("大后天", 3), ("后天", 2), ("明天", 1), ("今晚", 0), ("今夜", 0), ("今天", 0)):
+    for word, off in (("大后天", 3), ("后天", 2), ("明天", 1), ("今晚", 0), ("今夜", 0), ("今天", 0),
+                      # 「明晚/明早」以前靠笔误闸门把它改成「明天」才碰上日期 —— 那一步顺带把
+                      # "晚"字里的**晚上**信息擦了（明晚八点 → 早上 08:00）。现在两头都认：
+                      # 时间词表登记了「明晚」不再被改写，这里也直接算出明天。
+                      # ⚠️ 不加「昨晚」：那是过去，算出日期只会排一条学生已经错过的待办。
+                      ("明晚", 1), ("明早", 1)):
         if word in t:
             return (today + datetime.timedelta(days=off)).isoformat()
     m = _WEEKDAY_RE.search(t)
@@ -2210,7 +2297,11 @@ def looks_like_thing(name: str) -> bool:
 # 真正的"时间词"（擦标题时要擦掉的那一批）。**只写一份**：抠标题、抠待办名、
 # 形近字纠正三处都从这儿取，省得改一处忘两处。
 _TIME_WORDS = ("今天", "今晚", "今夜", "明天", "后天", "大后天",
-               "上午", "下午", "中午", "晚上", "早上", "夜里", "周末")
+               "上午", "下午", "中午", "晚上", "早上", "夜里", "周末",
+               # ↓ 2026-10-11 补：这些**本来就是时间词**，漏登记就会被笔误闸门当成错字改掉。
+               # 代价实测过：「明晚七点到九点」被改写成「明天七点到九点」→ 钟点从 19:00 变 07:00；
+               # 「半夜12点」被改写成「半夜里2点」→ 14:00。**静默排错时间**比排不进更坑。
+               "明晚", "后晚", "昨晚", "凌晨", "半夜", "午夜", "清晨", "早晨", "一早")
 
 
 # 长得像时间词、其实是**正经事名**的两字词 —— 绝不能被当成笔误纠掉。
@@ -2643,6 +2734,11 @@ def parse_add_todo(text: str) -> dict | None:
         "end": end,
         "weekday": _weekday_name(date),
         "minutes": to_minutes(end) - to_minutes(start),
+        # ★ 「每个周六上午九点爬山」这种**每周几 + 报了准点**的说法，repeat 必须一起带上：
+        # 以前只有"摊候选时段"那一路带 repeat，报了准点就走这一路 → 学生说了"每个周六"，
+        # 拿到的却是一条**一次性**待办（2026-10-11 一批真机句子打出来的，三句都一样）。
+        # `store.add_todo` 在 weekday 不传时按 date 推，所以这里只补 repeat 就够。
+        "repeat": REPEAT_WEEKLY if weekly_repeat_day(t) else REPEAT_NONE,
         "summary": f"{title}｜{date}（{_weekday_name(date)}）{start}-{end}",
     }
 
@@ -2746,6 +2842,7 @@ def auto_todo_proposal(text: str) -> dict | None:
         "weekday": wd,
         "minutes": slot["minutes"],
         "auto": True,           # 时间不是学生给的，是系统挑的 —— 话术里要说清楚
+        "repeat": REPEAT_WEEKLY if weekly_repeat_day(t) else REPEAT_NONE,
         "summary": f"{title}｜{date}（{wd}）{slot['start']}-{slot['end']}",
     }
 
@@ -3094,6 +3191,60 @@ def has_concrete_span(text: str) -> bool:
     return bool(_CONCRETE_SPAN_RE.search(text or ""))
 
 
+# 模型"把工具调用打成字"的形状：工具名 + 紧跟的一段 JSON。
+# ⚠️ 只列**能直接变成卡片**的那三件 + 两件只读的（撤文本不代执行）：
+#    诊断页/日志里出现工具名是正常的，别一看到名字就把回话换掉。
+_TOOL_ECHO_RE = re.compile(
+    r"(propose_todo_mode_tool|propose_todo_slots_tool|propose_todo_tool"
+    r"|propose_todo_remove|propose_todo_done|propose_slots)"
+    r"\s*[:：]?\s*(\{.*?\})", re.S)
+
+
+def looks_like_tool_echo(text: str) -> bool:
+    """这段回话是不是"模型把工具调用当成文本打出来了"。
+
+    2026-10-11 真机实测：学生问「三点开始大约三个小时」，管家回的不是卡片，而是原样一段——
+        propose_todo_tool
+        {"title": "写作业", "when": "2024-01-05 15:00~18:00"}
+    这是**两件事**：卡没出来（学生白等），而且把内部机制端到了学生面前
+    （红线 8「学生面前不出现技术内脏」里最直白的一种）。
+    判据要保守：必须是"工具名 + 花括号里的一段 JSON"，光提到工具名不算
+    （管理员的诊断页、日志里都可能出现工具名）。
+    """
+    return bool(_TOOL_ECHO_RE.search(text or ""))
+
+
+def textual_tool_card(text: str) -> dict | None:
+    """模型没"调"工具、而是把调用**打成字**了 → 系统替它执行这一次调用。
+
+    走的是**同一件函数**：参数校验、空档检查、周期否决（`period_reject`）一道都不少，
+    所以"文本调用"和"真调用"结果一致 —— 不因为模型换了种表达方式就少查一遍。
+    认不出形状、或那件函数根本不产卡片（如 `propose_slots` 只渲染已有候选），返回 None，
+    由调用方**至少把那段文本撤下来**（`looks_like_tool_echo` 那条红线）。
+    """
+    m = _TOOL_ECHO_RE.search(text or "")
+    if not m:
+        return None
+    name, payload = m.group(1), m.group(2)
+    fn = {"propose_todo_tool": propose_todo_tool,
+          "propose_todo_mode_tool": propose_todo_mode_tool,
+          "propose_todo_slots_tool": propose_todo_slots_tool}.get(name)
+    if fn is None:
+        return None
+    try:
+        args = json.loads(payload)
+    except Exception:
+        return None
+    if not isinstance(args, dict):
+        return None
+    try:
+        raw = fn(**args)
+        prop = (json.loads(raw) or {}).get("__proposal__")
+    except Exception:
+        return None
+    return prop if isinstance(prop, dict) else None
+
+
 def rescue_proposal_from_reply(text: str, add_req: str = "") -> dict | None:
     """模型这轮没调工具 → 系统替它把该有的卡片补出来（人话：别让它"嘴上说发了"）。
 
@@ -3231,6 +3382,10 @@ def retime_todo_proposal(card: dict, text: str) -> dict | None:
         "weekday": wd,
         "minutes": to_minutes(finish) - to_minutes(begin),
         "retimed": True,        # 换过时间 —— 话术里要说清"按你说的改成了…"
+        # ⚠️ 换时间**不许顺手把"每周"换没**：上一张卡是 weekly 的（「每个周天写作业」），
+        # 学生只说"改成上午十点"，落库就该还是每周重复（2026-10-11 真机：改成 10:00 之后
+        # 卡片上的 repeat 掉成 ""，学生以为改好了，下周那天却不再出现）。
+        "repeat": (card.get("repeat") or REPEAT_NONE),
         "summary": f"{title}｜{date}（{wd}）{begin}-{finish}",
     }
 
