@@ -442,12 +442,60 @@ def batch_j_strip_not_veto():
     return c
 
 
+
+def batch_k_category_word_in_middle():
+    """K 批 · 类别词夹在中间时，不许把整句判成"没说事名"（2026-10-11 用户两张截图）。
+
+    病根链：`_strip_title_noise` 只擦**结尾**的「待办/代办/事项/日程」，中间那颗留着
+    → `looks_like_thing` 拿 `_TITLE_NOISE` 做 `any(w in t)` → **整串**不算事名
+    → 系统反问「要安排的是什么事」，而「去图书馆」白纸黑字在他那句话里。
+    中文写法一样中招，跟阿拉伯数字无关。
+    """
+    c = Checker()
+    title("K 批 · 「加个代办去图书馆」：说了的事不许被当成没说")
+    from app.modules import planner as P
+
+    # ① 机制本身（反证）：类别词留在中间，否决表就是会把整串打死。
+    #    没有这一条，下面那四条"名字抠出来了"全是假绿 —— 看不见否决表在起作用。
+    c.check("病根复刻：「代办去图书馆」这串过不了判真（否决表整串打死）",
+            P._title_ok("代办去图书馆") is False, P._title_ok("代办去图书馆"))
+
+    for s, want in (("周六加个代办去图书馆", "图书馆"),
+                    ("周日加个待办去图书馆", "图书馆"),
+                    ("帮我安排个日程去体检", "体检"),
+                    ("周六加个事项去医务室", "医务室"),
+                    ("代办：交作业 周六", "交作业")):
+        got = P._pick_title(s)
+        c.check(f"「{s}」→ 事名「{want}」（不是反问）", got == want, got)
+        card = P.todo_slots_proposal(s) or {}
+        c.check(f"「{s}」的卡片标题也是「{want}」（残渣不许印到卡上）",
+                card.get("title") == want, card.get("title"))
+
+    # ② 反向：擦完什么都不剩的那种，照旧该问 —— 这次改动不许把追问能力打掉
+    for s in ("加个待办", "周六加个代办", "帮我安排个日程"):
+        c.check(f"只有类别词、没有事情：「{s}」仍判不出事名（该问）",
+                P._pick_title(s) == "待办", P._pick_title(s))
+        c.check(f"「{s}」也不许硬摊一张候选卡",
+                P.todo_slots_proposal(s) is None, P.todo_slots_proposal(s))
+
+    # ③ 形状：否决表照旧留着这几个词（它管的是"只剩类别词"那种形状）
+    c.check("形状：`_TITLE_NOISE` 里四个类别词一个都没撤（两种形状各管各的）",
+            all(w in P._TITLE_NOISE for w in ("待办", "代办", "事项", "日程")),
+            P._TITLE_NOISE)
+
+    # ④ 副作用按住：「日程表」是名词的一部分，擦成「整理表」比反问更伤
+    c.check("「整理日程表」不许被擦成「整理表」（错名比问一句更坑）",
+            P._pick_title("整理日程表") != "整理表", P._pick_title("整理日程表"))
+    return c
+
+
 def main():
     results = [batch_a_time_words_registered(), batch_b_title_has_no_tail(),
                batch_c_tool_echo_never_shown(), batch_d_bare_clock_asked_in_place(),
                batch_e_period_carry(), batch_f_weekly_e2e(),
                batch_g_slot_answer_shape(), batch_h_model_exit_gate_behaviour(),
-               batch_i_no_internal_note(), batch_j_strip_not_veto()]
+               batch_i_no_internal_note(), batch_j_strip_not_veto(),
+               batch_k_category_word_in_middle()]
     tp = sum(r.passed for r in results)
     tf = sum(r.failed for r in results)
     print(f"\n===== 真机批次查出的四个缺口总账：通过 {tp} 项，失败 {tf} 项 =====")
