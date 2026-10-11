@@ -575,6 +575,112 @@ def batch_l_arabic_weekday():
     return c
 
 
+
+def batch_m_family_sweep():
+    """M 批 · 整族扫：同族写法一次列全，逐条比**期望值**（2026-10-11 用户：「不要只改我截图的」）。
+
+    这张表来自 `D:/campustime-scratch/sweep_family.py`：四族、162 个检查点。
+    第一轮扫出来 160 对 2 错 —— 错的两条都是"动作/类别词出现在另一头"：
+    「周六去图书馆**加个**代办」→「图书馆加个」（类别词在结尾擦掉了，尾巴上那颗没人管）、
+    「周六加个**提醒**去拿快递」→「提醒去拿快递」（「提醒」当时不在容器词族里）。
+    把整张表留在这里，是为了下一个改代码的人**别只补被投诉的那一句**。
+    """
+    import datetime
+    c = Checker()
+    title("M 批 · 整族扫：周几 / 容器词 / 时间残渣 / 数字钟点，四族一次过")
+    from app.modules import planner as P
+
+    today = datetime.date.today()
+
+    def _nxt(want):
+        return (today + datetime.timedelta(days=(want - today.isoweekday()) % 7 or 7)).isoformat()
+
+    SAT, SUN, MON = _nxt(6), _nxt(7), _nxt(1)
+
+    # (句子, 期望 date, 期望 repeat, 期望 weekday, 期望 start, 期望事名或 None=不查)
+    A = [
+        ("周6去图书馆", SAT, "", None, None, "图书馆"),
+        ("周六去图书馆", SAT, "", None, None, "图书馆"),
+        ("星期六去图书馆", SAT, "", None, None, "图书馆"),
+        ("礼拜六去图书馆", SAT, "", None, None, "图书馆"),
+        ("星期6去图书馆", SAT, "", None, None, "图书馆"),
+        ("下周六去图书馆", SAT, "", None, None, "图书馆"),
+        ("下礼拜六去图书馆", SAT, "", None, None, "图书馆"),
+        ("下星期6去图书馆", SAT, "", None, None, "图书馆"),
+        ("本周日去图书馆", SUN, "", None, None, "图书馆"),
+        ("星期天去图书馆", SUN, "", None, None, "图书馆"),
+        ("周一开会", MON, "", None, None, "开会"),
+        ("周1开会", MON, "", None, None, "开会"),
+        ("周0去图书馆", None, "", None, None, None),      # 0 算周日还是周一我们说了不算：宁可少认
+        ("周8去图书馆", None, "", None, None, None),      # 不是星期几
+        ("每周6去图书馆", None, "weekly", 6, None, "图书馆"),
+        ("每周六去图书馆", None, "weekly", 6, None, "图书馆"),
+        ("每个星期6去图书馆", None, "weekly", 6, None, "图书馆"),
+        ("每个礼拜六去图书馆", None, "weekly", 6, None, "图书馆"),
+        ("每星期6去图书馆", None, "weekly", 6, None, "图书馆"),
+        ("每周日晨跑", None, "weekly", 7, None, "晨跑"),
+        ("每周7聚餐", None, "weekly", 7, None, "聚餐"),
+        ("每周3游泳", None, "weekly", 3, None, "游泳"),
+        ("每周6点起床", None, "", None, "06:00", "起床"),   # 那个 6 是钟点，不是周六
+    ]
+    for s, wd, wr, wwd, ws, wt in A:
+        sp = P.parse_time_spec(s)
+        got = (sp.get("date"), sp.get("repeat"), sp.get("weekday"), sp.get("start"))
+        c.check(f"A｜{s}", got == (wd, wr, wwd, ws), (got, (wd, wr, wwd, ws)))
+        if wt is not None:
+            c.check(f"A·名｜{s}", P._pick_title(s) == wt, P._pick_title(s))
+
+    # (句子, 期望事名)：容器词在**开头/中间/结尾**三种位置都要擦干净
+    B = [
+        ("周六加个代办去图书馆", "图书馆"),
+        ("周六加个待办去图书馆", "图书馆"),
+        ("周日添加一个日程去体检", "体检"),
+        ("帮我记个事项去医务室", "医务室"),
+        ("周六安排个待办交作业", "交作业"),
+        ("加个代办：周五还书", "还书"),
+        ("周六去图书馆加个代办", "图书馆"),          # 整族扫查出来的：尾巴上露出「加个」
+        ("周六加个提醒去拿快递", "拿快递"),          # 整族扫查出来的：「提醒」是容器词
+        ("加个待办", "待办"),                        # 擦完什么都不剩 → 该问，不许硬摊卡
+        ("帮我安排个日程", "待办"),
+        ("周六加个代办", "待办"),
+        ("加个提醒", "待办"),
+        ("整理日程表", "待办"),                      # 「表」保护：不许擦成「整理表」
+        ("代办：交作业 周六", "交作业"),
+        ("查件", "查件"),                            # 反向：量词不是谁都吃
+        ("做个手工", "做个手工"),
+    ]
+    for s, want in B:
+        c.check(f"B｜{s}", P._pick_title(s) == want, P._pick_title(s))
+
+    # 「该问」那一档不许顺手摊出一张卡（名字判不出 = 不出卡，红线 13）
+    for s in ("加个待办", "加个提醒", "周六加个代办"):
+        c.check(f"B·不出卡｜{s}", P.todo_slots_proposal(s) is None, P.todo_slots_proposal(s))
+
+    C = [
+        ("三点开始值日", "值日"), ("晚上七点开始写作业", "写作业"),
+        ("6点开始晨跑", "晨跑"), ("早上6点半跑步", "跑步"),
+        ("傍晚六点半踢球", "踢球"), ("十二点整集合", "集合"),
+        ("12点整点名", "点名"), ("下午两点半复习", "复习"),
+        ("周六上午九点小组讨论", "小组讨论"), ("明天下午三点到四点面谈", "面谈"),
+    ]
+    for s, want in C:
+        c.check(f"C｜{s}", P._pick_title(s) == want, P._pick_title(s))
+
+    D = [
+        ("早上6点半跑步", "06:30", None), ("早上六点半跑步", "06:30", None),
+        ("早上6:30跑步", "06:30", None), ("晚上8点半到9点半复习", "20:30", "21:30"),
+        ("下午2点30分开会", "14:30", None), ("12点半吃午饭", "12:30", None),
+        ("中午十二点半吃饭", "12:30", None), ("半小时后交作业", None, None),
+        ("下周6点开会", "06:00", None), ("周日6点看升旗", "06:00", None),
+        ("晚上九点泡脚", "21:00", None), ("早上6点半", "06:30", None),
+    ]
+    for s, wstart, wend in D:
+        sp = P.parse_time_spec(s)
+        c.check(f"D｜{s}", (sp.get("start"), sp.get("end")) == (wstart, wend),
+                ((sp.get("start"), sp.get("end")), (wstart, wend)))
+    return c
+
+
 def main():
     results = [batch_a_time_words_registered(), batch_b_title_has_no_tail(),
                batch_c_tool_echo_never_shown(), batch_d_bare_clock_asked_in_place(),
@@ -582,7 +688,8 @@ def main():
                batch_g_slot_answer_shape(), batch_h_model_exit_gate_behaviour(),
                batch_i_no_internal_note(), batch_j_strip_not_veto(),
                batch_k_category_word_in_middle(),
-               batch_l_arabic_weekday()]
+               batch_l_arabic_weekday(),
+               batch_m_family_sweep()]
     tp = sum(r.passed for r in results)
     tf = sum(r.failed for r in results)
     print(f"\n===== 真机批次查出的四个缺口总账：通过 {tp} 项，失败 {tf} 项 =====")
