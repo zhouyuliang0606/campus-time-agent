@@ -784,6 +784,73 @@ def batch_n_no_past_dates():
     return c
 
 
+
+def batch_o_reminder_frame_words():
+    """O 批 · 「记得 / 别忘了 / 提醒我 / 想起来 + 事件」这类**框词**不许留在事名里。
+
+    学生说「提醒我周五交作业」，要办的事是「交作业」，"提醒我"是他给系统的**指令外壳**。
+    旧代码只把开头的"我要/帮我"削掉，这类外壳整批漏在外面，实测写进日程的名字是
+    「得我交作业」「想起来要买点水果」「别忘了还书」—— 判真还都过了。
+    另一头是**动词不能被单独吃**：「加油打卡」被削成「油打卡」，那是把名字改坏，
+    比留个外壳更伤（同 `(?!表)` 那条理由）。所以这一批两向都钉。
+    """
+    c = Checker()
+    title("O 批 · 框词剥干净、动词不许误吃")
+    from app.modules import planner as P
+
+    # ① 框词族：在前 / 带人称 / 带"要" / 带日子 / 长句里
+    for s, want in (
+            ("记得提醒我周五交作业", "交作业"),
+            ("想起来要买点水果", "买点水果"),
+            ("别忘了周四还书", "还书"),
+            ("千万别忘了交报告", "交报告"),
+            ("帮我提醒妈妈生日", "妈妈生日"),
+            ("给我提醒一下去取快递", "取快递"),
+            ("记着带伞", "带伞"),
+            ("记住带钥匙", "带钥匙"),
+            ("忽然想起来要交表", "交表"),
+            ("想起来交表", "交表"),
+            ("记得要喝水", "喝水"),
+            ("设个提醒吃药", "吃药"),
+            ("提醒我明天开会", "开会"),
+            ("提醒我们周五交作业", "交作业"),
+            ("你提醒我喝水", "喝水"),
+            # 他说的是「我妈」：不许吃掉这个"妈"，也不许替他补成"妈妈"
+            ("提醒我妈生日买礼物", "妈生日买礼物")):
+        got = P._pick_title(s)
+        c.check(f"框词剥掉｜「{s}」→「{want}」", got == want, got)
+
+    # ② 动词 + 数词 + 量词：成对出现才整体吃
+    for s, want in (("记一条还信用卡", "还信用卡"),
+                    ("加两条复习", "复习"),
+                    ("添一件买牛奶", "买牛奶"),
+                    ("一条还信用卡", "还信用卡"),
+                    ("条还信用卡", "还信用卡"),
+                    ("记一下交作业", "交作业")):
+        got = P._pick_title(s)
+        c.check(f"动量整体吃｜「{s}」→「{want}」", got == want, got)
+
+    # ③ 反向：光杆动词开头**不许吃动词**（`len>=2` 那道护栏只挡得住"削完剩一个字"，
+    #    「油打卡」三个字照样溜过去 —— 第一版注释说这条被护栏保住了，实测没有）
+    for s, want in (("记账", "记账"), ("加油打卡", "加油打卡"),
+                    ("打卡", "打卡"), ("备忘", "备忘"), ("还信用卡", "还信用卡"),
+                    ("做个手工", "做个手工"), ("查件", "查件")):
+        got = P._pick_title(s)
+        c.check(f"不误吃动词｜「{s}」照旧是「{want}」", got == want, got)
+
+    # ④ 只剩框词 = 判不出事名，该问（不许硬摊一张卡）
+    for s in ("记得", "提醒我", "设个提醒"):
+        c.check(f"只有框词｜「{s}」判不出事名", P._pick_title(s) == "待办", P._pick_title(s))
+
+    # ⑤ 形状：框词那道擦除必须排在类别词那道**之前**（顺序错了会把「设个提醒」拆散）
+    src = io.open(PLANNER, encoding="utf-8").read()
+    i_frame = src.find("千万别忘了|千万记得")
+    i_cat = src.find("(待办|代办|事项|日程|提醒)(?!表)")
+    c.check("形状：框词擦除在中间类别词擦除之前（顺序是这次踩出来的）",
+            0 < i_frame < i_cat, (i_frame, i_cat))
+    return c
+
+
 def main():
     results = [batch_a_time_words_registered(), batch_b_title_has_no_tail(),
                batch_c_tool_echo_never_shown(), batch_d_bare_clock_asked_in_place(),
@@ -793,7 +860,8 @@ def main():
                batch_k_category_word_in_middle(),
                batch_l_arabic_weekday(),
                batch_m_family_sweep(),
-               batch_n_no_past_dates()]
+               batch_n_no_past_dates(),
+               batch_o_reminder_frame_words()]
     tp = sum(r.passed for r in results)
     tf = sum(r.failed for r in results)
     print(f"\n===== 真机批次查出的四个缺口总账：通过 {tp} 项，失败 {tf} 项 =====")
