@@ -1,0 +1,133 @@
+/* ============================================================
+   glass.css —— 玻璃质感公共层（依据 glass-ui-skill v1.0.0）
+   只放**页面无关**的四块：主题 token / 摄影层 / 动效层 / 降级。
+   页面专属的选择器（.card .row .btn …）留在各自文件的样式层里，
+   理由与 esc.js 一样：一处定义，别处复用，但不把某个页面的知识塞进公共层。
+
+   配方派生自 gdut4140/summer-checkin-ui-skill（MIT），署名见仓库 NOTICE.md。
+   ============================================================ */
+
+/* ---------- §1 主题 token（skill references/design-system.md §1 两套场景） ---------- */
+.tk-rain{
+  --theme-bg:#07130d; --theme-bg2:#0a1b13;
+  --fill-rgb:16,36,28; --glass-rgb:9,22,17; --veil-rgb:7,19,13; --primary-rgb:215,239,131;
+  --theme-primary:#d7ef83; --theme-primary-fg:#0a1a10;
+  --theme-fg:#eaf3ec; --theme-fg2:#b9cfc2; --theme-muted-fg:#a2beb1;
+  --theme-border:rgba(255,255,255,.11); --theme-border2:rgba(255,255,255,.18);
+  --theme-destructive:#e85555; --theme-ring:rgba(var(--primary-rgb),.55);
+}
+.tk-space{
+  --theme-bg:#080d1a; --theme-bg2:#0d1322;
+  --fill-rgb:18,32,50; --glass-rgb:12,22,38; --veil-rgb:8,13,26; --primary-rgb:158,202,255;
+  --theme-primary:#9ecaff; --theme-primary-fg:#071020;
+  --theme-fg:#e9f0ff; --theme-fg2:#a8bdd4; --theme-muted-fg:#8fa4bf;
+  --theme-border:rgba(255,255,255,.11); --theme-border2:rgba(255,255,255,.18);
+  --theme-destructive:#e85555; --theme-ring:rgba(var(--primary-rgb),.55);
+}
+
+/* ---------- §2 摄影层：一张 fixed 背景图 + 四层暗遮罩 ----------
+   从下到上：① --gx-scrim 均匀暗遮罩（整页一致压暗，不挑位置）
+             ② --gx-vm 上下强、中段弱的渐变（负责"顶底溶进主题色"）
+             ③ 横向 scrim（只压左侧，给侧栏垫底）
+             ④ --gx-core 径向局部压暗（只打亮核，星空图那种）
+   ★ 均匀遮罩比加深 veil 划算：正文恰好压在 veil 中段最弱的那一条上，
+     把 --gx-vm 顶高会连带毁掉"背景透得出来"，而遮罩只均匀降一档亮度、层次不丢。
+   两个数都是**按图反解**出来的（判据：90×18 文字窗口逐格取均值 → 合成亮度 →
+   对 --theme-muted-fg 求 WCAG → 取全页最差值 ≥ 4.5:1），换图必须重测：
+     forest .31 / .20    milky .40 / .12    星空(开亮核压暗) .10 / .10 */
+.gx-backdrop{position:fixed;inset:0;width:100%;height:100%;object-fit:cover;z-index:0;pointer-events:none;
+  filter:brightness(var(--gx-bd,.95)) saturate(1.12) contrast(1.03)}
+.gx-veil{position:fixed;inset:0;z-index:1;pointer-events:none;
+  background:
+    radial-gradient(560px 300px at 50% 53%,rgba(var(--veil-rgb),var(--gx-core,0)) 0%,rgba(var(--veil-rgb),calc(var(--gx-core,0)*.55)) 45%,rgba(var(--veil-rgb),0) 72%),
+    linear-gradient(90deg,rgba(var(--veil-rgb),calc(var(--gx-vm,.31)*1.9)) 0%,rgba(var(--veil-rgb),calc(var(--gx-vm,.31)*.55)) 42%,rgba(var(--veil-rgb),0) 70%),
+    linear-gradient(180deg,rgba(var(--veil-rgb),.95) 0%,rgba(var(--veil-rgb),calc(var(--gx-vm,.31) + .34)) 20%,rgba(var(--veil-rgb),var(--gx-vm,.31)) 46%,rgba(var(--veil-rgb),calc(var(--gx-vm,.31) + .16)) 74%,rgba(var(--veil-rgb),.92) 100%),
+    linear-gradient(rgba(var(--veil-rgb),var(--gx-scrim,.2)),rgba(var(--veil-rgb),var(--gx-scrim,.2)))}
+.gx-fx{position:fixed;inset:0;z-index:1;pointer-events:none;overflow:hidden;display:none}
+html[data-gx-fx]:not([data-gx-fx="off"]) .gx-fx{display:block}
+/* 内容层抬到背景之上；卡片的 backdrop-filter 才会实时模糊背后的图 */
+.gx-root{position:relative;z-index:2}
+
+/* ---------- §3 四档透视工具类：--gx-f 填充不透明度 / --gx-b 模糊半径 ----------
+   ★ 决定"看不看得见背景"的主因是 --gx-b（模糊半径），不是 --gx-f。
+     blur 18px 之下哪怕填充只 .07，透出来的也只是一片匀色。 */
+.gx-t0{--gx-f:.46;--gx-b:22px} .gx-t1{--gx-f:.30;--gx-b:12px}
+.gx-t2{--gx-f:.16;--gx-b:6px}  .gx-t3{--gx-f:.07;--gx-b:2px}
+/* 反光透明玻璃：面板族（顶部高光条 + 内沿高光 + 模糊） */
+.gx-panel{
+  background:linear-gradient(180deg,rgba(255,255,255,.10),rgba(255,255,255,0) 45%) rgba(var(--fill-rgb),var(--gx-f,.26));
+  border:1px solid var(--theme-border2);
+  backdrop-filter:blur(var(--gx-b,18px)) saturate(135%);
+  -webkit-backdrop-filter:blur(var(--gx-b,18px)) saturate(135%);
+  box-shadow:0 1px 0 rgba(255,255,255,.22) inset,0 18px 38px -22px rgba(0,0,0,.5)}
+/* 磨砂玻璃：按钮族（奶白半透 + 模糊 + 哑光，**没有**顶部高光条，与面板形成对比） */
+.gx-btn{color:var(--theme-fg);background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.15);
+  backdrop-filter:blur(7px) saturate(115%);-webkit-backdrop-filter:blur(7px) saturate(115%);
+  box-shadow:0 1px 0 rgba(255,255,255,.07) inset;cursor:pointer}
+.gx-btn:hover{background:rgba(255,255,255,.13);border-color:rgba(255,255,255,.24)}
+/* 主 CTA：半透之后字色必须翻亮 —— 暗字在半透底上压到暗区会直接消失 */
+.gx-btn-primary{
+  background:linear-gradient(180deg,rgba(var(--primary-rgb),.22),rgba(var(--primary-rgb),.08));
+  color:var(--theme-primary);border:1px solid rgba(var(--primary-rgb),.42);
+  backdrop-filter:blur(7px) saturate(120%);-webkit-backdrop-filter:blur(7px) saturate(120%);
+  box-shadow:0 1px 0 rgba(255,255,255,.10) inset;text-shadow:0 1px 2px rgba(var(--veil-rgb),.6);
+  cursor:pointer;font-weight:600}
+.gx-btn-primary:hover{background:linear-gradient(180deg,rgba(var(--primary-rgb),.32),rgba(var(--primary-rgb),.14))}
+.gx-btn-primary:active{transform:scale(.95)}
+:focus-visible{outline:2px solid var(--theme-ring);outline-offset:2px}
+
+/* ---------- §4 动效层内容：飞鸟 / 风 / 流星（纯 CSS，不引运行时库） ----------
+   鸟的"活"来自四件分开的事：两翼各自绕肩关节转（不是整只压扁）、身体独立小幅浮沉、
+   飞行途中带一点侧倾、近大远小的三层景深（远处那只更小更淡还带一点模糊）。
+   另有滑翔姿态：张翅不扇。 */
+.gx-bird{position:absolute;left:var(--x);top:var(--y);width:var(--w,22px);height:calc(var(--w,22px)/2);
+  opacity:0;filter:drop-shadow(0 1px 1.5px rgba(0,0,0,.5));
+  animation:gx-glide var(--t,16s) cubic-bezier(.42,.04,.58,.96) var(--d,0s) infinite}
+.gx-bird.far{filter:drop-shadow(0 1px 1px rgba(0,0,0,.4)) blur(.45px)}
+.gx-bob{display:block;width:100%;height:100%;animation:gx-bob var(--bt,2.6s) ease-in-out var(--btd,0s) infinite}
+.gx-bird svg{display:block;width:100%;height:100%;fill:rgba(255,255,255,.94);overflow:visible}
+.gx-bird .wg{transform-box:view-box;transform-origin:20px 12px;
+  animation:gx-flap var(--ft,.82s) ease-in-out var(--fd,0s) infinite alternate}
+.gx-bird.soar .wg{animation:none;transform:rotate(-4deg)}
+@keyframes gx-flap{from{transform:rotate(15deg)}to{transform:rotate(-21deg)}}
+@keyframes gx-bob{0%,100%{transform:translateY(-7%)}50%{transform:translateY(7%)}}
+@keyframes gx-glide{
+  0%{opacity:0;transform:translate(0,0) scale(var(--sc,1)) rotate(0deg)}
+  8%{opacity:var(--op,.9)}
+  45%{transform:translate(calc(var(--dx,32vw) * .45),-2.4vh) scale(var(--sc,1)) rotate(var(--bm,3deg))}
+  92%{opacity:var(--op,.9)}
+  100%{opacity:0;transform:translate(var(--dx,32vw),1.6vh) scale(var(--sc,1)) rotate(0deg)}}
+/* 风：树冠上两团缓慢游移的光斑 + 几片斜着翻下来的叶子 */
+.gx-gust{position:absolute;inset:-25%;
+  background:radial-gradient(38% 26% at 28% 22%,rgba(var(--primary-rgb),.14),transparent 62%),
+             radial-gradient(30% 22% at 62% 16%,rgba(255,255,255,.11),transparent 60%);
+  animation:gx-drift 26s ease-in-out infinite alternate}
+@keyframes gx-drift{0%{transform:translate3d(-3%,-1%,0) scale(1)}100%{transform:translate3d(4%,2%,0) scale(1.07)}}
+.gx-leaf{position:absolute;left:var(--x);top:var(--y);width:var(--w,14px);aspect-ratio:1/1;opacity:0;
+  animation:gx-tumble var(--t,11s) linear var(--d,0s) infinite}
+.gx-leaf svg{display:block;width:100%;height:100%;fill:rgba(var(--primary-rgb),.62);
+  filter:drop-shadow(0 1px 1px rgba(0,0,0,.35))}
+@keyframes gx-tumble{0%{opacity:0;transform:translate(0,0) rotate(0)}8%{opacity:.9}
+  50%{transform:translate(22vw,26vh) rotate(220deg)}92%{opacity:.7}
+  100%{opacity:0;transform:translate(44vw,54vh) rotate(470deg)}}
+/* 流星：整层放在 veil 之上、内容之下 —— 划过面板时会被 backdrop-filter 实时糊掉，
+   这一帧是玻璃材质最值钱的地方 */
+.gx-meteor{position:absolute;left:var(--x);top:var(--y);width:0;height:0;transform:rotate(var(--ang,22deg))}
+.gx-meteor i{position:absolute;display:block;width:var(--len,140px);height:2px;border-radius:2px;
+  background:linear-gradient(270deg,rgba(255,255,255,.98),rgba(var(--primary-rgb),.55) 30%,rgba(255,255,255,0));
+  opacity:0;animation:gx-shoot var(--t,4s) linear var(--d,0s) infinite;will-change:transform,opacity}
+.gx-meteor i::after{content:"";position:absolute;right:-2px;top:50%;width:4px;height:4px;border-radius:50%;
+  transform:translateY(-50%);background:#fff;box-shadow:0 0 14px 4px rgba(var(--primary-rgb),.65)}
+@keyframes gx-shoot{0%{opacity:0;transform:translateX(0)}5%{opacity:.95}55%{opacity:.8}
+  100%{opacity:0;transform:translateX(calc(var(--len,140px) * 3.4))}}
+
+/* ---------- §5 克制动效与降级 ----------
+   v1 不做滚动 reveal：它要 IntersectionObserver，等于往视觉改版里塞业务 JS。
+   只留颜色/边框/阴影的短过渡；prefers-reduced-motion 下动效层整层撤掉。 */
+.gx-btn,.gx-btn-primary{transition:background .15s,color .15s,transform .12s,box-shadow .15s,border-color .15s}
+.gx-btn:active{transform:translateY(1px)}
+@media (prefers-reduced-motion:reduce){
+  .gx-fx{display:none!important}
+  .gx-btn,.gx-btn-primary{transition:none}
+  *{animation-duration:.01ms!important;animation-iteration-count:1!important}
+}
