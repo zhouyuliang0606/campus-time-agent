@@ -384,6 +384,24 @@ REPEAT_WEEKLY = "weekly"
 REPEAT_VALUES = (REPEAT_NONE, REPEAT_WEEKLY)
 
 
+def is_past_date(date: str) -> bool:
+    """这个日子是不是已经过去了（人话：**过去的日子不许再往上排待办**）。
+
+    为什么要单独一处写、还要四处都查（用户 2026-10-11 明令）：
+      · 语义层偶尔吐出一个**陈年日期**（真机实测：「晚上八点开始值日」被给了
+        `2023-04-18`），确定性分支照收 → 卡片挂出去了，学生刷新一看**永远找不到**；
+      · 卡片挂着过夜，学生第二天点【确认加入】 → 写进去的是一条过去的待办，
+        它再也不会出现在"今天/ upcoming"里。
+    所以**出卡那一路**和**写库那一路**都要拦，而判据只能有一份。
+    格式不对（空串、"昨天"这种没解析干净的）返回 False：不在这里管，
+    交给调用方自己的必填校验，免得这道闸顺手把别的错误也吞掉。
+    """
+    try:
+        return datetime.date.fromisoformat((date or "").strip()) < datetime.date.today()
+    except ValueError:
+        return False
+
+
 def iso_weekday_of(date: str) -> int | None:
     """把 "2026-10-11" 换成 1..7（周一=1）。解析不了回 None，不抛错。"""
     from datetime import date as _date

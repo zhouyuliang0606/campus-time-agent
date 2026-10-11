@@ -681,6 +681,103 @@ def batch_m_family_sweep():
     return c
 
 
+
+def batch_n_no_past_dates():
+    """N 批 · 待办不许落在**已经过去的日子**上（用户 2026-10-11：「代办不能加到过去的日期」）。
+
+    真机引子：「晚上八点开始值日」那轮，语义层吐了一个 `2023-04-18`，
+    确定性分支照收 → 卡片挂出去、学生刷新一看**永远找不到**；
+    另一种更常见的走漏是卡片过夜 —— 昨天勾好的时段，今天点【确认加入】。
+    所以出卡那一路（四条）和写库那一路（两个接口）都查**同一份**判据
+    `store.is_past_date`，不许各写一个比较。
+    """
+    import datetime
+    c = Checker()
+    title("N 批 · 过去的日子：出卡不兜底、写库不进门")
+    from app.modules import planner as P
+    from app.store import is_past_date
+
+    today = datetime.date.today()
+    y = (today - datetime.timedelta(days=1)).isoformat()
+    t0 = today.isoformat()
+    tm = (today + datetime.timedelta(days=1)).isoformat()
+
+    # ① 判据本身
+    for d, want in (("2023-04-18", True), (y, True), (t0, False), (tm, False)):
+        c.check(f"判据：{d} → {want}", is_past_date(d) is want, is_past_date(d))
+    for bad in ("", "昨天", "not-a-date"):
+        c.check(f"判据：读不出格式「{bad}」不拦（交给必填校验，别顺手吞掉别的错）",
+                is_past_date(bad) is False, is_past_date(bad))
+
+    # ② 出卡那四条路一律不兜底到过去的日子
+    c.check("parse_add_todo：过去的日子不建卡",
+            P.parse_add_todo("2023年4月18号晚上八点写作业") is None,
+            P.parse_add_todo("2023年4月18号晚上八点写作业"))
+    c.check("auto_todo_proposal：过去的日子不替他挑时段",
+            P.auto_todo_proposal(f"{y}加个健身") is None, y)
+    c.check("span_only_proposal：兜底日期给了过去的日子 → 不出卡",
+            P.span_only_proposal("晚上八点写作业", "写作业", y) is None,
+            P.span_only_proposal("晚上八点写作业", "写作业", y))
+    c.check("retime_todo_proposal：不许把已有待办挪到过去的日子",
+            P.retime_todo_proposal({"title": "写作业", "date": t0, "start": "20:00",
+                                    "end": "21:00"}, f"改到{y}晚上八点") is None,
+            P.retime_todo_proposal({"title": "写作业", "date": t0, "start": "20:00",
+                                    "end": "21:00"}, f"改到{y}晚上八点"))
+
+    # ③ 反向：这道闸不许把正常句子挡掉
+    c.check("反向：今天/将来的日子照旧出卡（闸不是把功能关掉）",
+            P.span_only_proposal("晚上八点写作业", "写作业", t0) is not None, t0)
+    c.check("反向：「明天下午三点交表」照旧建得出卡",
+            P.parse_add_todo(f"明天下午三点交表") is not None,
+            P.parse_add_todo("明天下午三点交表"))
+
+    # ④ 形状：四条出卡路 + 两个写入口都查同一份判据
+    src = io.open(PLANNER, encoding="utf-8").read()
+    msrc = io.open(MAIN, encoding="utf-8").read()
+    c.check("形状：planner 里至少四处用 `is_past_date`（四条出卡路一条不落）",
+            src.count("is_past_date(") >= 4, src.count("is_past_date("))
+    c.check("形状：两个写入口都查（单条 + 批量），判据不重写一遍",
+            msrc.count("is_past_date(") >= 2 and "def is_past_date" not in msrc,
+            msrc.count("is_past_date("))
+
+    # ⑤ 端到端：写库那一层真的进不去
+    with sandbox():
+        from app.store import list_todos
+        client = make_client()
+        # ⚠️ 断言一律用**前后对比**，不能假设沙箱里是空的：
+        #    `sandbox()` 是把真实 app/data 整个复制进去的（只清 SCRATCH 那几个文件），
+        #    所以 `list_todos()` 一上来就有演示数据 —— 写"不该有"是假判据。
+        base = [(t.get("title"), t.get("date")) for t in list_todos()]
+        r = client.post("/api/todos", json={"title": "补作业", "date": y,
+                                            "start": "20:00", "end": "21:00"})
+        c.check("POST /api/todos 过去的日子 → 400", r.status_code == 400,
+                (r.status_code, (r.json() or {}).get("error")))
+        c.check("拒的是人话：说清「已经过去了」",
+                "过去" in ((r.json() or {}).get("error") or ""), (r.json() or {}).get("error"))
+        c.check("单条被拒之后库里一条没多",
+                [(t.get("title"), t.get("date")) for t in list_todos()] == base,
+                [(t.get("title"), t.get("date")) for t in list_todos()])
+        r2 = client.post("/api/todos/batch", json={"title": "健身", "repeat": "",
+                                                   "slots": [{"date": y, "start": "19:00",
+                                                              "end": "20:00"}]})
+        c.check("批量：勾的全是过去的日子 → 400，一条都不写",
+                r2.status_code == 400
+                and [(t.get("title"), t.get("date")) for t in list_todos()] == base,
+                (r2.status_code, [(t.get("title"), t.get("date")) for t in list_todos()]))
+        r3 = client.post("/api/todos/batch", json={"title": "健身", "repeat": "",
+                                                   "slots": [{"date": y, "start": "19:00",
+                                                              "end": "20:00"},
+                                                             {"date": tm, "start": "19:00",
+                                                              "end": "20:00"}]})
+        got = [(t.get("title"), t.get("date")) for t in list_todos()]
+        c.check("批量：混合勾选只写将来那条，过去那条丢掉不谎报",
+                got == base + [("健身", tm)], got[len(base) - 1:])
+        r4 = client.post("/api/todos", json={"title": "交表", "date": tm,
+                                             "start": "15:00", "end": "16:00"})
+        c.check("反向：将来的日子照旧写得进去", r4.status_code == 200, r4.status_code)
+    return c
+
+
 def main():
     results = [batch_a_time_words_registered(), batch_b_title_has_no_tail(),
                batch_c_tool_echo_never_shown(), batch_d_bare_clock_asked_in_place(),
@@ -689,7 +786,8 @@ def main():
                batch_i_no_internal_note(), batch_j_strip_not_veto(),
                batch_k_category_word_in_middle(),
                batch_l_arabic_weekday(),
-               batch_m_family_sweep()]
+               batch_m_family_sweep(),
+               batch_n_no_past_dates()]
     tp = sum(r.passed for r in results)
     tf = sum(r.failed for r in results)
     print(f"\n===== 真机批次查出的四个缺口总账：通过 {tp} 项，失败 {tf} 项 =====")

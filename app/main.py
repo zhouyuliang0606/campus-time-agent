@@ -45,7 +45,7 @@ from app.store import (
     get_conversation, append_conversation, clear_conversation,
     get_timetable_data, list_todos, list_todos_in_month,
     add_todo, update_todo, delete_todo, get_todo, save_timetable,
-    set_todo_done_on, REPEAT_NONE, REPEAT_WEEKLY,
+    set_todo_done_on, REPEAT_NONE, REPEAT_WEEKLY, is_past_date,
     add_workorder, list_workorders, update_workorder_status,
 )
 from app.modules.faq import SYSTEM_PROMPT as FAQ_PROMPT, build_tools as faq_tools
@@ -4007,6 +4007,11 @@ async def todo_add(req: Request):
     title = (body.get("title") or "").strip()
     if not (date and start and end and title):
         return JSONResponse({"error": "标题、日期、开始与结束时间都要填"}, status_code=400)
+    if is_past_date(date):
+        # 「代办不能加到过去的日期」（用户 2026-10-11）。写入口这一层是最后一道：
+        # 出卡那四条路都查过同一份判据，但手动加、改期、陈旧卡片过夜都可能递进旧日子。
+        return JSONResponse({"error": f"{date} 已经过去了，不能往过去的日子里排待办"},
+                            status_code=400)
     rep = (body.get("repeat") or "").strip()
     if rep not in (REPEAT_NONE, REPEAT_WEEKLY):
         rep = REPEAT_NONE
@@ -4112,6 +4117,7 @@ async def todo_add_batch(req: Request):
 
     # 1) 先把前端递来的勾选项归一化（去重、丢掉字段不全的）
     chosen, seen = [], set()
+    dropped_past = 0
     for s in raw_slots:
         if not isinstance(s, dict):
             continue
@@ -4120,8 +4126,20 @@ async def todo_add_batch(req: Request):
         en = (s.get("end") or "").strip()
         if not (d and st and en) or (d, st) in seen:
             continue
+        # 卡片是上一轮算出来的，**过夜之后再点**日子就可能已经过了；
+        # 语义层偶尔还会直接吐一个陈年日期（真机实测 2023-04-18）。
+        # 写进去的是一条永远不会出现在日程里的记录 —— 这一道在写入口再拦一次
+        # （出卡那一路四条都查过，判据是同一份 `store.is_past_date`）。
+        if is_past_date(d):
+            dropped_past += 1
+            continue
         seen.add((d, st))
         chosen.append((d, st, en))
+
+    if not chosen and dropped_past and not other:
+        return JSONResponse(
+            {"error": f"你勾的那几段日子已经过去了（{dropped_past} 段），"
+                      f"重新问一句要哪天，我再给你算"}, status_code=400)
 
     if not chosen and not other:
         # 一个都没勾、也没自填 —— 这不是错误，是学生手滑点了按钮。

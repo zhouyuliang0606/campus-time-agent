@@ -21,7 +21,7 @@ from app.agent.pending import is_confirmation
 from app.store import (
     add_todo, get_timetable, list_todos,
     save_timetable, update_todo,
-    REPEAT_NONE, REPEAT_WEEKLY,
+    REPEAT_NONE, REPEAT_WEEKLY, is_past_date,
 )
 from app.modules.student_persona import mock_phrase
 
@@ -605,6 +605,10 @@ def span_only_proposal(text: str, title: str = "", fallback_date: str = "") -> d
     name = _pick_title(text or "")
     if not name or name == "待办":
         name = (title or "").strip() or "待办"
+    # 语义层偶尔吐出一个**陈年日子**（真机实测 `2023-04-18`），照收就是一张
+    # "刷新永远看不见"的卡 —— 过去的日子一律不兜底（用户 2026-10-11 明令）。
+    if is_past_date(day):
+        return None
     # 语义层可能把"12"这种时间碎片当 title 传下来，必须再过判真关
     if not _title_ok(name):
         return None
@@ -2809,6 +2813,11 @@ def parse_add_todo(text: str) -> dict | None:
     start, end = _pick_span(t)
     if not date or not start:
         return None
+    if is_past_date(date):
+        # 学生点了个**已经过去的日子**（「3月5号交的那个作业补一下」）→ 不出一张
+        # 他永远看不见的卡。返回 None 交给上层如实说"那天已经过了"（用户 2026-10-11：
+        # 「代办不能加到过去的日期」）。四条出卡路都查这同一道闸，判据在 `store.is_past_date`。
+        return None
     # ⚠️ 裸钟点（只说"三点"、没报上午下午）**不出这张单条卡**：卡上写的是"就排在这个点"，
     # 而 `_pick_span('周日三点')` 给的是 03:00 —— 2026-10-11 真机就是这么漏的：
     # 「周日三点开始写作业」直接成了一张 03:00-04:00 的凌晨卡。
@@ -2925,6 +2934,8 @@ def auto_todo_proposal(text: str) -> dict | None:
     date = _pick_date(t)
     if not date:
         return None
+    if is_past_date(date):
+        return None                      # 同 `parse_add_todo`：过去的日子不排待办
     title = _pick_title(t)
     if not title or title == "待办":
         return None
@@ -3457,6 +3468,8 @@ def retime_todo_proposal(card: dict, text: str) -> dict | None:
     date = new_date or old_date
     if not date:
         return None
+    if is_past_date(date):
+        return None                      # 同 `parse_add_todo`：不许把待办挪到过去的日子上
     title = card.get("title") or "待办"
     wd = _weekday_name(date)
     if begin:
