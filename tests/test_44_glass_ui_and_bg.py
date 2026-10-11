@@ -70,7 +70,7 @@ def batch_structure(ck):
              re.search(r"\.shell\s*\{[^}]*z-index:\s*2", src) is not None)
     ck.check("html 初始就挂着 rain 主题 + 玻璃总闸（不挂会先闪一下浅色）",
              'class="tk-rain gx-glass"' in src)
-    ck.check("默认档写在初始 HTML 上（半透 + 去土开）",
+    ck.check("默认档写在初始 HTML 上（半透 + 精修开）",
              'data-gx-lv="2"' in src and 'data-gx-refine="on"' in src)
     g = read(GLASS)
     ck.check("公共层含 rain / space 两套 token", ".tk-rain{" in g and ".tk-space{" in g)
@@ -157,7 +157,7 @@ def batch_pref(ck):
 
 def batch_gate(ck):
     """G. 总闸与旋钮：设置页每一项都必须真有对应效果，否则它是个会说谎的控件。"""
-    title("G. 玻璃总闸 / 四档 / 去土层 / 四个旋钮")
+    title("G. 玻璃总闸 / 四档 / 精修层 / 四个旋钮")
     src = read(STUDENT)
     glass = read(GLASS)
     # 总闸：深色值与补丁段全部挂在 html.gx-glass 下，关掉即整层失效
@@ -182,11 +182,13 @@ def batch_gate(ck):
     for lv, blur in [("0", "22px"), ("1", "12px"), ("2", "6px"), ("3", "2px")]:
         ck.check("档位 data-gx-lv=%s 有对应模糊（%s）" % (lv, blur),
                  ('data-gx-lv="%s"]' % lv) in block and blur in block)
-    # 去土层：勾选框必须真有对应规则
-    ck.check("去土层存在且键在 data-gx-refine 上", 'data-gx-refine="on"]' in src)
-    ck.check("去土确实动了字阶（23px 标题）",
+    # 精修层：勾选框必须真有对应规则
+    ck.check("精修层存在且键在 data-gx-refine 上", 'data-gx-refine="on"]' in src)
+    ck.check("设置页标签写的是「精修」，且界面里不再出现「去土」字样",
+             " 精修（强调色收口 + 字阶拉开）" in src and "去土（" not in src)
+    ck.check("精修确实动了字阶（23px 标题）",
              re.search(r'data-gx-refine="on"\] \.topbar \.t \{ font-size: 23px', src) is not None)
-    ck.check("去土确实收了强调色（状态标签改 2px 色杠）",
+    ck.check("精修确实收了强调色（状态标签改 2px 色杠）",
              "inset 2px 0 0" in src)
     # 四个旋钮 + 五个偏好键
     for key in ["ct_gx_scrim", "ct_gx_vm", "ct_gx_bd", "ct_gx_core", "ct_gx_lv", "ct_gx_fx", "ct_gx_refine"]:

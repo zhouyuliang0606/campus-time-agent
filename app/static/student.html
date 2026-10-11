@@ -619,11 +619,11 @@ html.gx-glass[data-gx-lv="1"] { --gx-f:.70; --gx-b:12px; }   /* 微透 */
 html.gx-glass[data-gx-lv="2"] { --gx-f:.52; --gx-b:6px;  }   /* 半透（默认） */
 html.gx-glass[data-gx-lv="3"] { --gx-f:.30; --gx-b:2px;  }   /* 通透 */
 
-  /* ============ 去土层（2026-10-11，对照 skill 原版 showcase 定位） ============
-     用户反馈「总感觉怪土的」。根因不是配色也不是透明度：原版是一张**稀疏 landing page**，
+  /* ============ 精修层（2026-10-11，对照 skill 原版 showcase 定位） ============
+     名字从用户原话「去土」改成了「精修」，指的是同一件事。根因不是配色也不是透明度：原版是一张**稀疏 landing page**，
      学生端是**密排工具界面**，玻璃在前者显贵、在后者显贱。四条里"图标换 SVG"已单独落地，
      这里做剩下三条：强调色再收一档、字阶拉开、容器去边框。
-     ★ 这一层必须真实存在，设置页那个勾选框才不是骗人的。 */
+     ★ 这一层必须真实存在，设置页那个「精修」勾选框才不是骗人的。 */
   /* ① 强调色再收一档：亮绿只留给「主 CTA + 当前选中 + 勾选态」，其余回中性 */
 html.gx-glass[data-gx-refine="on"] .row .info b,
 html.gx-glass[data-gx-refine="on"] .opt-card .info b { color: var(--text); font-size: 15px; }
@@ -2746,7 +2746,7 @@ html.gx-glass[data-gx-refine="on"] .composer, html.gx-glass[data-gx-refine="on"]
         '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:14px;align-items:center;">'+
           '<span class="small">整页玻璃</span><span id="setGxLv" class="persona-list"></span>'+
           '<span class="small" style="margin-left:10px;">动效</span><select id="setGxFx" class="model-sel"></select>'+
-          '<label class="small" style="display:flex;align-items:center;gap:6px;cursor:pointer;margin-left:10px;"><input type="checkbox" id="setGxRefine" style="width:15px;height:15px;"> 去土（强调色收口 + 字阶拉开）</label>'+
+          '<label class="small" style="display:flex;align-items:center;gap:6px;cursor:pointer;margin-left:10px;"><input type="checkbox" id="setGxRefine" style="width:15px;height:15px;"> 精修（强调色收口 + 字阶拉开）</label>'+
         '</div></div>'+
         '<div class="card"><h2>模型与 API</h2><div class="desc">默认用管理端配置的模型；也可填自己的 API Key（存在本机浏览器，每轮对话上传给服务器代你调模型——用完即弃，不落盘）。</div>'+
         '<div id="setModelInfo" style="font-size:13px;margin-bottom:10px;"></div>'+
