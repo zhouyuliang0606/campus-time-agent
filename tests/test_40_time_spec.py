@@ -324,10 +324,52 @@ def batch_g_evening_words():
     return c
 
 
+
+def batch_h_half_hour():
+    """H 批 · 「6点半」的半小时不许被吞、句尾钟点不许被笔误闸门擦掉（2026-10-11 探针）。
+
+    两处都是**静默排错时间**：卡片照挂、数字是错的，学生不盯着看根本发现不了。
+    """
+    c = Checker()
+    title("H 批 · 「N点半」两种写法算同一个钟点，句尾那个点不许丢")
+    from app.modules.planner import _normalize_clock, _fix_typo_time_words, parse_time_spec
+
+    # ① 病根：中文写法走 `_normalize_clock` 的第二条归一（6:30），
+    #    阿拉伯数字写法「6点半」没人管 → 只被认成 6 点，半小时掉了。
+    for s in ("早上6点半跑步", "早上六点半跑步", "早上6:30跑步"):
+        sp = parse_time_spec(s)
+        c.check(f"「{s}」→ 06:30（三种写法同一个钟点）",
+                sp["start"] == "06:30", (s, _normalize_clock(s), sp["start"]))
+    c.check("反向：「晚上8点半到9点半」两头都在（补「半夜」那次把「半到」纠成了「半夜」）",
+            (parse_time_spec("晚上8点半到9点半复习")["start"],
+             parse_time_spec("晚上8点半到9点半复习")["end"]) == ("20:30", "21:30"),
+            parse_time_spec("晚上8点半到9点半复习"))
+    c.check("「12点半」不拨档、也不当成 0 点",
+            parse_time_spec("12点半吃午饭")["start"] == "12:30",
+            parse_time_spec("12点半吃午饭"))
+    # 同一件事在标题上的表现：半小时被吞的时候，那个「半」会掉下来粘住事名（「半跑步」）。
+    from app.modules import planner as P
+    c.check("「早上6点半跑步」事名是「跑步」（半小时既不丢、也不在名字里留残渣）",
+            P._pick_title("早上6点半跑步") == "跑步", P._pick_title("早上6点半跑步"))
+    c.check("「99点半」这种不像钟点的写法一个字都不动（不许拨成 3:30 蒙人）",
+            _normalize_clock("99点半集合") == "99点半集合",
+            _normalize_clock("99点半集合"))
+    # ② 新增的那道闸不许把老功能关掉：正经笔误照纠
+    for s, want in (("中文12点的车", "中午"), ("下物三点开会", "下午"),
+                    ("上物十点上课", "上午")):
+        fixed = _fix_typo_time_words(s)
+        c.check(f"笔误「{s}」照旧纠成带「{want}」的写法", want in fixed, fixed)
+    c.check("「半小时」是时长、不是钟点（不许被「点+半」那条误伤）",
+            parse_time_spec("半小时后交作业")["start"] is None
+            and "6:30" not in _normalize_clock("半小时"),
+            (parse_time_spec("半小时后交作业")["start"], _normalize_clock("半小时")))
+    return c
+
+
 def main():
     results = [batch_a_spec_fields(), batch_b_clock_must_be_used(),
                batch_c_no_split_reading(), batch_d_e2e(), batch_e_bare_clock(),
-               batch_g_evening_words()]
+               batch_g_evening_words(), batch_h_half_hour()]
     tp = sum(r.passed for r in results)
     tf = sum(r.failed for r in results)
     print(f"\n===== 时间解析收口（TimeSpec）总账：通过 {tp} 项，失败 {tf} 项 =====")
