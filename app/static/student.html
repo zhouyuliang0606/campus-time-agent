@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="zh-CN" class="tk-rain" data-gx-fx="birds-wind">
+<html lang="zh-CN" class="tk-rain gx-glass" data-gx-fx="birds-wind" data-gx-lv="2" data-gx-refine="on">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -433,25 +433,40 @@
      放在所有基础规则之后、媒体查询之前：
      ① 同权重下后者覆盖前者，所以能盖掉上面那些旧样式；
      ② 又在移动端断点之前，所以 @media 里的响应式规则依旧生效（不会被这次改版破坏）。 */
-  /* ============ 视觉改版 · 深色玻璃（2026-10-11，依据 glass-ui-skill） ============
-     接着上面那层「清爽留白」做：那一层已经把配色收进 :root，
-     所以这里**只改值、不改名** —— 全站 101 处 var() 自动跟上，不必逐条改写。
-     键名保持不动是有意的：改名等于把一次视觉改版做成一次全文件重构。 */
   :root {
-    --bg: #07130d;                     /* 页面底色：被背景图与 veil 盖住，只兜底用 */
-    --surface: rgba(16,36,28,.52);     /* 卡片/面板：半透，让背景透出来 */
-    --line: rgba(255,255,255,.11);     /* 弱边框（主） */
-    --line-strong: rgba(255,255,255,.18); /* 弱边框（强调，如虚线上传区） */
-    --text: #eaf3ec;                   /* 一级文字 */
-    --text-2: #b9cfc2;                 /* 二级文字 */
-    --text-3: #a2beb1;                 /* 三级文字（辅助说明） */
-    --brand: #d7ef83;                  /* 主色：柠檬绿（skill 的 rain 场景） */
-    --brand-fg: #0a1a10;               /* 新增：主色当**底色**用时的文字色 */
-    --brand-soft: rgba(215,239,131,.14);   /* 主色浅底 */
-    --brand-soft-2: rgba(255,255,255,.05); /* 更浅的一档底（原来是近白） */
-    --radius: 10px;                    /* 控件统一圆角 */
-    --radius-lg: 14px;                 /* 卡片统一圆角 */
-    --gap: 16px;                       /* 区块统一间距 */
+    --bg:              #f7f8fa;
+    --surface:         #fff;
+    --line:            #eaedf3;
+    --line-strong:     #dee4ee;
+    --text:            #22283a;
+    --text-2:          #5b6579;
+    --text-3:          #8d96a8;
+    --brand:           #4d6bb5;
+    --brand-fg:        #fff;
+    --brand-soft:      #eef2fb;
+    --brand-soft-2:    #f6f8fd;
+    --radius:          10px;
+    --radius-lg:       14px;
+    --gap:             16px;
+  }
+  /* 玻璃层开启时的深色覆盖值：键名与上面**逐字相同**，只换值。
+     挂到 html.gx-glass 而不是直接写进 :root，是为了「设置 → 背景 → 不用图」能把
+     整层撤掉、回到改版前的样子 —— 关掉即还原，不养第二套样式。 */
+  html.gx-glass {
+    --bg:              #07130d;
+    --surface:         rgba(16,36,28,.52);
+    --line:            rgba(255,255,255,.11);
+    --line-strong:     rgba(255,255,255,.18);
+    --text:            #eaf3ec;
+    --text-2:          #b9cfc2;
+    --text-3:          #a2beb1;
+    --brand:           #d7ef83;
+    --brand-fg:        #0a1a10;
+    --brand-soft:      rgba(215,239,131,.14);
+    --brand-soft-2:    rgba(255,255,255,.05);
+    --radius:          10px;
+    --radius-lg:       14px;
+    --gap:             16px;
   }
   body { background: var(--bg); color: var(--text); }
   header { background: var(--brand); }
@@ -543,49 +558,101 @@
        ① .shell 抬到背景层之上 —— 不抬就没有内容层，backdrop-filter 也就没有可模糊的底层；
        ② --brand 一名两用：原来「亮蓝底 + 白字」成立，换成亮柠檬绿后「亮绿底 + 白字」直接糊掉，
           所以凡把 --brand 当**底色**用的地方，文字一律跟着翻（.btn 族 / .tab.active / .sb-avatar）。 */
-  .shell { position: relative; z-index: 2; }
-  .sidebar, .topbar, .composer { background: var(--surface); }
+html.gx-glass .shell { position: relative; z-index: 2; }
+html.gx-glass .sidebar, html.gx-glass .topbar, html.gx-glass .composer { background: var(--surface); }
   /* .tab.active 是「--brand 当底色」的典型：亮柠檬绿底上白字读不清，文字翻深 */
-  .tab.active { background: rgba(215,239,131,.20); color: var(--brand); border-color: rgba(215,239,131,.5); text-shadow: 0 1px 2px rgba(7,19,13,.6); }
-  .card, .notices, #log, .view, .mod, .dlg { background: var(--surface); }
-  .notice-item { border-top-color: var(--line); }
-  .tag { background: var(--brand-soft); color: var(--brand); }
-  .slot-row { background: rgba(255,255,255,.04); }
-  .slot-row:hover { background: var(--brand-soft); }
-  .slot-row input { accent-color: var(--brand); }
-  .wk .day.today { border-color: rgba(215,239,131,.5); background: rgba(215,239,131,.08); box-shadow: none; }
-  .tb-link { background: transparent; color: var(--text-2); border: 1px solid var(--line-strong); }
-  .tb-link:hover { background: rgba(255,255,255,.08); color: var(--brand); }
-  .up-drop { border-color: var(--line-strong); color: var(--text-3); }
-  .mic, .attach, .persona, .tab, .view-head .close, .dlg-btn { background: rgba(255,255,255,.06); color: var(--text-2); }
-  .persona:hover, .tab:hover, .attach:hover, .view-head .close:hover { background: var(--brand-soft); color: var(--text); }
-  .mic:hover { background: rgba(232,85,85,.16); color: #ffc9c9; border-color: rgba(232,85,85,.4); }
-  .inputbar input, .model-sel, .slot-other, .wo-form select, .wo-form textarea { background: rgba(0,0,0,.26); color: var(--text); }
-  .inputbar input::placeholder { color: rgba(162,190,177,.75); }
-  .av-opt { color: var(--brand-fg); }
+html.gx-glass .tab.active { background: rgba(215,239,131,.20); color: var(--brand); border-color: rgba(215,239,131,.5); text-shadow: 0 1px 2px rgba(7,19,13,.6); }
+html.gx-glass .card, html.gx-glass .notices, html.gx-glass #log, html.gx-glass .view, html.gx-glass .mod, html.gx-glass .dlg { background: var(--surface); }
+html.gx-glass .notice-item { border-top-color: var(--line); }
+html.gx-glass .tag { background: var(--brand-soft); color: var(--brand); }
+html.gx-glass .slot-row { background: rgba(255,255,255,.04); }
+html.gx-glass .slot-row:hover { background: var(--brand-soft); }
+html.gx-glass .slot-row input { accent-color: var(--brand); }
+html.gx-glass .wk .day.today { border-color: rgba(215,239,131,.5); background: rgba(215,239,131,.08); box-shadow: none; }
+html.gx-glass .tb-link { background: transparent; color: var(--text-2); border: 1px solid var(--line-strong); }
+html.gx-glass .tb-link:hover { background: rgba(255,255,255,.08); color: var(--brand); }
+html.gx-glass .up-drop { border-color: var(--line-strong); color: var(--text-3); }
+html.gx-glass .mic, html.gx-glass .attach, html.gx-glass .persona, html.gx-glass .tab, html.gx-glass .view-head .close, html.gx-glass .dlg-btn { background: rgba(255,255,255,.06); color: var(--text-2); }
+html.gx-glass .persona:hover, html.gx-glass .tab:hover, html.gx-glass .attach:hover, html.gx-glass .view-head .close:hover { background: var(--brand-soft); color: var(--text); }
+html.gx-glass .mic:hover { background: rgba(232,85,85,.16); color: #ffc9c9; border-color: rgba(232,85,85,.4); }
+html.gx-glass .inputbar input, html.gx-glass .model-sel, html.gx-glass .slot-other, html.gx-glass .wo-form select, html.gx-glass .wo-form textarea { background: rgba(0,0,0,.26); color: var(--text); }
+html.gx-glass .inputbar input::placeholder { color: rgba(162,190,177,.75); }
+html.gx-glass .av-opt { color: var(--brand-fg); }
   /* 气泡与状态标签：主色当底的两处翻成半透 + 亮字，语义色提亮到深底可读 */
-  header { background: rgba(7,19,13,.34); color: var(--text); }
-  .user .bubble { background: rgba(215,239,131,.16); color: var(--text); }
-  .bot .bubble { background: rgba(255,255,255,.07); color: var(--text); }
-  .sys .bubble { background: rgba(242,180,92,.12); color: #f7ddb2; border-color: rgba(242,180,92,.5); }
-  .evt.course { background: rgba(215,239,131,.14); border-color: rgba(215,239,131,.42); color: var(--text); }
-  .evt.todo { background: rgba(242,180,92,.14); border-color: rgba(242,180,92,.45); color: #f7ddb2; }
-  .evt.done { background: rgba(125,196,138,.14); border-color: #7dc48a; color: #b9e2c2; }
-  .evt .clash-tag { background: #e85555; color: #fff; }
+html.gx-glass header { background: rgba(7,19,13,.34); color: var(--text); }
+html.gx-glass .user .bubble { background: rgba(215,239,131,.16); color: var(--text); }
+html.gx-glass .bot .bubble { background: rgba(255,255,255,.07); color: var(--text); }
+html.gx-glass .sys .bubble { background: rgba(242,180,92,.12); color: #f7ddb2; border-color: rgba(242,180,92,.5); }
+html.gx-glass .evt.course { background: rgba(215,239,131,.14); border-color: rgba(215,239,131,.42); color: var(--text); }
+html.gx-glass .evt.todo { background: rgba(242,180,92,.14); border-color: rgba(242,180,92,.45); color: #f7ddb2; }
+html.gx-glass .evt.todo.done { background: rgba(125,196,138,.14); border-color: #7dc48a; color: #b9e2c2; }
+html.gx-glass .evt .clash-tag { background: #e85555; color: #fff; }
   /* 弹窗：它压在遮罩上，必须比页面面板更实一档，否则读不清 */
-  .dlg-head { background: rgba(255,255,255,.04); color: var(--text); border-bottom-color: var(--line); }
-  .dlg-foot { background: rgba(0,0,0,.22); border-top-color: var(--line); }
-  .dlg-warn { background: rgba(242,180,92,.12); color: #f7ddb2; border-color: rgba(242,180,92,.45); }
-  .dlg-btn { border: 1px solid rgba(255,255,255,.15); }
-  .dlg-btn.ghost { background: rgba(255,255,255,.03); color: var(--text-2); }
-  .dlg-btn.ghost:hover { background: rgba(232,85,85,.16); color: #ffc9c9; border-color: rgba(232,85,85,.4); }
+html.gx-glass .dlg-head { background: rgba(255,255,255,.04); color: var(--text); border-bottom-color: var(--line); }
+html.gx-glass .dlg-foot { background: rgba(0,0,0,.22); border-top-color: var(--line); }
+html.gx-glass .dlg-warn { background: rgba(242,180,92,.12); color: #f7ddb2; border-color: rgba(242,180,92,.45); }
+html.gx-glass .dlg-btn { border: 1px solid rgba(255,255,255,.15); }
+html.gx-glass .dlg-btn.ghost { background: rgba(255,255,255,.03); color: var(--text-2); }
+html.gx-glass .dlg-btn.ghost:hover { background: rgba(232,85,85,.16); color: #ffc9c9; border-color: rgba(232,85,85,.4); }
   /* 主 CTA 族：主色由「实心蓝底白字」改成「半透柠檬底 + 亮绿字 + 深色投影托底」 */
-  .btn, .confirm-btn, .inputbar button, .wo-form button {
+html.gx-glass .btn, html.gx-glass .confirm-btn, html.gx-glass .inputbar button, html.gx-glass .wo-form button {
     background: rgba(215,239,131,.20); color: var(--brand); border: 1px solid rgba(215,239,131,.42);
     text-shadow: 0 1px 2px rgba(7,19,13,.6); }
-  .btn.ghost { background: rgba(255,255,255,.04); color: var(--text-2); border: 1px solid var(--line-strong); text-shadow: none; }
-  .sb-avatar { background: rgba(255,255,255,.10); color: var(--text); border: 1px solid var(--line-strong); }
-  .st.cook { background: var(--brand); }
+html.gx-glass .btn.ghost { background: rgba(255,255,255,.04); color: var(--text-2); border: 1px solid var(--line-strong); text-shadow: none; }
+html.gx-glass .sb-avatar { background: rgba(255,255,255,.10); color: var(--text); border: 1px solid var(--line-strong); }
+html.gx-glass .st.cook { background: var(--brand); }
+
+  /* 真·磨砂玻璃：原来这些面板只有半透底色、**没有 backdrop-filter**，
+     所以"玻璃"其实没立起来，「整页玻璃」那一档拧了也没反馈。补上模糊，
+     并把它做成四档（data-gx-lv），设置里能一档档看差别。
+     ★ 档位的填充值比预览件高：预览件的面板还叠了一层顶部高光渐变，
+       这里没有，同样的 alpha 会偏透，所以整档上移。 */
+html.gx-glass .card, html.gx-glass .notices, html.gx-glass #log, html.gx-glass .view,
+html.gx-glass .sidebar, html.gx-glass .topbar, html.gx-glass .composer, html.gx-glass .dlg {
+  background: rgba(var(--fill-rgb), var(--gx-f,.52));
+  backdrop-filter: blur(var(--gx-b,6px)) saturate(135%);
+  -webkit-backdrop-filter: blur(var(--gx-b,6px)) saturate(135%);
+  border: 1px solid var(--theme-border2);
+  box-shadow: 0 1px 0 rgba(255,255,255,.22) inset, 0 18px 38px -22px rgba(0,0,0,.5); }
+html.gx-glass[data-gx-lv="0"] { --gx-f:.86; --gx-b:22px; }   /* 实心 */
+html.gx-glass[data-gx-lv="1"] { --gx-f:.70; --gx-b:12px; }   /* 微透 */
+html.gx-glass[data-gx-lv="2"] { --gx-f:.52; --gx-b:6px;  }   /* 半透（默认） */
+html.gx-glass[data-gx-lv="3"] { --gx-f:.30; --gx-b:2px;  }   /* 通透 */
+
+  /* ============ 去土层（2026-10-11，对照 skill 原版 showcase 定位） ============
+     用户反馈「总感觉怪土的」。根因不是配色也不是透明度：原版是一张**稀疏 landing page**，
+     学生端是**密排工具界面**，玻璃在前者显贵、在后者显贱。四条里"图标换 SVG"已单独落地，
+     这里做剩下三条：强调色再收一档、字阶拉开、容器去边框。
+     ★ 这一层必须真实存在，设置页那个勾选框才不是骗人的。 */
+  /* ① 强调色再收一档：亮绿只留给「主 CTA + 当前选中 + 勾选态」，其余回中性 */
+html.gx-glass[data-gx-refine="on"] .row .info b,
+html.gx-glass[data-gx-refine="on"] .opt-card .info b { color: var(--text); font-size: 15px; }
+html.gx-glass[data-gx-refine="on"] .tag { background: transparent; color: var(--text-2); border-color: var(--line); }
+html.gx-glass[data-gx-refine="on"] .trace > summary { color: var(--text-2); }
+html.gx-glass[data-gx-refine="on"] .paste-btn { color: var(--text-2); }
+  /* 状态标签：整块上色改成「中性底 + 一条 2px 色杠」，语义还在但不刺眼 */
+html.gx-glass[data-gx-refine="on"] .evt.course,
+html.gx-glass[data-gx-refine="on"] .evt.todo,
+html.gx-glass[data-gx-refine="on"] .evt.todo.done {
+  background: rgba(255,255,255,.05); border-color: var(--line-strong); color: var(--text-2); }
+html.gx-glass[data-gx-refine="on"] .evt.course { box-shadow: inset 2px 0 0 rgba(var(--primary-rgb),.75); }
+html.gx-glass[data-gx-refine="on"] .evt.todo { box-shadow: inset 2px 0 0 #f2b45c; }
+html.gx-glass[data-gx-refine="on"] .evt.todo.done { box-shadow: inset 2px 0 0 rgba(125,196,138,.7); color: var(--text-3); }
+  /* ② 字阶：原来全站 12–16px、字重跨度不到 2 档，读起来平。拉开跨度才有主次 */
+html.gx-glass[data-gx-refine="on"] .topbar .t { font-size: 23px; font-weight: 700; letter-spacing: -.01em; }
+html.gx-glass[data-gx-refine="on"] .view-head,
+html.gx-glass[data-gx-refine="on"] .notices-head { font-size: 12px; font-weight: 600; letter-spacing: .07em; color: var(--text-3); }
+html.gx-glass[data-gx-refine="on"] .msg .bubble { font-size: 14.5px; line-height: 1.7; }
+html.gx-glass[data-gx-refine="on"] .msg .who { font-size: 11px; letter-spacing: .06em; }
+html.gx-glass[data-gx-refine="on"] .dlg-head { font-size: 15px; font-weight: 700; }
+  /* ③ 容器去边框：面板靠填充 + 阴影分层，hairline 只留给可交互件。
+     一圈亮边是"线框稿感"的主要来源 */
+html.gx-glass[data-gx-refine="on"] .card, html.gx-glass[data-gx-refine="on"] .notices,
+html.gx-glass[data-gx-refine="on"] #log, html.gx-glass[data-gx-refine="on"] .view,
+html.gx-glass[data-gx-refine="on"] .sidebar, html.gx-glass[data-gx-refine="on"] .topbar,
+html.gx-glass[data-gx-refine="on"] .composer, html.gx-glass[data-gx-refine="on"] .dlg {
+  border-color: transparent;
+  box-shadow: 0 1px 0 rgba(255,255,255,.16) inset, 0 22px 48px -26px rgba(0,0,0,.65); }
 
   @media (max-width: 720px) {
     .sidebar { width: 64px; padding: 10px 8px; }
@@ -2577,8 +2644,22 @@
     const GX_BGS = {
       forest: { label:"雾松林", src:"/static/bg/forest.jpg", vm:".31", scrim:".20", bd:".95", core:"0",   fx:"birds-wind" },
       milky:  { label:"银河",   src:"/static/bg/milky.jpg",  vm:".40", scrim:".12", bd:"1",   core:"0",   fx:"meteor" },
-      none:   { label:"不用图", src:"",                       vm:".55", scrim:"0",   bd:"1",   core:"0",   fx:"off" }
+      space:  { label:"星空",   src:"/static/bg/space.jpg",  vm:".10", scrim:".10", bd:"1",   core:".78", fx:"meteor" },
+      park:   { label:"草坪",   src:"/static/bg/park.jpg",   vm:".62", scrim:".30", bd:".78", core:"0",   fx:"off" },
+      // 「不用图」不是"黑色底"，而是**撤掉总闸**：html.gx-glass 一摘，深色 token 与
+      // 补丁段全部失效，页面回到玻璃改版之前的样子。关掉即还原，不养第二套样式。
+      none:   { label:"不用图（回到改版前）", src:"", vm:".31", scrim:".20", bd:".95", core:"0", fx:"off" }
     };
+    // 四个可调项：默认值随背景走（veil/遮罩/亮度/压暗都是按图**反解**出来的，换图必须重测）
+    // [localStorage 键, CSS 变量, 标签, 滑杆 min, max, step, 该图默认值取哪个字段]
+    const GX_TUNES = [
+      ["ct_gx_scrim","--gx-scrim","暗度",     0,  60,  2,  "scrim"],
+      ["ct_gx_vm",   "--gx-vm",   "渐变遮罩", 0,  80,  2,  "vm"],
+      ["ct_gx_bd",   "--gx-bd",   "背景亮度", 40, 110, 5,  "bd"],
+      ["ct_gx_core", "--gx-core", "亮核压暗", 0,  95,  5,  "core"]
+    ];
+    const GX_LV = [["0","实心"],["1","微透"],["2","半透"],["3","通透"]];
+    const GX_FX = [["off","关"],["birds","飞鸟"],["wind","风"],["birds-wind","飞鸟+风"],["meteor","流星 ×6"],["meteor2","流星 ×16"]];
     // 鸟必须**内联**画，不能用 <use> 引 symbol：use 复制出来的内容在 shadow 树里，
     // 文档样式（含 .wg 的扇翅动画）选不中它，结果就是一只不会动的鸟。
     const GX_BIRD = '<svg viewBox="0 0 40 20" aria-hidden="true"><path class="wg" d="M20 12 C15 11 9 8 1.4 2.2 C7 10 13 13 20 14 Z"/><path class="wg" d="M20 12 C25 11 31 8 38.6 2.2 C33 10 27 13 20 14 Z"/><ellipse cx="20" cy="13.4" rx="2.3" ry="1.15"/></svg>';
@@ -2622,21 +2703,30 @@
       }
     }
     function applyBackdrop(){
-      const key = gxVal('ct_bg','forest'); const b = GX_BGS[key] || GX_BGS.forest;
       const root = document.documentElement, img = document.getElementById('gxBg');
+      const key = gxVal('ct_bg','forest'), b = GX_BGS[key] || GX_BGS.forest;
+      const on = (key !== 'none');
+      root.classList.toggle('gx-glass', on);              // ← 总闸
       if (img) {
-        if (b.src) { if (img.getAttribute('src') !== b.src) img.setAttribute('src', b.src); img.style.display=''; }
+        if (on && b.src) { if (img.getAttribute('src') !== b.src) img.setAttribute('src', b.src); img.style.display=''; }
         else img.style.display='none';
       }
-      root.style.setProperty('--gx-vm', b.vm);
-      root.style.setProperty('--gx-bd', b.bd);
-      root.style.setProperty('--gx-core', b.core);
-      root.style.setProperty('--gx-scrim', gxVal('ct_bg_scrim', b.scrim));
-      const fx = gxVal('ct_bg_fx', b.fx);
+      // 四个旋钮：用户拧过的（ct_gx_*）优先，没拧过就用这张图的反解默认值
+      GX_TUNES.forEach(function(t){
+        const v = gxVal(t[0], '');
+        root.style.setProperty(t[1], v !== '' ? v : b[t[6]]);
+      });
+      root.setAttribute('data-gx-lv', gxVal('ct_gx_lv','2'));
+      const fx = on ? gxVal('ct_gx_fx', b.fx) : 'off';
       root.setAttribute('data-gx-fx', fx);
       buildGxFx(fx);
+      root.setAttribute('data-gx-refine', gxVal('ct_gx_refine','on'));
     }
-
+    // 旋钮当前生效值（给滑杆回显用）：读 CSS 变量，避免"设置显示"与"页面实际"两张皮
+    function gxNow(prop){
+      const v = getComputedStyle(document.documentElement).getPropertyValue(prop);
+      return Math.round((parseFloat(v)||0)*100);
+    }
     function loadSettingsView(){
       var box=document.getElementById("settingsBody"); if(!box) return;
       var name=localStorage.getItem("campustime_name")||localStorage.getItem("ct_profile_name")||"管家";
@@ -2650,9 +2740,14 @@
         // 演示/评委场景能回到"只看结果"的干净样子。
         '<div class="card"><h2>思考过程</h2><div class="desc">每条回复下面要不要展示"我是这么想的"（它把你的话听成了什么、依据是哪一档）。关掉之后只显示结果。</div>'+
         '<label style="display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;"><input type="checkbox" id="setTrace" '+(traceOn()?"checked":"")+' style="width:16px;height:16px;"> 展示思考过程</label></div>'+
-        '<div class="card"><h2>背景</h2><div class="desc">选一张当界面的底，玻璃面板会透出它；「暗度」是压在图上那层遮罩，越暗字越清楚。两项都只存这台浏览器。</div>'+
+        '<div class="card"><h2>背景与外观</h2><div class="desc">底图、玻璃透不透、遮罩多暗、有没有动效，都在这调；只存这台浏览器，不上传。「不用图」= 关掉整层玻璃，回到改版前的样子。</div>'+
         '<div id="setBgList" class="persona-list"></div>'+
-        '<label style="display:flex;align-items:center;gap:10px;font-size:13px;margin-top:12px;color:var(--text-2);">暗度 <input type="range" id="setScrim" min="0" max="60" step="2" style="flex:1;accent-color:var(--brand);"> <span id="setScrimV" class="small"></span></label></div>'+
+        '<div id="setGxTunes" style="margin-top:14px;display:flex;flex-direction:column;gap:9px;"></div>'+
+        '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:14px;align-items:center;">'+
+          '<span class="small">整页玻璃</span><span id="setGxLv" class="persona-list"></span>'+
+          '<span class="small" style="margin-left:10px;">动效</span><select id="setGxFx" class="model-sel"></select>'+
+          '<label class="small" style="display:flex;align-items:center;gap:6px;cursor:pointer;margin-left:10px;"><input type="checkbox" id="setGxRefine" style="width:15px;height:15px;"> 去土（强调色收口 + 字阶拉开）</label>'+
+        '</div></div>'+
         '<div class="card"><h2>模型与 API</h2><div class="desc">默认用管理端配置的模型；也可填自己的 API Key（存在本机浏览器，每轮对话上传给服务器代你调模型——用完即弃，不落盘）。</div>'+
         '<div id="setModelInfo" style="font-size:13px;margin-bottom:10px;"></div>'+
         '<button class="btn" id="setModelBtn">'+(cfg&&cfg.api_key?"修改 API":"添加 API")+'</button> '+
@@ -2666,27 +2761,56 @@
       document.getElementById("setTrace").addEventListener("change", function(e){
         localStorage.setItem("campustime_trace", e.target.checked ? "1" : "0");
       });
-      // ---- 背景与暗度：立刻存本机，然后重新套一遍 ----
-      // applyBackdrop 只写 CSS 变量与 .gx-fx 里的装饰节点，不碰任何接口与业务状态。
-      // 换图时把 ct_bg_fx 删掉：动效交回那张图的默认档（森林=飞鸟，星空=流星），
-      // 否则会出现「草地上掉流星」这种调性打架的组合。
+      // ---- 背景与外观：改一项就立刻存本机 + 重新套一遍 ----
+      // applyBackdrop 只写 CSS 变量、类名与 .gx-fx 里的装饰节点，不碰接口与业务状态。
+      // 换图时把四个旋钮与 ct_gx_fx 清掉：让它们回到**那张图自己的**反解默认值，
+      // 否则会出现「在亮草坪上沿用雾松林的薄遮罩」这种调性打架的组合。
       (function(){
+        function resetTunes(){ ['ct_gx_scrim','ct_gx_vm','ct_gx_bd','ct_gx_core','ct_gx_fx'].forEach(function(k){ localStorage.removeItem(k); }); }
         var cur=gxVal('ct_bg','forest'), bl=document.getElementById('setBgList');
         bl.innerHTML=Object.keys(GX_BGS).map(function(k){
           return '<div class="persona '+(k===cur?'active':'')+'" data-bg="'+esc(k)+'"><span>'+esc(GX_BGS[k].label)+'</span></div>';
         }).join('');
         bl.querySelectorAll('.persona').forEach(function(el){ el.addEventListener('click', function(){
-          localStorage.setItem('ct_bg', el.dataset.bg); localStorage.removeItem('ct_bg_fx');
+          localStorage.setItem('ct_bg', el.dataset.bg); resetTunes();
           applyBackdrop(); loadSettingsView();
         }); });
-        var sl=document.getElementById('setScrim'), sv=document.getElementById('setScrimV');
-        var now=function(){ return parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--gx-scrim')||'0'); };
-        sl.value=Math.round(now()*100);
-        sv.textContent=Math.round(now()*100)+'%';
-        sl.addEventListener('input', function(){
-          localStorage.setItem('ct_bg_scrim', (sl.value/100).toFixed(2));
-          applyBackdrop(); sv.textContent=Math.round(now()*100)+'%';
+
+        var tw=document.getElementById('setGxTunes');
+        tw.innerHTML=GX_TUNES.map(function(t){
+          return '<label style="display:flex;align-items:center;gap:10px;font-size:13px;color:var(--text-2);">'+
+            '<span style="width:64px;flex:none;">'+esc(t[2])+'</span>'+
+            '<input type="range" data-k="'+esc(t[0])+'" data-p="'+esc(t[1])+'" min="'+t[3]+'" max="'+t[4]+'" step="'+t[5]+'" style="flex:1;accent-color:var(--brand);">'+
+            '<span class="small" data-v="'+esc(t[1])+'" style="width:38px;text-align:right;"></span></label>';
+        }).join('');
+        tw.querySelectorAll('input[type=range]').forEach(function(sl){
+          sl.value=gxNow(sl.dataset.p);
+          var lab=tw.querySelector('[data-v="'+sl.dataset.p+'"]'); if(lab) lab.textContent=sl.value+'%';
+          sl.addEventListener('input', function(){
+            localStorage.setItem(sl.dataset.k,(sl.value/100).toFixed(2));
+            applyBackdrop();
+            sl.value=gxNow(sl.dataset.p); if(lab) lab.textContent=sl.value+'%';
+          });
         });
+
+        var lv=document.getElementById('setGxLv'), curLv=gxVal('ct_gx_lv','2');
+        lv.innerHTML=GX_LV.map(function(x){
+          return '<div class="persona '+(x[0]===curLv?'active':'')+'" data-lv="'+x[0]+'"><span>'+esc(x[1])+'</span></div>';
+        }).join('');
+        lv.querySelectorAll('.persona').forEach(function(el){ el.addEventListener('click', function(){
+          localStorage.setItem('ct_gx_lv', el.dataset.lv); applyBackdrop(); loadSettingsView();
+        }); });
+
+        var fs=document.getElementById('setGxFx');
+        fs.innerHTML=GX_FX.map(function(x){
+          var on=(x[0]===gxVal('ct_gx_fx',(GX_BGS[gxVal('ct_bg','forest')]||GX_BGS.forest).fx));
+          return '<option value="'+x[0]+'"'+(on?' selected':'')+'>'+esc(x[1])+'</option>';
+        }).join('');
+        fs.addEventListener('change', function(){ localStorage.setItem('ct_gx_fx', fs.value); applyBackdrop(); });
+
+        var rf=document.getElementById('setGxRefine');
+        rf.checked = gxVal('ct_gx_refine','on')==='on';
+        rf.addEventListener('change', function(){ localStorage.setItem('ct_gx_refine', rf.checked?'on':'off'); applyBackdrop(); });
       })();
       (async function(){
         var personas=[]; try{ personas=(await (await fetch("/api/student-personas")).json()).personas||[]; }catch(e){}

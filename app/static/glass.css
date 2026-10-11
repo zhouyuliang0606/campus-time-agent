@@ -35,16 +35,19 @@
    两个数都是**按图反解**出来的（判据：90×18 文字窗口逐格取均值 → 合成亮度 →
    对 --theme-muted-fg 求 WCAG → 取全页最差值 ≥ 4.5:1），换图必须重测：
      forest .31 / .20    milky .40 / .12    星空(开亮核压暗) .10 / .10 */
-.gx-backdrop{position:fixed;inset:0;width:100%;height:100%;object-fit:cover;z-index:0;pointer-events:none;
-  filter:brightness(var(--gx-bd,.95)) saturate(1.12) contrast(1.03)}
-.gx-veil{position:fixed;inset:0;z-index:1;pointer-events:none;
+.gx-backdrop{display:none;position:fixed;inset:0;width:100%;height:100%;object-fit:cover;z-index:0;pointer-events:none}
+html.gx-glass .gx-backdrop{display:block;filter:brightness(var(--gx-bd,.95)) saturate(1.12) contrast(1.03)}
+.gx-veil{display:none;position:fixed;inset:0;z-index:1;pointer-events:none}
+html.gx-glass .gx-veil{display:block;
   background:
     radial-gradient(560px 300px at 50% 53%,rgba(var(--veil-rgb),var(--gx-core,0)) 0%,rgba(var(--veil-rgb),calc(var(--gx-core,0)*.55)) 45%,rgba(var(--veil-rgb),0) 72%),
     linear-gradient(90deg,rgba(var(--veil-rgb),calc(var(--gx-vm,.31)*1.9)) 0%,rgba(var(--veil-rgb),calc(var(--gx-vm,.31)*.55)) 42%,rgba(var(--veil-rgb),0) 70%),
     linear-gradient(180deg,rgba(var(--veil-rgb),.95) 0%,rgba(var(--veil-rgb),calc(var(--gx-vm,.31) + .34)) 20%,rgba(var(--veil-rgb),var(--gx-vm,.31)) 46%,rgba(var(--veil-rgb),calc(var(--gx-vm,.31) + .16)) 74%,rgba(var(--veil-rgb),.92) 100%),
     linear-gradient(rgba(var(--veil-rgb),var(--gx-scrim,.2)),rgba(var(--veil-rgb),var(--gx-scrim,.2)))}
 .gx-fx{position:fixed;inset:0;z-index:1;pointer-events:none;overflow:hidden;display:none}
-html[data-gx-fx]:not([data-gx-fx="off"]) .gx-fx{display:block}
+/* 装饰三层都以 html.gx-glass 为总闸：设置里选「不用图」= 撤掉整层，
+   页面回到改版前的样子，不养第二套样式 */
+html.gx-glass[data-gx-fx]:not([data-gx-fx="off"]) .gx-fx{display:block}
 /* 内容层抬到背景之上；卡片的 backdrop-filter 才会实时模糊背后的图 */
 .gx-root{position:relative;z-index:2}
 
