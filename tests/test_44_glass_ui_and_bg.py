@@ -68,7 +68,10 @@ def batch_structure(ck):
              'class="gx-veil" aria-hidden="true"' in src and 'id="gxStage" aria-hidden="true"' in src)
     ck.check(".shell 抬到内容层（backdrop-filter 才有可模糊的底层）",
              re.search(r"\.shell\s*\{[^}]*z-index:\s*2", src) is not None)
-    ck.check("html 挂上 rain 主题类", 'class="tk-rain"' in src)
+    ck.check("html 初始就挂着 rain 主题 + 玻璃总闸（不挂会先闪一下浅色）",
+             'class="tk-rain gx-glass"' in src)
+    ck.check("默认档写在初始 HTML 上（半透 + 去土开）",
+             'data-gx-lv="2"' in src and 'data-gx-refine="on"' in src)
     g = read(GLASS)
     ck.check("公共层含 rain / space 两套 token", ".tk-rain{" in g and ".tk-space{" in g)
     ck.check("公共层含 prefers-reduced-motion 降级", "prefers-reduced-motion" in g)
@@ -95,7 +98,12 @@ def batch_tokens(ck):
     ck.check("var() 引用量没塌（≥90，实测 %d）" % n, n >= 90)
     # 深色底上白字/浅底会糊：--brand 当 background 用的地方必须同时给文字色
     ck.check("主色当底的按钮已配亮字+投影", re.search(r"\.btn[^{]*\{[^}]*--brand", src, re.S) is not None)
-    ck.check("旧浅色底 #f7f8fa 已从 token 块消失", "#f7f8fa" not in block)
+    # 浅色基线**故意留在 :root** —— 「设置 → 背景 → 不用图」靠它原样还回去；
+    # 深色值只能出现在 html.gx-glass 覆盖块里。两边必须成对存在，缺一即坏。
+    # （值前有多个对齐空格，所以用正则而不是字面量匹配 —— 字面量会被排版差异绊倒）
+    ck.check("浅色基线在 :root、深色值在 html.gx-glass 下（成对）",
+             "#f7f8fa" in block and "html.gx-glass {" in src
+             and re.search(r"--surface:\s+rgba\(16,36,28,\.52\)", src) is not None)
 
 
 def batch_icons(ck):
@@ -123,14 +131,18 @@ def batch_icons(ck):
 def batch_pref(ck):
     title("D. 背景偏好：读写、默认值与动效联动")
     src = read(STUDENT)
-    ck.check("三档背景都在表里", all(k in src for k in ['label:"雾松林"', 'label:"银河"', 'label:"不用图"']))
-    for key in ["ct_bg", "ct_bg_scrim", "ct_bg_fx"]:
+    ck.check("背景五档齐全（4 图 + 不用图）",
+             all(k in src for k in ['label:"雾松林"', 'label:"银河"', 'label:"星空"',
+                                    'label:"草坪"', 'label:"不用图（回到改版前）"']))
+    for key in ["ct_bg", "ct_gx_scrim", "ct_gx_vm", "ct_gx_bd", "ct_gx_core", "ct_gx_fx"]:
         ck.check("localStorage 键 %s 被使用" % key, key in src)
     ck.check("偏好只写 CSS 变量，不碰接口",
-             src.count("setProperty('--gx-vm'") >= 1 and "gxVal('ct_bg'" in src)
-    # 换图必须把动效交回该图默认档，否则会出现"草地上掉流星"
-    ck.check("换图时清掉 ct_bg_fx（动效回默认档）",
-             re.search(r"setItem\('ct_bg',[^;]+;[^;]*removeItem\('ct_bg_fx'\)", src) is not None)
+             "setProperty(t[1]" in src and "gxVal('ct_bg'" in src)
+    # 换图必须把四个旋钮与动效都交回该图自己的反解默认值，
+    # 否则会在亮草坪上沿用雾松林的薄遮罩 —— 那是调性打架，不是偏好
+    ck.check("换图时清掉四个旋钮与动效（resetTunes）",
+             "resetTunes" in src
+             and "ct_gx_scrim','ct_gx_vm','ct_gx_bd','ct_gx_core','ct_gx_fx" in src)
     ck.check("reduced-motion 下连节点都不生成",
              "prefers-reduced-motion" in src and "buildGxFx" in src)
     ck.check("启动时先套背景再绘制（applyBackdrop 在引导段里）",
@@ -139,8 +151,58 @@ def batch_pref(ck):
     ck.check("鸟是内联画的（不是 <use> 引 symbol）",
              'GX_BIRD' in src and '<use href="#gi-bird"' not in src)
     # 每档背景自带**反解**出来的 veil/遮罩默认值（不是拍脑袋的数）
-    ck.check("每档背景自带反解出的 veil/遮罩默认值",
-             'vm:".31"' in src and 'vm:".40"' in src and 'scrim:".20"' in src)
+    ck.check("每张图自带反解出的 veil/遮罩默认值（四张各不相同）",
+             'vm:".31"' in src and 'vm:".40"' in src and 'vm:".10"' in src and 'vm:".62"' in src)
+
+
+def batch_gate(ck):
+    """G. 总闸与旋钮：设置页每一项都必须真有对应效果，否则它是个会说谎的控件。"""
+    title("G. 玻璃总闸 / 四档 / 去土层 / 四个旋钮")
+    src = read(STUDENT)
+    glass = read(GLASS)
+    # 总闸：深色值与补丁段全部挂在 html.gx-glass 下，关掉即整层失效
+    ck.check(":root 保留浅色基线（关掉玻璃要能原样还回去）",
+             re.search(r":root\s*\{[^}]*--surface:\s*#fff", src) is not None)
+    ck.check("深色值改挂 html.gx-glass", re.search(r"html\.gx-glass\s*\{[^}]*--surface:\s*rgba\(16,36,28", src) is not None)
+    i = src.index("深色玻璃补丁")
+    j = src.index("@media (max-width: 720px)")
+    block = src[i:j]
+    ungated = [l.strip()[:48] for l in block.splitlines()
+               if "{" in l and "html.gx-glass" not in l and not l.strip().startswith(("*", "/*", ":"))]
+    ck.check("补丁段每条规则都在总闸下（漏网：%s）" % (ungated or "无"), not ungated)
+    ck.check("装饰三层以总闸为开关（glass.css）",
+             "html.gx-glass .gx-backdrop{display:block" in glass and "html.gx-glass .gx-veil{display:block" in glass)
+    # 真·磨砂：面板必须有**未加前缀的** backdrop-filter，否则"整页玻璃"那档拧了没反馈。
+    # ⚠️ 判据不能写 `"backdrop-filter" in block` —— `-webkit-backdrop-filter` 里也含这个
+    #    子串，摘掉标准属性照样绿（本条变异实测过，第一次就是这么假绿的）。
+    std_blur = re.findall(r"(?<!-webkit-)backdrop-filter:\s*blur", block)
+    ck.check("面板上了未加前缀的 backdrop-filter（共 %d 处）" % len(std_blur), len(std_blur) >= 1)
+    ck.check("同时带 -webkit- 前缀（Safari 要）",
+             "-webkit-backdrop-filter: blur" in block or "-webkit-backdrop-filter:blur" in block)
+    for lv, blur in [("0", "22px"), ("1", "12px"), ("2", "6px"), ("3", "2px")]:
+        ck.check("档位 data-gx-lv=%s 有对应模糊（%s）" % (lv, blur),
+                 ('data-gx-lv="%s"]' % lv) in block and blur in block)
+    # 去土层：勾选框必须真有对应规则
+    ck.check("去土层存在且键在 data-gx-refine 上", 'data-gx-refine="on"]' in src)
+    ck.check("去土确实动了字阶（23px 标题）",
+             re.search(r'data-gx-refine="on"\] \.topbar \.t \{ font-size: 23px', src) is not None)
+    ck.check("去土确实收了强调色（状态标签改 2px 色杠）",
+             "inset 2px 0 0" in src)
+    # 四个旋钮 + 五个偏好键
+    for key in ["ct_gx_scrim", "ct_gx_vm", "ct_gx_bd", "ct_gx_core", "ct_gx_lv", "ct_gx_fx", "ct_gx_refine"]:
+        ck.check("偏好键 %s 有读写" % key, key in src)
+    ck.check("四个旋钮都进了 GX_TUNES", src.count('"--gx-') >= 4)
+    # 换图必须把旋钮交回该图自己的反解默认值，否则会在亮草坪上沿用雾松林的薄遮罩
+    ck.check("换图时清掉四个旋钮（resetTunes）",
+             "resetTunes" in src and "ct_gx_scrim','ct_gx_vm','ct_gx_bd','ct_gx_core'" in src)
+    # 四张图 + 不用图，五档选择
+    ck.check("背景五档齐全（4 图 + 不用图）",
+             all(x in src for x in ['forest.jpg', 'milky.jpg', 'space.jpg', 'park.jpg', 'none:']))
+    ck.check("「不用图」的语义是撤总闸，不是黑底",
+             "root.classList.toggle('gx-glass', on)" in src)
+    # 死规则检查：类名写错会让规则静默失效
+    ck.check("已完成态选择器是真实的 .evt.todo.done",
+             ".evt.todo.done {" in src and ".evt.done {" not in src)
 
 
 def batch_http(ck):
@@ -156,12 +218,13 @@ def batch_http(ck):
     ck.check("响应里带着背景图节点", 'id="gxBg"' in html)
     r2 = client.get("/static/glass.css")
     ck.check("GET /static/glass.css 200", r2.status_code == 200, str(r2.status_code))
-    for name in ["forest.jpg", "milky.jpg"]:
+    BGS = ["forest.jpg", "milky.jpg", "space.jpg", "park.jpg"]
+    for name in BGS:
         rr = client.get("/static/bg/" + name)
         ck.check("GET /static/bg/%s 200 且是图片" % name,
                  rr.status_code == 200 and rr.headers.get("content-type", "").startswith("image/"),
                  "%s / %s" % (rr.status_code, rr.headers.get("content-type")))
-    for name in ["forest.jpg", "milky.jpg"]:
+    for name in BGS:
         size = os.path.getsize(os.path.join(BG_DIR, name))
         ck.check("%s 体积在预算内（%d KB ≤ 230KB）" % (name, size // 1024), size <= 230 * 1024)
     ck.check("素材许可与署名已登记 NOTICE.md",
@@ -187,6 +250,7 @@ def main():
     batch_tokens(ck)
     batch_icons(ck)
     batch_pref(ck)
+    batch_gate(ck)
     batch_http(ck)
     batch_reply_text_untouched(ck)
     return ck.summary("test_44 玻璃层与背景偏好")
