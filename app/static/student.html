@@ -2565,6 +2565,73 @@
       }catch(e){ box.innerHTML='<div class="empty">待办加载失败</div>'; }
     }
 
+    /* ============ 背景与动效层（2026-10-11，玻璃质感改版） ============
+       纯视觉：只写 CSS 变量、只往 .gx-fx 里塞装饰节点，不碰任何接口与业务状态。
+       选择记在 localStorage（沿用 ct_* 命名），刷新与下次打开都还在；
+       换设备/清缓存就回到默认，这是刻意的 —— 它是偏好，不是数据。 */
+    const GX_BGS = {
+      forest: { label:"雾松林", src:"/static/bg/forest.jpg", vm:".31", scrim:".20", bd:".95", core:"0",   fx:"birds-wind" },
+      milky:  { label:"银河",   src:"/static/bg/milky.jpg",  vm:".40", scrim:".12", bd:"1",   core:"0",   fx:"meteor" },
+      none:   { label:"不用图", src:"",                       vm:".55", scrim:"0",   bd:"1",   core:"0",   fx:"off" }
+    };
+    // 鸟必须**内联**画，不能用 <use> 引 symbol：use 复制出来的内容在 shadow 树里，
+    // 文档样式（含 .wg 的扇翅动画）选不中它，结果就是一只不会动的鸟。
+    const GX_BIRD = '<svg viewBox="0 0 40 20" aria-hidden="true"><path class="wg" d="M20 12 C15 11 9 8 1.4 2.2 C7 10 13 13 20 14 Z"/><path class="wg" d="M20 12 C25 11 31 8 38.6 2.2 C33 10 27 13 20 14 Z"/><ellipse cx="20" cy="13.4" rx="2.3" ry="1.15"/></svg>';
+    const GX_LEAF = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 20A7 7 0 0 1 4 13C4 8 8.5 4 13.5 4c3 0 6 1.5 6 1.5s-.5 9-8.5 14.5z"/></svg>';
+    const GX_TIERS = { far:{w:[10,14],op:.5,t:[20,27],sc:.85}, mid:{w:[15,22],op:.8,t:[13,20],sc:1}, near:{w:[24,34],op:.95,t:[9,14],sc:1.15} };
+    function gxVal(k, d){ const v = localStorage.getItem(k); return (v===null||v==='') ? d : v; }
+    function buildGxFx(kind){
+      const stage = document.getElementById('gxStage'); if(!stage) return;
+      stage.innerHTML = '';
+      // prefers-reduced-motion：CSS 已经把整层藏掉，这里连节点都不必生成
+      if (kind === 'off' || matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+      const rnd=(a,b)=>a+Math.random()*(b-a);
+      const put=(cls,style,inner)=>{ const d=document.createElement('div'); d.className=cls;
+        d.setAttribute('style',style); if(inner) d.innerHTML=inner; stage.appendChild(d); };
+      if (kind === 'meteor' || kind === 'meteor2') {
+        const n = kind==='meteor2' ? 16 : 6;
+        for (let i=0;i<n;i++) put('gx-meteor',
+          '--x:'+rnd(5,60).toFixed(1)+'vw;--y:'+rnd(-18,32).toFixed(1)+'vh;--ang:'+rnd(20,36).toFixed(0)
+          +'deg;--len:'+rnd(140,320).toFixed(0)+'px;--t:'+rnd(3.2,6.6).toFixed(1)+'s;--d:'
+          +(i<2?'0.3s':rnd(0,9).toFixed(1))+'s', '<i></i>');
+      }
+      if (kind === 'birds' || kind === 'birds-wind') {
+        const mk=(tier,o)=>{ const s=GX_TIERS[tier]; o=o||{};
+          const x=o.x!==undefined?o.x:rnd(-8,34).toFixed(1), y=o.y!==undefined?o.y:rnd(4,26).toFixed(1);
+          put('gx-bird'+(tier==='far'?' far':'')+(o.soar?' soar':''),
+            '--x:'+x+'vw;--y:'+y+'vh;--w:'+(o.w||rnd(s.w[0],s.w[1]).toFixed(0))+'px;--t:'+(o.t||rnd(s.t[0],s.t[1]).toFixed(1))
+            +'s;--d:'+(o.d!==undefined?o.d:rnd(0,14).toFixed(1))+'s;--op:'+s.op+';--sc:'+s.sc+';--dx:'+rnd(28,46).toFixed(0)
+            +'vw;--ft:'+rnd(.62,.95).toFixed(2)+'s;--fd:'+(o.fd!==undefined?o.fd:rnd(0,.9).toFixed(2))
+            +'s;--bt:'+rnd(2.1,3.4).toFixed(1)+'s;--btd:'+rnd(0,2).toFixed(1)+'s;--bm:'+rnd(1.5,4.5).toFixed(1)+'deg',
+            '<span class="gx-bob">'+GX_BIRD+'</span>'); };
+        mk('near',{d:'0.4'}); mk('mid',{d:'1.2'}); mk('far',{d:'2.1',soar:true}); mk('mid',{d:'3.4'}); mk('far',{d:'4.6'});
+        // 一小群三只：同一条航线、错开半个翅膀周期跟着 —— 比各飞各的像活物
+        const fy=rnd(7,19), ft=rnd(13,17), fx=rnd(-6,10);
+        [0,1,2].forEach(k=>mk('mid',{x:(fx+k*1.4).toFixed(1),y:(fy+k*.7).toFixed(1),t:ft.toFixed(1),fd:(k*.31).toFixed(2),d:(k*.55).toFixed(2)}));
+      }
+      if (kind === 'wind' || kind === 'birds-wind') {
+        put('gx-gust','');
+        for (let i=0;i<6;i++) put('gx-leaf',
+          '--x:'+rnd(-5,32).toFixed(1)+'vw;--y:'+rnd(6,42).toFixed(1)+'vh;--w:'+rnd(10,19).toFixed(0)
+          +'px;--t:'+rnd(8,15).toFixed(1)+'s;--d:'+(i<2?'0.8s':rnd(0,9).toFixed(1))+'s', GX_LEAF);
+      }
+    }
+    function applyBackdrop(){
+      const key = gxVal('ct_bg','forest'); const b = GX_BGS[key] || GX_BGS.forest;
+      const root = document.documentElement, img = document.getElementById('gxBg');
+      if (img) {
+        if (b.src) { if (img.getAttribute('src') !== b.src) img.setAttribute('src', b.src); img.style.display=''; }
+        else img.style.display='none';
+      }
+      root.style.setProperty('--gx-vm', b.vm);
+      root.style.setProperty('--gx-bd', b.bd);
+      root.style.setProperty('--gx-core', b.core);
+      root.style.setProperty('--gx-scrim', gxVal('ct_bg_scrim', b.scrim));
+      const fx = gxVal('ct_bg_fx', b.fx);
+      root.setAttribute('data-gx-fx', fx);
+      buildGxFx(fx);
+    }
+
     function loadSettingsView(){
       var box=document.getElementById("settingsBody"); if(!box) return;
       var name=localStorage.getItem("campustime_name")||localStorage.getItem("ct_profile_name")||"管家";
@@ -2578,6 +2645,9 @@
         // 演示/评委场景能回到"只看结果"的干净样子。
         '<div class="card"><h2>思考过程</h2><div class="desc">每条回复下面要不要展示"我是这么想的"（它把你的话听成了什么、依据是哪一档）。关掉之后只显示结果。</div>'+
         '<label style="display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;"><input type="checkbox" id="setTrace" '+(traceOn()?"checked":"")+' style="width:16px;height:16px;"> 展示思考过程</label></div>'+
+        '<div class="card"><h2>背景</h2><div class="desc">选一张当界面的底，玻璃面板会透出它；「暗度」是压在图上那层遮罩，越暗字越清楚。两项都只存这台浏览器。</div>'+
+        '<div id="setBgList" class="persona-list"></div>'+
+        '<label style="display:flex;align-items:center;gap:10px;font-size:13px;margin-top:12px;color:var(--text-2);">暗度 <input type="range" id="setScrim" min="0" max="60" step="2" style="flex:1;accent-color:var(--brand);"> <span id="setScrimV" class="small"></span></label></div>'+
         '<div class="card"><h2>模型与 API</h2><div class="desc">默认用管理端配置的模型；也可填自己的 API Key（存在本机浏览器，每轮对话上传给服务器代你调模型——用完即弃，不落盘）。</div>'+
         '<div id="setModelInfo" style="font-size:13px;margin-bottom:10px;"></div>'+
         '<button class="btn" id="setModelBtn">'+(cfg&&cfg.api_key?"修改 API":"添加 API")+'</button> '+
@@ -2591,6 +2661,28 @@
       document.getElementById("setTrace").addEventListener("change", function(e){
         localStorage.setItem("campustime_trace", e.target.checked ? "1" : "0");
       });
+      // ---- 背景与暗度：立刻存本机，然后重新套一遍 ----
+      // applyBackdrop 只写 CSS 变量与 .gx-fx 里的装饰节点，不碰任何接口与业务状态。
+      // 换图时把 ct_bg_fx 删掉：动效交回那张图的默认档（森林=飞鸟，星空=流星），
+      // 否则会出现「草地上掉流星」这种调性打架的组合。
+      (function(){
+        var cur=gxVal('ct_bg','forest'), bl=document.getElementById('setBgList');
+        bl.innerHTML=Object.keys(GX_BGS).map(function(k){
+          return '<div class="persona '+(k===cur?'active':'')+'" data-bg="'+esc(k)+'"><span>'+esc(GX_BGS[k].label)+'</span></div>';
+        }).join('');
+        bl.querySelectorAll('.persona').forEach(function(el){ el.addEventListener('click', function(){
+          localStorage.setItem('ct_bg', el.dataset.bg); localStorage.removeItem('ct_bg_fx');
+          applyBackdrop(); loadSettingsView();
+        }); });
+        var sl=document.getElementById('setScrim'), sv=document.getElementById('setScrimV');
+        var now=function(){ return parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--gx-scrim')||'0'); };
+        sl.value=Math.round(now()*100);
+        sv.textContent=Math.round(now()*100)+'%';
+        sl.addEventListener('input', function(){
+          localStorage.setItem('ct_bg_scrim', (sl.value/100).toFixed(2));
+          applyBackdrop(); sv.textContent=Math.round(now()*100)+'%';
+        });
+      })();
       (async function(){
         var personas=[]; try{ personas=(await (await fetch("/api/student-personas")).json()).personas||[]; }catch(e){}
         var saved=localStorage.getItem("campustime_persona")||(personas[0]&&personas[0].key);
@@ -2639,6 +2731,7 @@
     // 注意：真正的"发送"由上方（send/Enter 监听）负责；这里不再强制切回校园问答，
     // 左侧导航在发送时保持当前模块不动。
 
+    applyBackdrop();   // 背景/暗度/动效：先于首屏绘制套好，避免闪一下无底的状态
     loadProfile();
     loadModelSel();
     // 落地页：**日程**（2026-10-09 用户「主用的是日程这个板块，校园问答是一个小模块」）。
