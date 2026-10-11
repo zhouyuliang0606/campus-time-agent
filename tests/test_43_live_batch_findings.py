@@ -489,13 +489,100 @@ def batch_k_category_word_in_middle():
     return c
 
 
+
+def batch_l_arabic_weekday():
+    """L 批 · 「周6 / 每周6 / 星期六」：读日子的地方以前只认一种写法（2026-10-11 三张截图）。
+
+    一条链上八处各自手写 `[一二三四五六日天]`，于是学生写阿拉伯数字时：
+    周期丢（`每周6` 不认）→ 掉进摊候选那条路（四段里一段周六都没有）→
+    擦标题只擦掉「每周」、把「6」留在事名上 → **卡片标题印着「6去图书馆」**。
+    顺带挖出更早的一条：`_WEEKDAY_RE` 连「星期X / 礼拜X」都不认，
+    「星期六去图书馆」不但日子读不出，`_pick_title` 把**整句**当事名。
+    """
+    import datetime
+    c = Checker()
+    title("L 批 · 周6 / 每周6 / 星期六：一份字符类管住八处")
+    from app.modules import planner as P
+
+    today = datetime.date.today()
+    nxt = lambda want: (today + datetime.timedelta(
+        days=(want - today.isoweekday()) % 7 or 7)).isoformat()
+    next_sat, next_sun = nxt(6), nxt(7)
+
+    # ① 用户截图原句
+    sp = P.parse_time_spec("周6加个代办去图书馆")
+    c.check("「周6加个代办去图书馆」→ 日子读得出（下周六）",
+            sp["date"] == next_sat, sp["date"])
+    c.check("同一句的事名是「图书馆」（不是「6去图书馆」）",
+            P._pick_title("周6加个代办去图书馆") == "图书馆",
+            P._pick_title("周6加个代办去图书馆"))
+
+    # ② 周期：数字写法与中文写法**结果必须一模一样**
+    for cn, ar in (("每周六去图书馆", "每周6去图书馆"),
+                   ("每个礼拜六去图书馆", "每个礼拜6去图书馆"),
+                   ("每个星期六去图书馆", "每个星期6去图书馆")):
+        a, b = P.parse_time_spec(cn), P.parse_time_spec(ar)
+        c.check(f"「{ar}」与「{cn}」同解（都是 weekly + 周六）",
+                (a["repeat"], a["weekday"]) == (b["repeat"], b["weekday"]) == ("weekly", 6),
+                (a["repeat"], a["weekday"], b["repeat"], b["weekday"]))
+        c.check(f"「{ar}」的事名干净", P._pick_title(ar) == "图书馆", P._pick_title(ar))
+    for s, want in (("每周3游泳", 3), ("每周1升旗", 1), ("每周7聚餐", 7)):
+        c.check(f"「{s}」→ 星期 {want}", P.weekly_repeat_day(s) == want,
+                P.weekly_repeat_day(s))
+
+    # ③ 「星期X / 礼拜X」以前压根不读日子，还把整句当事名
+    for s, want_day in (("星期六去图书馆", next_sat), ("礼拜六去图书馆", next_sat),
+                        ("星期天去图书馆", next_sun)):
+        c.check(f"「{s}」→ 日子 {want_day}（以前读不出）",
+                P.parse_time_spec(s)["date"] == want_day, P.parse_time_spec(s)["date"])
+        c.check(f"「{s}」的事名不许是整句", P._pick_title(s) == "图书馆", P._pick_title(s))
+
+    # ④ ★ 歧义反证：数字后面紧跟「点」的那颗是**钟点**，认成星期几就静默排错日子
+    sp = P.parse_time_spec("下周6点开会")
+    c.check("「下周6点开会」不许把 6 读成周六（日子留空、钟点照给 06:00）",
+            sp["date"] is None and sp["start"] == "06:00", (sp["date"], sp["start"]))
+    sp = P.parse_time_spec("每周6点起床")
+    c.check("「每周6点起床」不许变成每周六（repeat 留空、钟点 06:00）",
+            not sp["repeat"] and P.weekly_repeat_day("每周6点起床") is None
+            and sp["start"] == "06:00", (sp["repeat"], sp["start"]))
+    sp = P.parse_time_spec("周日6点看升旗")
+    c.check("「周日6点看升旗」两样都要：日子=周日、钟点=06:00",
+            sp["date"] == next_sun and sp["start"] == "06:00", (sp["date"], sp["start"]))
+
+    # ⑤ 次数不是星期几（14b 的阿拉伯版）：「每周6次」照旧走频次，不许读成周六
+    c.check("「每周6次去图书馆」→ 次数 6、周期不认周六",
+            P.weekly_times("每周6次去图书馆") == 6
+            and P.weekly_repeat_day("每周6次去图书馆") is None,
+            (P.weekly_times("每周6次去图书馆"),
+             P.weekly_repeat_day("每周6次去图书馆")))
+
+    # ⑥ 形状：读日子的那几条正则都从**同一份**字符类取（八处各写一份就是这次的病根）
+    src = io.open(PLANNER, encoding="utf-8").read()
+    lines = src.splitlines()
+    for name in ("_WEEKDAY_RE", "_DAY_WORD_RE", "_REPEAT_WEEKDAY_RE", "_REPEAT_PHRASE_RE"):
+        at = [i for i, ln in enumerate(lines) if ln.startswith(name + " = ")]
+        window = " ".join(lines[at[0]:at[0] + 5]) if at else ""
+        c.check(f"形状：{name} 用共享字符类 `_WD_CHARS`，不是自己手写一串",
+            bool(at) and "_WD_CHARS" in window, (name, bool(at)))
+    # 判据打在**代码行**上：注释里引用旧原话（"以前这里是 .index(ch)"）是历史说明，
+    # 不算违规 —— 但断言本身不许因此放宽。
+    _pd_code = "\n".join(ln for ln in src.split("def _pick_date(")[1].split("\ndef ")[0].splitlines()
+                         if not ln.strip().startswith("#"))
+    c.check("形状：`_pick_date` 里不许再自己数下标（「周6」曾在那儿抛 ValueError）",
+            ".index(" not in _pd_code, "还留着 index 写法")
+    c.check("形状：那份字符类只有一份定义", src.count("_WD_CHARS = ") == 1,
+            src.count("_WD_CHARS = "))
+    return c
+
+
 def main():
     results = [batch_a_time_words_registered(), batch_b_title_has_no_tail(),
                batch_c_tool_echo_never_shown(), batch_d_bare_clock_asked_in_place(),
                batch_e_period_carry(), batch_f_weekly_e2e(),
                batch_g_slot_answer_shape(), batch_h_model_exit_gate_behaviour(),
                batch_i_no_internal_note(), batch_j_strip_not_veto(),
-               batch_k_category_word_in_middle()]
+               batch_k_category_word_in_middle(),
+               batch_l_arabic_weekday()]
     tp = sum(r.passed for r in results)
     tf = sum(r.failed for r in results)
     print(f"\n===== 真机批次查出的四个缺口总账：通过 {tp} 项，失败 {tf} 项 =====")
