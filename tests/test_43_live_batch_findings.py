@@ -390,12 +390,64 @@ def batch_i_no_internal_note():
     return c
 
 
+
+def batch_j_strip_not_veto():
+    """J 批 · 事名里的时间残渣走**擦除**，不走否决表（2026-10-11 探针四处）。
+
+    `_TITLE_NOISE` 是 `any(w in t)` 的**否决表**：往里塞词 = 整串不算事名 = 系统反问
+    「要安排的是什么事」。学生明明说了要干什么，却被问一句 —— 比挂个丑名字更坑。
+    所以这一批同时钉代码形状（那张表里不许有单字）和真行为（擦完得是干净名字）。
+    """
+    c = Checker()
+    title("J 批 · 残渣擦干净，但不许靠往否决表塞单字来做到")
+    from app.modules import planner as P
+
+    # ① 代码形状：否决表里每一项都必须是两字起。
+    #    「半」塞进去的后果：「半夜」→「夜」、「半小时」→「小时」，
+    #    而这两个都是 `_TIME_WORDS` 里的有效档词/时长 —— 一次改坏一整类句子。
+    c.check("形状：`_TITLE_NOISE` 里没有单字（那张表整串否决，单字迟早咬掉正经词）",
+            all(len(w) >= 2 for w in P._TITLE_NOISE),
+            [w for w in P._TITLE_NOISE if len(w) < 2])
+    c.check("形状：「半」「开始」都不在那张否决表里（走的是擦除，不是否决）",
+            "半" not in P._TITLE_NOISE and "开始" not in P._TITLE_NOISE,
+            P._TITLE_NOISE)
+
+    # ② 真行为：擦完是干净名字
+    for s, want in (("三点开始值日", "值日"),
+                    ("晚上七点开始写作业", "写作业"),
+                    ("6点开始晨跑", "晨跑"),
+                    ("周三上午八点到九点开始班会", "班会"),
+                    ("十二点整集合", "集合"),
+                    ("12点整集合", "集合"),
+                    ("傍晚六点半踢球", "踢球")):
+        got = P._pick_title(s)
+        c.check(f"「{s}」→ 事名「{want}」（不是残渣）", got == want, got)
+
+    # ③ 反证：这次补的擦除不许咬到正经名字
+    for s, want in (("运动会开幕式", "运动会开幕式"),
+                    ("半夜三点起来喝水", "起来喝水"),
+                    ("半小时后交作业", "后交作业")):
+        got = P._pick_title(s)
+        c.check(f"不误伤：「{s}」的事名照旧是「{want}」", got == want, got)
+
+    # ④ 「傍晚」两张表都得登着：`_PART_WORDS` 认它拨档、`_TIME_WORDS` 才擦得掉。
+    #    只登一张的实测后果 = 卡片名「傍晚踢球」（档对、名字脏）。
+    c.check("「傍晚」在这两张表里都在（一处登记一处漏 = 档对名字脏）",
+            "傍晚" in P._TIME_WORDS
+            and any("傍晚" in words for _name, words in P._PART_WORDS),
+            ("傍晚" in P._TIME_WORDS, P._PART_WORDS))
+    c.check("反向：「傍晚六点」照样拨到 18:00（补进时间词表不许把档弄丢）",
+            P.parse_time_spec("傍晚六点踢球")["start"] == "18:00",
+            P.parse_time_spec("傍晚六点踢球"))
+    return c
+
+
 def main():
     results = [batch_a_time_words_registered(), batch_b_title_has_no_tail(),
                batch_c_tool_echo_never_shown(), batch_d_bare_clock_asked_in_place(),
                batch_e_period_carry(), batch_f_weekly_e2e(),
                batch_g_slot_answer_shape(), batch_h_model_exit_gate_behaviour(),
-               batch_i_no_internal_note()]
+               batch_i_no_internal_note(), batch_j_strip_not_veto()]
     tp = sum(r.passed for r in results)
     tf = sum(r.failed for r in results)
     print(f"\n===== 真机批次查出的四个缺口总账：通过 {tp} 项，失败 {tf} 项 =====")
