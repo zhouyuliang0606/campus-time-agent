@@ -762,7 +762,7 @@ def batch_n_no_past_dates():
                                                               "end": "20:00"}]})
         c.check("批量：勾的全是过去的日子 → 400，一条都不写",
                 r2.status_code == 400
-                and [(t.get("title"), t.get("date")) for t in list_todos()] == base,
+                and sorted([(t.get("title"), t.get("date")) for t in list_todos()]) == sorted(base),
                 (r2.status_code, [(t.get("title"), t.get("date")) for t in list_todos()]))
         r3 = client.post("/api/todos/batch", json={"title": "健身", "repeat": "",
                                                    "slots": [{"date": y, "start": "19:00",
@@ -770,8 +770,14 @@ def batch_n_no_past_dates():
                                                              {"date": tm, "start": "19:00",
                                                               "end": "20:00"}]})
         got = [(t.get("title"), t.get("date")) for t in list_todos()]
+        # ⚠️ 比**多重集**不比顺序：`list_todos()` 是按日期排的，新写那条会插在中间，
+        #    拿 `got == base + [新]` 拼顺序是假判据（演示数据里多一条同日的就把我绊红过一次）。
+        #    "过去那条没写进去"也不能写成"库里没有任何昨天的待办"—— 演示数据本来就有，
+        #    要写的是**这条新的没多出来**。
         c.check("批量：混合勾选只写将来那条，过去那条丢掉不谎报",
-                got == base + [("健身", tm)], got[len(base) - 1:])
+                sorted(got) == sorted(base + [("健身", tm)])
+                and got.count(("健身", y)) == base.count(("健身", y)),
+                (got[len(base) - 1:], got.count(("健身", y)), base.count(("健身", y))))
         r4 = client.post("/api/todos", json={"title": "交表", "date": tm,
                                              "start": "15:00", "end": "16:00"})
         c.check("反向：将来的日子照旧写得进去", r4.status_code == 200, r4.status_code)
