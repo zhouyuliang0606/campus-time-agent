@@ -77,8 +77,17 @@ class sandbox:
 
     # 这几样是"运行时痕迹"，不是种子数据：密钥配置、上传的文件、通知、学生消息。
     # 每次测试从零开始，免得上一次测试的假密钥把这一次的结果带偏。
+    #
+    # ★ `intent_samples.json` 是 2026-10-11 加进来的：它是**系统自己学出来的**样本库
+    #   （每处理一句学生的话就长一条），不是种子数据。以前它跟着 copytree 进沙箱，
+    #   于是"用户在浏览器里手测一轮"就能把全量基线改红 —— 实测两条：
+    #   手测灌进四条含「图书馆」的 add_todo 样本之后，
+    #   `match_sample("图书馆几点关门")` 以 dice 0.444 ≥ 阈值 0.42 抢走了一句**提问**
+    #   （`test_01`、`test_08` 各红一条），而测试根本没改过任何东西。
+    #   清掉它不影响判定：内置种子 `_SEED_SAMPLES` 写在代码里，新实例照样有例句可依。
+    # ⚠️ `student/todos.json` 还没进来（那是要不要顺带修 7 条存量红的大刀，见指南红线 18）。
     SCRATCH = ("settings.json", "uploads.json", "uploads", "notices.json",
-               "student_messages.json", "workorders.json")
+               "student_messages.json", "workorders.json", "intent_samples.json")
 
     def __enter__(self):
         self.tmp = tempfile.mkdtemp(prefix="campustime-test-")
