@@ -129,7 +129,7 @@ def batch_d_faq_drawer_and_week_collapse():
             'data-nav="schedule"' in src and 'let currentView = "schedule";' in src
             and 'switchNav("schedule")' in src)
     # 问答抽屉：按钮 + 开合函数 + 那个 ✕ 不能再走通用 .close
-    c.check("日程页工具条上有「❓ 校园问答」按钮", 'id="faqBtn"' in src)
+    c.check("日程页工具条上有「校园问答」按钮（图标已换线性 SVG）", 'id="faqBtn"' in src)
     c.check("抽屉开合走 showView 那套内联 display，没另起一套 CSS 状态",
             "function setFaqDrawer(" in src and "#view-faq.open" not in src)
     c.check("问答的关闭键是专用的（用通用 .close 会把日程面板一起收掉）",

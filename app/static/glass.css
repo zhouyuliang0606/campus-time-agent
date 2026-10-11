@@ -74,6 +74,13 @@ html[data-gx-fx]:not([data-gx-fx="off"]) .gx-fx{display:block}
   cursor:pointer;font-weight:600}
 .gx-btn-primary:hover{background:linear-gradient(180deg,rgba(var(--primary-rgb),.32),rgba(var(--primary-rgb),.14))}
 .gx-btn-primary:active{transform:scale(.95)}
+/* 线性图标：尺寸与描边跟着 currentColor 走，所以它永远和所在处的文字同色同重。
+   界面原来用 emoji 当图标 —— 这是"土"的最大单一来源：emoji 有自己的颜色与风格，
+   任何配色方案都压不住它，换成单色线性图标之后强调色才收得回来。 */
+.ic{width:16px;height:16px;stroke:currentColor;fill:none;stroke-width:1.7;
+   stroke-linecap:round;stroke-linejoin:round;vertical-align:-3px;flex:none}
+.ico{display:inline-flex;align-items:center}
+.ic-lg{width:18px;height:18px}
 :focus-visible{outline:2px solid var(--theme-ring);outline-offset:2px}
 
 /* ---------- §4 动效层内容：飞鸟 / 风 / 流星（纯 CSS，不引运行时库） ----------

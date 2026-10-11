@@ -27,6 +27,7 @@
     .mod:hover { transform: translateY(-2px); border-color: #4f7cff; }
     .mod.active { border-color: #4f7cff; background: #eef2ff; }
     .mod .ico { font-size: 26px; }
+    .mod .ico .ic { width: 24px; height: 24px; }
     .mod .nm { margin-top: 6px; font-size: 14px; font-weight: 600; }
 
     /* 校园通知：管理员在后台发布，学生在这里看到 */
@@ -393,7 +394,7 @@
   .model-sel { padding: 8px 10px; border: 1px solid #d8def0; border-radius: 9px; font-size: 13px; background: #fff; color: #4a5366; max-width: 340px; }
   .paste-btn { padding: 8px 12px; border: 1px solid #d8def0; border-radius: 9px; background: #fff; color: #4f7cff; font-size: 13px; cursor: pointer; }
   .paste-btn:hover { background: #eef2ff; }
-  /* 🧭 意图诊断的结果条：默认不出现（display:none），点了按钮才 .show。
+  /* <svg class="ic"><use href="#gi-compass"/></svg> 意图诊断的结果条：默认不出现（display:none），点了按钮才 .show。
      用中性灰蓝而不是彩色，免得跟聊天气泡抢注意力——它只是个"看一眼"的工具。 */
   .probe-out { display: none; margin-top: 8px; padding: 9px 12px; border: 1px dashed #cfd6ea; border-radius: 9px; background: #f7f9ff; color: #3f4a63; font-size: 12.5px; line-height: 1.7; }
   .probe-out.show { display: block; }
@@ -616,6 +617,10 @@
     <symbol id="gi-clip" viewBox="0 0 24 24"><path d="M20.4 11.1l-9.2 9.2a6 6 0 1 1-8.5-8.5l9.2-9.2a4 4 0 0 1 5.7 5.7l-9.2 9.2a2 2 0 0 1-2.8-2.8l8.5-8.5"/></symbol>
     <symbol id="gi-spark" viewBox="0 0 24 24"><path d="M12 3l2 5.2L19.5 10 14 12l-2 5.2L10 12 4.5 10 10 8.2 12 3z"/></symbol>
     <symbol id="gi-trash" viewBox="0 0 24 24"><path d="M4 7h16M10 4h4M6 7l1 13h10l1-13M10 11v6M14 11v6"/></symbol>
+    <symbol id="gi-bell" viewBox="0 0 24 24"><path d="M18 8a6 6 0 1 0-12 0c0 6-2.5 7-2.5 7h17S18 14 18 8z"/><path d="M13.7 20a2 2 0 0 1-3.4 0"/></symbol>
+    <symbol id="gi-doc" viewBox="0 0 24 24"><rect x="4" y="3" width="16" height="18" rx="2.5"/><path d="M8 8h8M8 12h8M8 16h5"/></symbol>
+    <symbol id="gi-mail" viewBox="0 0 24 24"><rect x="2.5" y="5" width="19" height="14" rx="2.5"/><path d="M3 7l9 6 9-6"/></symbol>
+    <symbol id="gi-compass" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9.5"/><path d="M15.5 8.5l-2 5-5 2 2-5z"/></symbol>
     <symbol id="gi-bird" viewBox="0 0 40 20"><path class="wg" d="M20 12 C15 11 9 8 1.4 2.2 C7 10 13 13 20 14 Z"/><path class="wg" d="M20 12 C25 11 31 8 38.6 2.2 C33 10 27 13 20 14 Z"/><ellipse cx="20" cy="13.4" rx="2.3" ry="1.15"/></symbol>
     <symbol id="gi-leaf" viewBox="0 0 24 24"><path d="M11 20A7 7 0 0 1 4 13C4 8 8.5 4 13.5 4c3 0 6 1.5 6 1.5s-.5 9-8.5 14.5z"/></symbol>
   </defs></svg>
@@ -633,15 +638,15 @@
              问答和日程其实是同一个页面的两种视线，并列成两栏反而让学生先做"选栏目"这道题。
              问答改成日程页里的一个按钮（见 faqBtn），点开是抽屉。
              ⚠️ 「🗓️ 日程」这一项**不能一起摘**：它是从「设置/代办」回主页的唯一入口。 -->
-        <div class="sb-item active" data-nav="schedule"><span class="ico">🗓️</span>日程</div>
-        <div class="sb-item" data-nav="todos"><span class="ico">✅</span>代办事项</div>
-        <div class="sb-item" data-nav="settings"><span class="ico">⚙️</span>设置</div>
+        <div class="sb-item active" data-nav="schedule"><span class="ico"><svg class="ic"><use href="#gi-cal"/></svg></span>日程</div>
+        <div class="sb-item" data-nav="todos"><span class="ico"><svg class="ic"><use href="#gi-check"/></svg></span>代办事项</div>
+        <div class="sb-item" data-nav="settings"><span class="ico"><svg class="ic"><use href="#gi-sliders"/></svg></span>设置</div>
       </nav>
       <div class="sb-more" id="sbMore">
-        <div class="sb-item sb-more-toggle" id="sbMoreToggle"><span class="ico">➕</span>更多服务 ▾</div>
+        <div class="sb-item sb-more-toggle" id="sbMoreToggle"><span class="ico"><svg class="ic"><use href="#gi-plus"/></svg></span>更多服务 ▾</div>
         <div class="sb-more-body" id="sbMoreBody">
-          <div class="sb-item" data-nav="express"><span class="ico">📦</span>快递</div>
-          <div class="sb-item" data-nav="takeout"><span class="ico">🍱</span>外卖</div>
+          <div class="sb-item" data-nav="express"><span class="ico"><svg class="ic"><use href="#gi-box"/></svg></span>快递</div>
+          <div class="sb-item" data-nav="takeout"><span class="ico"><svg class="ic"><use href="#gi-bowl"/></svg></span>外卖</div>
         </div>
       </div>
       <div class="sb-pop" id="sbPop">
@@ -655,7 +660,7 @@
       <div class="topbar">
         <div class="t" id="navTitle">日程</div>
         <span class="grow"></span>
-        <a class="tb-link" href="/plan">📅 完整日程</a>
+        <a class="tb-link" href="/plan"><svg class="ic"><use href="#gi-cal"/></svg> 完整日程</a>
         <!-- 顶栏原先还挂着「🛠 管理端」「🏪 驿站」两颗直达链接（新标签页打开）。
              2026-10-09 拿掉：三端分流是登录页的职责，学生端里放这两颗，
              等于一边讲"身份分开"一边把控制台入口递到学生手边。
@@ -667,7 +672,7 @@
     <!-- 校园通知（管理员在控制台发布，含附件可直接下载） -->
     <div class="notices">
       <div class="notices-head" id="noticesHead">
-        <span>📢 校园通知</span>
+        <span><svg class="ic"><use href="#gi-bell"/></svg> 校园通知</span>
         <span class="badge" id="noticeCount">0</span>
         <span class="small" id="noticesToggle" style="margin-left:auto;color:#8a93a6;font-weight:400;">展开 ▾</span>
       </div>
@@ -682,17 +687,17 @@
     <div id="panel">
       <!-- ① 我的日程：周表 + 月表（精简版，完整版去 /plan） -->
       <div class="view" id="view-schedule">
-        <div class="view-head"><span>🗓️ 我的日程</span><span class="grow"></span><button class="close">收起面板 ✕</button></div>
+        <div class="view-head"><span><svg class="ic"><use href="#gi-cal"/></svg> 我的日程</span><span class="grow"></span><button class="close">收起面板 ✕</button></div>
         <div class="view-body">
           <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;flex-wrap:wrap;">
             <button class="tab active" id="tabWeek">周视图</button>
             <button class="tab" id="tabMonth">月表</button>
-            <button class="tab" id="faqBtn" title="打开校园问答：点一条就直接把这个问题问管家">❓ 校园问答</button>
+            <button class="tab" id="faqBtn" title="打开校园问答：点一条就直接把这个问题问管家"><svg class="ic"><use href="#gi-help"/></svg> 校园问答</button>
             <button class="tab" id="schExpand" title="默认只列今天起四天，展开看整周">展开整周 ▾</button>
             <span class="small" id="schRange" style="margin-left:4px;"></span>
             <span style="flex:1;"></span>
             <input type="file" id="ttFilePanel" style="display:none;" accept=".docx,.xlsx,.pptx,.pdf,.txt,.csv,.json,.md" />
-            <button class="tab" id="uploadTtPanel" title="上传课表文件，管家读取后给出预览清单，确认后写进周表">📤 上传课表</button>
+            <button class="tab" id="uploadTtPanel" title="上传课表文件，管家读取后给出预览清单，确认后写进周表"><svg class="ic"><use href="#gi-upload"/></svg> 上传课表</button>
             <button class="tab" id="schPrev">←</button>
             <button class="tab" id="schNext">→</button>
             <a href="/plan" class="small" style="text-decoration:none;color:#4f7cff;">完整版日程 →</a>
@@ -700,7 +705,7 @@
           <div class="small" id="ttPanelStatus" style="margin:-4px 0 8px;min-height:14px;"></div>
 
 
-          <div class="small" id="schWeekHead" style="margin:14px 0 6px;display:none;">📋 逐日明细</div>
+          <div class="small" id="schWeekHead" style="margin:14px 0 6px;display:none;"><svg class="ic"><use href="#gi-doc"/></svg> 逐日明细</div>
           <div id="schWeek"></div>
           <div id="schMonth" style="display:none;"></div>
           <div id="schDayDetail" style="display:none;margin-top:10px;"></div>
@@ -715,11 +720,11 @@
 
       <!-- ② 快递：包裹列表 + 工单提交与记录 -->
       <div class="view" id="view-express">
-        <div class="view-head"><span>📦 我的快递</span><span class="grow"></span><button class="close">收起面板 ✕</button></div>
+        <div class="view-head"><span><svg class="ic"><use href="#gi-box"/></svg> 我的快递</span><span class="grow"></span><button class="close">收起面板 ✕</button></div>
         <div class="view-body">
           <div id="expList"></div>
           <div class="wo-form">
-            <b style="font-size:13px;">📨 快递有问题？提交个工单</b>
+            <b style="font-size:13px;"><svg class="ic"><use href="#gi-mail"/></svg> 快递有问题？提交个工单</b>
             <select id="woType">
               <option>快递没收到</option>
               <option>包裹破损</option>
@@ -730,20 +735,20 @@
             <textarea id="woDesc" rows="2" placeholder="简单描述一下情况（比如：取件码扫不开柜门）"></textarea>
             <button id="woSubmit">提交工单</button>
           </div>
-          <b style="font-size:13px;">📋 我提交过的工单</b>
+          <b style="font-size:13px;"><svg class="ic"><use href="#gi-doc"/></svg> 我提交过的工单</b>
           <div id="woList" style="margin-top:8px;"></div>
         </div>
       </div>
 
       <!-- ③ 外卖：订单列表 -->
       <div class="view" id="view-takeout">
-        <div class="view-head"><span>🍱 我的外卖</span><span class="grow"></span><button class="close">收起面板 ✕</button></div>
+        <div class="view-head"><span><svg class="ic"><use href="#gi-bowl"/></svg> 我的外卖</span><span class="grow"></span><button class="close">收起面板 ✕</button></div>
         <div class="view-body"><div id="tkList"></div></div>
       </div>
 
       <!-- ④ 校园问答：高频问题按钮墙（点按钮直接问管家） -->
       <div class="view" id="view-faq">
-        <div class="view-head"><span>❓ 校园问答</span><span class="small" style="font-weight:400;">点一条就直接问管家</span><span class="grow"></span><button class="tab" id="faqClose">收起问答 ✕</button></div>
+        <div class="view-head"><span><svg class="ic"><use href="#gi-help"/></svg> 校园问答</span><span class="small" style="font-weight:400;">点一条就直接问管家</span><span class="grow"></span><button class="tab" id="faqClose">收起问答 ✕</button></div>
         <div class="view-body"><div class="faq-grid" id="faqGrid"></div></div>
       </div>
     </div>
@@ -759,7 +764,7 @@
 
     <!-- "正在思考…" 底部提示：替代原来的思考轨迹，等 AI 回话时显示 -->
     <div class="thinking" id="thinking">
-      <span>🤖 正在思考…</span>
+      <span><svg class="ic"><use href="#gi-spark"/></svg> 正在思考…</span>
       <span class="dots"><span></span><span></span><span></span></span>
     </div>
 
@@ -777,23 +782,23 @@
       <div class="composer">
         <div class="composer-row">
           <select id="modelSel" class="model-sel" title="模型与 API"><option value="">默认模型（管理端配置）</option></select>
-          <button class="paste-btn" id="pasteBtn" title="粘贴大段文本发给管家">📋 粘贴文本</button>
-          <button class="paste-btn" id="probeBtn" title="不写库、不进历史：只看它把这句话理解成什么">🧭 意图诊断</button>
+          <button class="paste-btn" id="pasteBtn" title="粘贴大段文本发给管家"><svg class="ic"><use href="#gi-doc"/></svg> 粘贴文本</button>
+          <button class="paste-btn" id="probeBtn" title="不写库、不进历史：只看它把这句话理解成什么"><svg class="ic"><use href="#gi-compass"/></svg> 意图诊断</button>
         </div>
         <div class="inputbar">
           <input type="file" id="file" style="display:none;" />
-          <button class="attach" id="attach" title="上传资料给管家读">📎</button>
-          <button class="mic" id="mic" title="语音输入（中文）">🎤</button>
-          <button class="mic" id="clearChat" title="清空与管家的聊天记录">🧹</button>
-          <input id="text" placeholder="说点什么…（可点 🎤 语音输入，或 📋 粘贴大段文本）" />
+          <button class="attach" id="attach" title="上传资料给管家读"><svg class="ic"><use href="#gi-clip"/></svg></button>
+          <button class="mic" id="mic" title="语音输入（中文）"><svg class="ic"><use href="#gi-mic"/></svg></button>
+          <button class="mic" id="clearChat" title="清空与管家的聊天记录"><svg class="ic"><use href="#gi-trash"/></svg></button>
+          <input id="text" placeholder="说点什么…（可用左边的语音输入，或点粘贴大段文本）" />
           <button id="send">发送</button>
         </div>
-        <!-- 🧭 意图诊断的结果（点了上面那颗按钮才出现；不占地方、不打断聊天） -->
+        <!-- <svg class="ic"><use href="#gi-compass"/></svg> 意图诊断的结果（点了上面那颗按钮才出现；不占地方、不打断聊天） -->
         <div id="probeOut" class="probe-out"></div>
       </div><!-- /composer -->
       <div id="chatResetMask" class="mask">
         <div class="dlg" role="dialog" aria-modal="true" aria-labelledby="chatResetTitle">
-          <div class="dlg-head" id="chatResetTitle">🧹 清空与管家的聊天记录</div>
+          <div class="dlg-head" id="chatResetTitle"><svg class="ic"><use href="#gi-trash"/></svg> 清空与管家的聊天记录</div>
           <div class="dlg-body">
             <p id="chatResetSummary" style="margin:0 0 8px;line-height:1.6;"></p>
             <div class="dlg-warn">
@@ -817,10 +822,10 @@
   <script>
     // 四个模块的配置：名字、图标、示例问题
     const MODULES = {
-      schedule: { name: "我的日程", ico: "🗓️", chips: ["我这周哪天有空复习高数？", "周三都有什么课？", "帮我排 3 小时复习线代，优先周二", "周五下午有空吗？"] },
-      faq:      { name: "校园问答", ico: "❓", chips: ["图书馆几点关门？", "宿舍几点断电？", "校车在哪坐？", "怎么申请奖学金？"] },
-      express:  { name: "快递",     ico: "📦", chips: ["我有哪些快递待取？", "取件码 B-5678 是什么？", "有没有滞留的快递？", "列出我所有快递"] },
-      takeout:  { name: "外卖",     ico: "🍱", chips: ["我的外卖到哪了？", "有哪些待取的外卖？", "订单 T1 什么状态？", "去哪取我的外卖？"] },
+      schedule: { name: "我的日程", ico: "gi-cal", chips: ["我这周哪天有空复习高数？", "周三都有什么课？", "帮我排 3 小时复习线代，优先周二", "周五下午有空吗？"] },
+      faq:      { name: "校园问答", ico: "gi-help", chips: ["图书馆几点关门？", "宿舍几点断电？", "校车在哪坐？", "怎么申请奖学金？"] },
+      express:  { name: "快递",     ico: "gi-box", chips: ["我有哪些快递待取？", "取件码 B-5678 是什么？", "有没有滞留的快递？", "列出我所有快递"] },
+      takeout:  { name: "外卖",     ico: "gi-bowl", chips: ["我的外卖到哪了？", "有哪些待取的外卖？", "订单 T1 什么状态？", "去哪取我的外卖？"] },
     };
 
     let currentModule = null; // 当前选中的模块；null 表示让后端自动识别
@@ -841,7 +846,7 @@
       const el = document.createElement("div");
       el.className = "mod";
       el.dataset.key = key;
-      el.innerHTML = `<div class="ico">${m.ico}</div><div class="nm">${m.name}</div>`;
+      el.innerHTML = `<div class="ico"><svg class="ic ic-lg"><use href="#${m.ico}"/></svg></div><div class="nm">${m.name}</div>`;
       el.addEventListener("click", () => selectModule(key));
       modBox.appendChild(el);
     });
@@ -2181,7 +2186,7 @@
     send.addEventListener("click", () => sendMsg(text.value));
     text.addEventListener("keydown", e => { if (e.key === "Enter") sendMsg(text.value); });
 
-    // ---------- 🧭 意图诊断（只读） ----------
+    // ---------- <svg class="ic"><use href="#gi-compass"/></svg> 意图诊断（只读） ----------
     // 调的是判定层的只读接口 POST /classify：**不写库、不进聊天历史、不替代 /api/chat**。
     // 聊天照旧走 /api/chat；这个按钮只是把"它到底听成了什么"摊开给学生和评委看——
     // 出问题时也能一眼看出是"问/办"分错了，还是类型/意图判错了、是哪一档判的。
@@ -2404,7 +2409,7 @@
     });
     document.getElementById("sbMoreToggle").addEventListener("click", function(){
       var m=document.getElementById("sbMore"); m.classList.toggle("open");
-      var ic=m.querySelector(".ico"); if(ic) ic.textContent = m.classList.contains("open")?"➖":"➕";
+      var ic=m.querySelector(".ico"); if(ic) ic.textContent = m.classList.contains("open")?"−":"+";
     });
     var sbPop=document.getElementById("sbPop");
     document.getElementById("sbProfile").addEventListener("click", function(e){ e.stopPropagation(); sbPop.classList.toggle("show"); });
