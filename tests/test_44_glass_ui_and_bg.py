@@ -199,6 +199,16 @@ def batch_gate(ck):
              re.search(r'data-gx-refine="on"\] \.topbar \.t \{ font-size: 23px', src) is not None)
     ck.check("精修确实收了强调色（状态标签改 2px 色杠）",
              "inset 2px 0 0" in src)
+    # 漏白兜底：设置页/弹窗那几处表单的浅色是**内联样式**，类规则压不动，只能 !important；
+    # 这条规则必须一直挂在 html.gx-glass 上，否则「不用图」那一档的浅色原样就被带跑了。
+    LEAK = '[style*="border:1px solid #d8def0"]'
+    ck.check("内联浅色的表单在深色下被兜住（background 带 !important）",
+             re.search(r'html\.gx-glass \[style\*="border:1px solid #d8def0"\] \{[^}]*background:[^;}]*!important', src) is not None)
+    ck.check("兜底规则全部挂在总闸下（出现次数 = 带 html.gx-glass 前缀的次数）",
+             src.count(LEAK) == src.count("html.gx-glass " + LEAK), "%d / %d" % (src.count(LEAK), src.count("html.gx-glass " + LEAK)))
+    ck.check("页面里确实还有内联浅色的表单（这条兜底不是空转）",
+             src.count("border:1px solid #d8def0") - src.count(LEAK) >= 8,
+             "内联 %d 处" % (src.count("border:1px solid #d8def0") - src.count(LEAK)))
     # 四个旋钮 + 五个偏好键
     for key in ["ct_gx_scrim", "ct_gx_vm", "ct_gx_bd", "ct_gx_core", "ct_gx_lv", "ct_gx_fx", "ct_gx_refine"]:
         ck.check("偏好键 %s 有读写" % key, key in src)

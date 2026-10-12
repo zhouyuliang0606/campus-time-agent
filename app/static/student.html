@@ -577,6 +577,10 @@ html.gx-glass .persona:hover, html.gx-glass .tab:hover, html.gx-glass .attach:ho
 html.gx-glass .mic:hover { background: rgba(232,85,85,.16); color: #ffc9c9; border-color: rgba(232,85,85,.4); }
 html.gx-glass .inputbar input, html.gx-glass .model-sel, html.gx-glass .slot-other, html.gx-glass .wo-form select, html.gx-glass .wo-form textarea { background: rgba(0,0,0,.26); color: var(--text); }
 html.gx-glass .inputbar input::placeholder { color: rgba(162,190,177,.75); }
+  /* 设置页与弹窗里的表单是**内联样式**写的浅色（改版前就在），类规则压不动内联，只能 !important。
+     用属性选择器一次兜住这 9 处，不逐个点名 —— 下次再加一栏输入框不会又漏出白底。 */
+html.gx-glass [style*="border:1px solid #d8def0"] { background: rgba(0,0,0,.26) !important; color: var(--text) !important; border-color: var(--line-strong) !important; }
+html.gx-glass [style*="border:1px solid #d8def0"]::placeholder { color: rgba(162,190,177,.75); }
 html.gx-glass .av-opt { color: var(--brand-fg); }
   /* 气泡与状态标签：主色当底的两处翻成半透 + 亮字，语义色提亮到深底可读 */
 html.gx-glass header { background: rgba(7,19,13,.34); color: var(--text); }
