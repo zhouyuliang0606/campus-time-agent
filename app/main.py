@@ -59,6 +59,7 @@ from app.modules.station import build_system_prompt as STATION_PROMPT, build_too
 # planner 也是"可调用提示"：每次对话都要把**今天的日期**动态拼进去，
 # 否则学生说"明天"，AI 根本算不出是哪一天
 from app.modules.planner import (
+    DAY_NAMES,
     auto_todo_proposal,
     build_system_prompt as PLANNER_PROMPT,
     build_tools as planner_tools,
@@ -154,6 +155,25 @@ REGISTRY: dict[str, tuple[Any, Any]] = {
 }
 # 没命中任何模块时的兜底提示
 DEFAULT_PROMPT = "你是校园时间管家，一个友好、靠谱的校园 AI 助手。"
+
+# 统一追加给每个模块的"现在是哪天几点"。
+# 为什么必须在这一层加、而不是各模块自己写：原先**只有 planner** 的提示里注了基准日期，
+# 问答/课表/快递那几路没有 → 学生问一句「今天几号」，模型就拿训练数据里的日子现编，
+# 本机同一晚连问两次编出两个（`2025-06-12 星期四`、`2026-07-08 星期三`，真的那天是
+# 2026-10-12 周一）。对一个"时间管家"来说，这比答错更糟 —— 它答得理直气壮。
+# ⚠️ 必须是**函数**、每次请求现算：写成模块级常量就在 import 那一刻定死了，
+#   服务跨夜不停机，第二天还在拿昨天当"今天"（相对时间只许在用的那一刻算一次，红线 10 那一家族）。
+def _now_block() -> str:
+    now = datetime.datetime.now()
+    today = now.date()
+    return (
+        "\n\n【现在的真实时间】" + today.isoformat() + " "
+        + DAY_NAMES.get(today.isoweekday(), "") + " " + now.strftime("%H:%M")
+        + "\n学生说的「今天/明天/后天/周几/下周」一律以这一行为准换算。"
+        "除了这一行，你不许自己猜日期，更不许编一个日子写进回答或字段里；"
+        "换算不出来就照实说换算不出来。"
+    )
+
 
 # 统一追加给每个模块的"读资料"能力说明。
 # 放在这里而不是逐个写进模块的 SYSTEM_PROMPT，是为了改一处所有模块都生效。
@@ -1326,7 +1346,7 @@ async def _chat_impl(req: Request, meta: dict):
     prompt_src, build_tools = REGISTRY.get(module_key, (DEFAULT_PROMPT, lambda: {}))
     base_prompt = prompt_src() if callable(prompt_src) else prompt_src
     # 统一拼上"你会读文件"的说明 + 学生助手人设规矩 + 闲聊守则，每个模块都生效
-    prompt = base_prompt + FILE_HINT + ASSISTANT_RULES + CHITCHAT_RULES
+    prompt = base_prompt + _now_block() + FILE_HINT + ASSISTANT_RULES + CHITCHAT_RULES
     # 学生端选了性格，且不是驿站模块（驿站用管理员配的人格），就把性格腔调拼进去
     if persona_key and module_key != "station":
         prompt += "\n" + persona_block(persona_key)

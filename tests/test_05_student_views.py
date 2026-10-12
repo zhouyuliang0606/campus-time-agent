@@ -369,8 +369,72 @@ def test_persona_rules_and_workorders():
 
         # —— 人设规矩真的写进了系统提示 ——
         main_src = (proj / "app" / "main.py").read_text(encoding="utf-8")
+        # ⚠️ 取"拼装那一行"再查里面的件，别拿整行字面量比（插一块就假红，见 test_38 同批一条）。
+        _asm = next((l for l in main_src.splitlines()
+                     if l.strip().startswith("prompt = base_prompt +")), "")
         c.check("全局人设规矩块 ASSISTANT_RULES 存在并拼进每个模块",
-                "ASSISTANT_RULES" in main_src and "prompt = base_prompt + FILE_HINT + ASSISTANT_RULES" in main_src)
+                "ASSISTANT_RULES" in main_src
+                and bool(_asm) and "ASSISTANT_RULES" in _asm and "FILE_HINT" in _asm)
+        c.check("共享的「现在的真实时间」块也拼在同一处（每个模块都拿得到）",
+                "_now_block()" in _asm, _asm.strip()[:72])
+
+        # ★ 「今天是哪天」也是**每个模块都该拿得到**的事实（2026-10-12 真机撞出来的）：
+        #   原先只有 planner 的提示里注了基准日期，问答栏那几路没有 →
+        #   同一晚连问两次「今天几号」，模型编出两个日子（2025-06-12 星期四、
+        #   2026-07-08 星期三；真的是 2026-10-12 周一）。时间管家的答复里日子是编的，
+        #   比答错还难解释。语义层那一路更要紧：它的输出 schema 带 `date` 字段，
+        #   而 `to_canonical` 会把这个 date 拼回规范句 → 编出来的日子能一路进到提案里。
+        import datetime as _pdt
+
+        from app.agent.intent import _intent_system
+        from app.main import _now_block
+        from app.modules.planner import build_system_prompt as planner_prompt
+
+        iso = _pdt.date.today().isoformat()
+        blk = _now_block()
+        c.check("共享的「现在的真实时间」块里写的就是今天",
+                iso in blk and "【现在的真实时间】" in blk, blk.strip()[:40])
+        c.check("planner 自己那份不再重复写日期（同一个事实只留一处）",
+                "【今天的日期】" not in planner_prompt(), planner_prompt()[:40])
+        c.check("拼起来之后整个提示里今天只出现一次",
+                (planner_prompt() + blk).count(iso) == 1,
+                f"{(planner_prompt() + blk).count(iso)} 次")
+        c.check("语义层的系统提示也带基准日期，并明令不许编日子",
+                iso in _intent_system() and "不许编一个日子" in _intent_system(),
+                _intent_system()[:40])
+
+        # 形状：这两份**必须是每次现算的函数**。模块级常量会在 import 那刻定死，
+        # 服务跨一夜就还在拿昨天当"今天" —— 那正是这一批要防的事故。
+        intent_src = (proj / "app" / "agent" / "intent.py").read_text(encoding="utf-8")
+        c.check("形状：日期是每次现算（不许退回模块级常量 _INTENT_SYSTEM）",
+                "_INTENT_SYSTEM = " not in intent_src and "def _intent_system()" in intent_src
+                and "def _now_block()" in main_src, "见两个文件")
+
+        # 断言"走过去的那一份"，不是手拼的相似物：包一层 run，
+        # 记下引擎真正拿到的 system_prompt（构造器照旧走真的）。
+        import app.main as _M
+
+        sent = {}
+        real_run = _M.AgentEngine.run
+
+        async def _spy_run(self, *a, **k):
+            sent["prompt"] = self.system_prompt or ""
+            return await real_run(self, *a, **k)
+
+        _M.AgentEngine.run = _spy_run
+        try:
+            client.post("/api/chat", json={"message": "今天几号",
+                                           "session_id": "p-date-1"}).json()
+        finally:
+            _M.AgentEngine.run = real_run
+        got = sent.get("prompt", "")
+        c.check("走到引擎那一份 system prompt 里确实带着今天的日期",
+                bool(got) and iso in got, f"{len(got)} 字")
+        c.check("而且不是 planner 独占 —— 这一句归的是问答/兜底那一路",
+                "时间规划助手" not in got and iso in got, got[:44])
+        c.check("那一份里日期也只出现一次（去重做到位了）",
+                got.count(iso) == 1, f"{got.count(iso)} 次")
+
         c.check("规矩①输出要求：简洁/不暴露内部报错/不输出低俗内容",
                 all(k in main_src for k in ("不冗长废话", "禁止把系统内部报错", "低俗")))
         c.check("规矩②工单：只有快递/外卖这类才两步走（先问是否上报、确认才推送）",

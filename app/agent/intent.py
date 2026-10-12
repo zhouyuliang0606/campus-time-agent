@@ -32,6 +32,7 @@
 """
 from __future__ import annotations
 
+import datetime
 import json
 import os
 import re
@@ -162,7 +163,7 @@ def looks_like_question(text: str) -> bool:
 # 实测（2026-09-30）：`我饿了` 在规则层是**干净**的（`wants_add_todo` 返回 False），
 # 可线上**语义层把它判成了 add_todo**，于是一张写着「饿」的待办卡挂到了学生眼前。
 # 病根：模型把"状态"读成了"指令"——他说自己饿，**不等于**让系统替他排一顿饭。
-# 提示词里补例子（见 `_INTENT_SYSTEM`）只能降低概率、消不掉（模型是非确定性的），
+# 提示词里补例子（见 `_intent_system()`）只能降低概率、消不掉（模型是非确定性的），
 # 所以这里再补一条**确定性否决**，跟问句守卫同款：
 # **宁可漏判掉回老路，不可替学生瞎排。**
 #
@@ -405,8 +406,27 @@ def match_sample(text: str) -> dict | None:
 #   现在两件事一次问清：先分"这是问还是办"，再给 module 和 intent。
 _MODULE_LINES = "\n".join(f"- {k}：{v}" for k, v in MODULE_MEANING.items())
 
-_INTENT_SYSTEM = f"""你是校园时间管家的**类型与意图识别器**，只做一件事：把学生这句话归类。
+def _intent_system() -> str:
+    """类型识别器的系统提示。**每次调用现算**，因为里面带着基准日期。
 
+    为什么这里也要注日期：输出 schema 里有一个 `date` 字段（YYYY-MM-DD），
+    而 `to_canonical` 会把语义层给的 date 拼回规范句（见本文件 617 行附近）——
+    模型不知道今天几号，那个字段就只能靠训练数据里"大概哪天"编，
+    编出来的日子会一路进到提案里。聊天那边"今天几号"答错至少还只是难看，
+    这一路错了是**把事排到错的日子**。
+    """
+    now = datetime.datetime.now()
+    today = now.date()
+    # 星期几那份表只在 planner 里定义一份（红线 11b）。这里**函数内导入**：
+    # planner 自己也在函数里 import 本模块（`looks_like_question`），
+    # 顶层互引会变成导入门环绕不过去的那一类。
+    from app.modules.planner import DAY_NAMES
+    anchor = (f"\n【现在的真实时间】{today.isoformat()} "
+              f"{DAY_NAMES.get(today.isoweekday(), '')} {now.strftime('%H:%M')}\n"
+              "句子里的「今天/明天/后天/周几」都按这一行换算成具体日子；"
+              "换算不出来 `date` 就留空，**不许编一个日子填进去**。\n")
+    return f"""你是校园时间管家的**类型与意图识别器**，只做一件事：把学生这句话归类。
+{anchor}
 重要：你**不负责安排时间、不负责写日程、也不负责回答**，那些由系统另做。
 你只输出两样：这句话归哪个类型管（module）、他想干什么（intent）。
 
@@ -487,7 +507,7 @@ async def classify_with_llm(text: str, history: list | None = None,
     # 带上一两句最近的话：学生上一轮说"我想去吃火锅"、这一轮说"就周四吧"，
     # 光看这一句模型也猜不出来。只带最近 4 条，别把整个历史都塞进去。
     tail = [m for m in (history or []) if isinstance(m, dict)][-4:]
-    msgs = [{"role": "system", "content": _INTENT_SYSTEM}]
+    msgs = [{"role": "system", "content": _intent_system()}]
     for m in tail:
         role = m.get("role") if m.get("role") in ("user", "assistant") else "user"
         content = (m.get("content") or "").strip()

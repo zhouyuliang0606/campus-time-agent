@@ -183,8 +183,12 @@ def batch_d_identity_and_admin():
     c.check("并给了被问时的具体答法（不许编厂商，也不许摆一句「我很先进」）",
             "底层的实现我不清楚" in rules and "不编厂商" in rules)
     src = io.open(MAIN, encoding="utf-8").read()
+    # ⚠️ 取"拼装那一行"再查里面的件，别拿整行字面量比：
+    #   这行中间插过块（今天插了 `_now_block()`），字面量一比就是两个文件的形状断言同时假红，
+    #   红得毫无信息量 —— 而这一条真正要钉的是"红线只写一处、靠拼装广播给所有模块"。
+    _asm = next((l for l in src.splitlines() if l.strip().startswith("prompt = base_prompt +")), "")
     c.check("这条红线拼在**所有**学生端模块的提示词上（不是逐个模块各写一遍）",
-            "base_prompt + FILE_HINT + ASSISTANT_RULES" in src)
+            "ASSISTANT_RULES" in _asm and "FILE_HINT" in _asm and _asm != "")
 
     g = io.open(GATEWAY, encoding="utf-8").read()
     c.check("网关记的仍是技术原文（管理员的用量表能定位问题）",
