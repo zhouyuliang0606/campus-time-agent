@@ -2644,8 +2644,11 @@ html.gx-glass[data-gx-refine="on"] .composer, html.gx-glass[data-gx-refine="on"]
     const GX_BGS = {
       forest: { label:"雾松林", src:"/static/bg/forest.jpg", vm:".31", scrim:".20", bd:".95", core:"0",   fx:"birds-wind" },
       milky:  { label:"银河",   src:"/static/bg/milky.jpg",  vm:".40", scrim:".12", bd:"1",   core:"0",   fx:"meteor" },
-      space:  { label:"星空",   src:"/static/bg/space.jpg",  vm:".10", scrim:".10", bd:"1",   core:".78", fx:"meteor" },
-      park:   { label:"草坪",   src:"/static/bg/park.jpg",   vm:".62", scrim:".30", bd:".78", core:"0",   fx:"off" },
+      // 「星空」「草坪」两档 2026-10-12 撤掉了：那两张图（`space.jpg`/`park.jpg`）
+      // 是随手贴进来的、来源没追溯过，许可核不了 —— 仓库要公开、要交比赛，
+      // 未授权的素材不能留（登记与处置见 NOTICE.md）。
+      // 谁以前存过 `ct_bg=park`，这里查不到就自动回落 `forest`（下面 applyBackdrop 的
+      // `GX_BGS[key] || GX_BGS.forest` 是白名单查表，不是拼路径，所以老值不会白屏）。
       // 「不用图」不是"黑色底"，而是**撤掉总闸**：html.gx-glass 一摘，深色 token 与
       // 补丁段全部失效，页面回到玻璃改版之前的样子。关掉即还原，不养第二套样式。
       none:   { label:"不用图（回到改版前）", src:"", vm:".31", scrim:".20", bd:".95", core:"0", fx:"off" }
@@ -2772,7 +2775,7 @@ html.gx-glass[data-gx-refine="on"] .composer, html.gx-glass[data-gx-refine="on"]
       // ---- 背景与外观：改一项就立刻存本机 + 重新套一遍 ----
       // applyBackdrop 只写 CSS 变量、类名与 .gx-fx 里的装饰节点，不碰接口与业务状态。
       // 换图时把四个旋钮与 ct_gx_fx 清掉：让它们回到**那张图自己的**反解默认值，
-      // 否则会出现「在亮草坪上沿用雾松林的薄遮罩」这种调性打架的组合。
+      // 否则会出现「在银河上沿用雾松林的薄遮罩」这种调性打架的组合。
       (function(){
         function resetTunes(){ ['ct_gx_scrim','ct_gx_vm','ct_gx_bd','ct_gx_core','ct_gx_fx'].forEach(function(k){ localStorage.removeItem(k); }); }
         var cur=gxVal('ct_bg','forest'), bl=document.getElementById('setBgList');

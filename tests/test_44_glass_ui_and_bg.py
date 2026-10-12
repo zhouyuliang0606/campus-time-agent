@@ -131,15 +131,20 @@ def batch_icons(ck):
 def batch_pref(ck):
     title("D. 背景偏好：读写、默认值与动效联动")
     src = read(STUDENT)
-    ck.check("背景五档齐全（4 图 + 不用图）",
-             all(k in src for k in ['label:"雾松林"', 'label:"银河"', 'label:"星空"',
-                                    'label:"草坪"', 'label:"不用图（回到改版前）"']))
+    ck.check("背景三档齐全（2 图 + 不用图）",
+             all(k in src for k in ['label:"雾松林"', 'label:"银河"',
+                                    'label:"不用图（回到改版前）"']))
+    # 撤掉的两档是**因为许可核不了**（见 NOTICE.md）：断言它们不在，
+    # 免得哪天有人从备份里把图捞回来、档也顺手加回来，测试还全绿。
+    ck.check("「星空」「草坪」两档已摘除（许可不明的图不许悄悄回来）",
+             'label:"星空"' not in src and 'label:"草坪"' not in src,
+             [k for k in ("星空", "草坪") if ('label:"%s"' % k) in src])
     for key in ["ct_bg", "ct_gx_scrim", "ct_gx_vm", "ct_gx_bd", "ct_gx_core", "ct_gx_fx"]:
         ck.check("localStorage 键 %s 被使用" % key, key in src)
     ck.check("偏好只写 CSS 变量，不碰接口",
              "setProperty(t[1]" in src and "gxVal('ct_bg'" in src)
     # 换图必须把四个旋钮与动效都交回该图自己的反解默认值，
-    # 否则会在亮草坪上沿用雾松林的薄遮罩 —— 那是调性打架，不是偏好
+    # 否则会在银河上沿用雾松林的薄遮罩 —— 那是调性打架，不是偏好
     ck.check("换图时清掉四个旋钮与动效（resetTunes）",
              "resetTunes" in src
              and "ct_gx_scrim','ct_gx_vm','ct_gx_bd','ct_gx_core','ct_gx_fx" in src)
@@ -151,8 +156,12 @@ def batch_pref(ck):
     ck.check("鸟是内联画的（不是 <use> 引 symbol）",
              'GX_BIRD' in src and '<use href="#gi-bird"' not in src)
     # 每档背景自带**反解**出来的 veil/遮罩默认值（不是拍脑袋的数）
-    ck.check("每张图自带反解出的 veil/遮罩默认值（四张各不相同）",
-             'vm:".31"' in src and 'vm:".40"' in src and 'vm:".10"' in src and 'vm:".62"' in src)
+    # 断言写成"留下的两张各有不同的反解默认值 + 撤掉的那两组数值不许还在"，
+    # 而不是数四个具体值在不在 —— 前者是规则，后者只是当时那四张图的快照（4c）。
+    ck.check("留下的两张图各有不同的反解默认值，撤掉的两组数值不许还留着",
+             'vm:".31", scrim:".20"' in src and 'vm:".40", scrim:".12"' in src
+             and 'vm:".62"' not in src and 'vm:".10"' not in src,
+             [v for v in ('.62', '.10') if ('vm:"%s"' % v) in src])
 
 
 def batch_gate(ck):
@@ -194,12 +203,16 @@ def batch_gate(ck):
     for key in ["ct_gx_scrim", "ct_gx_vm", "ct_gx_bd", "ct_gx_core", "ct_gx_lv", "ct_gx_fx", "ct_gx_refine"]:
         ck.check("偏好键 %s 有读写" % key, key in src)
     ck.check("四个旋钮都进了 GX_TUNES", src.count('"--gx-') >= 4)
-    # 换图必须把旋钮交回该图自己的反解默认值，否则会在亮草坪上沿用雾松林的薄遮罩
+    # 换图必须把旋钮交回该图自己的反解默认值，否则会在银河上沿用雾松林的薄遮罩
     ck.check("换图时清掉四个旋钮（resetTunes）",
              "resetTunes" in src and "ct_gx_scrim','ct_gx_vm','ct_gx_bd','ct_gx_core'" in src)
-    # 四张图 + 不用图，五档选择
-    ck.check("背景五档齐全（4 图 + 不用图）",
-             all(x in src for x in ['forest.jpg', 'milky.jpg', 'space.jpg', 'park.jpg', 'none:']))
+    # 两张登记过的图 + 不用图，三档选择
+    # 判据打在**引用形式**上（`src:"/static/bg/x.jpg"`），不是"文件名字符串出没出现过"——
+    # 注释里写一句"space.jpg 已撤"是历史记录，不该把测试绊红（同 4c）。
+    refs = [x for x in ("forest.jpg", "milky.jpg", "space.jpg", "park.jpg")
+            if 'src:"/static/bg/' + x + '"' in src]
+    ck.check("背景表里真正指向图片的只有 forest / milky 两行",
+             refs == ["forest.jpg", "milky.jpg"] and 'none:' in src, refs)
     ck.check("「不用图」的语义是撤总闸，不是黑底",
              "root.classList.toggle('gx-glass', on)" in src)
     # 死规则检查：类名写错会让规则静默失效
@@ -220,7 +233,7 @@ def batch_http(ck):
     ck.check("响应里带着背景图节点", 'id="gxBg"' in html)
     r2 = client.get("/static/glass.css")
     ck.check("GET /static/glass.css 200", r2.status_code == 200, str(r2.status_code))
-    BGS = ["forest.jpg", "milky.jpg", "space.jpg", "park.jpg"]
+    BGS = ["forest.jpg", "milky.jpg"]   # 草坪/星空 2026-10-12 因许可不明删除，见 NOTICE.md
     for name in BGS:
         rr = client.get("/static/bg/" + name)
         ck.check("GET /static/bg/%s 200 且是图片" % name,
@@ -232,6 +245,31 @@ def batch_http(ck):
     ck.check("素材许可与署名已登记 NOTICE.md",
              os.path.isfile(os.path.join(PROJ_DIR, "NOTICE.md"))
              and "Guisard" in read(os.path.join(PROJ_DIR, "NOTICE.md")))
+
+
+def batch_notice(ck):
+    """H. 素材登记闸：`app/static/bg/` 里**每一张图**都得在 NOTICE.md 登记过，且许可明确。
+
+    为什么要有这道闸：这次的洞就是"顺手贴两张图进来、没人问过许可"，
+    而当时所有测试都绿（E 批只验文件可达，可达 ≠ 有权用）。
+    仓库要公开、要交比赛，这类债只能靠测试拦，不能靠人记得住。
+    """
+    title("H. 素材登记闸（bg/ 里不许出现没登记或许可不明的图）")
+    notice = read(os.path.join(PROJ_DIR, "NOTICE.md"))
+    files = sorted(f for f in os.listdir(BG_DIR) if f.lower().endswith((".jpg", ".jpeg", ".png")))
+    ck.check("背景目录里有图可查（这道闸不是空转）", len(files) >= 1, files)
+    for name in files:
+        row = next((ln for ln in notice.splitlines() if ln.startswith("|") and name in ln), None)
+        ck.check("NOTICE 登记了 %s" % name, row is not None, "表里找不到这一行")
+        if row:
+            cols = [c.strip() for c in row.strip().strip("|").split("|")]
+            lic = cols[2] if len(cols) > 2 else ""
+            ck.check("%s 的许可列是明确的（不许「未确认」）" % name,
+                     lic and ("未确认" not in lic) and ("未知" not in lic), lic)
+    # 反向：已经删掉的图不许还躺在目录里
+    for gone in ("park.jpg", "space.jpg"):
+        ck.check("%s 已从仓库删除" % gone, gone not in files,
+                 "文件还在（备份在仓库外，别放回来）")
 
 
 def batch_reply_text_untouched(ck):
@@ -254,6 +292,7 @@ def main():
     batch_pref(ck)
     batch_gate(ck)
     batch_http(ck)
+    batch_notice(ck)
     batch_reply_text_untouched(ck)
     return ck.summary("test_44 玻璃层与背景偏好")
 

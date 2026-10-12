@@ -29,12 +29,13 @@
    从下到上：① --gx-scrim 均匀暗遮罩（整页一致压暗，不挑位置）
              ② --gx-vm 上下强、中段弱的渐变（负责"顶底溶进主题色"）
              ③ 横向 scrim（只压左侧，给侧栏垫底）
-             ④ --gx-core 径向局部压暗（只打亮核，星空图那种）
+             ④ --gx-core 径向局部压暗（只打亮核；现在两张都用不上，
+                原来那张星空图靠它，图已因许可不明撤下，见 NOTICE.md）
    ★ 均匀遮罩比加深 veil 划算：正文恰好压在 veil 中段最弱的那一条上，
      把 --gx-vm 顶高会连带毁掉"背景透得出来"，而遮罩只均匀降一档亮度、层次不丢。
    两个数都是**按图反解**出来的（判据：90×18 文字窗口逐格取均值 → 合成亮度 →
    对 --theme-muted-fg 求 WCAG → 取全页最差值 ≥ 4.5:1），换图必须重测：
-     forest .31 / .20    milky .40 / .12    星空(开亮核压暗) .10 / .10 */
+     forest .31 / .20    milky .40 / .12    （星空 .10 / .10 + 亮核压暗 —— 图已撤，见 NOTICE） */
 .gx-backdrop{display:none;position:fixed;inset:0;width:100%;height:100%;object-fit:cover;z-index:0;pointer-events:none}
 html.gx-glass .gx-backdrop{display:block;filter:brightness(var(--gx-bd,.95)) saturate(1.12) contrast(1.03)}
 .gx-veil{display:none;position:fixed;inset:0;z-index:1;pointer-events:none}
