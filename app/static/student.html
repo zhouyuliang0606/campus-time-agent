@@ -2712,12 +2712,20 @@ html.gx-glass[data-gx-refine="on"] .composer, html.gx-glass[data-gx-refine="on"]
         else img.style.display='none';
       }
       // 四个旋钮：用户拧过的（ct_gx_*）优先，没拧过就用这张图的反解默认值
+      // ⚠️ localStorage 里的值**必须夹回滑杆区间**再用：这里不是注入面（写的是单个属性值，
+      //    不是声明列表），但谁手改一个 `ct_gx_scrim=999` 就把整页压成黑屏，
+      //    而学生唯一的自救只有「不用图」。读不出数（NaN/空）也回落到这张图的默认值。
       GX_TUNES.forEach(function(t){
-        const v = gxVal(t[0], '');
+        const raw = parseFloat(gxVal(t[0], ''));
+        const v = isFinite(raw) ? Math.min(t[4], Math.max(t[3], raw)) : '';
         root.style.setProperty(t[1], v !== '' ? v : b[t[6]]);
       });
-      root.setAttribute('data-gx-lv', gxVal('ct_gx_lv','2'));
-      const fx = on ? gxVal('ct_gx_fx', b.fx) : 'off';
+      // 透明度档位与动效档同理：只认表里有的那几个键，认不出就回默认，
+      // 免得 localStorage 里一个错值让页面出现"没有 CSS 匹配"的第三种样子。
+      const lv = gxVal('ct_gx_lv', '2');
+      root.setAttribute('data-gx-lv', GX_LV.some(function(x){ return x[0] === lv; }) ? lv : '2');
+      const fxRaw = on ? gxVal('ct_gx_fx', b.fx) : 'off';
+      const fx = GX_FX.some(function(x){ return x[0] === fxRaw; }) ? fxRaw : (on ? b.fx : 'off');
       root.setAttribute('data-gx-fx', fx);
       buildGxFx(fx);
       root.setAttribute('data-gx-refine', gxVal('ct_gx_refine','on'));
