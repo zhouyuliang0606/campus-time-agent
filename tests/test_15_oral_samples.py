@@ -335,6 +335,102 @@ def batch_i_real_machine_gaps():
     return c
 
 
+def batch_j_change_mind():
+    """J. **反悔刚提的那件事**：「算了不吃了」不许掉给模型当闲聊（2026-10-12 用户指令）。
+
+    场景是他自己走出来的：先提「吃自助餐」，紧接着来一句「算了不吃了」——
+    这句字面上一个"删"字都没有，而软词表里当时只有「不去了/不要了/不搞了」，
+    于是 `wants_remove_todo` 不认、`wants_add_todo` 也不认（没有加字），
+    三档判定一路落空 → 模型当闲聊回一句"没关系，那就不吃了吧"，
+    那条待办**还留在日程上**。学生心里的账是"我撤掉了"，屏幕上的账是"还挂着"。
+
+    补的是 `_REMOVE_TODO_SOFT` 两颗词（不吃了 / 不做了），沿用同一套让路判定，
+    **没有**给语义层加提示（项目纪律：规则接得住就别问模型）。
+    ⚠️ 这张表同时是 `wants_add_todo` 开头的让路开关，加一颗词的代价写在 ④。
+    """
+    c = Checker()
+    title("J. 反悔刚提的事：「算了不吃了」= 删待办（不许回一句闲聊）")
+    with sandbox():
+        client = make_client()
+        from app.modules.planner import wants_add_todo, wants_remove_todo
+        from app.store import add_todo, delete_todo, list_todos
+
+        for t in list_todos():
+            delete_todo(t["id"])
+        add_todo("吃自助餐", _D, "12:00", "13:00")
+
+        # ① 判定层：这句一个"删"字都没有，也必须认出是删待办（规则档，不问模型）
+        #    后三颗是用户浏览器里的**原话**（`sfacc53a8c8` 那段会话），不是编的：
+        #    「不吃了，删掉吧」当时回的是「删待办：没找到符合条件的」——
+        #    因为「删掉吧」认得、可抠出来的名字是残渣；一句报障话被回成"没这条"。
+        for s in ("算了不吃了", "不吃了", "不做了", "算了不做了", "算了，不吃了",
+                  "算了不去了", "不要了", "不去了",
+                  "不吃了，删掉吧", "算了不吃了，删掉吧", "吃自助餐不吃了", "那个不吃了"):
+            c.check("判定层认成删待办｜%s" % s, wants_remove_todo(s) is True,
+                    wants_remove_todo(s))
+        # 「规则接得住就别问模型」得有个可查的说法：`_rule_intent` 是"要不要升级到语义层"
+        # 那道预检，它认出 remove_todo，这句就**一次 API 都不花**。
+        from app.main import _rule_intent
+        from app.agent.intent import INTENT_REMOVE_TODO
+        for s in ("算了不吃了", "不吃了", "不做了"):
+            c.check("规则档就接住（不升级到语义层）｜%s" % s,
+                    _rule_intent(s) == INTENT_REMOVE_TODO, _rule_intent(s))
+        # 光「算了」历史刻意不收（多半是"算了不说这个了"），本轮也不收
+        for s in ("算了", "算了不说这个了", "算了随便吧"):
+            c.check("光「算了」不许被拽进删除｜%s" % s, wants_remove_todo(s) is False,
+                    wants_remove_todo(s))
+
+        # ② 端到端：库里只有一条 → 原样念一遍出确认条，不是"我没办成什么"
+        d = _say(client, "oral-j1", "算了不吃了")
+        o = (d.get("options") or [{}])[0]
+        c.check("「算了不吃了」→ 删待办确认条，念的就是刚提的那条《吃自助餐》",
+                _kinds(d) == ["todo_remove"] and o.get("title") == "吃自助餐",
+                f"{_kinds(d)} | {o.get('title')}")
+        c.check("回话里不许出现「我没办成 / 没找到」那种白话",
+                "没找到" not in (d.get("answer") or ""),
+                (d.get("answer") or "").replace("\n", " ")[:60])
+        c.check("学生还没点头 → 一条都没删", len(list_todos()) == 1,
+                f"{len(list_todos())}")
+
+        # ②b 他那句原话「不吃了，删掉吧」：当时"删掉吧"认得、名字却是残渣 →
+        #     回「删待办：没找到符合条件的」。现在必须同样落到《吃自助餐》那条确认条。
+        d1b = _say(client, "oral-j1b", "不吃了，删掉吧")
+        c.check("「不吃了，删掉吧」→ 也是那条确认条（不许再回「没找到符合条件的」）",
+                _kinds(d1b) == ["todo_remove"]
+                and (d1b.get("options") or [{}])[0].get("title") == "吃自助餐"
+                and "没找到" not in (d1b.get("answer") or ""),
+                f"{_kinds(d1b)} | {(d1b.get('answer') or '')[:44]}")
+
+        # ③ 库里两条时**不猜**：列清单问是哪一条
+        add_todo("跑步", _D, "19:00", "20:00")
+        d3 = _say(client, "oral-j3", "算了不吃了")
+        c.check("库里两条 → 列清单问是哪一条（不替他挑）",
+                not _kinds(d3) and ("哪一条" in (d3.get("answer") or "")
+                                    or "不敢替你挑" in (d3.get("answer") or "")),
+                f"{_kinds(d3)} | {(d3.get('answer') or '')[:50]}")
+        c.check("列完清单仍然一条都没删", len(list_todos()) == 2, f"{len(list_todos())}")
+
+        # ④ 这张表的代价（照实钉住，不是"应该为真"）：软词是 `wants_add_todo` 的让路开关，
+        #    所以"一句里两件事"会被挡掉新增那一件 —— 「这周不吃了，帮我加个体检复查」。
+        #    「不去了」早就是这个形状，本轮没让它变大，但把它写成数字，别没人知道。
+        d4 = _say(client, "oral-j4", "这周不吃了，帮我加个体检复查")
+        c.check("已知取舍｜一句里同时说「不吃了 + 帮我加X」时，新增那件被让路挡掉",
+                wants_add_todo("这周不吃了，帮我加个体检复查") is False
+                and "体检复查" not in [t["title"] for t in list_todos()],
+                f"add={wants_add_todo('这周不吃了，帮我加个体检复查')} "
+                f" titles={[t['title'] for t in list_todos()]} kinds={_kinds(d4)}")
+
+        # ⑤ 形状：新词必须真的进了那张表（三处引用它的分支自动生效，别再各自加词）
+        from app.modules import planner as _P
+        c.check("形状：两颗新词在表里，而且只有这一份表",
+                "不吃了" in _P._REMOVE_TODO_SOFT and "不做了" in _P._REMOVE_TODO_SOFT
+                and len(_P._REMOVE_TODO_SOFT) == 9,
+                _P._REMOVE_TODO_SOFT)
+        c.check("形状：死条目不留——「算了不吃了」不该单独进表（它是「不吃了」的超串）",
+                "算了不吃了" not in _P._REMOVE_TODO_SOFT, _P._REMOVE_TODO_SOFT)
+    return c
+
+
 def _say_faq(client, sid, msg):
     return client.post("/api/chat", json={"message": msg, "module": "faq",
                                           "session_id": sid}).json()
@@ -351,6 +447,7 @@ def main():
         batch_g_typos(),
         batch_h_kb(),
         batch_i_real_machine_gaps(),
+        batch_j_change_mind(),
     ]
     total_pass = sum(r.passed for r in results)
     total_fail = sum(r.failed for r in results)
