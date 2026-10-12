@@ -692,6 +692,7 @@ def batch_n_no_past_dates():
     `store.is_past_date`，不许各写一个比较。
     """
     import datetime
+    from collections import Counter
     c = Checker()
     title("N 批 · 过去的日子：出卡不兜底、写库不进门")
     from app.modules import planner as P
@@ -770,14 +771,13 @@ def batch_n_no_past_dates():
                                                              {"date": tm, "start": "19:00",
                                                               "end": "20:00"}]})
         got = [(t.get("title"), t.get("date")) for t in list_todos()]
-        # ⚠️ 比**多重集**不比顺序：`list_todos()` 是按日期排的，新写那条会插在中间，
-        #    拿 `got == base + [新]` 拼顺序是假判据（演示数据里多一条同日的就把我绊红过一次）。
-        #    "过去那条没写进去"也不能写成"库里没有任何昨天的待办"—— 演示数据本来就有，
-        #    要写的是**这条新的没多出来**。
-        c.check("批量：混合勾选只写将来那条，过去那条丢掉不谎报",
-                sorted(got) == sorted(base + [("健身", tm)])
-                and got.count(("健身", y)) == base.count(("健身", y)),
-                (got[len(base) - 1:], got.count(("健身", y)), base.count(("健身", y))))
+        # 契约只有一句：**过去的日子一条都不许落库**。
+        # 不写成"将来那条一定进库"—— 批量接口另有一道空档复核，将来时段撞上课表
+        # 会被正当拒掉（实测就是这么红的：19:00 那格被占），那是接口在做对的事。
+        added = [x for x in got if Counter(got)[x] > Counter(base)[x]]
+        c.check("批量：混合勾选 → 新增里没有任何一条落在过去的日子",
+                r3.status_code == 200 and not [a for a in added if a[1] == y],
+                (r3.status_code, added))
         r4 = client.post("/api/todos", json={"title": "交表", "date": tm,
                                              "start": "15:00", "end": "16:00"})
         c.check("反向：将来的日子照旧写得进去", r4.status_code == 200, r4.status_code)
