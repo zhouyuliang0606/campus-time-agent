@@ -110,7 +110,26 @@ with sandbox():
     m2 = client.get(f"/api/todos/month?month={TODAY[:7]}").json()
     c.check("今天至少 1 项", len(m2["days"].get(TODAY, [])) >= 1,
             f"{len(m2['days'].get(TODAY, []))} 项")
-    c.check("查空月份返回空", client.get("/api/todos/month?month=2099-01").json()["days"] == {})
+    # 「查空月份返回空」原先写死 2099-01。那条写法没有信息量：远到谁都空，
+    # 而真机恰恰红在**它不空** —— 一条 `repeat=weekly` 等于"直到世界尽头的每个周日"，
+    # 月表翻到 2099-01 照样画得出东西（学生从没答应过要做到 2099 年）。
+    # 现在按上限自己算一个"翻不到的整月"：上限 = 今天起 3 个日历月（`store.weekly_horizon`），
+    # 取它**下个月**那一整月来查，边界上的日子归 test_39 G 批钉。
+    from app.store import WEEKLY_HORIZON_MONTHS, weekly_horizon
+
+    _lim = datetime.date.fromisoformat(weekly_horizon())
+    _ny, _nm = divmod(_lim.year * 12 + _lim.month, 12)
+    _beyond = "%04d-%02d" % (_ny, _nm + 1)          # 上限月的下一个月
+    c.check("查上限之外那个整月返回空（每周重复不许一路铺到世界尽头）",
+            client.get(f"/api/todos/month?month={_beyond}").json()["days"] == {},
+            f"上限 {WEEKLY_HORIZON_MONTHS} 个月 → {_lim}，查 {_beyond}")
+    # 一次性待办的日子再远也照原样在：上限收的是"替他推出来的将来"，不是他写的数
+    _far = (_lim + datetime.timedelta(days=366)).isoformat()
+    add_todo_tool("毕业礼", _far, "10:00", "11:00")
+    c.check("但一次性待办不受上限影响（明确写下的日子不许被吞）",
+            _far in client.get(f"/api/todos/month?month={_far[:7]}").json()["days"],
+            _far)
+
 
     title("7. 会话历史（多轮商量的前提）")
     sid = "test-session-1"

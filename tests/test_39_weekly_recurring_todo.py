@@ -230,9 +230,105 @@ def batch_f_old_path_untouched():
     return c
 
 
+def _last_on_or_before(weekday: int, iso: str) -> str:
+    """`iso` 那天（含）之前最后一个"星期几 = weekday"的日子。"""
+    d = datetime.date.fromisoformat(iso)
+    while d.isoweekday() != weekday:
+        d -= datetime.timedelta(days=1)
+    return d.isoformat()
+
+
+def batch_g_weekly_horizon():
+    """G 批 · 每周重复往后**只铺 3 个日历月**（2026-10-13 用户指令：给展开加个头）。
+
+    没有头的 weekly 等于"直到世界尽头的每个周日"：月表翻到 2099-01 也画得出东西，
+    而学生从没答应过要做到那一年（test_03 那条「查空月份返回空」就是红在这儿）。
+    上限这把尺子有三份实现（`store.weekly_horizon` / student.html / plan.html，
+    接手指南 §4 第 9 条要求同步），所以这一批既钉边界、也钉三份是不是同一把尺子。
+    """
+    c = Checker()
+    title("G 批 · 展开上限：3 个日历月之内才算出现，之外一律没有")
+    from app import store as S
+
+    with sandbox():
+        wk = S.add_todo("每周跑步", _sun(0), "07:00", "08:00", repeat="weekly")
+        lim = S.weekly_horizon(wk["date"])
+        # ⚠️ 边界必须钉**两侧**，而且"里面"那一侧要用**跟上限无关的绝对日子**：
+        #   上一版这里写的是"上限那天所在的那个同星期几仍然算出现" —— 那个日期是从
+        #   `weekly_horizon()` 自己算出来的，上限改成 0 个月它也跟着缩，断言永远为真（自证式断言）。
+        #   变异 V2（上限=0 个月）就是这么躲过去的。
+        c.check("四周后那个同星期几还算出现（绝对日子，上限缩到零就会红）",
+                S.todo_occurs_on(wk, _sun(4)), _sun(4))
+        c.check("半年后那个同星期几不算（远于任何 3 个月的上限）",
+                not S.todo_occurs_on(wk, _sun(26)), _sun(26))
+        # 紧挨着上限那一格的一侧一格：钉的是"切在 3 个月"，不是"切在大概三个多月"
+        last_in = _last_on_or_before(wk["weekday"], lim)
+        first_out = (datetime.date.fromisoformat(last_in)
+                     + datetime.timedelta(weeks=1)).isoformat()
+        c.check("上限之内最后一个同星期几仍然算出现（边界内侧）",
+                S.todo_occurs_on(wk, last_in), f"锚点 {wk['date']} → 上限 {lim}，查 {last_in}")
+        c.check("再往后一个周期就不算了（边界外侧）",
+                not S.todo_occurs_on(wk, first_out), first_out)
+        c.check("2099 年那个同星期几不再出现（原先就是红在这儿）",
+                not S.todo_occurs_on(wk, "2099-01-04"))
+        c.check("按天查询也走同一套（读侧只有一份规则，上限自动继承）",
+                wk["id"] not in [t["id"] for t in S.list_todos(first_out)]
+                and wk["id"] in [t["id"] for t in S.list_todos(last_in)],
+                first_out)
+
+        # 月末锚点：加 3 个**日历月**，落不进就贴到目标月最后一天。
+        # ⚠️ 挑的锚点必须让"3 个日历月"和"90 天"算出**不同**的日子，否则这条钉不住
+        #   真正写错成 `today + timedelta(days=90)` 的那种实现
+        #   （11-30、12-31 两个锚点两种算法恰好相等，变异 V4 因此在上一版红 0 条）。
+        c.check("月末锚点贴到目标月最后一天（2026-11-30 + 3 月 = 2027-02-28）",
+                S.weekly_horizon("2026-11-30") == "2027-02-28",
+                S.weekly_horizon("2026-11-30"))
+        c.check("2027-01-31 + 3 月 = 2027-04-30（90 天那套会算成 05-01）",
+                S.weekly_horizon("2027-01-31") == "2027-04-30",
+                S.weekly_horizon("2027-01-31"))
+        c.check("2027-05-31 + 3 月 = 2027-08-31（90 天那套会算成 08-29）",
+                S.weekly_horizon("2027-05-31") == "2027-08-31",
+                S.weekly_horizon("2027-05-31"))
+        # ⚠️ 这三个锚点都得在**未来**：`weekly_horizon` 取的是 max(今天, 锚点)，
+        #   写了个过去的日子（上一版的 2026-05-31）算出来是"今天 + 3 月"，
+        #   断言当场红 —— 那是我在测自己的误解，不是在测代码。
+        c.check("过去的锚点按今天起算（max(今天, 锚点) 这一条要说清楚）",
+                S.weekly_horizon("2020-01-01") == S.weekly_horizon(),
+                S.weekly_horizon("2020-01-01"))
+        c.check("跨年的锚点也算对",
+                S.weekly_horizon("2026-12-31") == "2027-03-31",
+                S.weekly_horizon("2026-12-31"))
+
+        # 锚点在**未来**的那条：上限跟着锚点走，否则这一天都看不见
+        far = S.add_todo("以后的周六", "2027-06-05", "09:00", "10:00", repeat="weekly")
+        c.check("远期锚点：从锚点起算，锚点那天照样出现（上限不能吞掉将来才开始的安排）",
+                S.todo_occurs_on(far, "2027-06-05"), S.weekly_horizon("2027-06-05"))
+        c.check("但它也照样有头（锚点 + 3 个月之后一样没有）",
+                not S.todo_occurs_on(far, "2027-12-25"))
+
+        # 一次性待办：日子再远也照原样在。上限收的是"替他推出来的将来"，不是他写的数。
+        once = S.add_todo("毕业礼", "2099-01-04", "10:00", "11:00")
+        c.check("一次性待办不受上限影响", S.todo_occurs_on(once, "2099-01-04"))
+
+        # 三份实现的常量必须是同一个数（值的一致另外用 node 把两份 JS 抠出来对照过，
+        # 见 D:\\campustime-scratch\\chk_horizon_three.py —— 评委机器不一定有 node，
+        # 所以测试里只钉"字面上的同一把尺子"）
+        st = io.open(STUDENT, encoding="utf-8").read()
+        pl = io.open(PLAN, encoding="utf-8").read()
+        for name, src in (("student.html", st), ("plan.html", pl)):
+            c.check(f"{name} 有同一把尺子（常量 3，且 todoOccurs 真的拿上限去比）",
+                    "WEEKLY_HORIZON_MONTHS = 3" in src
+                    and "dIso <= weeklyLimit(t.date)" in src,
+                    src.count("weeklyLimit("))
+        c.check("后端那份的常量也是 3（三份不许各写一个数）",
+                S.WEEKLY_HORIZON_MONTHS == 3, S.WEEKLY_HORIZON_MONTHS)
+    return c
+
+
 def main():
     results = [batch_a_recognition(), batch_b_title_and_veto(), batch_c_store_model(),
-               batch_d_end_to_end(), batch_e_three_layers_synced(), batch_f_old_path_untouched()]
+               batch_d_end_to_end(), batch_e_three_layers_synced(), batch_f_old_path_untouched(),
+               batch_g_weekly_horizon()]
     total_pass = sum(r.passed for r in results)
     total_fail = sum(r.failed for r in results)
     print(f"\n===== 每周重复待办总账：通过 {total_pass} 项，失败 {total_fail} 项 =====")

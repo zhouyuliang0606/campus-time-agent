@@ -215,10 +215,23 @@
     // 每周重复（2026-10-10）：与后端 store.todo_occurs_on / 学生端 student.html
     // 同一套规则，三处必须一起改 —— 只改一边就会出现"接口里有、这一页画不出"。
     const wdOfIso = s => isoWd(parseISO(s));
+    // 每周重复往后**只铺 3 个日历月**：跟后端 `store.weekly_horizon` 同一把尺子，三处一起改。
+    // 没有它，一条 weekly 记录等于"直到世界尽头的每个周六"，月表翻到 2099-01 也画得出东西。
+    // 基准取 max(今天, 锚点)：锚点在未来的那条（「明年六月起每个周六」）不能一天都看不见。
+    const WEEKLY_HORIZON_MONTHS = 3;
+    function weeklyLimit(anchorIso) {
+      let base = new Date();                                   // 今天
+      const a = anchorIso ? parseISO(anchorIso) : null;
+      if (a && a > base) base = a;
+      const target = new Date(base.getFullYear(), base.getMonth() + WEEKLY_HORIZON_MONTHS, 1);
+      // 那天在目标月不存在就贴到月末（11-30 加 3 个月 = 2-28，不是 3-2）
+      const last = new Date(target.getFullYear(), target.getMonth() + 1, 0).getDate();
+      return iso(new Date(target.getFullYear(), target.getMonth(), Math.min(base.getDate(), last)));
+    }
     function todoOccurs(t, dIso) {
       if (t.repeat === "weekly") {
         const wd = t.weekday || wdOfIso(t.date);
-        return wdOfIso(dIso) === wd && dIso >= t.date;
+        return wdOfIso(dIso) === wd && dIso >= t.date && dIso <= weeklyLimit(t.date);
       }
       return t.date === dIso;
     }

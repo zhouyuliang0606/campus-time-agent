@@ -381,6 +381,10 @@ def save_timetable(courses: list) -> dict:
 
 REPEAT_NONE = ""
 REPEAT_WEEKLY = "weekly"
+# 每周重复往后展开的上限（月）。三处必须一起改：后端 `weekly_horizon`、
+# `student.html` 的 weeklyLimit、`plan.html` 的 weeklyLimit —— 只改一边就是
+# "接口说那天有、日程上画不出来"（2026-10-10 定下这条规矩，见接手指南 §4 第 9 条）。
+WEEKLY_HORIZON_MONTHS = 3
 REPEAT_VALUES = (REPEAT_NONE, REPEAT_WEEKLY)
 
 
@@ -413,10 +417,47 @@ def iso_weekday_of(date: str) -> int | None:
         return None
 
 
+def weekly_horizon(anchor: str = "") -> str:
+    """每周重复**最多往后铺到那一天**（含这一天）。
+
+    为什么必须有上限：一条 `repeat=weekly` 的记录只有一个锚点，却代表"以后每个周六"。
+    不加收口，它就是"直到世界尽头的每个周六" —— 月表翻到 2099-01 也给你画出东西来
+    （test_03 那条红一直钉在这儿，而产品确实离谱：学生从没答应过要一直做到 2099 年）。
+
+    基准取 `max(今天, 这条的锚点)`，两个方向都不能吞数据：
+      · 锚点在过去或今天 → 从今天起算 N 个月（翻到上限之外的整月应当是空的）；
+      · 锚点在未来（「明年六月起每个周六」）→ 从锚点起算，不然这一条**一天都看不见**。
+    ⚠️ 只管**每周重复的推断展开**。一次性待办的 `date` 是学生明确写下的日子，
+      再远也照原样出现 —— 上限收的是"系统替他推出来的将来"，不是他写的数。
+    """
+    base = datetime.date.today()
+    try:
+        a = datetime.date.fromisoformat((anchor or "").strip())
+        if a > base:
+            base = a
+    except ValueError:
+        pass
+    return _add_months(base, WEEKLY_HORIZON_MONTHS).isoformat()
+
+
+def _add_months(day: datetime.date, months: int) -> datetime.date:
+    """加 n 个**日历月**，那天在目标月不存在就贴到目标月最后一天。
+
+    11-30 加 3 个月 = 2-28（不是 3-2）：Python 的 `date(y, m+3, d)` 会直接溢到下一月，
+    那种"多加了 33 天"的写法在月末生成的锚点上会一天差一个月。
+    """
+    y, m = divmod(day.year * 12 + day.month - 1 + months, 12)
+    m += 1                                   # divmod 给的是 0..11，月份从 1 数
+    last = (datetime.date(y + (m == 12), (m % 12) + 1, 1)
+            - datetime.timedelta(days=1)).day
+    return datetime.date(y, m, min(day.day, last))
+
+
 def todo_occurs_on(t: dict, date: str) -> bool:
     """这条待办**在不在这一天**（人话：重复的事每个周期都会再出现一次）。
 
     判据只有一处，前端/撞档/面板都该是同一套逻辑的翻译，别在别处再抄一遍 `t.date == date`。
+    每周重复那份"以后每个周六"是**推断**出来的，所以它有个头：见 `weekly_horizon`。
     """
     if not t:
         return False
@@ -425,8 +466,12 @@ def todo_occurs_on(t: dict, date: str) -> bool:
     wd = t.get("weekday") or iso_weekday_of(t.get("date") or "")
     if iso_weekday_of(date) != wd:
         return False
+    anchor = str(t.get("date") or "")
     # 锚点之前不算出现：学生说"从下周日开始"，不该把已经过去的周日也算进去
-    return str(date) >= str(t.get("date") or "")
+    if str(date) < anchor:
+        return False
+    # 往后也只铺到上限那天：翻到四个月以后的月表应当是空的
+    return str(date) <= weekly_horizon(anchor)
 
 
 def todo_done_on(t: dict, date: str) -> bool:

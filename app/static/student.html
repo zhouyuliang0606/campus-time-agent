@@ -1870,10 +1870,23 @@ html.gx-glass[data-gx-refine="on"] .composer, html.gx-glass[data-gx-refine="on"]
     // 的**同一套规则**，两处必须一起改 —— 只改一边就会出现"接口说有、日程上画不出"。
     // 一条 repeat=weekly 的记录只有一个锚点 date，但它每个同星期几都算出现一次。
     const wdOfIso = iso => isoWd(new Date(iso + "T00:00:00"));
+    // 每周重复往后**只铺 3 个日历月**：跟后端 `store.weekly_horizon` 同一把尺子，三处一起改。
+    // 没有它，一条 weekly 记录等于"直到世界尽头的每个周六"，月表翻到 2099-01 也画得出东西。
+    // 基准取 max(今天, 锚点)：锚点在未来的那条（「明年六月起每个周六」）不能一天都看不见。
+    const WEEKLY_HORIZON_MONTHS = 3;
+    function weeklyLimit(anchorIso) {
+      let base = new Date();                                   // 今天
+      const a = anchorIso ? new Date(anchorIso + "T00:00:00") : null;
+      if (a && a > base) base = a;
+      const target = new Date(base.getFullYear(), base.getMonth() + WEEKLY_HORIZON_MONTHS, 1);
+      // 那天在目标月不存在就贴到月末（11-30 加 3 个月 = 2-28，不是 3-2）
+      const last = new Date(target.getFullYear(), target.getMonth() + 1, 0).getDate();
+      return isoD(new Date(target.getFullYear(), target.getMonth(), Math.min(base.getDate(), last)));
+    }
     function todoOccurs(t, dIso) {
       if (t.repeat === "weekly") {
         const wd = t.weekday || wdOfIso(t.date);
-        return wdOfIso(dIso) === wd && dIso >= t.date;   // 锚点之前不算出现
+        return wdOfIso(dIso) === wd && dIso >= t.date && dIso <= weeklyLimit(t.date);   // 锚点之前不算，上限之后也不算
       }
       return t.date === dIso;
     }
