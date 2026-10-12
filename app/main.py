@@ -100,6 +100,8 @@ from app.modules.planner import (
     todo_done_batch_proposal,
     wants_remove_todo,
     wants_remove_todo_loose,
+    _REMOVE_TODO_SOFT,
+    _DEL_ANY_RE,
     wants_done_todo,
     is_add_todo_answer,
     is_add_todo_followup,
@@ -451,10 +453,33 @@ def _recent_add_request(session_id: str, span: int = 8) -> str:
 
 # 「不去了」「算了」「取消」——删除/取消**动作**词。抠出的"标题"擦掉这些还
 # 剩不下东西 = 学生根本没点名（「不去了删了吧」抠出来的是「不去了删」这种残渣）。
+# ⚠️ 这张表擦的是**标题形**的动作词（`todo_title_of` 已经把句末那个「了」吃掉了），
+#   跟 planner 那两张**句子里**的词表形状不一样 —— 所以以前在这儿手抄了一份，一抄就漂：
+#   「不吃」「不做」「不要」都不在抄件里，于是 `_is_blind_delete("算了不吃了")` 判 False，
+#   他刚说的「算了不吃了」既不算是盲删、也没有别的目标，只能去把整张日程列一遍
+#   （2026-10-12 真机截图那一幕）。现在句子形那一半**从 `_REMOVE_TODO_SOFT` 推**
+#   （去掉尾上的「了」就是标题形），以后加一颗软词这边自动跟上；
+#   左边剩下的都是这张表独有的标题形说法（不去 / 改主意…），不复制整词表。
 _DELETE_ACTION_WORDS = ("不去了", "不去", "取消", "算了", "删除", "删掉",
-                        "删了", "删", "去掉", "移除", "退掉", "改主意")
+                        "删了", "删", "去掉", "移除", "退掉", "改主意") \
+    + tuple(w[:-1] if w.endswith("了") else w for w in _REMOVE_TODO_SOFT)
 # 学生用指代词点的那条（"把刚才那个删了"）——也算没点名，但指向同样明确。
 _BLIND_DELETE_HINTS = ("这个", "那个", "它", "刚才", "刚加", "刚排", "这条", "那条", "上次")
+
+
+def _delete_residue(text: str) -> str:
+    """这句话"点到的东西"擦掉动作词之后还剩什么 —— **剩不下东西 = 他根本没点名**。
+
+    抽成一个函数是因为同一个判断原先只长在 `_is_blind_delete` 里：
+    新那道"作废还没点头的提案"要问的正是同一件事，抄第二份就会漂（红线 11b）。
+    """
+    title = todo_title_of(text)
+    if not title or title == "待办":
+        return ""
+    stripped = title
+    for w in _DELETE_ACTION_WORDS:
+        stripped = stripped.replace(w, "")
+    return stripped.strip("的吧了呀哦呢啊嗯")
 
 
 def _is_blind_delete(text: str) -> bool:
@@ -469,13 +494,53 @@ def _is_blind_delete(text: str) -> bool:
         return False
     if any(h in t for h in _BLIND_DELETE_HINTS):
         return True
-    title = todo_title_of(t)
-    if not title or title == "待办":
+    return not _delete_residue(t)
+
+
+# 「还没点头的加待办提案」那几张卡（候选时段 / 已定时等确认 / 二选一 / 单条已定）。
+# 共同点：**库里还没有这条**，学生反悔时要撤的是这张卡，不是日程里的某条待办。
+_ADD_PROPOSAL_KINDS = ("todo_slots", "todo_add", "todo_mode", "todo_pick")
+
+
+def _active_add_proposal(session_id: str) -> dict | None:
+    """暂存里那张**还没点头**的加待办提案，没有就返回 None。
+
+    `applied` 打在**条目**上、不在每张卡上（`pending.save_pending` 就写这一层），
+    所以这里查的是条目 —— 照 option 查会一辈子查不到（那个字段压根不在卡上）。
+    """
+    entry = peek_pending(session_id) or {}
+    if entry.get("applied"):
+        return None
+    for o in entry.get("options") or []:
+        if isinstance(o, dict) and o.get("kind") in _ADD_PROPOSAL_KINDS:
+            return o
+    return None
+
+
+def _cancels_active_proposal(message: str, proposal: dict) -> bool:
+    """这句是不是在作废**那张还没点头的卡**（而不是要去日程里删一条）。
+
+    真机截图那一幕：「明天去吃自助」出了候选时段卡，紧接着「算了不吃了」——
+    他要撤的是这张刚挂出来的卡，可执行层不认这一层，跑去把整张日程列一遍问
+    "是下面哪一条"。所以先问三件事：
+      ① 话里**明说了「删」**？那是删库里的一条，别拿作废卡顶掉（「把那个删了」）；
+      ② 报了日子 / 挑了"撞时间的"？那是一条新的删除指令，不作废；
+      ③ 擦掉动作词之后**还剩东西**？剩下的是另一件事的名字（「我要取消健身」而卡上是
+         「吃自助」）就别作废；剩下的正好是这张卡的事名（「吃自助餐不吃了」）才算。
+    """
+    t = (message or "").strip()
+    if not t or _DEL_ANY_RE.search(t):
+        return False
+    if _pick_date(t) or _wants_colliding(t):
+        return False
+    # 「嗯」「确认」这类既没动作词、又短的句子不能算反悔（否则学生点个头都把卡撤了）
+    if not any(w in t for w in _DELETE_ACTION_WORDS):
+        return False
+    residue = _delete_residue(t)
+    if not residue:
         return True
-    stripped = title
-    for w in _DELETE_ACTION_WORDS:
-        stripped = stripped.replace(w, "")
-    return not stripped.strip("的吧了呀哦呢啊嗯")
+    title = (proposal.get("title") or "").strip()
+    return bool(title) and (residue in title or title in residue)
 
 
 def _recent_written_todos(session_id: str, span: int = 6) -> list:
@@ -2907,6 +2972,33 @@ async def _chat_impl(req: Request, meta: dict):
     #   · 说"不对" —— 只在**刚挂过一张删待办卡**时才算（说明他是在否掉那张卡）。
     held_now = _rm_held_now
     answers_held = _rm_answers_held
+    # ★ 软取消优先作废**还没点头的加待办提案**，别去日程里翻一条出来删。
+    #   真机那一幕（用户截图）：「明天去吃自助」出了候选时段卡《吃自助》，
+    #   他紧接着说「算了不吃了」—— 库里**压根还没有这条**，可执行层把这句听成
+    #   "删一条待办"，于是端出整张日程问他"是下面哪一条"。他要的是把这张卡撤掉。
+    #   这一支只清暂存：**一个字节都不写库，也不删库**（判定/执行分离照旧）。
+    # ⚠️ 只认 `_ADD_PROPOSAL_KINDS` 那几种 = 天然避开了"他正在回答删待办那份清单"：
+    #   暂存每个会话**只有一个位置**（`save_pending` 整份覆盖），挂着 `todo_remove_candidates`
+    #   的时候这里拿到的就是 None，不需要再叠一层 `asking_rm_todo / answers_held` 的判断
+    #   （早先按施工单加了那道，实测是**死条件** —— 永远为真，白占一行还让人以为它在把关）。
+    _active_add = _active_add_proposal(session_id)
+    if _active_add is not None and _cancels_active_proposal(message, _active_add):
+        _back_out = (_active_add.get("title") or "").strip() or "这件事"
+        _back_out_summary = _active_add.get("summary") or _back_out
+        clear_pending(session_id)
+        append_conversation(session_id, "user", message)
+        append_conversation(session_id, "assistant", f"已取消待办提案：{_back_out_summary}")
+        return {
+            "module": "planner",
+            "session_id": session_id,
+            "answer": (f"好，**{_back_out}** 先不加了 —— 那张卡我撤了，日程一个字都没动。\n"
+                       "改主意了再说一声就行。"),
+            "trace": [{"step": 1,
+                       "phase": "🗑️ 学生反悔：作废还没点头的待办提案（不写库也不删库）",
+                       "answer": _back_out_summary}],
+            "options": [],
+            "awaiting_choice": False,
+        }
     if rm_intent or asking_rm_todo or answers_held:
         # 学生是不是在回答"是哪一条"（回一句"第二条"/"23"/"游泳那条"）。
         # ⚠️ 只看"上一句是不是我那句追问"，**不能再 and not rm_intent**：

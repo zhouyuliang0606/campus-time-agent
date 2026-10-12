@@ -11,9 +11,16 @@
 ⚠️ 沙箱没有密钥，语义层静默返回 None，所以这一批**只测确定性分支**（删/改/读）。
    语义层那条路怎么测，见 `test_14_semantic_priority.py`（它把语义层替成了假货）。
 """
+import datetime as _dt
+import io
+
 from _harness import Checker, make_client, sandbox, title
 
 _D = "2026-10-06"
+# K 批要的是"**明天**去吃自助"那种还没落库的安排，日子必须往后取：
+# 落在过去的日子会被 `store.is_past_date` 那道闸正当拒掉（N 批钉的），测试就测不到路过了。
+_D2 = (_dt.date.today() + _dt.timedelta(days=1)).isoformat()
+MAIN_FILE = "app/main.py"
 
 
 def _seed_three_pairs():
@@ -431,6 +438,166 @@ def batch_j_change_mind():
     return c
 
 
+def batch_k_cancel_held_proposal():
+    """K. 「算了不吃了」对着**还没点头的那张卡**：作废提案，别去日程里翻一条来删。
+
+    用户施工单里的截图那一幕：先说「明天去吃自助」→ 系统出候选时段卡《吃自助》
+    （库里**还没有这条**），他接着说「算了不吃了」→ 系统把这句听成"删一条待办"，
+    端出整张日程问「是下面哪一条」。要撤的是那张刚挂出来的卡，不是日程里的东西。
+
+    ⚠️ 这一批同时钉住施工单里那个**照抄会失效**的条件：它要求 `_is_blind_delete(message)` 为真，
+    可 `main._DELETE_ACTION_WORDS` 是第四份手抄的撤销词表，里面没有「不吃/不做/不要」——
+    「算了不吃了」当场判 False，那道拦截对截图里那句**一辈子不生效**（死分支）。
+    现在那份词表从 `planner._REMOVE_TODO_SOFT` 推，⑦ 组把这件事钉住。
+    """
+    c = Checker()
+    title("K. 反悔对着还没点头的卡：作废提案、不写库也不删库")
+    with sandbox():
+        client = make_client()
+        from app.agent.pending import peek_pending
+        from app.modules import planner as _P
+        from app.store import add_todo, delete_todo, list_todos
+
+        import app.main as M
+
+        def seed():
+            for t in list_todos():
+                delete_todo(t["id"])
+            add_todo("图书馆", _D2, "14:00", "15:00")
+            add_todo("跑步", _D2, "19:00", "20:00")
+            add_todo("健身", _D2, "09:00", "10:00")
+
+        def hold_card(sid):
+            """挂出一张《吃自助》候选时段卡，返回第一张卡的 kind/title。"""
+            d = _say(client, sid, "明天去吃自助")
+            o = (d.get("options") or [{}])[0]
+            return o.get("kind"), o.get("title"), d
+
+        # ① 五种软取消说法，卡挂着 → 都作废这张卡，库里一个字不动
+        for n, msg in enumerate(("算了不吃了", "不吃了", "不要了", "算了", "取消")):
+            sid = f"oral-k1-{n}"
+            seed()
+            kind, ctitle, _ = hold_card(sid)
+            base = sorted(t["id"] for t in list_todos())
+            c.check("前提：挂出来的确实是候选时段卡《吃自助》｜%s" % msg,
+                    kind == "todo_slots" and ctitle == "吃自助", f"{kind}/{ctitle}")
+            d = _say(client, sid, msg)
+            o = (d.get("options") or [{}])[0]
+            c.check("软取消作废那张卡｜%s" % msg,
+                    not _kinds(d) and "先不加了" in (d.get("answer") or ""),
+                    f"{_kinds(d)} | {(d.get('answer') or '')[:40]}")
+            c.check("念的是卡上的事名《吃自助》，不是日程里的某条｜%s" % msg,
+                    "吃自助" in (d.get("answer") or ""), (d.get("answer") or "")[:44])
+            c.check("不写库也不删库｜%s" % msg,
+                    sorted(t["id"] for t in list_todos()) == base,
+                    f"{len(list_todos())} 条")
+            c.check("暂存确实被清了（下次说一句新的不会被旧卡顶掉）｜%s" % msg,
+                    peek_pending(sid) is None, peek_pending(sid))
+
+        # ①b 另外三种"还没点头"的卡：二选一（todo_mode）/ 确认条（todo_add）/ 单条已定（todo_pick）。
+        #     这里用 `save_pending` 直接挂卡：真机上这几张卡各自要什么话术才出、不是本轮决定的，
+        #     要验的是**这一支把 kinds 认全了** —— 少认一种，那种卡上的反悔就漏进删除流程
+        #     （施工单 §四.2 点名的正是这一条：摘掉 todo_mode 应该红）。
+        from app.agent.pending import save_pending
+        from app.modules.planner import todo_mode_proposal
+
+        hand_made = [
+            todo_mode_proposal("帮我加个游泳，大概一个小时"),
+            {"kind": "todo_add", "title": "看电影", "date": _D2, "weekday": "周二",
+             "start": "19:00", "end": "20:30", "minutes": 90,
+             "summary": "看电影｜%s（周二）19:00-20:30" % _D2},
+            {"kind": "todo_pick", "title": "看书", "date": _D2, "start": "20:00",
+             "end": "21:00", "minutes": 60, "summary": "看书｜%s 20:00-21:00" % _D2},
+        ]
+        for n, card in enumerate(hand_made):
+            if not isinstance(card, dict):
+                c.check("前提：%s 那张卡造得出来" % (n + 1), False, card)
+                continue
+            sid = f"oral-k1b-{n}"
+            seed()
+            save_pending(sid, [card])
+            base = sorted(t["id"] for t in list_todos())
+            d = _say(client, sid, "不要了")
+            c.check("反悔认全这种卡｜%s" % card.get("kind"),
+                    not _kinds(d) and "先不加了" in (d.get("answer") or "")
+                    and peek_pending(sid) is None
+                    and sorted(t["id"] for t in list_todos()) == base,
+                    f"{_kinds(d)} | {(d.get('answer') or '')[:40]}")
+
+        # ② 明说「删」/ 点了另一件事的名字 → 不许作废那张卡（还是走删除流程）
+        for n, (msg, why) in enumerate((
+                ("把昨天那个删了", "明说删"),
+                ("我要取消健身", "点名的是《健身》，不是卡上的《吃自助》"),
+                ("不吃了，删掉吧", "说了删 → 交回删除流程（本轮取舍写在 J 批）"),
+        )):
+            sid = f"oral-k2-{n}"
+            seed()
+            hold_card(sid)
+            d = _say(client, sid, msg)
+            c.check("这句不该作废卡｜%s（%s）" % (msg, why),
+                    "先不加了" not in (d.get("answer") or ""),
+                    (d.get("answer") or "").replace("\n", " ")[:46])
+
+        # ③ 「确认」是点头，不是反悔 —— 五颗软词里挑一颗最像的当反面都不许误伤
+        sid = "oral-k3"
+        seed()
+        hold_card(sid)
+        d = _say(client, sid, "确认")
+        c.check("「确认」不许被听成反悔（点头就是点头）",
+                "先不加了" not in (d.get("answer") or ""),
+                (d.get("answer") or "").replace("\n", " ")[:46])
+        # ④ 「嗯」「好的」这种短应答不能把卡撤了
+        for n, msg in enumerate(("嗯", "好的")):
+            sid = f"oral-k4-{n}"
+            seed()
+            hold_card(sid)
+            d = _say(client, sid, msg)
+            c.check("短应答｜%s」不该作废那张卡" % msg,
+                    "先不加了" not in (d.get("answer") or ""),
+                    (d.get("answer") or "").replace("\n", " ")[:40])
+
+        # ⑤ **没有卡**挂着时说「算了不吃了」→ 照旧走删除流程（这一轮没改它）
+        sid = "oral-k5"
+        seed()
+        d = _say(client, sid, "算了不吃了")
+        c.check("没挂卡时行为不变（仍走删待办那条路，列清单不猜）",
+                "先不加了" not in (d.get("answer") or "")
+                and ("哪一条" in (d.get("answer") or "")
+                     or "不敢替你挑" in (d.get("answer") or "")),
+                (d.get("answer") or "").replace("\n", " ")[:46])
+
+        # ⑥ 已经**写进库**的那条：回执路不能被这条抢走（test_08 ⑦ 同一个形状）
+        sid = "oral-k6"
+        seed()
+        _say(client, sid, "加个明天19:00到20:00游泳")
+        _say(client, sid, "确认")
+        wrote = [t for t in list_todos() if t["title"] == "游泳"]
+        c.check("前提：那条《游泳》确实写进库了", len(wrote) == 1, f"{len(wrote)}")
+        d = _say(client, sid, "不去了删了吧")
+        c.check("没点头的卡已经不在了 → 回执路接手，定位到刚写入的《游泳》",
+                _kinds(d) == ["todo_remove"]
+                and (d.get("options") or [{}])[0].get("title") == "游泳",
+                f"{_kinds(d)} | {(d.get('options') or [{}])[0].get('title')}")
+
+        # ⑦ 形状：标题形动作词从软词表**推**出来，不再手抄第四份
+        stems = tuple(w[:-1] if w.endswith("了") else w for w in _P._REMOVE_TODO_SOFT)
+        missing = [w for w in stems if w not in M._DELETE_ACTION_WORDS]
+        c.check("形状：每颗软词的标题形都在 `_DELETE_ACTION_WORDS` 里（漂移过一次就再发一次）",
+                not missing, f"缺 {missing}")
+        c.check("形状：`_is_blind_delete` 与新判据共用同一份残渣计算（不抄第二份）",
+                "_delete_residue" in M._is_blind_delete.__code__.co_names
+                and "_delete_residue" in M._cancels_active_proposal.__code__.co_names,
+                M._is_blind_delete.__code__.co_names)
+
+        # ⑧ 形状：作废那一段必须排在删待办分支入口**之前**（排在后面永远进不来）
+        src = io.open(MAIN_FILE, encoding="utf-8").read()
+        i_cancel = src.find("_active_add = _active_add_proposal(session_id)")
+        i_rm = src.find("if rm_intent or asking_rm_todo or answers_held:")
+        c.check("形状：作废提案那段在删待办分支入口之前", 0 < i_cancel < i_rm,
+                (i_cancel, i_rm))
+    return c
+
+
 def _say_faq(client, sid, msg):
     return client.post("/api/chat", json={"message": msg, "module": "faq",
                                           "session_id": sid}).json()
@@ -448,6 +615,7 @@ def main():
         batch_h_kb(),
         batch_i_real_machine_gaps(),
         batch_j_change_mind(),
+        batch_k_cancel_held_proposal(),
     ]
     total_pass = sum(r.passed for r in results)
     total_fail = sum(r.failed for r in results)
