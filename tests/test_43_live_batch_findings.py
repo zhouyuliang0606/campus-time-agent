@@ -851,6 +851,89 @@ def batch_o_reminder_frame_words():
     return c
 
 
+def batch_p_done_claim_not_routed_by_sample():
+    """P 批 · 「去完图书馆了」被样本库按 add_todo 学死了，确定性层要把它夺回来。
+
+    用户 2026-10-12 的截图：轨迹写着「听成 **办事**（加待办）｜依据：样本库」，
+    卡片标题是「完图书馆」。本机 `app/data/intent_samples.json`（gitignored）里
+    就躺着那条脏证据：
+        {"text": "去完图书馆了", "intent": "add_todo", "hits": 1}
+    —— 当年模型判错、还真出了卡，`remember()` 就照**错的意图**把这句学死了；
+    现在它每次都以 1.0 **全命中**回 add_todo，而加待办那条分支排在标记完成之前，
+    于是识别层再怎么对也轮不到它说话（红线 12 的老形状：学习层能单独接单）。
+
+    钉四件事：
+      ① 一条待办都不许多出来（新增那条路当场堵死）；
+      ② 走的是标记完成那条路 —— 出确认条，等学生点头；
+      ③ 思考轨迹不许再写着「加待办」：轨迹说假话比没有轨迹更坏；
+      ④ 判定只算一次（`wants_done_todo(` 在 main.py 里只许出现一处，其余分支共用 `_done_claim`）。
+    """
+    import datetime as _dt
+    c = Checker()
+    title("P 批 · 样本库把「办完了」学成「新增」：确定性层的分层否决（截图「完图书馆」）")
+    today = _dt.date.today().isoformat()
+    with sandbox():
+        from app.agent.intent import match_sample, remember
+        from app.modules import planner as _P
+        from app.store import add_todo, delete_todo, list_todos
+        client = make_client()
+        # 沙箱继承真实演示数据，先清干净：这一批要的是"库里只有那一条《图书馆》"
+        for t in list_todos():
+            delete_todo(t["id"])
+        add_todo("图书馆", today, "19:00", "20:00")
+        # 脏样本必须**自己种**：sandbox 会把真实样本库删掉（学到的句子不许进测试），
+        # 不种就等于没复现现场。
+        remember("去完图书馆了", "add_todo", {"module": "planner"})
+        c.check("现场复现：样本库确实把这句回成 add_todo（全命中，字段照抄）",
+                (match_sample("去完图书馆了") or {}).get("intent") == "add_todo",
+                match_sample("去完图书馆了"))
+
+        before = sorted(t["id"] for t in list_todos())
+        sid = "p-done-claim-1"
+        d = client.post("/api/chat", json={
+            "message": "去完图书馆了", "session_id": sid,
+        }).json()
+        blob = json.dumps(d, ensure_ascii=False)
+        opts = d.get("options") or []
+
+        c.check("一条待办都没多出来（加待办那条路被堵死）",
+                sorted(t["id"] for t in list_todos()) == before,
+                [t["title"] for t in list_todos()])
+        c.check("走的是标记完成：出了确认条，不是新增卡",
+                any(o.get("kind") == "todo_done" for o in opts)
+                and not any(o.get("kind") == "todo" for o in opts),
+                [(o.get("kind"), o.get("title")) for o in opts])
+        c.check("确认条上念的是《图书馆》，不是「完图书馆」那种残渣",
+                any(o.get("kind") == "todo_done" and o.get("title") == "图书馆"
+                    for o in opts),
+                [(o.get("kind"), o.get("title")) for o in opts])
+        c.check("轨迹不撒谎：整条响应里搜不到「加待办」",
+                "加待办" not in blob, blob[:150])
+        c.check("轨迹把这句报成「标记完成」（依据那一档仍如实写着样本库）",
+                "标记完成" in blob, blob[:150])
+        c.check("学生没点头之前，那条状态还不是 done",
+                all(t.get("status") != "done" for t in list_todos()),
+                [(t["title"], t.get("status")) for t in list_todos()])
+
+        # 形状：这一句在整个请求里**只判一次**，多算一次就是多一个漂移点（红线 10/11b）。
+        src = io.open(MAIN, encoding="utf-8").read()
+        c.check("形状：main.py 里 wants_done_todo( 只许出现一处（其余分支共用 _done_claim）",
+                src.count("wants_done_todo(") == 1, src.count("wants_done_todo("))
+
+        # 形状：否决是在**判定层**做的，不是在下面的分支里各补一份（同 _period_block 的位置）。
+        # 锚点用加待办分支那一行**独有的** `is_add_todo_answer(message)` ——
+        # 拿 `INTENT_ADD_TODO)` 当锚点会先撞上上面 `_period_block` 那一处，测的就不是分支入口了。
+        i_veto = src.find('_done_claim = wants_done_todo(message)')
+        i_add = src.find("asking_add and is_add_todo_answer(message)")
+        c.check("形状：否决在加待办分支入口之前（排在后面就拦不住了）",
+                0 < i_veto < i_add, (i_veto, i_add))
+        # 落地与识别同源：`_done_resultative` 必须是识别层唯一的判据
+        c.check("形状：识别层只有一份动结式判据（_done_resultative 定义一次）",
+                io.open(PLANNER, encoding="utf-8").read().count("def _done_resultative") == 1,
+                _P._done_resultative("图书馆", "去完图书馆了"))
+    return c
+
+
 def main():
     results = [batch_a_time_words_registered(), batch_b_title_has_no_tail(),
                batch_c_tool_echo_never_shown(), batch_d_bare_clock_asked_in_place(),
@@ -861,7 +944,8 @@ def main():
                batch_l_arabic_weekday(),
                batch_m_family_sweep(),
                batch_n_no_past_dates(),
-               batch_o_reminder_frame_words()]
+               batch_o_reminder_frame_words(),
+               batch_p_done_claim_not_routed_by_sample()]
     tp = sum(r.passed for r in results)
     tf = sum(r.failed for r in results)
     print(f"\n===== 真机批次查出的四个缺口总账：通过 {tp} 项，失败 {tf} 项 =====")

@@ -1214,6 +1214,23 @@ async def _chat_impl(req: Request, meta: dict):
     _period = unsupported_period(message)
     _period_block = bool(_period) and (
         _rule_hit == INTENT_ADD_TODO or _sem_intent == INTENT_ADD_TODO)
+    # ★ 「去完图书馆了」这类**宣布办完了**的句子：学习层/语义层不许把它单独送进"新增"。
+    #   跟上面周期那条是同一个病（红线 12：样本库能单独接单，规则层却从来不认）。
+    #   本机实测的铁证在 app/data/intent_samples.json（gitignored）里躺着一条
+    #     {"text":"去完图书馆了","intent":"add_todo","hits":1}
+    #   —— 当年模型判错、还真出了卡，于是 `remember()` 把这句**按错的意图学死了**；
+    #   现在它每次都以 1.0 **全命中**回 add_todo，加待办分支（就在下面几百行处）
+    #   抢在 3h 标记完成之前接管，弹出一张标题写着「完图书馆」的卡（学生截图）。
+    #   处理照 `_physio` 那一档的老规矩：**改语义层给的结论，不无中生有造一份**——
+    #   把 intent 纠正成 done_todo，于是 ①加待办那条分支进不来，
+    #   ②3h 按确定性路径接管，③思考轨迹也不会写着"办事（加待办）"却干着别的事。
+    # ⚠️ 只纠 `_sem_intent == INTENT_ADD_TODO` 这一种：规则层自己认得的话
+    #   （`wants_add_todo` 为真）压根进不了这条 —— `wants_done_todo` 见 add 就让路。
+    _done_claim = wants_done_todo(message)
+    if _done_claim and _sem_intent == INTENT_ADD_TODO:
+        if _sem:
+            _sem = dict(_sem, intent=INTENT_DONE)
+        _sem_intent = INTENT_DONE
     # 「我把这句听成什么」——交给外面的 `chat()` 统一插进思考轨迹（见 `_read_step`）。
     # 在这儿只**记下结论**，不重新判定：`_sem` / `_sem_intent` / `_rule_hit` 就是判定层
     # 刚算出来的那三个，照抄即可。
@@ -2732,7 +2749,7 @@ async def _chat_impl(req: Request, meta: dict):
     _last_bot = next((m.get("content") or "" for m in reversed(get_conversation(session_id))
                       if m.get("role") == "assistant"), "").strip()
     asking_done = _last_bot == "标记完成缺细节"
-    done_intent = ((wants_done_todo(message) and not _rule_veto)
+    done_intent = ((_done_claim and not _rule_veto)
                    or _sem_intent == INTENT_DONE)
     # ★★ 先算"这句是不是在回答**删待办**那份候选清单"，再决定要不要让标记完成接。
     #
@@ -2751,7 +2768,7 @@ async def _chat_impl(req: Request, meta: dict):
         bool(_pick_todo_indexes(message, len(_rm_held_now)))
         or (_pending_todo_remove(session_id) is not None and _wants_rechoose(message)))
     _rm_reply_pending = _rm_asking or _rm_answers_held
-    _done_hard = wants_done_todo(message) and not _rule_veto
+    _done_hard = _done_claim and not _rule_veto
     if (done_intent or asking_done) and not (_rm_reply_pending and not _done_hard):
         # 学生是不是在回答"是哪一条"（回一句"第二条"/"23"/"游泳那条"）。
         # 同删待办：不能再 and not done_intent——语义层会把「第二条」判成某类办事意图，
@@ -3190,7 +3207,7 @@ async def _chat_impl(req: Request, meta: dict):
             and not any(w in message for w in ("待办", "代办", "日程", "周表",
                                                "月表", "课表", "清单", "列表"))
             and not (wants_add_todo(message) or wants_remove_todo(message)
-                     or wants_done_todo(message) or wants_add_course(message)
+                     or _done_claim or wants_add_course(message)
                      or wants_remove_course(message)
                      or wants_clear_timetable(message))
             and looks_like_question(message)
