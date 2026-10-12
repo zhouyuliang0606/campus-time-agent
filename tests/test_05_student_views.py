@@ -109,6 +109,35 @@ def test_student_panel_markup():
                 "/api/express" in html and "/api/takeout" in html)
         c.check("课表视图拉 /api/timetable 与 /api/todos",
                 "/api/timetable" in html and '"/api/todos"' in html)
+        # ── 校园通知：从"对话页顶部一块折叠面板"搬成侧栏独立一栏（2026-10-13 用户：
+        #    「学校发布通知在学生端没有地方显示」）。真实原因是 panel 改版那条
+        #    `.panel-mode .notices{display:none}` 把它连模块卡片一起藏了，而默认视图就是 panel。
+        #    他否掉了顶栏铃铛（顶部已经挤、视野又小），所以这里钉"栏在、且不会再被藏回去"。
+        c.check("侧栏有「校园通知」这一项",
+                'data-nav="notices"' in html, "sb-item data-nav")
+        c.check("容器 id 跟 switchNav 的找法对得上（nav + 首字母大写的 view 名）",
+                'id="navNotices"' in html and 'data-nav="notices"' in html,
+                "名字错一个字母就是白屏")
+        c.check("NAV_TITLE 里有这一栏（顶栏标题不能还写着校园问答）",
+                'notices:"校园通知"' in html, "NAV_TITLE")
+        c.check("旧的顶部通知面板真搬走了（不然两块抢一份数据）",
+                'class="notices"' not in html, 'class="notices"')
+        # ⚠️ 这条是这次事故的**正身**：当年一句 panel-mode 顺手把通知藏没了，
+        #    谁再往那条规则里塞 .notices，测试就红，不用再靠肉眼发现"通知不见了"。
+        hide = [ln for ln in html.splitlines() if ".panel-mode" in ln and "display: none" in ln]
+        c.check("panel-mode 的隐藏规则里不再出现 .notices（改版别把它又藏回去）",
+                all(".notices" not in ln for ln in hide), [ln.strip()[:60] for ln in hide])
+        c.check("这一栏仍然拉 /api/notices", '"/api/notices"' in html, "fetch")
+        c.check("通知正文走唯一那个转义函数 esc()",
+                "${esc(n.title" in html and "${esc(n.content)}" in html, "esc 单源")
+        c.check("空标题退回显示 (无标题)（不然是一行空白）",
+                'n.title || "(无标题)"' in html, "标题兜底")
+        c.check("深色玻璃下正文色有覆盖（旧浅色主题的 #4a5366 在深底上几乎看不见）",
+                "html.gx-glass .notice-item .body" in html, "玻璃层颜色")
+        c.check("已读写在拉到列表之后（不靠函数调用顺序）",
+                'if (currentView === "notices") markNoticesSeen()' in html, "markNoticesSeen")
+        c.check("「看到哪儿」记在 localStorage 而不是服务端（它是偏好，换设备回到默认）",
+                'NOTICE_SEEN_KEY = "ct_notice_seen"' in html, "偏好键")
     return c.summary("第三批（页面标记）")
 
 

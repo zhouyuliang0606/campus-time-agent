@@ -30,19 +30,18 @@
     .mod .ico .ic { width: 24px; height: 24px; }
     .mod .nm { margin-top: 6px; font-size: 14px; font-weight: 600; }
 
-    /* 校园通知：管理员在后台发布，学生在这里看到 */
-    .notices {
-      background: #fff; border-radius: 12px; margin-bottom: 14px;
-      box-shadow: 0 4px 16px rgba(40,60,120,.08); overflow: hidden;
-    }
-    .notices-head {
-      display: flex; align-items: center; gap: 8px; padding: 12px 16px;
-      cursor: pointer; font-size: 14px; font-weight: 600;
-    }
+    /* 校园通知：管理员在后台发布，学生从侧栏「校园通知」这一栏进来看。
+       原先它是一块挂在对话页顶部、点开才展开的面板 —— panel 改版那条
+       `.panel-mode .notices{display:none}` 把它跟模块卡片一起藏了，通知于是彻底看不见
+       （2026-10-13 用户报「学生端没地方显示通知」）。改成独立一栏：不占顶栏、不压日程首屏。 */
     .badge { background: #ff5c8a; color: #fff; border-radius: 10px; padding: 1px 8px; font-size: 12px; }
-    .notice-item { border-top: 1px solid #eef0f6; padding: 10px 16px; }
+    .notice-item { border-top: 1px solid #eef0f6; padding: 12px 0; }
+    .notice-item:first-child { border-top: 0; padding-top: 2px; }
     .notice-item b { font-size: 14px; }
     .notice-item .body { font-size: 13px; color: #4a5366; margin-top: 4px; white-space: pre-wrap; }
+    /* 侧栏那颗小红点：只有比"上次看过"更新的通知才亮，打开这一栏就灭 */
+    .sb-dot { width: 7px; height: 7px; border-radius: 50%; background: #ff5c8a; margin-left: auto; display: none; }
+    .sb-item.has-unread .sb-dot { display: block; }
 
     .hint { font-size: 13px; color: #6a7388; margin: 12px 2px 6px; }
 
@@ -384,7 +383,7 @@
   /* 面板模式下：只隐藏首页级组件（通知/模块卡/提示），保留聊天区（#log/#chips/正在思考）。
      这样"日程/快递/外卖"既能看面板，又能继续和管家对话并看到对话内容。
      （代办/上传/设置本就是独立的 nav-view，chatStage 整体不激活，自然没有对话框。） */
-  .panel-mode .notices, .panel-mode #modules, .panel-mode #hint { display: none !important; }
+  .panel-mode #modules, .panel-mode #hint { display: none !important; }
   /* 仅"校园问答"和"日程"保留对话框（对话区+输入框）；快递/外卖/代办/上传/设置纯查看，整体隐藏对话框 */
   body.no-chatbox .composer,
   body.no-chatbox #log,
@@ -499,7 +498,6 @@
   .bot .bubble { background: #f2f4f9; }
   #log { padding: 22px 24px; border-radius: var(--radius-lg); box-shadow: none; border: 1px solid var(--line); }
   .card { padding: 22px 24px; margin-bottom: 20px; border-radius: var(--radius-lg); box-shadow: none; border: 1px solid var(--line); }
-  .notices { border-radius: var(--radius-lg); box-shadow: none; border: 1px solid var(--line); margin-bottom: 20px; }
   .persona-bar { padding: 12px 16px; border-radius: var(--radius-lg); box-shadow: none; border: 1px solid var(--line); margin-bottom: 16px; }
   .persona { border: 1px solid var(--line); border-radius: 20px; padding: 7px 14px; }
   .persona.active { border-color: var(--brand); background: var(--brand-soft); color: var(--brand); }
@@ -565,7 +563,7 @@ html.gx-glass .shell { position: relative; z-index: 2; }
 html.gx-glass .sidebar, html.gx-glass .topbar, html.gx-glass .composer { background: var(--surface); }
   /* .tab.active 是「--brand 当底色」的典型：亮柠檬绿底上白字读不清，文字翻深 */
 html.gx-glass .tab.active { background: rgba(215,239,131,.20); color: var(--brand); border-color: rgba(215,239,131,.5); text-shadow: 0 1px 2px rgba(7,19,13,.6); }
-html.gx-glass .card, html.gx-glass .notices, html.gx-glass #log, html.gx-glass .view, html.gx-glass .mod, html.gx-glass .dlg { background: var(--surface); }
+html.gx-glass .card, html.gx-glass #log, html.gx-glass .view, html.gx-glass .mod, html.gx-glass .dlg { background: var(--surface); }
 html.gx-glass .notice-item { border-top-color: var(--line); }
 html.gx-glass .tag { background: var(--brand-soft); color: var(--brand); }
 html.gx-glass .slot-row { background: rgba(255,255,255,.04); }
@@ -614,7 +612,7 @@ html.gx-glass .st.cook { background: var(--brand); }
      并把它做成四档（data-gx-lv），设置里能一档档看差别。
      ★ 档位的填充值比预览件高：预览件的面板还叠了一层顶部高光渐变，
        这里没有，同样的 alpha 会偏透，所以整档上移。 */
-html.gx-glass .card, html.gx-glass .notices, html.gx-glass #log, html.gx-glass .view,
+html.gx-glass .card, html.gx-glass #log, html.gx-glass .view,
 html.gx-glass .sidebar, html.gx-glass .topbar, html.gx-glass .composer, html.gx-glass .dlg {
   background: rgba(var(--fill-rgb), var(--gx-f,.52));
   backdrop-filter: blur(var(--gx-b,6px)) saturate(135%);
@@ -647,14 +645,15 @@ html.gx-glass[data-gx-refine="on"] .evt.todo { box-shadow: inset 2px 0 0 #f2b45c
 html.gx-glass[data-gx-refine="on"] .evt.todo.done { box-shadow: inset 2px 0 0 rgba(125,196,138,.7); color: var(--text-3); }
   /* ② 字阶：原来全站 12–16px、字重跨度不到 2 档，读起来平。拉开跨度才有主次 */
 html.gx-glass[data-gx-refine="on"] .topbar .t { font-size: 23px; font-weight: 700; letter-spacing: -.01em; }
-html.gx-glass[data-gx-refine="on"] .view-head,
-html.gx-glass[data-gx-refine="on"] .notices-head { font-size: 12px; font-weight: 600; letter-spacing: .07em; color: var(--text-3); }
+html.gx-glass[data-gx-refine="on"] .view-head { font-size: 12px; font-weight: 600; letter-spacing: .07em; color: var(--text-3); }
+/* 通知正文用的是旧浅色主题的 #4a5366，在深色玻璃上会偏暗看不见 —— 跟正文层级对齐 */
+html.gx-glass .notice-item .body { color: var(--text-2); }
 html.gx-glass[data-gx-refine="on"] .msg .bubble { font-size: 14.5px; line-height: 1.7; }
 html.gx-glass[data-gx-refine="on"] .msg .who { font-size: 11px; letter-spacing: .06em; }
 html.gx-glass[data-gx-refine="on"] .dlg-head { font-size: 15px; font-weight: 700; }
   /* ③ 容器去边框：面板靠填充 + 阴影分层，hairline 只留给可交互件。
      一圈亮边是"线框稿感"的主要来源 */
-html.gx-glass[data-gx-refine="on"] .card, html.gx-glass[data-gx-refine="on"] .notices,
+html.gx-glass[data-gx-refine="on"] .card,
 html.gx-glass[data-gx-refine="on"] #log, html.gx-glass[data-gx-refine="on"] .view,
 html.gx-glass[data-gx-refine="on"] .sidebar, html.gx-glass[data-gx-refine="on"] .topbar,
 html.gx-glass[data-gx-refine="on"] .composer, html.gx-glass[data-gx-refine="on"] .dlg {
@@ -713,6 +712,7 @@ html.gx-glass[data-gx-refine="on"] .composer, html.gx-glass[data-gx-refine="on"]
              问答改成日程页里的一个按钮（见 faqBtn），点开是抽屉。
              ⚠️ 「🗓️ 日程」这一项**不能一起摘**：它是从「设置/代办」回主页的唯一入口。 -->
         <div class="sb-item active" data-nav="schedule"><span class="ico"><svg class="ic"><use href="#gi-cal"/></svg></span>日程</div>
+        <div class="sb-item" data-nav="notices" id="sbNotices"><span class="ico"><svg class="ic"><use href="#gi-bell"/></svg></span>校园通知<span class="sb-dot" id="sbNoticeDot"></span></div>
         <div class="sb-item" data-nav="todos"><span class="ico"><svg class="ic"><use href="#gi-check"/></svg></span>代办事项</div>
         <div class="sb-item" data-nav="settings"><span class="ico"><svg class="ic"><use href="#gi-sliders"/></svg></span>设置</div>
       </nav>
@@ -743,15 +743,9 @@ html.gx-glass[data-gx-refine="on"] .composer, html.gx-glass[data-gx-refine="on"]
       </div>
       <div class="stage">
         <div id="chatStage" class="nav-view active">
-    <!-- 校园通知（管理员在控制台发布，含附件可直接下载） -->
-    <div class="notices">
-      <div class="notices-head" id="noticesHead">
-        <span><svg class="ic"><use href="#gi-bell"/></svg> 校园通知</span>
-        <span class="badge" id="noticeCount">0</span>
-        <span class="small" id="noticesToggle" style="margin-left:auto;color:#8a93a6;font-weight:400;">展开 ▾</span>
-      </div>
-      <div id="noticeList" style="display:none;"></div>
-    </div>
+    <!-- 校园通知原先就挂在这个位置（对话流上方一块可折叠面板）。
+         panel 改版后它在默认视图里被整块隐藏，学生端等于没有通知 —— 
+         2026-10-13 挪成侧栏独立一栏（见 #navNotices），不再压着日程首屏。 -->
 
     <!-- 四个模块导航 -->
     <div class="modules" id="modules"></div>
@@ -848,6 +842,11 @@ html.gx-glass[data-gx-refine="on"] .composer, html.gx-glass[data-gx-refine="on"]
         </div><!-- /chatStage -->
         <div id="navTodos" class="nav-view">
           <div class="card"><h2>代办事项</h2><div class="desc">勾选标记完成，或删除。改动即时同步到日程。</div><div id="todoList" class="todo-list"></div></div>
+        </div>
+        <div id="navNotices" class="nav-view">
+          <div class="card"><h2>校园通知 <span class="badge" id="noticeCount">0</span></h2>
+            <div class="desc">管理员发布的公告，附件可直接下载。按发布时间倒序，最新的在最上面。</div>
+            <div id="noticeList"></div></div>
         </div>
         <div id="navSettings" class="nav-view">
           <div class="card"><h2>设置</h2><div class="desc">助手名字、性格、模型与 API 都在这里调。</div><div id="settingsBody"></div></div>
@@ -2197,14 +2196,26 @@ html.gx-glass[data-gx-refine="on"] .composer, html.gx-glass[data-gx-refine="on"]
       g.dataset.done = "1";
     }
 
-    // ---------- 校园通知（管理员发布，学生看到，含附件可下载） ----------
-    // 这条链路补齐了「管理员发布 → 学生接收」的最后一段闭环
-    let noticesOpen = false;
+    // ---------- 校园通知（管理员发布 → 侧栏「校园通知」这一栏接收） ----------
+    // 这条链路补齐了「管理员发布 → 学生接收」的最后一段闭环。
+    // 后端 `list_notices()` 本身就是倒序（最新在前），所以这里**不再排一次** —— 多排一遍
+    // 就是给"两边顺序不一致"留第二个说法（同一个判断只留一份）。
+    // "看到哪儿了"记在 localStorage：它是**偏好不是数据**，换设备/清缓存就回到"有新通知"，
+    // 宁可多提醒一次，也不把没看过的公告悄悄标成看过。
+    const NOTICE_SEEN_KEY = "ct_notice_seen";
+    let noticesMaxTs = "";        // 最近一次拉到的最新一条的时间，用来标记"已读到这里"
+
     async function loadNotices() {
       const box = document.getElementById("noticeList");
+      const item = document.getElementById("sbNotices");
       try {
         const ns = (await (await fetch("/api/notices")).json()).notices || [];
         document.getElementById("noticeCount").textContent = ns.length;
+        noticesMaxTs = ns.length ? String(ns[0].ts || "") : "";
+        const seen = localStorage.getItem(NOTICE_SEEN_KEY) || "";
+        // ts 形如 "2026-10-08 23:04:10"，同格式下字符串比大小＝时间比大小
+        const unread = ns.filter(n => String(n.ts || "") > seen).length;
+        if (item) item.classList.toggle("has-unread", unread > 0);
         if (!ns.length) {
           box.innerHTML = '<div class="notice-item"><span class="small">暂无通知</span></div>';
           return;
@@ -2218,15 +2229,19 @@ html.gx-glass[data-gx-refine="on"] .composer, html.gx-glass[data-gx-refine="on"]
             <div class="body">${esc(n.content)}</div>${att}
           </div>`;
         }).join("");
+        // 人就停在这一栏，拉到新通知就直接算已读 —— 不用等下一次点击（也不靠调用顺序，
+        // 放这儿 = 拿到最新一条的时间戳之后才写）
+        if (currentView === "notices") markNoticesSeen();
       } catch (e) {
         box.innerHTML = '<div class="notice-item"><span class="small">通知加载失败</span></div>';
       }
     }
-    document.getElementById("noticesHead").addEventListener("click", () => {
-      noticesOpen = !noticesOpen;
-      document.getElementById("noticeList").style.display = noticesOpen ? "block" : "none";
-      document.getElementById("noticesToggle").textContent = noticesOpen ? "收起 ▴" : "展开 ▾";
-    });
+    // 打开这一栏就算读到最新一条：红点灭掉（挂在 switchNav 里，见下面 notices 那一支）
+    function markNoticesSeen() {
+      const item = document.getElementById("sbNotices");
+      if (noticesMaxTs) localStorage.setItem(NOTICE_SEEN_KEY, noticesMaxTs);
+      if (item) item.classList.remove("has-unread");
+    }
 
     // ---------- 上传资料给管家读 ----------
     // 流程：选文件 → POST /api/upload 存起来 → 管家之后就能用工具读到它的真实内容
@@ -2465,7 +2480,7 @@ html.gx-glass[data-gx-refine="on"] .composer, html.gx-glass[data-gx-refine="on"]
 
   // ================= 三栏外壳交互（新增） =================
   (function(){
-    var NAV_TITLE = {chat:"校园问答", schedule:"日程", todos:"代办事项", settings:"设置", express:"快递", takeout:"外卖"};
+    var NAV_TITLE = {chat:"校园问答", schedule:"日程", notices:"校园通知", todos:"代办事项", settings:"设置", express:"快递", takeout:"外卖"};
     function cap(x){ return x.charAt(0).toUpperCase()+x.slice(1); }
     function switchNav(view){
       currentView = view;
@@ -2486,6 +2501,7 @@ html.gx-glass[data-gx-refine="on"] .composer, html.gx-glass[data-gx-refine="on"]
       else if(view==="takeout") showView("view-takeout");
       else if(view==="chat") showView("view-faq");
       else if(view==="todos") loadTodosView();
+      else if(view==="notices") loadNotices();   // 进来就拉一次（顺带把红点清掉）
       else if(view==="settings") loadSettingsView();
       // 切模块**不再重画聊天区**：既然全站一条对话流，"换个栏就把历史擦一遍再拉回来"
       // 只会让流跳一下、并把刚接回来的待确认卡又冲掉一次。模块切换只换右侧面板。
