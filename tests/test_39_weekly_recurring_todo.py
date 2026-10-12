@@ -22,6 +22,7 @@ from app.store import set_settings   # ⚠️ 在 app.store，不在 _harness（
 STUDENT = "app/static/student.html"
 PLAN = "app/static/plan.html"
 CONFIRM = "app/static/confirm.html"
+PLANNER = "app/modules/planner.py"
 
 
 def _sun(offset_weeks=0):
@@ -38,14 +39,22 @@ def batch_a_recognition():
 
     yes = {"每个周天都加一个写作业的代办": 7, "每周日都写作业": 7,
            "以后每个周天晚上写作业": 7, "每一个周天都跑步": 7,
-           "所有周六去图书馆": 6, "每星期一交周报": 1, "每个礼拜天写作业": 7}
+           "所有周六去图书馆": 6, "每星期一交周报": 1, "每个礼拜天写作业": 7,
+           # —— 倒装语序（2026-10-13 用户 Prompt 01：「周天早上去健身房每周」）——
+           "周天早上去健身房每周": 7, "周日早上去健身房每周": 7,
+           "星期一去图书馆每周": 1, "礼拜三交作业每星期": 3,
+           "每周天早上去健身房": 7}          # 正装对照组，确认没被倒装那条改坏
     for t, want in yes.items():
         c.check(f"认：{t} → 周{want}", weekly_repeat_day(t) == want, weekly_repeat_day(t))
     no = {"周日去健身": "单日说法，不能判成永久", "下周六爬山": "点了具体一周的周六",
           "我一周要去三次健身房": "数量频次，走铺 N 条那条路",
           "每周都交周报": "没点哪天，替他挑一天=替他做主",
           "每个周末去爬山": "周末=六+日两天，一条记录表达不了",
-          "今天写作业": "今天"}
+          "今天写作业": "今天",
+          # 倒装句的反面：句尾那个「每」各有主人，不许被"周日重复"抢走
+          "周天去跑步每周两次": "频次（每周两次），不是每个周日",
+          "周天去健身每月": "每月归 unsupported_period 的硬闸门，这里返回 None",
+          "下周日去健身房每周": "带「下」的是具体某天，不是长期"}
     for t, why in no.items():
         c.check(f"不认：{t}（{why}）", weekly_repeat_day(t) is None, weekly_repeat_day(t))
     c.check("空输入不炸", weekly_repeat_day("") is None and weekly_repeat_day(None) is None)
@@ -325,10 +334,81 @@ def batch_g_weekly_horizon():
     return c
 
 
+def batch_h_inverted_word_order():
+    """H 批 · 倒装语序「周天早上去健身房每周」端到端（2026-10-13 用户 Prompt 01）。
+
+    这一批一半是钉行为，一半是钉**施工单里两条被实测否掉的前提** ——
+    那两条不写下来，下一轮还会有人把它们抄回来：
+      ① 它给的正则把两种语序写进**同一个** pattern、两个分支都用同名命名组 `wd`，
+         Python 直接 `redefinition of group name 'wd' as group 2` —— 粘进去 planner 整个 import 失败；
+      ② 改成两个组名之后能编译，但倒装那条要求「周X」**紧贴**「每」，
+         在它自己举的例句上（中间隔着"早上去健身房"）仍然返回 None；
+      ③ 它的「修改 3」（给标题擦除再加一条倒装分支）是多余的：
+         正装那条的星期字本来就可选，「每周」两字单独就能擦，
+         前半「周X」归日子那一路擦 —— 实测标题已经是干净的「健身房」。
+    """
+    c = Checker()
+    title("H 批 · 倒装「周X…每周」：端到端 + 施工单三条前提的实测结论")
+    from app.modules import planner as P
+
+    with sandbox():
+        # ① 端到端：倒装句落的必须也是"一条每周重复"，不是某一天一次
+        next_sun = _sun(0)
+        for s, title_want in (("每周天早上去健身房", "健身房"),
+                              ("周天早上去健身房每周", "健身房"),
+                              ("周日晚上跑步每周", "跑步")):
+            prop = P.auto_todo_proposal(s) or P.parse_add_todo(s)
+            c.check("端到端落的是每周重复｜%s" % s,
+                    bool(prop) and prop.get("repeat") == "weekly"
+                    and prop.get("title") == title_want
+                    and prop.get("date") == next_sun,
+                    f"{(prop or {}).get('repeat')}/{(prop or {}).get('title')}"
+                    f"/{(prop or {}).get('date')}")
+        # ② 同一件事换个语序说，落卡必须一模一样（两种说法不该有两种结果）
+        a = P.auto_todo_proposal("每周天早上去健身房") or {}
+        b = P.auto_todo_proposal("周天早上去健身房每周") or {}
+        c.check("正装与倒装落卡一致",
+                (a.get("repeat"), a.get("title"), a.get("date"))
+                == (b.get("repeat"), b.get("title"), b.get("date")),
+                f"{(a.get('title'), a.get('date'))} vs {(b.get('title'), b.get('date'))}")
+        # ③ 候选卡那一路也带上 repeat（少带一次，勾完就退化成单日）
+        card = P.todo_slots_proposal("周天去健身房每周")
+        c.check("摊候选卡也带 repeat=weekly",
+                bool(card) and card.get("repeat") == "weekly"
+                and card.get("title") == "健身房",
+                f"{(card or {}).get('kind')}/{(card or {}).get('repeat')}")
+        # ④ 标题擦除早就够了 —— 钉住这条，免得有人照施工单「修改 3」再补一条不命中的分支
+        c.check("倒装句的标题不需要新擦除分支（现在就是干净的「健身房」）",
+                P._pick_title("周天早上去健身房每周") == "健身房",
+                P._pick_title("周天早上去健身房每周"))
+        c.check("日子也照样认（前半「周天」归日子那一路擦）",
+                P._pick_date("周天早上去健身房每周") == next_sun,
+                P._pick_date("周天早上去健身房每周"))
+        # ⑤ 形状：两种语序是**两条正则**（同一个 pattern 里两个同名组编译不过），
+        #    而且正装先查、倒装兜底。⚠️ 实测过：我试的 5 句里没找到"换个顺序答案就变"的句子
+        #    （倒装那条要求「每」在星期几**之后**，「周三开会每周五汇报」它压根不命中，
+        #     「每周三上课，周日去健身房每周」两条都给 3）—— 所以这条是**形状钉**，
+        #     钉的是"更严的那条先查、宽的那条只兜底"这个结构，不许被无声调换。
+        src = io.open(PLANNER, encoding="utf-8").read()
+        i_pos = src.find("_REPEAT_WEEKDAY_RE.search(t)")
+        i_inv = src.find("_REPEAT_WEEKDAY_INV_RE.search(t)")
+        c.check("形状：正装先查、倒装兜底（顺序不改结果，但这条结构不许无声调换）",
+                0 < i_pos < i_inv, (i_pos, i_inv))
+        i_def = src.find("_REPEAT_WEEKDAY_INV_RE = re.compile(")
+        body = src[i_def:i_def + 700]
+        c.check("形状：倒装那条允许两段之间隔内容（要求紧邻的版本在它自己例句上不命中）",
+                r"[\s\S]*?" in body, "倒装正则里没有跨内容的那一段")
+        c.check("形状：「每周两次」这类频次被堵住（周/星也进拦截表）",
+                P.weekly_repeat_day("周天去跑步每周两次") is None
+                and P.weekly_repeat_day("周日晚上跑步每周") == 7,
+                "每周两次 与 每周 的区分")
+    return c
+
+
 def main():
     results = [batch_a_recognition(), batch_b_title_and_veto(), batch_c_store_model(),
                batch_d_end_to_end(), batch_e_three_layers_synced(), batch_f_old_path_untouched(),
-               batch_g_weekly_horizon()]
+               batch_g_weekly_horizon(), batch_h_inverted_word_order()]
     total_pass = sum(r.passed for r in results)
     total_fail = sum(r.failed for r in results)
     print(f"\n===== 每周重复待办总账：通过 {total_pass} 项，失败 {total_fail} 项 =====")
