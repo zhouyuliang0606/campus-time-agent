@@ -231,6 +231,19 @@ def batch_gate(ck):
                  m is not None and float(m.group(1)) <= .20, m.group(0) if m else None)
     ck.check("「不用图」的语义是撤总闸，不是黑底",
              "root.classList.toggle('gx-glass', on)" in src)
+    # 出处上界面：档名后带小标，选中那档再给一行署名文案。
+    # 为什么非要放进界面：用户问的是「银河那张要署名啥意思」，而答案只写在 NOTICE 里的话，
+    # 会去拧这个开关的人永远看不到 —— 许可是选择的一部分，不是选择的脚注。
+    ck.check("五档各带 lic 与 credit 两个字段",
+             src.count('lic:"') >= 5 and src.count('credit:"') >= 5,
+             "%d / %d" % (src.count('lic:"'), src.count('credit:"')))
+    ck.check("渲染器真的用上了（小标 + 选中档的署名文案，且过 esc）",
+             'class="bg-lic"' in src and "esc(curBg.credit)" in src
+             and "getElementById('setBgLic')" in src)
+    ck.check("银河那档在界面上直接写明「需署名」", 'lic:"CC BY 需署名"' in src)
+    ck.check("两张自生成档各自写明 AI 生成", src.count('lic:"AI 生成"') == 2)
+    ck.check("「不用图」也有一句说明它到底关掉什么（不许留空文案）",
+             'credit:"撤掉整层玻璃' in src)
     # 死规则检查：类名写错会让规则静默失效
     ck.check("已完成态选择器是真实的 .evt.todo.done",
              ".evt.todo.done {" in src and ".evt.done {" not in src)

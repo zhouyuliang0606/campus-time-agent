@@ -121,6 +121,9 @@
     .persona:hover { border-color: #4f7cff; }
     .persona.active { border-color: #4f7cff; background: #eef2ff; color: #3457d5; font-weight: 600; }
     .persona .em { font-size: 15px; }
+    /* 档名后面的出处小标（CC0 / AI 生成 / CC BY 需署名）。只用 opacity，
+       所以深色覆盖段不必再写一条 —— 两套主题下都是同一档从属字。 */
+    .bg-lic { font-style: normal; font-size: 10.5px; opacity: .6; letter-spacing: .02em; }
 
     /* "正在思考…" 底部提示（取代思考轨迹） */
     .thinking {
@@ -2645,14 +2648,17 @@ html.gx-glass[data-gx-refine="on"] .composer, html.gx-glass[data-gx-refine="on"]
        纯视觉：只写 CSS 变量、只往 .gx-fx 里塞装饰节点，不碰任何接口与业务状态。
        选择记在 localStorage（沿用 ct_* 命名），刷新与下次打开都还在；
        换设备/清缓存就回到默认，这是刻意的 —— 它是偏好，不是数据。 */
+    // 每档自带出处标签（lic，标在档名后面）与一行署名文案（credit，选中才显示）。
+    // 为什么把许可放进界面而不只写在 NOTICE：这张表是学生自己能拧的，
+    // 「银河那张要署名」这件事写在文档里他永远看不到；标在档上，选的时候就知道自己选了个什么。
     const GX_BGS = {
-      forest: { label:"雾松林", src:"/static/bg/forest.jpg", vm:".31", scrim:".20", bd:".95", core:"0",   fx:"birds-wind" },
+      forest: { label:"雾松林", lic:"CC0", credit:"摄影 Vadim Sherbakov · CC0（无署名义务）· 取自 Wikimedia Commons", src:"/static/bg/forest.jpg", vm:".31", scrim:".20", bd:".95", core:"0",   fx:"birds-wind" },
       // 深空 / 星野：本项目 AI 生成的夜空图，无第三方版权、无署名义务（出处与"裁掉平台角标"
       // 这件事都记在 NOTICE.md）。两张的反解值比 ESO 那张低得多 —— 中段总遮罩 .17 / .19，
       // 对 milky 的 .47：同样过 AA，背景能多透出一倍。
-      deep:   { label:"深空",   src:"/static/bg/deep.jpg",   vm:".12", scrim:".06", bd:"1",   core:"0",   fx:"meteor" },
-      dusk:   { label:"星野",   src:"/static/bg/dusk.jpg",   vm:".14", scrim:".06", bd:"1",   core:"0",   fx:"meteor2" },
-      milky:  { label:"银河",   src:"/static/bg/milky.jpg",  vm:".40", scrim:".12", bd:"1",   core:"0",   fx:"meteor" },
+      deep:   { label:"深空",   lic:"AI 生成", credit:"本项目用 AI 生成，无第三方版权、无署名义务（生成记录与裁角标处置见 NOTICE.md）", src:"/static/bg/deep.jpg",   vm:".12", scrim:".06", bd:"1",   core:"0",   fx:"meteor" },
+      dusk:   { label:"星野",   lic:"AI 生成", credit:"本项目用 AI 生成，无第三方版权、无署名义务（生成记录与裁角标处置见 NOTICE.md）", src:"/static/bg/dusk.jpg",   vm:".14", scrim:".06", bd:"1",   core:"0",   fx:"meteor2" },
+      milky:  { label:"银河",   lic:"CC BY 需署名", credit:"摄影 S. Guisard / ESO · CC BY 4.0 —— 署名义务已在仓库 NOTICE.md 履行，界面不加水印", src:"/static/bg/milky.jpg",  vm:".40", scrim:".12", bd:"1",   core:"0",   fx:"meteor" },
       // 「星空」「草坪」两档 2026-10-12 撤掉了：那两张图（`space.jpg`/`park.jpg`）
       // 是随手贴进来的、来源没追溯过，许可核不了 —— 仓库要公开、要交比赛，
       // 未授权的素材不能留（登记与处置见 NOTICE.md）。
@@ -2660,7 +2666,7 @@ html.gx-glass[data-gx-refine="on"] .composer, html.gx-glass[data-gx-refine="on"]
       // `GX_BGS[key] || GX_BGS.forest` 是白名单查表，不是拼路径，所以老值不会白屏）。
       // 「不用图」不是"黑色底"，而是**撤掉总闸**：html.gx-glass 一摘，深色 token 与
       // 补丁段全部失效，页面回到玻璃改版之前的样子。关掉即还原，不养第二套样式。
-      none:   { label:"不用图（回到改版前）", src:"", vm:".31", scrim:".20", bd:".95", core:"0", fx:"off" }
+      none:   { label:"不用图（回到改版前）", lic:"", credit:"撤掉整层玻璃：深色 token、底图、遮罩、动效全部关掉，页面回到玻璃改版之前的浅色原版", src:"", vm:".31", scrim:".20", bd:".95", core:"0", fx:"off" }
     };
     // 四个可调项：默认值随背景走（veil/遮罩/亮度/压暗都是按图**反解**出来的，换图必须重测）
     // [localStorage 键, CSS 变量, 标签, 滑杆 min, max, step, 该图默认值取哪个字段]
@@ -2762,6 +2768,7 @@ html.gx-glass[data-gx-refine="on"] .composer, html.gx-glass[data-gx-refine="on"]
         '<label style="display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;"><input type="checkbox" id="setTrace" '+(traceOn()?"checked":"")+' style="width:16px;height:16px;"> 展示思考过程</label></div>'+
         '<div class="card"><h2>背景与外观</h2><div class="desc">底图、玻璃透不透、遮罩多暗、有没有动效，都在这调；只存这台浏览器，不上传。「不用图」= 关掉整层玻璃，回到改版前的样子。</div>'+
         '<div id="setBgList" class="persona-list"></div>'+
+        '<div id="setBgLic" class="desc" style="margin:9px 0 2px;"></div>'+
         '<div id="setGxTunes" style="margin-top:14px;display:flex;flex-direction:column;gap:9px;"></div>'+
         '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:14px;align-items:center;">'+
           '<span class="small">整页玻璃</span><span id="setGxLv" class="persona-list"></span>'+
@@ -2788,9 +2795,14 @@ html.gx-glass[data-gx-refine="on"] .composer, html.gx-glass[data-gx-refine="on"]
       (function(){
         function resetTunes(){ ['ct_gx_scrim','ct_gx_vm','ct_gx_bd','ct_gx_core','ct_gx_fx'].forEach(function(k){ localStorage.removeItem(k); }); }
         var cur=gxVal('ct_bg','forest'), bl=document.getElementById('setBgList');
+        // 老值（比如已撤掉的 park）回落 forest —— 与 applyBackdrop 用同一套白名单，别在这里拼出第三种样子
+        var curBg = GX_BGS[cur] || GX_BGS.forest;
         bl.innerHTML=Object.keys(GX_BGS).map(function(k){
-          return '<div class="persona '+(k===cur?'active':'')+'" data-bg="'+esc(k)+'"><span>'+esc(GX_BGS[k].label)+'</span></div>';
+          var b=GX_BGS[k];
+          return '<div class="persona '+(k===cur?'active':'')+'" data-bg="'+esc(k)+'"><span>'+esc(b.label)+
+                 (b.lic?' <i class="bg-lic">'+esc(b.lic)+'</i>':'')+'</span></div>';
         }).join('');
+        document.getElementById('setBgLic').innerHTML='<span class="small">'+esc(curBg.credit)+'</span>';
         bl.querySelectorAll('.persona').forEach(function(el){ el.addEventListener('click', function(){
           localStorage.setItem('ct_bg', el.dataset.bg); resetTunes();
           applyBackdrop(); loadSettingsView();
