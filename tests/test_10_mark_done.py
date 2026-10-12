@@ -361,6 +361,86 @@ def batch_f_completion_phrases():
 
 
 
+def batch_g_resultative_complement():
+    """G 批 · 动结式「去完图书馆了」这一族完成声明（用户 2026-10-12 的截图：卡片标题「完图书馆」）。
+
+    F 批收了整词「完了」，可学生宣布办完时最常说的不是整词，是**动词后面挂一个补语**：
+    「去完 / 看完 / 写好」，还会把名字拆开说（《健身》→「健完身」）、
+    把宾语提到动词前（《写作业》→「作业写完了」）。这一族一个整词都不沾，
+    于是整族掉给模型 —— 模型当**问事**回一句，或者被样本库听成"新增"。
+
+    三道闸都要钉住方向：认下来（YES）/ 绝不认（计划、连动、否定、状态吐槽、库里没这条）/
+    **识别与落地必须同源**（认得出却找不到，等于把学生推回"没找到"那句空话）。
+    """
+    ck = Checker()
+    title("G 批 · 动结式完成声明：去完图书馆了 / 健完身 / 作业写完了 / 从图书馆回来了")
+    today = _dt.date.today().isoformat()
+    SEED = ("图书馆", "健身", "跑步", "写作业", "看书")
+    with sandbox():
+        from app.modules.planner import resolve_todo_done, wants_done_todo
+        from app.store import add_todo, delete_todo, list_todos
+        # 沙箱继承真实演示数据，先清空再种：这一批的期望值只认下面这五个名字
+        for t in list_todos():
+            delete_todo(t["id"])
+        for nm in SEED:
+            add_todo(nm, today, "19:00", "20:00")
+
+        YES = ["去完图书馆了", "我刚去完图书馆", "图书馆去完啦", "图书馆去完了",
+               "图书馆看完了", "图书馆去好了", "从图书馆回来了", "我跑步回来了",
+               "健完身了", "跑完步了", "作业写完了", "作业做好了",
+               "昨天把作业写完了"]
+        for s in YES:
+            ck.check("认成标记完成｜%s" % s, wants_done_todo(s) is True, wants_done_todo(s))
+
+        NO = [
+            # 计划 / 假设：那个「V完」还没发生，认了就是替他改状态
+            "今晚把作业做完", "明天作业写完了就能玩", "明天去完图书馆再跑步",
+            "打算把书写完", "记得去把作业做完",
+            # 计划 + 句末"了"：光看"了"会以为已经办完，计划闸门必须排在已然之前
+            "明天就把作业写完了", "下个月这个时候图书馆就去看完了",
+            # 连动：补语属于前一件事，不贴后一个名字
+            "吃完饭再去图书馆",
+            # 否定：明说没办完
+            "还没去完图书馆", "作业没写完", "作业还没做完就先回来了",
+            # 状态吐槽 / 「完全·完善」这类"完"不是补语
+            "健身累完了", "完全没睡够", "作业完善了一下",
+            # 库里压根没这条待办
+            "去完快递了", "看完电影了",
+            # 问句与裸名字
+            "看书看完了吗", "跑步",
+            # 两字名字的宾语前置**不开放**：锚只剩最后一个字，放宽之后
+            # 「身穿完了」会撞上《健身》（探针 chk_r5_gate.py 实测：放宽翻 True 的
+            # 就是「身穿完了」「书写完了」这两条，没有一条是正经的完成声明）
+            "身穿完了", "书写完了", "书包买完了",
+        ]
+        for s in NO:
+            ck.check("不许误判｜%s" % s, wants_done_todo(s) is False, wants_done_todo(s))
+
+        # 已知缺口照实钉住（不是"应该为真"，是"现在为假、原因写清楚"）：
+        # 「这本书我看完了」确实是完成声明，可《看书》被"这本/我"隔得太远，
+        # 五道贴合模式一道都不沾 → 掉给模型。再放宽就得拿单字当锚，风险大于收益。
+        ck.check("已知缺口｜「这本书我看完了」仍不认（补语离名字太远，贴合判据不收）",
+                 wants_done_todo("这本书我看完了") is False,
+                 wants_done_todo("这本书我看完了"))
+
+        # 识别与落地同源：认得是"宣布办完"，就必须能在库里落到那一条上。
+        # 「健完身」「作业写完了」这两种写法，抠出来的名字（健完身 / 作业写）
+        # 跟《健身》《写作业》**没有包含关系**，早先落地那一步直接回"没找到"。
+        for s in YES:
+            res = resolve_todo_done(s)
+            got = {(x.get("title") or "").strip() for x in (res.get("todos") or [])}
+            ck.check("认得出也必须找得到｜%s" % s,
+                     res.get("status") != "empty" and bool(got) and got <= set(SEED),
+                     f'{res.get("status")}/{sorted(got)}')
+
+        # 判据只有一份：落地用的是同一个 `_done_resultative`，不是第二套字符串比对
+        from app.modules import planner as _P
+        ck.check("形状：落地兜底复用识别层那个判据（不抄第二份匹配）",
+                 "_done_resultative" in _P.resolve_todo_done.__code__.co_names,
+                 _P.resolve_todo_done.__code__.co_names)
+    return ck
+
+
 def main():
     results = [
         batch_a_mark_done_unit(),
@@ -369,6 +449,7 @@ def main():
         batch_d_qa_goto_schedule(),
         batch_e_delete_regression(),
         batch_f_completion_phrases(),
+        batch_g_resultative_complement(),
     ]
     total_pass = sum(r.passed for r in results)
     total_fail = sum(r.failed for r in results)

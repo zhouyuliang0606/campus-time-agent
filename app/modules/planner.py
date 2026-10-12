@@ -3595,6 +3595,29 @@ _DONE_TODO_VERB = ("完成了", "做完", "搞定了", "搞定", "办完", "做�
 # 所以这一颗要求**紧贴事名**（《健身》+「完了」）才算，其余动词沿用原有的含糊匹配。
 _DONE_TODO_VERB_TIGHT = ("完了",)
 
+# ── 动结式（结果补语）：整词表够不着的那一整族口语 ────────────────────────
+# 上面那张表收的都是**整词**（做完/办完/搞定），可学生宣布办完时最常说的是
+# 「动词 + 完/好」这个**结构**，它一个整词都不带：
+#   「去完图书馆了」「图书馆看完了」「健完身了」「作业写完了」「从图书馆回来了」
+# 2026-10-12 学生实测：这一族全都不认，于是掉给模型 —— 模型当**问事**回一句，
+# 或者被样本库听成"新增"，弹出一张标题写着「完图书馆」的卡。他那句"我办完了"就这么蒸发。
+_DONE_CPL = r"(?:完|好)"
+# 能挂结果补语的是**动作动词**；「累/烦/忙/饿/气」这类状态词故意不进册 ——
+# 这正是「健身做完了」（宣布办完）跟「健身累完了」（在说累）的分界线。
+# 少收一个动词的最坏结果是**退回原样**（这句还是掉给模型），不会替他改状态，所以这张表宁缺毋滥。
+_DONE_ACT_V = "去看听写做办买取拿送交还借背读练习跑跳游吃喝上下洗刷扫擦打搞弄干骑走学教考查修" \
+              "张贴包煮炒晾晒拍编排绘约签逛试穿叠清消接转汇报答复预备值缝剪烫拖抬搬拆装卸寄印补"
+# 已然标记：句末的"了/啦/咯"，或明说"已经/刚才/昨天"。
+_DONE_EVIDENCE_WORDS = ("已经", "已", "刚", "刚刚", "刚才", "方才", "昨晚", "昨天", "前天")
+# 反面的**计划**标记：话里带着这些，那个「V完」就还没发生（「明天作业写完了就能玩」）。
+# 不收「回头」——它同时是"回头看一眼"的回头，会误伤正经的完成声明。
+# 跟上面两份判据是同一个方向的活（红线 24：将来该由 TimeSpec 一次算出"过去/未来"，
+# 现在先用词表顶着 —— 记在这儿，别让它长成第三份）。
+_DONE_FUTURE_WORDS = ("明天", "明儿", "后天", "大后天", "下周", "下个星期", "下个月",
+                      "今晚", "今夜", "待会", "待会儿", "一会儿", "等会", "等下",
+                      "改天", "到时候", "打算", "准备", "计划", "记得",
+                      "别忘", "应该", "必须", "争取", "尽量")
+
 # 学生明说这几个词，就是在说待办（而不是课）——哪怕话里带了星期几。
 _TODO_WORDS = ("待办", "日程", "事项")
 
@@ -3958,6 +3981,71 @@ def wants_remove_todo(text: str) -> bool:
     return True
 
 
+def _done_already_said(t: str) -> bool:
+    """这句话带没带"**已经**办完"的标记（而且是明说，不是猜）。
+
+    句末的"了/啦/咯"是中文的已然体；"已经/刚才/昨天"那些是显式过去。
+    ⚠️ 顺序是**先否后肯**：话里出现「明天/打算/记得」这类计划词就一律不算，
+    哪怕句子以"了"结尾 —— 「明天作业写完了就能玩」里的"写完"是**假设**，
+    先查已然再查计划就会把它当成宣布办完（真机形状，测试 G 批钉着）。
+    """
+    if any(w in t for w in _DONE_FUTURE_WORDS):
+        return False
+    tail = (t or "").rstrip("。！!，,、~…\u2026 ）)】》")
+    if tail.endswith("了") or tail.endswith("啦") or tail.endswith("咯"):
+        return True
+    return any(w in t for w in _DONE_EVIDENCE_WORDS)
+
+
+def _done_resultative(name: str, t: str) -> bool:
+    """这条待办的名字是不是被一句**动结式**宣布办完了（识别用的唯一判据）。
+
+    五种口语写法，每一种都要求补语**紧贴**事名，不许隔山打牛：
+      「去完图书馆」   动词+补语在名字**前**
+      「图书馆去完了」  动词+补语在名字**后**
+      「健完身」      补语插在名字第一个字后面（动宾式的名字常被这么拆开）
+      「作业写完了」   宾语提到动词前（《写作业》被倒过来说）
+      「从图书馆回来了」办完就回来了，说的同样是"这条已经办了"
+    ⚠️ 三道闸缺一不可：①已然标记（见 `_done_already_said`），
+    ②补语前不能是「没/不/未/别」（「作业没写完」「还没去完图书馆」是**没办完**），
+    ③动词必须在册（「健身累完了」的"累"不在册 → 不算宣布）。
+    """
+    n = (name or "").strip()
+    t = (t or "").strip()
+    if len(n) < 2 or not t:
+        return False
+    if not _done_already_said(t):
+        return False
+    nn = re.escape(n)
+    tail_cpl = r"(?:了|啦)?"          # 「去完了图书馆」里的"了"在补语后面
+    neg = r"(?<![没不未别])"           # 否定贴着动词 → 这句说的是没办完
+    pats = [
+        rf"{neg}[{_DONE_ACT_V}]{_DONE_CPL}{tail_cpl}\s*{nn}",   # 去完图书馆 / 写完了作业
+        rf"{nn}\s*{neg}[{_DONE_ACT_V}]{_DONE_CPL}{tail_cpl}",   # 图书馆去完了
+        rf"{re.escape(n[0])}{_DONE_CPL}{tail_cpl}{re.escape(n[1])}",  # 健完身 / 写完作业
+    ]
+    if len(n) >= 3:
+        # 宾语前置只对 **3 字以上**的名字开放。两字名字的前置形态只剩最后一个字当锚，
+        # 实测（chk_r5_gate.py）放宽会把「身穿完了」撞上《健身》；而两字名字真被倒过来说时
+        # 多半是「书写完了」这种看着像动宾、其实像另一件事的句子。
+        # 两字名常见的倒装（「作业做完了」）本来就由上面①的整词表接住，不靠这一档。
+        pats.append(rf"{re.escape(n[1:])}\s*{neg}[{_DONE_ACT_V}]{_DONE_CPL}{tail_cpl}")
+    pats.append(rf"{nn}[^，。！？]{{0,3}}?(?:回来了|回来啦|回了|回宿舍了|回寝了)")
+    return any(re.search(p, t) for p in pats)
+
+
+def _done_shape_present(t: str) -> bool:
+    """句子里到底有没有"办完了"的**形状**——纯预筛，不判对错（把关全在 `_done_resultative`）。
+
+    ⚠️ 宽到只要求出现「完 / 好 / 回来了」之一，**不许拿动词表当预筛**：
+    「健完身」的"健"不在动词表里，上一版在这儿就把这句挡掉了 ——
+    补语插在名字中间的那种写法，动词位置根本不是我们认识的那个字。
+    """
+    return (any(v in t for v in _DONE_TODO_VERB)
+            or "完" in t or "好" in t
+            or bool(re.search(r"(?:回来了|回来啦|回了|回宿舍了|回寝了)", t)))
+
+
 def wants_done_todo(text: str) -> bool:
     """判断一句话算不算「把某条待办标记为完成」（确定性分支用的开关）。
 
@@ -3967,6 +4055,8 @@ def wants_done_todo(text: str) -> bool:
       · 显式的"标记/勾/划"指令（"把游泳标记完成""勾掉交电费"）直接算；
       · "完成/做完/搞定"这类软动词，只在**精准对上一条已有待办的名字**时才算
         （"游泳做完了"对上《游泳》才算；"帮我安排完成作业"里"作业"不是待办 → 不算）。
+      · ③ 动结式（"去完图书馆""健完身""作业写完了""从图书馆回来了"）——
+        学生最口语的一族，整词表一个都不沾，判据见 `_done_resultative`。
     """
     t = (text or "").strip()
     if not t or len(t) > 80:
@@ -3989,17 +4079,25 @@ def wants_done_todo(text: str) -> bool:
     #    显式的"标记/勾/划"指令走上面①，不受这里影响。
     if looks_like_question(t):
         return False
-    if not any(v in t for v in _DONE_TODO_VERB):
+    # 预筛：这句话有没有"办完了"的**形状**（整词 / 动结式 / 回来了），
+    # 三种都不沾就一次名字都不比（大部分句子在这儿就出去了）。
+    if not _done_shape_present(t):
         return False
     for x in list_todos():
         name = (x.get("title") or "").strip()
-        if not name or not _todo_name_match(name, t):
+        if not name:
             continue
-        # 常规软动词：事名对得上就算（「游泳做完了」对上《游泳》）
-        if any(v in t for v in _DONE_TODO_VERB if v not in _DONE_TODO_VERB_TIGHT):
-            return True
-        # 「完了」这一颗要紧贴事名：「健身完了」✓，「健身累完了」✗（那是在说累）
-        if any(re.search(re.escape(name) + r"\s*" + v, t) for v in _DONE_TODO_VERB_TIGHT):
+        if _todo_name_match(name, t):
+            # 常规软动词：事名对得上就算（「游泳做完了」对上《游泳》）
+            if any(v in t for v in _DONE_TODO_VERB if v not in _DONE_TODO_VERB_TIGHT):
+                return True
+            # 「完了」这一颗要紧贴事名：「健身完了」✓，「健身累完了」✗（那是在说累）
+            if any(re.search(re.escape(name) + r"\s*" + v, t)
+                   for v in _DONE_TODO_VERB_TIGHT):
+                return True
+        # ③ 动结式**不要求名字被原样包含**：「健完身」对《健身》、「作业写完了」对《写作业》，
+        #    补语插在名字中间或宾语提前，包含关系当场就断了。判据自己带着名字做贴合，够严。
+        if _done_resultative(name, t):
             return True
     return False
 
@@ -4529,6 +4627,13 @@ def resolve_todo_done(text: str) -> dict:
         hits = [x for x in pool if _todo_name_match(name, x.get("title", ""))]
         if not hits:
             hits = [x for x in list_todos() if _todo_name_match(name, x.get("title", ""))]
+        if not hits:
+            # 抠出来的残渣对不上任何一条名字 —— 动结式恰好会把名字拆开或倒过来说
+            # （「健完身」对《健身》、「作业写完了」对《写作业》），拿字符串比是比不上的。
+            # 这里**复用识别层那一个判据**（整句 + 候选名），不另抄一份匹配规则（红线 11b）：
+            # 认得出这句话是"宣布办完"却找不到是哪条，等于把学生推回"没找到"。
+            hits = [x for x in list_todos()
+                    if _done_resultative((x.get("title") or "").strip(), t)]
         if not hits:
             return {"status": "empty", "todos": [], "day": day, "name": name}
         pool = hits
