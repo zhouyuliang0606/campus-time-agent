@@ -322,6 +322,45 @@ def batch_e_delete_regression():
     return c
 
 
+def batch_f_completion_phrases():
+    """F 批 · 「X完了」这一族**完成声明**要认出来（用户 2026-10-12：
+    我说「今天健身完了」，它理解成问事了，只口头回复一句）。
+
+    整族扫出来的缺口比那一句大：软动词表收了"做完/完成了/办完/搞定"，
+    偏偏漏了最口语的光杆「完了」，于是「今天健身完了」「我健身完了」全掉给模型。
+    收进来之后又冒出一个反向问题：「健身累完了」是在**说累**、不是宣布做完 ——
+    所以「完了」这一颗单独要求紧贴事名。两个方向都在这儿钉住。
+    """
+    ck = Checker()
+    title("F 批 · 完成声明：「今天健身完了」不是问句，也不该被当成吐槽")
+    with sandbox():
+        from app.store import add_todo
+        from app.modules.planner import wants_done_todo
+        today = _dt.date.today().isoformat()
+        for t in ("健身", "跑步", "写作业"):
+            add_todo(t, today, "19:00", "20:00")
+
+        YES = ["今天健身完了", "健身完了", "我健身完了", "今天健身完了。",
+               "健身做完了", "写作业做完了", "跑步完成了", "把健身标记完成", "勾掉跑步"]
+        for s in YES:
+            ck.check("认成标记完成｜%s" % s, wants_done_todo(s) is True, wants_done_todo(s))
+
+        NO = ["健身完了吗", "我作业写完了没", "今天健身怎么样",     # 问句：是在问，不是宣布
+              "健身累完了", "忙完了", "说完了",                   # 状态/吐槽：没有紧贴事名的「完了」
+              "帮我安排完成作业", "游泳做完了"]                    # 撞新增意图 / 库里没这条待办
+        for s in NO:
+            ck.check("不许误判｜%s" % s, wants_done_todo(s) is False, wants_done_todo(s))
+
+        # 已知缺口照实钉住（不是"应该为真"，是"现在为假、原因写清楚"）：
+        # 「跑完了」对不上《跑步》—— `_todo_name_match` 是整名包含，不做词干/语序还原。
+        # 放宽它会同一条链影响删待办的点名，本轮没动，先钉住现状别让它悄悄变。
+        ck.check("已知缺口｜「跑完了」仍对不上《跑步》（词干匹配没做，动它会牵连删除）",
+                 wants_done_todo("跑完了") is False, wants_done_todo("跑完了"))
+    return ck
+
+
+
+
 def main():
     results = [
         batch_a_mark_done_unit(),
@@ -329,6 +368,7 @@ def main():
         batch_c_mark_done_e2e(),
         batch_d_qa_goto_schedule(),
         batch_e_delete_regression(),
+        batch_f_completion_phrases(),
     ]
     total_pass = sum(r.passed for r in results)
     total_fail = sum(r.failed for r in results)

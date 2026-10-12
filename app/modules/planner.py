@@ -1126,7 +1126,7 @@ def is_mode_answer(text: str) -> bool:
     t = (text or "").strip()
     if not t or len(t) > 24:
         return False
-    if any(k in t for k in ("吗", "？", "?")):
+    if looks_like_question(t):
         return False
     return any(w in t for w in _MODE_SELF_WORDS + _MODE_AI_WORDS)
 
@@ -1198,7 +1198,7 @@ def is_slot_answer(text: str) -> bool:
     t = (text or "").strip()
     if not t or len(t) > 40:
         return False
-    if any(k in t for k in ("吗", "？", "?")):
+    if looks_like_question(t):
         return False
     if any(w in t for w in _ADD_INTENT) or _ADD_TALK_RE.search(t):
         return False
@@ -2773,7 +2773,7 @@ def wants_add_todo(text: str) -> bool:
     # 三道关：有意图开头、无疑问词（问答不接）、事名判真（光"我想问一下"不接）。
     _name = _pick_title(t)
     if (_GO_INTENT_RE.search(t)
-            and not any(k in t for k in ("吗", "？", "?"))
+            and not looks_like_question(t)
             and not _GO_QUESTION_RE.search(t)      # 问路/问办法的（"我要去哪里取快递"）不是下单
             and _title_ok(_name)):                 # "我要去X" 必须 X 是件真事才放行，纯疑问/愿望不放开
         return True
@@ -2793,7 +2793,7 @@ def wants_add_todo(text: str) -> bool:
     # 它们同样带日期和事名，但学生不是在"排一件事"，是在查、是在管。动作动词是
     # "人要去办"的硬信号，没有就宁可漏判、不可替学生办错事。
     if (_pick_date(t) and _title_ok(_pick_title(t))
-            and not any(k in t for k in ("吗", "？", "?"))
+            and not looks_like_question(t)
             and re.search(r"(去|到|来)", t)):
         return True
     # 「我一周要去三次健身房」这类**只报了频次**的句子：没有"加/安排"这类意图词，
@@ -2813,7 +2813,7 @@ def wants_add_todo(text: str) -> bool:
             and not any(k in t for k in ("吗", "？", "?", "够不", "是不是", "怎么样", "来得及"))):
         return True
     return bool(_pick_date(t) and _pick_span(t)[0]
-                and not any(k in t for k in ("吗", "？", "?")))
+                and not looks_like_question(t))
 
 
 def wants_list_todo(text: str) -> bool:
@@ -3463,7 +3463,7 @@ def is_add_todo_answer(text: str) -> bool:
     t = (text or "").strip()
     if not t or len(t) > 40:
         return False
-    if any(k in t for k in ("吗", "？", "?")):
+    if looks_like_question(t):
         return False
     return _pick_span(t)[0] is not None or _pick_date(t) is not None
 
@@ -3584,10 +3584,30 @@ _DONE_TODO_INTENT = (
     "标记为已", "完成掉",
 )
 # 软动词：仅当精准对上一条已有待办名字时才算标记完成（避免跟"新增"意图撞车）
-_DONE_TODO_VERB = ("完成了", "做完", "搞定了", "搞定", "办完", "做掉了", "划掉", "勾掉")
+# ⚠️ 「完了」是 2026-10-12 补的：以前收了"做完/完成了/办完/搞定"，**偏偏漏了光杆的「完了」**，
+#    而学生最自然的说法就是它 —— 实测「今天健身完了」「我健身完了」「跑完了」「作业写完了」
+#    四条全都不认（库里明明有《健身》《跑步》《写作业》），于是一路掉给模型，
+#    模型把它当**问事**答了一句，学生那句"我做完了"就这么蒸发了。
+#    收进来仍然要求"精准对上一条已有待办的名字"，所以「忙完了」「说完了」不会误触发。
+_DONE_TODO_VERB = ("完成了", "做完", "搞定了", "搞定", "办完", "做掉了", "划掉", "勾掉", "完了")
+# 「完了」单独一档：它太泛 —— 「健身累完了」「忙完了」是在**说状态**，不是宣布做完某事。
+# 加了它之后实测「健身累完了」被判成标记完成（把吐槽当成办好了的动作），
+# 所以这一颗要求**紧贴事名**（《健身》+「完了」）才算，其余动词沿用原有的含糊匹配。
+_DONE_TODO_VERB_TIGHT = ("完了",)
 
 # 学生明说这几个词，就是在说待办（而不是课）——哪怕话里带了星期几。
 _TODO_WORDS = ("待办", "日程", "事项")
+
+
+def looks_like_question(text: str) -> bool:
+    """这句话是不是在**问事**（人话：带了"吗/？"就不是在宣布自己做完了什么）。
+
+    收成一份的原因：同一个 `("吗","？","?")` 判断以前在文件里抄了三份
+    （模式卡判定、加待办判定、问路放行），再加第四份就是"每处各写一遍、
+    改一处漏三处"的老形状（红线 10/11）。
+    """
+    t = text or ""
+    return any(k in t for k in ("吗", "？", "?"))
 
 # "撞时间的/冲突的/重复的"这类词在**说筛选条件**（挑出时间上打架的那几条），
 # 不是待办名。学生在日程里看到时间重叠的条目会被打上「撞」角标，就照这个词来点。
@@ -3965,8 +3985,21 @@ def wants_done_todo(text: str) -> bool:
     if any(w in t for w in _DONE_TODO_INTENT):
         return True
     # ② 软动词：只有精准对上一条已有待办才认（否则跟"新增"撞车）
-    if any(v in t for v in _DONE_TODO_VERB):
-        if any(_todo_name_match(x.get("title", ""), t) for x in list_todos()):
+    #    问句先挡掉：「健身完了吗」「我作业写完了没」是在**问**，不是在宣布做完。
+    #    显式的"标记/勾/划"指令走上面①，不受这里影响。
+    if looks_like_question(t):
+        return False
+    if not any(v in t for v in _DONE_TODO_VERB):
+        return False
+    for x in list_todos():
+        name = (x.get("title") or "").strip()
+        if not name or not _todo_name_match(name, t):
+            continue
+        # 常规软动词：事名对得上就算（「游泳做完了」对上《游泳》）
+        if any(v in t for v in _DONE_TODO_VERB if v not in _DONE_TODO_VERB_TIGHT):
+            return True
+        # 「完了」这一颗要紧贴事名：「健身完了」✓，「健身累完了」✗（那是在说累）
+        if any(re.search(re.escape(name) + r"\s*" + v, t) for v in _DONE_TODO_VERB_TIGHT):
             return True
     return False
 
