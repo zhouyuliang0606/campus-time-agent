@@ -206,13 +206,19 @@ def batch_gate(ck):
     # 换图必须把旋钮交回该图自己的反解默认值，否则会在银河上沿用雾松林的薄遮罩
     ck.check("换图时清掉四个旋钮（resetTunes）",
              "resetTunes" in src and "ct_gx_scrim','ct_gx_vm','ct_gx_bd','ct_gx_core'" in src)
-    # 两张登记过的图 + 不用图，三档选择
+    # 四张登记过的图 + 不用图，五档选择
     # 判据打在**引用形式**上（`src:"/static/bg/x.jpg"`），不是"文件名字符串出没出现过"——
     # 注释里写一句"space.jpg 已撤"是历史记录，不该把测试绊红（同 4c）。
-    refs = [x for x in ("forest.jpg", "milky.jpg", "space.jpg", "park.jpg")
+    refs = [x for x in ("forest.jpg", "deep.jpg", "dusk.jpg", "milky.jpg", "space.jpg", "park.jpg")
             if 'src:"/static/bg/' + x + '"' in src]
-    ck.check("背景表里真正指向图片的只有 forest / milky 两行",
-             refs == ["forest.jpg", "milky.jpg"] and 'none:' in src, refs)
+    ck.check("背景表里真正指向图片的只有登记过的四行",
+             refs == ["forest.jpg", "deep.jpg", "dusk.jpg", "milky.jpg"] and 'none:' in src, refs)
+    # 反解的 vm 是**这张图自己的遮罩成本**：自生成的两张本来就沉，照抄银河的 .40 会把背景糊死，
+    # 而页面看着"还行"、没人会去查 —— 只能钉在表上。
+    for name in ("deep.jpg", "dusk.jpg"):
+        m = re.search(r'src:"/static/bg/' + re.escape(name) + r'".*?vm:"(\.\d\d)"', src)
+        ck.check("%s 的反解 vm ≤ .20（比银河那档省一半，别照抄回去）" % name,
+                 m is not None and float(m.group(1)) <= .20, m.group(0) if m else None)
     ck.check("「不用图」的语义是撤总闸，不是黑底",
              "root.classList.toggle('gx-glass', on)" in src)
     # 死规则检查：类名写错会让规则静默失效
@@ -233,7 +239,7 @@ def batch_http(ck):
     ck.check("响应里带着背景图节点", 'id="gxBg"' in html)
     r2 = client.get("/static/glass.css")
     ck.check("GET /static/glass.css 200", r2.status_code == 200, str(r2.status_code))
-    BGS = ["forest.jpg", "milky.jpg"]   # 草坪/星空 2026-10-12 因许可不明删除，见 NOTICE.md
+    BGS = ["forest.jpg", "milky.jpg", "deep.jpg", "dusk.jpg"]   # 草坪/星空 2026-10-12 因许可不明删除，见 NOTICE.md
     for name in BGS:
         rr = client.get("/static/bg/" + name)
         ck.check("GET /static/bg/%s 200 且是图片" % name,
