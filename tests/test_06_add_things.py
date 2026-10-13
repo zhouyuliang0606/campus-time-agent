@@ -20,7 +20,7 @@ import os
 import pathlib
 
 from _e2e_env import demo_courses_from_json
-from _harness import Checker, make_client, sandbox, title
+from _harness import Checker, make_client, sandbox, title, wipe_todos
 
 code = 0
 
@@ -49,6 +49,11 @@ def test_add_todo_pipeline():
     from app.modules.planner import parse_add_todo, wants_add_todo
 
     with sandbox():
+        # ★ 起始状态自己种（2026-10-14 整族扫）：沙箱是复制真实数据，
+        #   本机库里 11 条、干净克隆里 0 条，两种环境都能把
+        #   「数一数那天的待办」「拿周二那节课当靶子」这类断言弄红。
+        seed_timetable()
+        wipe_todos()
         client = make_client()
         base = seed_timetable()
         today = datetime.date.today().isoformat()
@@ -142,6 +147,11 @@ def test_add_course_pipeline():
     from app.modules.planner import wants_add_course, parse_add_course
 
     with sandbox():
+        # ★ 起始状态自己种（2026-10-14 整族扫）：沙箱是复制真实数据，
+        #   本机库里 11 条、干净克隆里 0 条，两种环境都能把
+        #   「数一数那天的待办」「拿周二那节课当靶子」这类断言弄红。
+        seed_timetable()
+        wipe_todos()
         client = make_client()
         base = seed_timetable()
 
@@ -215,6 +225,11 @@ def test_conversation_history():
     from app.store import append_conversation, clear_conversation, get_conversation
 
     with sandbox():
+        # ★ 起始状态自己种（2026-10-14 整族扫）：沙箱是复制真实数据，
+        #   本机库里 11 条、干净克隆里 0 条，两种环境都能把
+        #   「数一数那天的待办」「拿周二那节课当靶子」这类断言弄红。
+        seed_timetable()
+        wipe_todos()
         client = make_client()
         clear_conversation("hist-a")
         append_conversation("hist-a", "user", "帮我看看这周的空档")
@@ -257,6 +272,11 @@ def test_clear_conversation():
                            list_todos, save_timetable)
 
     with sandbox():
+        # ★ 起始状态自己种（2026-10-14 整族扫）：沙箱是复制真实数据，
+        #   本机库里 11 条、干净克隆里 0 条，两种环境都能把
+        #   「数一数那天的待办」「拿周二那节课当靶子」这类断言弄红。
+        seed_timetable()
+        wipe_todos()
         client = make_client()
         seed_timetable()
         today = datetime.date.today().isoformat()
@@ -359,6 +379,11 @@ def test_add_todo_chinese_clock():
     from app.store import list_todos, append_conversation
 
     with sandbox():
+        # ★ 起始状态自己种（2026-10-14 整族扫）：沙箱是复制真实数据，
+        #   本机库里 11 条、干净克隆里 0 条，两种环境都能把
+        #   「数一数那天的待办」「拿周二那节课当靶子」这类断言弄红。
+        seed_timetable()
+        wipe_todos()
         client = make_client()
         tomorrow = (_dt.date.today() + _dt.timedelta(days=1)).isoformat()
 
@@ -616,6 +641,11 @@ def test_schedule_proposal_tool():
     （内层是 HTTP 那半段，各管各的临时目录）。
     """
     with sandbox():
+        # ★ 起始状态自己种（2026-10-14 整族扫）：沙箱是复制真实数据，
+        #   本机库里 11 条、干净克隆里 0 条，两种环境都能把
+        #   「数一数那天的待办」「拿周二那节课当靶子」这类断言弄红。
+        seed_timetable()
+        wipe_todos()
         return _proposal_tool_body()
 
 
@@ -736,6 +766,11 @@ def _proposal_tool_body():
 
     # —— ⑤ 整条链路（走接口）：模型没调工具、只在文字里写方案，学生回「可以」——
     with sandbox():
+        # ★ 起始状态自己种（2026-10-14 整族扫）：沙箱是复制真实数据，
+        #   本机库里 11 条、干净克隆里 0 条，两种环境都能把
+        #   「数一数那天的待办」「拿周二那节课当靶子」这类断言弄红。
+        seed_timetable()
+        wipe_todos()
         client = make_client()
         seed_timetable()
         sid = "sched-text-proposal"
@@ -795,6 +830,11 @@ def test_remove_todo_pipeline():
     from app.store import append_conversation, add_todo, list_todos
 
     with sandbox():
+        # ★ 起始状态自己种（2026-10-14 整族扫）：沙箱是复制真实数据，
+        #   本机库里 11 条、干净克隆里 0 条，两种环境都能把
+        #   「数一数那天的待办」「拿周二那节课当靶子」这类断言弄红。
+        seed_timetable()
+        wipe_todos()
         client = make_client()
         seed_timetable()
         d_near = (_dt.date.today() + _dt.timedelta(days=4)).isoformat()   # 同一天两条
@@ -1008,6 +1048,11 @@ def test_proactive_time_and_confirm():
     from app.store import append_conversation, list_todos
 
     with sandbox():
+        # ★ 起始状态自己种（2026-10-14 整族扫）：沙箱是复制真实数据，
+        #   本机库里 11 条、干净克隆里 0 条，两种环境都能把
+        #   「数一数那天的待办」「拿周二那节课当靶子」这类断言弄红。
+        seed_timetable()
+        wipe_todos()
         client = make_client()
         seed_timetable()
         # 挑一个"有课、也有空档"的周四：空档里最长的那段应该被挑中
@@ -1191,6 +1236,11 @@ def test_todo_slots_pick_and_batch():
     from app.store import add_todo, delete_todo, list_todos
 
     with sandbox():
+        # ★ 起始状态自己种（2026-10-14 整族扫）：沙箱是复制真实数据，
+        #   本机库里 11 条、干净克隆里 0 条，两种环境都能把
+        #   「数一数那天的待办」「拿周二那节课当靶子」这类断言弄红。
+        seed_timetable()
+        wipe_todos()
         client = make_client()
         seed_timetable()
         today = _dt.date.today().isoformat()
@@ -1453,6 +1503,11 @@ def test_todo_mode_and_ai_plan():
     from app.store import list_todos
 
     with sandbox():
+        # ★ 起始状态自己种（2026-10-14 整族扫）：沙箱是复制真实数据，
+        #   本机库里 11 条、干净克隆里 0 条，两种环境都能把
+        #   「数一数那天的待办」「拿周二那节课当靶子」这类断言弄红。
+        seed_timetable()
+        wipe_todos()
         client = make_client()
         seed_timetable()
 
@@ -1864,6 +1919,11 @@ def test_rescue_when_model_forgot_tool():
                     "options": []}
 
     with sandbox():
+        # ★ 起始状态自己种（2026-10-14 整族扫）：沙箱是复制真实数据，
+        #   本机库里 11 条、干净克隆里 0 条，两种环境都能把
+        #   「数一数那天的待办」「拿周二那节课当靶子」这类断言弄红。
+        seed_timetable()
+        wipe_todos()
         seed_timetable()
         import app.main as _m
         _real_engine = _m.AgentEngine
@@ -2070,6 +2130,11 @@ def test_prose_proposal_and_lie():
                     "options": []}
 
     with sandbox():
+        # ★ 起始状态自己种（2026-10-14 整族扫）：沙箱是复制真实数据，
+        #   本机库里 11 条、干净克隆里 0 条，两种环境都能把
+        #   「数一数那天的待办」「拿周二那节课当靶子」这类断言弄红。
+        seed_timetable()
+        wipe_todos()
         seed_timetable()
         import app.main as _m
         _real = _m.AgentEngine
@@ -2315,6 +2380,11 @@ def test_span_first_title_and_claim_words():
                     "options": []}
 
     with sandbox():
+        # ★ 起始状态自己种（2026-10-14 整族扫）：沙箱是复制真实数据，
+        #   本机库里 11 条、干净克隆里 0 条，两种环境都能把
+        #   「数一数那天的待办」「拿周二那节课当靶子」这类断言弄红。
+        seed_timetable()
+        wipe_todos()
         seed_timetable()
         import app.main as _m
         _real = _m.AgentEngine
@@ -2341,8 +2411,12 @@ def test_span_first_title_and_claim_words():
                     card.get("summary", ""))
             c.check("这一步压根没问模型（系统自己就能捞出来）",
                     _FakeEngine.calls == 0, f"调了 {_FakeEngine.calls} 次")
+            # ⚠️ 跟着卡上的日期查，别钉死 2026-10-01（那是写这条时的"周四"）：
+            #    日子一过，"周四"就落到别的日期上，这两条断言必然红 ——
+            #    第十二批那处（list_todos(card.get("date"))）记过同一教训，这一批漏改了。
             c.check("还没写库（学生没点【确认加入】之前一条都不许写）",
-                    not list_todos("2026-10-01"))
+                    not any(t["title"] == "健身"
+                            for t in list_todos(card.get("date") or "")))
             c.check("措辞说清了是「确认条没跟上」（不再是含糊的「没接上」）",
                     "确认条没跟上" in (d.get("answer") or ""),
                     (d.get("answer") or "")[:60])
@@ -2353,9 +2427,10 @@ def test_span_first_title_and_claim_words():
                                                 "session_id": sid})
             c.check("再回一句「确认」→ 真写进日程",
                     any(t["title"] == "健身" and t["start"] == "08:00"
-                        and t["end"] == "09:00" for t in list_todos("2026-10-01")),
+                        and t["end"] == "09:00"
+                        for t in list_todos(card.get("date") or "")),
                     [f"{t['title']} {t['start']}-{t['end']}"
-                     for t in list_todos("2026-10-01")])
+                     for t in list_todos(card.get("date") or "")])
             c.check("回执里报了「已加入日程」（前端据此自动刷新周表/月表）",
                     "已加入日程" in (r2.json().get("answer") or ""),
                     (r2.json().get("answer") or "")[:60])
@@ -2458,6 +2533,11 @@ def test_name_field_and_comma_sentence():
 
     # —— ③ 走接口：图 1 那一幕，连同"附近刚写过库"的变体 ——
     with sandbox():
+        # ★ 起始状态自己种（2026-10-14 整族扫）：沙箱是复制真实数据，
+        #   本机库里 11 条、干净克隆里 0 条，两种环境都能把
+        #   「数一数那天的待办」「拿周二那节课当靶子」这类断言弄红。
+        seed_timetable()
+        wipe_todos()
         client = make_client()
         seed_timetable()
         import app.main as _m
@@ -2508,6 +2588,11 @@ def test_name_field_and_comma_sentence():
 
     # —— ④ 反向：划了起跑线，两头都不能塌 ——
     with sandbox():
+        # ★ 起始状态自己种（2026-10-14 整族扫）：沙箱是复制真实数据，
+        #   本机库里 11 条、干净克隆里 0 条，两种环境都能把
+        #   「数一数那天的待办」「拿周二那节课当靶子」这类断言弄红。
+        seed_timetable()
+        wipe_todos()
         client = make_client()
         seed_timetable()
         sid = "field-comma-receipt"
@@ -2562,6 +2647,11 @@ def test_name_field_and_comma_sentence():
     #     「进行列举、由我打勾」是学生明确要过的（第九批原话）；第六轮改版把
     #     第一站改成直接敲定之后，聊天里得留一个进去的口子（3c-pre4）。
     with sandbox():
+        # ★ 起始状态自己种（2026-10-14 整族扫）：沙箱是复制真实数据，
+        #   本机库里 11 条、干净克隆里 0 条，两种环境都能把
+        #   「数一数那天的待办」「拿周二那节课当靶子」这类断言弄红。
+        seed_timetable()
+        wipe_todos()
         client = make_client()
         seed_timetable()
         sid5 = "field-selfpick"
@@ -2645,6 +2735,11 @@ def test_context_inherit_and_half_sentence():
 
     # —— ③ 走接口：图 2 那一幕（说了事名 → 回一句只带时间的话） ——
     with sandbox():
+        # ★ 起始状态自己种（2026-10-14 整族扫）：沙箱是复制真实数据，
+        #   本机库里 11 条、干净克隆里 0 条，两种环境都能把
+        #   「数一数那天的待办」「拿周二那节课当靶子」这类断言弄红。
+        seed_timetable()
+        wipe_todos()
         client = make_client()
         seed_timetable()
         import app.main as _m
@@ -2707,6 +2802,11 @@ def test_context_inherit_and_half_sentence():
     #     「帮我安排一下健身」+「再安排一个」合并后抠出来的是「健身再」——
     #     两句话被揉成一个谁也没说过的怪名字。合并完必须还是同一个事名才认。
     with sandbox():
+        # ★ 起始状态自己种（2026-10-14 整族扫）：沙箱是复制真实数据，
+        #   本机库里 11 条、干净克隆里 0 条，两种环境都能把
+        #   「数一数那天的待办」「拿周二那节课当靶子」这类断言弄红。
+        seed_timetable()
+        wipe_todos()
         client = make_client()
         seed_timetable()
         sid3 = "inherit-stale"
@@ -2735,6 +2835,11 @@ def test_context_inherit_and_half_sentence():
                 f"{titles2} / {(r2.json().get('answer') or '')[:40]}")
 
     with sandbox():
+        # ★ 起始状态自己种（2026-10-14 整族扫）：沙箱是复制真实数据，
+        #   本机库里 11 条、干净克隆里 0 条，两种环境都能把
+        #   「数一数那天的待办」「拿周二那节课当靶子」这类断言弄红。
+        seed_timetable()
+        wipe_todos()
         client = make_client()
         seed_timetable()
         sid4 = "inherit-blend"
@@ -2799,6 +2904,11 @@ def test_missing_todo_check():
 
     # —— ② 走接口：四种查法，一步都不交给模型 ——
     with sandbox():
+        # ★ 起始状态自己种（2026-10-14 整族扫）：沙箱是复制真实数据，
+        #   本机库里 11 条、干净克隆里 0 条，两种环境都能把
+        #   「数一数那天的待办」「拿周二那节课当靶子」这类断言弄红。
+        seed_timetable()
+        wipe_todos()
         client = make_client()
         seed_timetable()
         import app.main as _m
@@ -2966,6 +3076,11 @@ def test_missing_todo_boundary():
 
     # —— ④ 走接口：问时间不许回「确实还没有」，也不许冒出残片 ——
     with sandbox():
+        # ★ 起始状态自己种（2026-10-14 整族扫）：沙箱是复制真实数据，
+        #   本机库里 11 条、干净克隆里 0 条，两种环境都能把
+        #   「数一数那天的待办」「拿周二那节课当靶子」这类断言弄红。
+        seed_timetable()
+        wipe_todos()
         client = make_client()
         r = client.post("/api/chat", json={
             "message": "游泳在哪天来着", "module": "planner", "session_id": "miss-b-1"})
@@ -3010,24 +3125,30 @@ def test_add_course_time_of_day():
     c.check("「周一早上加一节高数课」不算加待办",
             not wants_add_todo("周一早上加一节高数课"))
 
-    # —— ② 解析层：没给钟点也能算出提案，且课程名/时段/星期都抠对 ——
-    #     用"周四早上"测：演示周表周四上午 08:00 是空的，应能直接给卡。
-    p = parse_add_course("周四早上加一节高数课")
-    c.check("没给钟点也能解析出加课提案", p is not None)
-    if p is not None:
-        act = p.get("action") or {}
-        c.check("提案课程名从原话抠出（高数）", "高数" in (act.get("course") or ""),
-                act.get("course"))
-        c.check("上午没给钟点 → 自动塞到上午空段 08:00",
-                (act.get("new_start") or "") == "08:00", act.get("new_start"))
-        c.check("提案带星期（周四=4）", act.get("day") == 4, str(act.get("day")))
-
     # —— ③ 端到端：路由真的走加课分支，绝不当待办写 ——
     with sandbox():
-        client = make_client()
+        # ★ 起始状态自己种（2026-10-14 整族扫）：沙箱是复制真实数据，
+        #   本机库里 11 条、干净克隆里 0 条，两种环境都能把
+        #   「数一数那天的待办」「拿周二那节课当靶子」这类断言弄红。
+        #   ② 那一档更吃这份表：真实课表周四 08:00 坐着「高等数学」，
+        #   上午没有空段 → parse_add_course 直接给 None，测试读的是谁的课表就红给谁看。
         seed_timetable()
+        wipe_todos()
+        client = make_client()
         base_courses = len(get_timetable())
         today = datetime.date.today().isoformat()
+
+        # —— ② 解析层：没给钟点也能算出提案，且课程名/时段/星期都抠对 ——
+        #     用"周四早上"测：演示周表周四上午 08:00 是空的，应能直接给卡。
+        p = parse_add_course("周四早上加一节高数课")
+        c.check("没给钟点也能解析出加课提案", p is not None)
+        if p is not None:
+            act = p.get("action") or {}
+            c.check("提案课程名从原话抠出（高数）", "高数" in (act.get("course") or ""),
+                    act.get("course"))
+            c.check("上午没给钟点 → 自动塞到上午空段 08:00",
+                    (act.get("new_start") or "") == "08:00", act.get("new_start"))
+            c.check("提案带星期（周四=4）", act.get("day") == 4, str(act.get("day")))
 
         # ③a 周四早上（有空段）→ 直接给加课确认卡
         r = client.post("/api/chat", json={
