@@ -1,0 +1,14 @@
+# 只有想改用 `pytest` 跑自检的人才需要装它（可选，项目本身不依赖）。
+# 默认路径仍然是零额外安装的一条命令：
+#
+#     python tests/run_all.py
+#
+# 装了之后 `pytest` 走的是同一套（它开子进程跑 run_all，见 tests/pytest_gate.py）：
+#
+#     pip install -r requirements-dev.txt
+#     pytest
+#
+# ⚠️ 别指望 pytest 逐批收集 `tests/test_*.py`：那些是自跑脚本，
+#    三份（01/02/03）在模块层就 sys.exit，pytest 一 import 就 INTERNALERROR。
+#    原因与配套配置写在 tests/pytest_gate.py 和 pytest.ini 里。
+pytest>=8.0

@@ -400,6 +400,21 @@ python tests/run_all.py
 （`<N>` / `<M>` 随每次开发增长，所以**不写死** —— 跑一次就是当次的真实数字。
 `run_all.py` 会逐批报"通过 X 项，失败 Y 项"，末尾给总账，有失败退出码为 1。）
 
+习惯敲 `pytest` 的人也能用，但它是**可选**的（项目本身不依赖它）：
+
+```bash
+pip install -r requirements-dev.txt
+pytest
+```
+
+`pytest` 走的是同一套 —— 它开子进程跑上面那条 `run_all.py`，把总账那一行搬进断言
+（`tests/pytest_gate.py` + `pytest.ini`）。为什么不让他逐批收集 `tests/test_*.py`：
+那些文件是自带 `main` 的脚本，01/02/03 三份在模块层就 `sys.exit`，pytest 一 import 就
+`INTERNALERROR`；而且数据目录是启动时定下来的，几十批挤在一个进程里会互相串味。
+
+> ⚠️ 所以 **别单独点名某一份文件去跑**（`pytest tests/test_01_basic.py` 这种会当场
+> `INTERNALERROR`）。要看单批结果就用它本来的跑法：`python tests/test_01_basic.py`。
+
 测试跑在**临时数据副本**上，不会碰你的演示数据（见 `tests/README.md`）。
 
 ---
