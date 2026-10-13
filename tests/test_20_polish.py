@@ -298,6 +298,15 @@ def test_reverse_verification():
     c = Checker()
     with sandbox():
         client = make_client()
+        # ★ 这一批以前也栽在"沙箱里恰好有什么"上：3d 种过之后第七批漏了，
+        #   本机库里 11 条是绿的，干净克隆 0 条就变成「你目前还没有任何待办」，
+        #   「拆掉润色 → 模板话术回来」那条反而红（2026-10-14 克隆实测）。
+        write_timetable(SEED_COURSES)
+        seed_todos([
+            {"title": "交实验报告", "date": _d(0), "start": "10:00", "end": "11:00"},
+            {"title": "取快递", "date": _d(1), "start": "16:00", "end": "17:00"},
+            {"title": "值日", "date": _d(2), "start": "19:00", "end": "20:00"},
+        ])
 
         r = _patch_client("【润色】我念给你听～")
         try:
