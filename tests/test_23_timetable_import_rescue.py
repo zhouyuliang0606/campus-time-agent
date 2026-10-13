@@ -20,7 +20,8 @@
    planner 会在 `mock_planner` 提前返回（skill 坑表：探针验错地方 = 走了离线 Mock），
    根本到不了出卡兜底；假引擎则是为了钉死"模型没调工具"这条确定性路径。
 """
-from _harness import Checker, make_client, sandbox, title
+from _harness import (Checker, SEED_COURSES, make_client, sandbox, title,
+                      wipe_todos, write_timetable)
 from app.modules.planner import looks_like_timetable_import, timetable_courses_from_reply
 
 # 前端 timetableImportMsg 模板（照抄，改模板时要连这里一起改）
@@ -443,21 +444,57 @@ def batch_d_no_fake_todo_card():
                 "没能把课程整理成确认卡" in (d.get("answer") or ""),
                 (d.get("answer") or "")[:60])
 
-    # 4c 老的待办补条不许被这轮改坏：非导入请求照旧能补出待办确认条
+    # 4c 老的待办补条不许被这轮改坏：非导入请求照旧出待办卡
+    _TODO_PROSE = ("**待办提案** - 事项：健身 - 时间：周二 16:00~17:30\n"
+                   "提案已发出，请点确认条上的【确认】。")
     with sandbox():
+        # ★ 起始状态自己种（2026-10-14 整族扫）：这一档出的**候选时段个数**吃周表
+        #   —— 实测本机真表 1 个段、种子表 3 个段。不种就等于把"我周四有多忙"写进断言。
+        write_timetable(SEED_COURSES)
+        wipe_todos()
         client = make_client()
         restore = _fake_model_env()
         try:
-            _FakeEngine.answer = ("**待办提案** - 事项：健身 - 时间：周二 16:00~17:30\n"
-                                  "提案已发出，请点确认条上的【确认】。")
+            _FakeEngine.answer = _TODO_PROSE
             d = _ask(client, "tt-4", "今晚去健身怎么样")
         finally:
             restore()
-        todo = _todo_card(d.get("options"))
-        c.check("非导入请求照旧走待办补条（健身卡还在）",
-                todo is not None and todo.get("title") == "健身",
-                str([o.get("kind") for o in (d.get("options") or [])]))
+        kinds = [o.get("kind") for o in (d.get("options") or []) if isinstance(o, dict)]
+        c.check("非导入请求照旧出待办卡（todo_add 或候选时段卡都算）",
+                "todo_add" in kinds or "todo_slots" in kinds, str(kinds))
+        c.check("卡上的事名来自学生说的「健身」",
+                any("健身" in (o.get("title") or "")
+                    for o in (d.get("options") or []) if isinstance(o, dict)), str(kinds))
         c.check("非导入请求绝不挂课表卡", _tt_card(d.get("options")) is None)
+        # ⚠️ 2026-10-14 实测改口：这句话**已经走不到补条**了 —— 学生说了"今晚"
+        #   （哪天有了、钟点没有），规则层直接摊候选时段（`todo_slots`），
+        #   模型那段话一个字没参与。这是 TimeSpec 那一轮的既定规格（判据见 test_40 D 批），
+        #   不是回归。所以"补条那条路没被改坏"必须另起一个**真走得到**的用例：4c-bis。
+        c.check("（记录规格）「今晚去健身怎么样」走的是候选时段，不是补条",
+                "todo_slots" in kinds, str(kinds))
+
+    # 4c-bis 补条那一档本身：规则层没接住的话，系统才从模型回话里补出 todo_add
+    with sandbox():
+        write_timetable(SEED_COURSES)
+        wipe_todos()
+        client = make_client()
+        restore = _fake_model_env()
+        try:
+            _FakeEngine.answer = _TODO_PROSE
+            # 「我今晚该干点啥呢」—— 规则层判成问事（没认出口头加待办），
+            # 这一轮才真的落到「回答没给结构化结果 → 从话里补条」那一档。
+            d = _ask(client, "tt-4b", "我今晚该干点啥呢")
+        finally:
+            restore()
+        todo = _todo_card(d.get("options"))
+        c.check("补条那一档照旧走得通：todo_add + 健身 + 16:00-17:30",
+                todo is not None and todo.get("title") == "健身"
+                and todo.get("start") == "16:00" and todo.get("end") == "17:30",
+                str([o.get("kind") for o in (d.get("options") or [])]))
+        c.check("trace 写明是系统「补出确认条」（不是模型自己调的工具）",
+                any("补出确认条" in (s.get("phase") or "") for s in (d.get("trace") or [])),
+                [s.get("phase") for s in (d.get("trace") or [])])
+        c.check("补条这一路也绝不挂课表卡", _tt_card(d.get("options")) is None)
     return c
 
 
@@ -497,7 +534,9 @@ def batch_f_diagnostics():
             restore()
         t = _trace_text(d)
         c.check("命中：trace 含「探测：命中」", "探测：命中" in t, t[:120])
-        c.check("命中：trace 含「从模型回话抠课」", "从模型回话抠课" in t, t[:120])
+        # 文案对不上（2026-10-14 查）：9be6537「轨迹文案去掉技术内脏」把这档改名成
+        # 「从这轮回答里抠课程」（不对学生说"模型"），断言当时没跟着改，一直红着。
+        c.check("命中：trace 含「从这轮回答里抠课程」", "从这轮回答里抠课程" in t, t[:120])
         c.check("命中：trace 含「从文件原文抠课」", "从文件原文抠课" in t, t[:120])
         c.check("命中：trace 含「出卡」结论", "出卡" in t, t[:200])
         c.check("命中：同时确实挂出了 timetable_change 卡",
