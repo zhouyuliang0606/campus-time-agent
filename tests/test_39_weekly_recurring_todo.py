@@ -20,6 +20,7 @@ from _harness import Checker, make_client, sandbox, title
 from app.store import set_settings   # ⚠️ 在 app.store，不在 _harness（踩过：那里没有这个名字）
 
 STUDENT = "app/static/student.html"
+MAIN = "app/main.py"
 PLAN = "app/static/plan.html"
 CONFIRM = "app/static/confirm.html"
 PLANNER = "app/modules/planner.py"
@@ -131,7 +132,8 @@ def batch_c_store_model():
         S.set_todo_done_on(one["id"], _sun(0), True)
         c.check("一次性待办带 on 也照旧翻 status", S.get_todo(one["id"])["status"] == "done")
 
-        junk = S.add_todo("测试", _sun(0), "10:00", "11:00", repeat="daily")
+        # ⚠️ 探针值不能用 "daily"（2026-10-13 起它是**合法值**了：一条每天的习惯）。
+        junk = S.add_todo("测试", _sun(0), "10:00", "11:00", repeat="monthly")
         c.check("不认识的 repeat 值退回一次性（不写脏字段）", "repeat" not in junk, junk.get("repeat"))
         legacy = {"id": "old", "title": "老数据", "date": _sun(0), "status": "planned"}
         c.check("缺新字段的老记录照样判（不 KeyError）",
@@ -216,8 +218,8 @@ def batch_e_three_layers_synced():
         c.check(f"{name} 的渲染调用点没有残留'按日期精确相等'", not left, left[:2])
         c.check(f"{name} 里 todoOccurs 的调用点至少 3 处（周表/月表/下钻）",
                 src.count("todoOccurs(") >= 4, src.count("todoOccurs("))
-    c.check("student.html 周表用 todoOccurs 过滤待办",
-            "schTodos.filter(t => todoOccurs(t, dIso))" in st)
+    c.check("student.html 周表用 todoOccurs 过滤待办（且习惯那一档被 isHabit 挡在格子外面）",
+            "schTodos.filter(t => !isHabit(t) && todoOccurs(t, dIso))" in st)
     c.check("confirm.html 把 repeat 一路发给 /api/todos/batch",
             "repeat: p.repeat" in cf)
     c.check("重复待办在日程上有可视标记（不然学生不知道它为什么每周都冒出来）",
@@ -405,10 +407,215 @@ def batch_h_inverted_word_order():
     return c
 
 
+def batch_i_daily_habit():
+    """I 批 · 每天类习惯（2026-10-13 用户 Prompt 02）。
+
+    产品口径是用户拍板的两条，断言全部围着它们写：
+      ① 「每天/天天/每日」落成**一条** repeat=daily，不再是一句"我记不了"；
+      ② 习惯**只进代办清单、一律不画进日历**（学生原话「这种任务完成不了，
+         我也不往日程堆，太多了乱」）；红角标 = 今天还没勾掉的条数。
+
+    ⚠️ 施工单 §三.1 那句「摘掉 `_UNSUPPORTED_PERIOD` 三项就彻底放开」是**错的**：
+      实测摘掉之后 `wants_add_todo("我每天都要背单词")` 仍然是 False ——
+      拦它的不是否决表，是接单开关里没有 daily 这一档。
+      所以 D 组专门钉这一条：只改否决表会得到"不拦了，但也没接"。
+    """
+    c = Checker()
+    title("I 批 · 每天类习惯：认得、只建一条、只进代办不画日历")
+    from app.modules import planner as P
+    from app.modules.planner import (daily_repeat, wants_add_todo, unsupported_period,
+                                     weekly_repeat_day, repeat_of, parse_time_spec, _pick_title)
+    from app.store import (REPEAT_DAILY, REPEAT_WEEKLY, REPEAT_VALUES, add_todo,
+                           HABIT_REPEATS, DAY_LOGGED_REPEATS, is_habit, list_todos,
+                           list_todos_in_month,
+                           set_todo_done_on, todo_done_on, todo_occurs_on)
+
+    today = datetime.date.today().isoformat()
+    tmr = (datetime.date.today() + datetime.timedelta(days=1)).isoformat()
+
+    # ==== A. 认与不认 ====
+    for s in ("我每天都要背单词", "天天跑步", "每日英语打卡", "以后每天晨跑", "每一天都背单词"):
+        c.check(f"认：{s}", daily_repeat(s) and not weekly_repeat_day(s),
+                f"daily={daily_repeat(s)} weekly={weekly_repeat_day(s)}")
+    for s, why in (("今天背单词", "具体一天，不是每天"), ("明天跑步", "同上"),
+                   ("昨天没睡好", "过去 + 不是每天"), ("每周日都写作业", "那是 weekly 的活"),
+                   ("每个周天都加一个写作业的代办", "点名星期几，优先 weekly"),
+                   ("隔一天去跑步", "跳日子表达不了")):
+        c.check(f"不认 daily：{s}（{why}）", not daily_repeat(s), daily_repeat(s))
+    c.check("「每周几 + 每天」同时出现时 weekly 赢（repeat_of 只有一份判据）",
+            repeat_of("每周三上课，每天都要背单词") == REPEAT_WEEKLY,
+            repeat_of("每周三上课，每天都要背单词"))
+
+    # ==== B. 施工单那条错前提：只摘否决表不够，接单开关必须有分支 ====
+    c.check("否决表里已经没有「每天/天天/每日」（摘掉了）",
+            not any(w in ("每天", "天天", "每日") for w in _UNSUPPORTED_NOW()),
+            _UNSUPPORTED_NOW())
+    c.check("但光摘否决表不会放行 —— 这条钉的是 wants_add_todo 的 daily 分支真的在生效",
+            wants_add_todo("我每天都要背单词") is True)
+    c.check("天天跑步 / 每日英语打卡 也照接",
+            wants_add_todo("天天跑步") and wants_add_todo("每日英语打卡"))
+    c.check("吐槽句不许被接成下单（「你每天都不回我消息」）",
+            wants_add_todo("你每天都不回我消息") is False)
+    c.check("问句不许被接（「每天几点起床最好」「每天都这么累有什么用」）",
+            not wants_add_todo("每天几点起床最好") and not wants_add_todo("每天都这么累有什么用"))
+    c.check("闸门没被顺手放宽：每月 / 每个周末 照旧拦",
+            unsupported_period("每个月交一次电费") == "每个月"
+            and unsupported_period("每个周末去爬山") == "每个周末",
+            unsupported_period("每个月交一次电费"))
+    for s in ("我每天都要背单词", "以后每天晨跑", "每日英语打卡"):
+        c.check(f"标题擦干净：{s}", "每天" not in _pick_title(s)
+                and "天天" not in _pick_title(s) and "每日" not in _pick_title(s), _pick_title(s))
+    sp = parse_time_spec("我每天都要背单词 晚上9点")
+    c.check("一次解析就定档：repeat=daily 且 weekday 为空（不猜星期几）",
+            sp["repeat"] == REPEAT_DAILY and sp["weekday"] is None and sp["start"] == "21:00", sp)
+
+    # ==== C. 存储层：一条记录、天天出现、按天记完成、有头 ====
+    with sandbox():
+        set_settings({"api_key": "", "base_url": "https://api.deepseek.com", "model": "deepseek-chat"})
+        cli = make_client()
+        item = add_todo("背单词", today, "21:00", "21:30", repeat=REPEAT_DAILY)
+        c.check("落库带 repeat=daily + done_dates（少了后者，勾今天会把整条划掉）",
+                item.get("repeat") == REPEAT_DAILY and "done_dates" in item, item)
+        c.check("daily 不写 weekday（它每天都是那天）", not item.get("weekday"), item.get("weekday"))
+        c.check("今天算出现 / 明天算出现", todo_occurs_on(item, today) and todo_occurs_on(item, tmr))
+        c.check("锚点之前不算（「从下周一开始每天」不能把过去的日子也算上）",
+                not todo_occurs_on(item, (datetime.date.today()
+                                          - datetime.timedelta(days=1)).isoformat()))
+        c.check("往后同样有头（2099 不该出现，沿用 weeklyLimit 那把尺子）",
+                not todo_occurs_on(item, "2099-01-01"))
+        set_todo_done_on(item["id"], today, True)
+        back = cli.get("/api/todos").json()["todos"]
+        got = [x for x in back if x["id"] == item["id"]][0]
+        c.check("勾掉今天 → 今天 done、明天没 done（按天记）",
+                todo_done_on(got, today) and not todo_done_on(got, tmr), got.get("done_dates"))
+        c.check("整条 status 不能被翻成 done（明天它还得出现）",
+                got.get("status") != "done", got.get("status"))
+        # ==== C-bis. 「说出来勾掉」那一路（不是复选框）：查出来的老洞，weekly 同样中招 ====
+        # 原写法是 `update_todo_status(id, "done")` + 读侧只看 done_dates ⇒ 空操作：
+        # 学生点完确认，第二天那条照旧挂着。现在两条确认路径都走 `set_todo_done_on`。
+        set_todo_done_on(item["id"], today, False)      # 撤回，重新用"说话"这条路勾
+        r_done = cli.post("/api/chat", json={"message": "背单词完成了",
+                                             "session_id": "t39-id", "module": "planner"})
+        dcards = [o for o in (r_done.json().get("options") or []) if isinstance(o, dict)]
+        c.check("说「背单词完成了」认出的是这条习惯",
+                [o.get("kind") for o in dcards] == ["todo_done"], [o.get("kind") for o in dcards])
+        r_ok = cli.post("/api/chat", json={"message": "确认",
+                                           "session_id": "t39-id", "module": "planner"})
+        after = [x for x in list_todos() if x["id"] == item["id"]][0]
+        c.check("点确认之后今天真的记进 done_dates（老写法在这儿是空操作）",
+                today in (after.get("done_dates") or []), after.get("done_dates"))
+        c.check("回执要说清记的是哪天、而且明天还会出现（不许说得像到底了）",
+                "已标记为完成" in (r_ok.json().get("answer") or "")
+                and "明天" in (r_ok.json().get("answer") or ""), (r_ok.json().get("answer") or "")[:80])
+        def _covers_2100():
+            return any(s.get("start", "99:99") <= "21:00" and s.get("end", "") >= "21:30"
+                       for s in P.find_free_slots(today, min_minutes=30))
+        set_todo_done_on(item["id"], today, False)
+        busy_before = _covers_2100()
+        set_todo_done_on(item["id"], today, True)
+        c.check("勾掉今天之后，21:00-21:30 这段不再替它占着（没勾时占、勾了就放开）",
+                busy_before is False and _covers_2100() is True,
+                f"没勾={busy_before} 勾了={_covers_2100()}")
+        one_more = add_todo("取快递", today, "16:00", "17:00")
+        set_todo_done_on(one_more["id"], "", True)
+        c.check("一次性待办不传日子仍照旧翻 status（这次改动没碰它）",
+                [x for x in list_todos() if x["id"] == one_more["id"]][0]["status"] == "done")
+        # 确认卡（confirm.html 的 todo_done）发的是**不带 on 的 PUT** —— 老写法在这儿正好是空操作，
+        # 所以这一条才是那颗牙（Y4 变异：把 `and date` 加回去，它当场红）。
+        by_card = add_todo("打卡·走确认卡", today, "06:30", "07:00", repeat=REPEAT_DAILY)
+        pu = cli.put(f"/api/todos/{by_card['id']}", json={"status": "done"})
+        got2 = [x for x in list_todos() if x["id"] == by_card["id"]][0]
+        c.check("不带 on 的 PUT 对习惯也按天记（确认卡那条发的就是这一种）",
+                pu.status_code == 200 and today in (got2.get("done_dates") or [])
+                and got2.get("status") == "planned",
+                f"{got2.get('done_dates')} / {got2.get('status')}")
+        c.check("一次性待办不受影响：status 照旧是判完成的依据",
+                todo_done_on({"date": today, "status": "done"}, today)
+                and not todo_occurs_on({"date": today, "repeat": ""}, tmr))
+        c.check("判据收成两个集合，别再散着写 == weekly（HABIT / DAY_LOGGED）",
+                HABIT_REPEATS == (REPEAT_DAILY,) and set(DAY_LOGGED_REPEATS) == {REPEAT_WEEKLY, REPEAT_DAILY}
+                and set(REPEAT_VALUES) == {"", REPEAT_WEEKLY, REPEAT_DAILY})
+        # ==== D. 日历一律不画习惯（后端这一侧只有一处取数：月表） ====
+        grp = list_todos_in_month(today[:7])
+        c.check("月表里找不到习惯（一天都不许出现，不然格子天天占）",
+                not any(x.get("repeat") == REPEAT_DAILY for v in grp.values() for x in v),
+                [x.get("title") for v in grp.values() for x in v if x.get("repeat") == REPEAT_DAILY])
+        wk = add_todo("每周跑步", _sun(0), "07:00", "08:00", repeat=REPEAT_WEEKLY)
+        grp2 = list_todos_in_month(_sun(0)[:7])
+        c.check("对照：weekly 照旧画进日历（它是时间承诺，用户只把 daily 移出去了）",
+                any(x.get("repeat") == REPEAT_WEEKLY for v in grp2.values() for x in v), wk.get("repeat"))
+        c.check("is_habit 只认 daily，不认 weekly / 一次性",
+                is_habit(item) and not is_habit(wk) and not is_habit({"repeat": ""}))
+
+        # ==== E. 端到端：一句话 → daily 候选卡 → 勾一段只建一条 ====
+        r = cli.post("/api/chat", json={"message": "我每天都要背单词",
+                                        "session_id": "t39-i", "module": "planner"})
+        d = r.json()
+        cards = [o for o in (d.get("options") or []) if isinstance(o, dict)]
+        card = cards[0] if cards else {}
+        c.check("出的是候选卡（不是「记不了」那句）",
+                card.get("kind") == "todo_slots" and card.get("repeat") == REPEAT_DAILY, card)
+        c.check("话术讲清三件事：每天 / 只建一条 / 不进日程格子",
+                all(k in (card.get("hint") or "") for k in ("每天", "只建一条", "代办")),
+                (card.get("hint") or "")[:120])
+        ans = d.get("answer") or ""
+        c.check("回话不许出现「记不了」（这句现在办得了）", "记不了" not in ans, ans[:80])
+        sl = (card.get("slots") or [{}])[0]
+        w = cli.post("/api/todos/batch", json={"session_id": "t39-i", "title": card.get("title"),
+                                               "slots": [{"date": sl.get("date"), "start": sl.get("start"),
+                                                          "end": sl.get("end")}],
+                                               "repeat": REPEAT_DAILY})
+        b = w.json()
+        c.check("勾一段只写 1 条，且落的是 daily",
+                b.get("count") == 1 and (b.get("added") or [{}])[0].get("repeat") == REPEAT_DAILY, b)
+
+    # ==== F. 三份同步：判据一份 + 日历那几个点各滤一次 ====
+    st = io.open(STUDENT, encoding="utf-8").read()
+    pl = io.open(PLAN, encoding="utf-8").read()
+    cf = io.open(CONFIRM, encoding="utf-8").read()
+    mn = io.open(MAIN, encoding="utf-8").read()
+    for name, src in (("student.html", st), ("plan.html", pl)):
+        c.check(f"{name}：todoOccurs 只有**一个**定义（习惯也靠它，不另抄一份）",
+                src.count("function todoOccurs") == 1, src.count("function todoOccurs"))
+        c.check(f"{name}：todoOccurs 里有 daily 分支", 't.repeat === "daily"' in src)
+        c.check(f"{name}：isHabit 是后端 HABIT_REPEATS 的翻译（表只有一份）",
+                'const HABIT_REPEATS = ["daily"];' in src and "function isHabit" in src)
+        c.check(f"{name}：todoDoneOn 对 daily 也按天记（勾一次≠整条完成）",
+                't.repeat === "weekly" || t.repeat === "daily"' in src)
+    c.check("student.html 三个日历渲染点都用 !isHabit 挡（周表/月表/下钻，少一处就是日程里冒出来）",
+            st.count("!isHabit(t) && todoOccurs") == 3, st.count("!isHabit(t) && todoOccurs"))
+    c.check("plan.html 同样三处", pl.count("!isHabit(t) && todoOccurs") == 3,
+            pl.count("!isHabit(t) && todoOccurs"))
+    # 没滤习惯的调用点**只允许有这一个**：红角标数的是"今天还要打卡的条数"，
+    # 它必须把 daily 算进来。日历那几处全都得带 !isHabit（上面两条计数钉着）。
+    c.check("student.html 不滤习惯的调用点只有角标那一个（别处漏一条=习惯钻进格子）",
+            st.count("=> todoOccurs(") == 1 and "todoOccurs(t, todayIso)" in st,
+            (st.count("=> todoOccurs("), "todoOccurs(t, todayIso)" in st))
+    c.check("plan.html 没有不滤习惯的调用点（它只有日历，没有代办角标）",
+            pl.count("=> todoOccurs(") == 0, pl.count("=> todoOccurs("))
+    c.check("confirm.html 的候选卡把 daily 显出来（不显就是 surprise）",
+            'p.repeat === "daily"' in cf and "每天重复" in cf)
+    c.check("后端三处 repeat 白名单都认 daily（漏一处=前端传 daily 被退回一次性）",
+            mn.count("(REPEAT_NONE, REPEAT_WEEKLY, REPEAT_DAILY)") == 3,
+            mn.count("(REPEAT_NONE, REPEAT_WEEKLY, REPEAT_DAILY)"))
+    # 角标：数的是"今天还没勾掉的"，必须含习惯，所以它问的是 todoOccurs 而不是被滤过的那份
+    c.check("红角标在侧栏和代办标题各一颗，且数的是 todoOccurs（含习惯）",
+            st.count('class="todo-badge"') == 2 and "todoOccurs(t, todayIso) && !todoDoneOn" in st,
+            st.count('class="todo-badge"'))
+    c.check("拉到待办的两处都刷角标（日程面板 + 代办列表）", st.count("updateTodoBadge(") == 3,
+            st.count("updateTodoBadge("))
+    return c
+
+
+def _UNSUPPORTED_NOW():
+    from app.modules.planner import _UNSUPPORTED_PERIOD
+    return tuple(_UNSUPPORTED_PERIOD)
+
+
 def main():
     results = [batch_a_recognition(), batch_b_title_and_veto(), batch_c_store_model(),
                batch_d_end_to_end(), batch_e_three_layers_synced(), batch_f_old_path_untouched(),
-               batch_g_weekly_horizon(), batch_h_inverted_word_order()]
+               batch_g_weekly_horizon(), batch_h_inverted_word_order(), batch_i_daily_habit()]
     total_pass = sum(r.passed for r in results)
     total_fail = sum(r.failed for r in results)
     print(f"\n===== 每周重复待办总账：通过 {total_pass} 项，失败 {total_fail} 项 =====")

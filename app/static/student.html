@@ -414,6 +414,14 @@
   .todo-row.done { opacity: .6; }
   .todo-row.done .todo-title { text-decoration: line-through; }
   .todo-row input[type=checkbox] { width: 16px; height: 16px; accent-color: #4f7cff; flex: none; }
+  /* 代办入口的红角标 = 今天还没勾掉的条数（用户 2026-10-13 点名要红数字）。
+     侧栏那颗靠 margin-left:auto 顶到行尾；窄屏（下面那条 media）会把 span 全隐藏，
+     所以补一条**写在隐藏规则之后**的例外，不然手机上正好看不见最该看的东西。 */
+  .todo-badge { background: #ff3b30; color: #fff; border-radius: 9px; padding: 0 6px; min-width: 16px;
+                height: 16px; line-height: 16px; font-size: 11px; font-weight: 700; text-align: center;
+                display: none; flex: none; }
+  .sb-item .todo-badge { margin-left: auto; }
+  .todo-group { font-size: 12px; color: #8a93a6; letter-spacing: .04em; margin: 4px 2px -2px; }
   .todo-main { flex: 1; min-width: 0; }
   .todo-title { font-size: 14px; font-weight: 500; }
   .todo-sub { font-size: 12px; color: #8a93a6; margin-top: 2px; }
@@ -663,7 +671,8 @@ html.gx-glass[data-gx-refine="on"] .composer, html.gx-glass[data-gx-refine="on"]
   @media (max-width: 720px) {
     .sidebar { width: 64px; padding: 10px 8px; }
     .sb-name, .sb-sub, .sb-item span:not(.ico), .sb-more-toggle span:not(.ico), .sb-foot { display: none; }
-    .sb-item { justify-content: center; }
+    .sb-item span.todo-badge { display: block; position: absolute; margin-left: 22px; }
+    .sb-item { justify-content: center; position: relative; }
   }
 </style>
   <!-- 玻璃质感公共层：放在内联样式之后，同权重下后者胜，才能盖住上面那些旧规则。
@@ -713,7 +722,7 @@ html.gx-glass[data-gx-refine="on"] .composer, html.gx-glass[data-gx-refine="on"]
              ⚠️ 「🗓️ 日程」这一项**不能一起摘**：它是从「设置/代办」回主页的唯一入口。 -->
         <div class="sb-item active" data-nav="schedule"><span class="ico"><svg class="ic"><use href="#gi-cal"/></svg></span>日程</div>
         <div class="sb-item" data-nav="notices" id="sbNotices"><span class="ico"><svg class="ic"><use href="#gi-bell"/></svg></span>校园通知<span class="sb-dot" id="sbNoticeDot"></span></div>
-        <div class="sb-item" data-nav="todos"><span class="ico"><svg class="ic"><use href="#gi-check"/></svg></span>代办事项</div>
+        <div class="sb-item" data-nav="todos"><span class="ico"><svg class="ic"><use href="#gi-check"/></svg></span>代办事项<span class="todo-badge" id="todoBadge"></span></div>
         <div class="sb-item" data-nav="settings"><span class="ico"><svg class="ic"><use href="#gi-sliders"/></svg></span>设置</div>
       </nav>
       <div class="sb-more" id="sbMore">
@@ -841,7 +850,7 @@ html.gx-glass[data-gx-refine="on"] .composer, html.gx-glass[data-gx-refine="on"]
     <!-- chatResetMask 已移至 main -->
         </div><!-- /chatStage -->
         <div id="navTodos" class="nav-view">
-          <div class="card"><h2>代办事项</h2><div class="desc">勾选标记完成，或删除。改动即时同步到日程。</div><div id="todoList" class="todo-list"></div></div>
+          <div class="card"><h2>代办事项 <span class="todo-badge" id="todoBadgeCard"></span></h2><div class="desc">勾选标记完成，或删除。<b>习惯（每天/每周）只列在这里，不画进日程格子</b>；单次任务改动即时同步到日程。</div><div id="todoList" class="todo-list"></div></div>
         </div>
         <div id="navNotices" class="nav-view">
           <div class="card"><h2>校园通知 <span class="badge" id="noticeCount">0</span></h2>
@@ -1882,7 +1891,18 @@ html.gx-glass[data-gx-refine="on"] .composer, html.gx-glass[data-gx-refine="on"]
       const last = new Date(target.getFullYear(), target.getMonth() + 1, 0).getDate();
       return isoD(new Date(target.getFullYear(), target.getMonth(), Math.min(base.getDate(), last)));
     }
+    // 「习惯」（每天类）—— 后端 `store.HABIT_REPEATS` 的翻译，这张表只该有一份。
+    // 它**天天都算"在"**（见下面 todoOccurs 的 daily 分支），但**一律不画进日历格子**：
+    // 学生的原话「这种任务完成不了，我也不往日程堆，太多了乱」。
+    // 所以滤它的位置是**日历那几个渲染点**（取数时滤），不是叫 todoOccurs 撒谎 ——
+    // 那儿撒一次谎，代办角标和清单就一起漏掉这条（用户 2026-10-13 拍板"判据只留一份"）。
+    const HABIT_REPEATS = ["daily"];
+    function isHabit(t) { return HABIT_REPEATS.indexOf(t.repeat) >= 0; }
     function todoOccurs(t, dIso) {
+      if (t.repeat === "daily") {
+        // 锚点之前不算（"从下周一开始每天"），往后同样用 weeklyLimit 那把尺子收口
+        return dIso >= t.date && dIso <= weeklyLimit(t.date);
+      }
       if (t.repeat === "weekly") {
         const wd = t.weekday || wdOfIso(t.date);
         return wdOfIso(dIso) === wd && dIso >= t.date && dIso <= weeklyLimit(t.date);   // 锚点之前不算，上限之后也不算
@@ -1890,9 +1910,23 @@ html.gx-glass[data-gx-refine="on"] .composer, html.gx-glass[data-gx-refine="on"]
       return t.date === dIso;
     }
     function todoDoneOn(t, dIso) {
-      // 重复待办的"完成"按天记：勾掉本周 ≠ 以后都不用做
-      if (t.repeat === "weekly") return (t.done_dates || []).indexOf(dIso) >= 0;
+      // 重复/习惯待办的"完成"按天记：勾掉本周（今天）≠ 以后都不用做
+      if (t.repeat === "weekly" || t.repeat === "daily") return (t.done_dates || []).indexOf(dIso) >= 0;
       return t.status === "done";
+    }
+    // 代办入口的**红色角标** = 今天还没勾掉的条数（用户 2026-10-13 点名要"红数字"）。
+    // ⚠️ 这里必须用 `todoOccurs`（含习惯），不能拿日历那几个渲染点的过滤结果来数 ——
+    // 习惯不进格子，但它恰恰是最该被催的："今天还没打卡"。
+    // 两处调用：日程面板拉到 todos 之后、代办列表拉到之后（谁先拿到谁先把数摆上）。
+    function updateTodoBadge(list) {
+      const todayIso = isoD(new Date());
+      const n = (list || []).filter(t => todoOccurs(t, todayIso) && !todoDoneOn(t, todayIso)).length;
+      document.querySelectorAll(".todo-badge").forEach(el => {
+        // 显隐一律写死在 inline 上：CSS 里那条是 display:none（默认不占位），
+        // 只靠清空 style.display 会被它盖住 —— 窄屏那条例外规则同理也救不了宽屏。
+        el.textContent = n ? String(n) : "";
+        el.style.display = n ? "inline-block" : "none";
+      });
     }
 
     let schTab = "week", schWeekOffset = 0, schMonthOffset = 0, schSelDate = null;
@@ -1907,6 +1941,7 @@ html.gx-glass[data-gx-refine="on"] .composer, html.gx-glass[data-gx-refine="on"]
       try {
         const t = await (await fetch("/api/timetable")).json(); schCourses = t.courses || [];
         const td = await (await fetch("/api/todos")).json(); schTodos = td.todos || [];
+        updateTodoBadge(schTodos);      // 日程这一栏也刷角标：改完待办回到日程看的就是这个数
       } catch (e) { /* 拉不到就按空数据渲染，不炸面板 */ }
       renderSchCurrent();
       setSchTab();   // 周表/月表同源，统一由 setSchTab 显隐切换并刷新当前 tab
@@ -1940,7 +1975,7 @@ html.gx-glass[data-gx-refine="on"] .composer, html.gx-glass[data-gx-refine="on"]
         const evts = [
           ...schCourses.filter(c => Number(c.day) === wd).map(c =>
             ({ s: minsOf(c.start), e: minsOf(c.end), cls: "course", name: c.course, tm: c.start + "-" + c.end, loc: c.location || "" })),
-          ...schTodos.filter(t => todoOccurs(t, dIso)).map(t =>
+          ...schTodos.filter(t => !isHabit(t) && todoOccurs(t, dIso)).map(t =>
             ({ s: minsOf(t.start), e: minsOf(t.end), cls: todoDoneOn(t, dIso) ? "todo done" : "todo", name: (t.repeat === "weekly" ? "🔁 " : "") + t.title, tm: t.start + "-" + t.end, loc: "" })),
         ].filter(x => x.e > x.s).sort((a, b) => a.s - b.s);
 
@@ -1978,7 +2013,7 @@ html.gx-glass[data-gx-refine="on"] .composer, html.gx-glass[data-gx-refine="on"]
       for (let d = 1; d <= dim; d++) {
         const date = new Date(y, m, d);
         const dIso = isoD(date), wd = isoWd(date);
-        const list = schTodos.filter(t => todoOccurs(t, dIso)), isT = dIso === todayIso;
+        const list = schTodos.filter(t => !isHabit(t) && todoOccurs(t, dIso)), isT = dIso === todayIso;
         // 与 /plan 月表同规则：像系统日历一样，每天格子直接列出**待办 + 课程**
         // （面板格子窄，最多 2 条）。
         //
@@ -2006,7 +2041,7 @@ html.gx-glass[data-gx-refine="on"] .composer, html.gx-glass[data-gx-refine="on"]
     function renderSchDay() {
       const box = document.getElementById("schDayDetail");
       if (!schSelDate) { box.innerHTML = '<div class="empty">点月历里任意一天，看当天安排</div>'; return; }
-      const list = schTodos.filter(t => todoOccurs(t, schSelDate)).sort((a, b) => a.start.localeCompare(b.start));
+      const list = schTodos.filter(t => !isHabit(t) && todoOccurs(t, schSelDate)).sort((a, b) => a.start.localeCompare(b.start));
       box.innerHTML = list.length
         ? `<b style="font-size:13px;">${schSelDate} 的待办</b>` + list.map(t =>
             `<div class="evt todo ${todoDoneOn(t, schSelDate) ? "done" : ""}" style="font-size:12px;margin-top:6px;white-space:normal;">${esc(t.start)}-${esc(t.end)} ${t.repeat === "weekly" ? "🔁 " : ""}${esc(t.title)}</div>`).join("")
@@ -2635,7 +2670,7 @@ html.gx-glass[data-gx-refine="on"] .composer, html.gx-glass[data-gx-refine="on"]
         // 重复待办没有"整条完成"这回事 —— 面板上那一勾对应的是**最近该出现的那一天**，
         // 所以每行都要带着那个日期（data-on），点勾时一起发给后端记进 done_dates。
         function nextOccur(t){
-          if(t.repeat!=="weekly"){ return t.date; }
+          if(t.repeat!=="weekly" && t.repeat!=="daily"){ return t.date; }
           var d=new Date(); d.setHours(0,0,0,0);
           for(var i=0;i<60;i++){
             var iso=isoD(d);
@@ -2644,19 +2679,37 @@ html.gx-glass[data-gx-refine="on"] .composer, html.gx-glass[data-gx-refine="on"]
           }
           return t.date;
         }
-        box.innerHTML=list.slice().sort(function(a,b){ return (a.date+a.start).localeCompare(b.date+b.start); }).map(function(t){
+        var rowHtml = function(t){
           var on=nextOccur(t), done=todoDoneOn(t,on);
           var wd=""; try{ wd=WD[((new Date(on+"T00:00:00").getDay()+6)%7)]; }catch(e){}
-          var when = t.repeat==="weekly"
-            ? ("🔁 每周"+(WD[((new Date(t.date+"T00:00:00").getDay()+6)%7)]||"")+" · 下次 "+esc(on)+"（"+wd+"）")
-            : (esc(t.date)+"（"+wd+"）");
+          var when = t.repeat==="daily"
+            ? ("🔁 每天 · 今天（"+wd+"）起天天有")
+            : (t.repeat==="weekly"
+               ? ("🔁 每周"+(WD[((new Date(t.date+"T00:00:00").getDay()+6)%7)]||"")+" · 下次 "+esc(on)+"（"+wd+"）")
+               : (esc(t.date)+"（"+wd+"）"));
+          // 「勾掉只算…」这句按档位给：习惯勾一次只算**那一天**，
+          // 写成"只算本周"对 daily 就是假话（它天天都在）。
+          var onlyThis = t.repeat==="daily" ? '勾掉只算今天' : (t.repeat==="weekly" ? '勾掉只算本周' : '');
           return '<div class="todo-row '+(done?"done":"")+'">'+
             '<input type="checkbox" '+(done?"checked":"")+' data-id="'+esc(t.id)+'" data-on="'+esc(on)+'" class="todo-done" />'+
             '<div class="todo-main"><div class="todo-title">'+esc(t.title)+'</div>'+
             '<div class="todo-sub">'+when+' '+esc(t.start||"")+'-'+esc(t.end||"")
-              +(t.repeat==="weekly" ? ' <span style="color:#8a93a6;">勾掉只算本周</span>' : '')+'</div></div>'+
+              +(onlyThis ? ' <span style="color:#8a93a6;">'+onlyThis+'</span>' : '')+'</div></div>'+
             '<button class="todo-del" data-id="'+esc(t.id)+'">删除</button></div>';
-        }).join("");
+        };
+        var sorted=list.slice().sort(function(a,b){ return (a.date+a.start).localeCompare(b.date+b.start); });
+        // 分两组摆：单次任务 / 习惯（每天 + 每周）。分组口径就一条：**有没有重复档**
+        // （`t.repeat` 非空）。⚠️ 别把它和上面 `isHabit`（日历画不画）混为一谈 ——
+        // weekly 进日历、也进习惯组，两者问的不是同一件事。
+        // 习惯**不画进日程格子**的那一档（daily），这一栏是它唯一看得见的位置，
+        // 所以给它自己的小标题，别和单次任务混成一锅。
+        var once = sorted.filter(function(t){ return !t.repeat; });
+        var habits = sorted.filter(function(t){ return !!t.repeat; });
+        var html = "";
+        if (once.length) html += '<div class="todo-group">单次任务</div>' + once.map(rowHtml).join("");
+        if (habits.length) html += '<div class="todo-group">习惯（每天 / 每周 · 不占日程格子）</div>' + habits.map(rowHtml).join("");
+        box.innerHTML = html;
+        updateTodoBadge(list);
         box.querySelectorAll(".todo-done").forEach(function(cb){ cb.addEventListener("change", async function(){
           // dataset 里拿回来的是**原值**（HTML 转义在解析时已还原），所以拼 URL 前必须 encode
           var id=cb.dataset.id, on=cb.dataset.on||"";

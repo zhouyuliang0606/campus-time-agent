@@ -321,17 +321,21 @@ def batch_h_model_exit_gate_behaviour():
         try:
             M.classify = quiet_sem
             M.AgentEngine = _FakeEngine
-            r = cli.post("/api/chat", json={"message": "以后每天晨跑",
+            # ⚠️ 例句 2026-10-13 换过一次：原来这里用「以后每天晨跑」，但"每天"现在
+            #   **表达得了**了（一条 daily 习惯，只进代办不进日历 —— Prompt 02），
+            #   拿它当"表达不了的周期"的例子，钉的就不是那道闸了。换成「每月」：
+            #   一条记录落不了"每个月"，这道闸必须照样把模型摊的候选撤光。
+            r = cli.post("/api/chat", json={"message": "以后每月晨跑",
                                             "session_id": "t43-h", "module": "planner"})
             d = r.json()
             opts = [o for o in (d.get("options") or []) if isinstance(o, dict)]
-            c.check("模型摊出来的这两段候选被出口撤掉（学生说的「每天」不能被偷偷改成两天）",
+            c.check("模型摊出来的这两段候选被出口撤掉（学生说的「每月」不能被偷偷改成两天）",
                     not opts, [(o.get("date"), o.get("title")) for o in opts])
             c.check("撤掉之后必须说一句为什么，不许只回一句「给你挑了几段」",
                     "记不了" in (d.get("answer") or ""), (d.get("answer") or "")[:90])
             r2 = cli.post("/api/chat", json={"message": "以后周六晨跑",
                                              "session_id": "t43-h2", "module": "planner"})
-            c.check("对照：没说「每天」的那句，引擎给的候选照旧留着（不是无差别撤卡）",
+            c.check("对照：没说「每月」的那句，引擎给的候选照旧留着（不是无差别撤卡）",
                     bool([o for o in (r2.json().get("options") or []) if isinstance(o, dict)]),
                     (r2.json().get("options") or [])[:1])
         finally:

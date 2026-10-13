@@ -367,8 +367,8 @@ def save_timetable(courses: list) -> dict:
 # ---- 待办：被安排进具体日期和时间段的任务 ----
 
 # 重复待办的三个新字段（2026-10-10 加，用户选了"真·长期"这条路线）：
-#   repeat    : "" = 一次性（老数据全是这个）；"weekly" = 每周重复
-#   weekday   : 1..7（周一=1）。只在 repeat != "" 时有意义，是"每周落在哪一天"
+#   repeat    : "" = 一次性（老数据全是这个）；"weekly" = 每周重复；"daily" = 每天的习惯
+#   weekday   : 1..7（周一=1）。只在 repeat == "weekly" 时有意义，是"每周落在哪一天"
 #   done_dates: ["2026-10-11", ...] 已经完成过的那些日子
 #
 # ⚠️ 为什么"完成"要按天记、而不是复用 status：
@@ -381,11 +381,25 @@ def save_timetable(courses: list) -> dict:
 
 REPEAT_NONE = ""
 REPEAT_WEEKLY = "weekly"
+# 每天类习惯（2026-10-13 用户 Prompt 02 拍板）：「我每天都要背单词」= 一条记录、天天出现。
+# 它和 weekly 的**分工不是展开长度，是出没出现在日历上**：
+#   weekly —— 有固定星期几 + 钟点，是"那天的时间承诺"，照旧画进日程；
+#   daily  —— 没有指定哪天，画进日历就是"以后每一天都占一格"，学生要的是打卡不是格子。
+# 所以 daily 属于**习惯类**：只进代办清单，日历（学生端周/月视图、/plan、月表角标）一律不画。
+REPEAT_DAILY = "daily"
+# 「这条是不是习惯（不进日历）」这个判据**只写这一处**。前端 `isHabit` 是它的翻译，
+# 别再写出第二份 `todoOccurs` 的变体（接手指南红线 11b：同一个判断抄几份就是同一个病）。
+HABIT_REPEATS = (REPEAT_DAILY,)
+# 「完成按天记（done_dates）而不是翻整条 status」的档位。判据只写这一处：
+# `todo_done_on` 与 `set_todo_done_on` 都问它 —— 漏掉一个，勾掉"今天"就会把
+# 一条习惯**永久**划掉（明天它不出现了），那是最容易被当成 bug 的行为。
+DAY_LOGGED_REPEATS = (REPEAT_WEEKLY, REPEAT_DAILY)
 # 每周重复往后展开的上限（月）。三处必须一起改：后端 `weekly_horizon`、
 # `student.html` 的 weeklyLimit、`plan.html` 的 weeklyLimit —— 只改一边就是
 # "接口说那天有、日程上画不出来"（2026-10-10 定下这条规矩，见接手指南 §4 第 9 条）。
+# daily 沿用**同一把尺子**收口（不是另起一套）：不封顶的话，一条"每天"能算到 2099 年。
 WEEKLY_HORIZON_MONTHS = 3
-REPEAT_VALUES = (REPEAT_NONE, REPEAT_WEEKLY)
+REPEAT_VALUES = (REPEAT_NONE, REPEAT_WEEKLY, REPEAT_DAILY)
 
 
 def is_past_date(date: str) -> bool:
@@ -453,20 +467,35 @@ def _add_months(day: datetime.date, months: int) -> datetime.date:
     return datetime.date(y, m, min(day.day, last))
 
 
+def is_habit(t: dict) -> bool:
+    """这条待办是不是「习惯」——**只进代办清单、不画进日历**的那一类（判据只此一份）。
+
+    新增一档"不进日历"的 repeat 时，只往 `HABIT_REPEATS` 里加一个值：
+    日历那几处（学生端周/月视图、/plan、后端月表）都是问这一句，不在那儿各写一份展开规则。
+    """
+    return str((t or {}).get("repeat") or "") in HABIT_REPEATS
+
+
 def todo_occurs_on(t: dict, date: str) -> bool:
     """这条待办**在不在这一天**（人话：重复的事每个周期都会再出现一次）。
 
     判据只有一处，前端/撞档/面板都该是同一套逻辑的翻译，别在别处再抄一遍 `t.date == date`。
     每周重复那份"以后每个周六"是**推断**出来的，所以它有个头：见 `weekly_horizon`。
+    ⚠️ 这里返回 True 只代表"这一天它是要做的一件事"，**不代表要画进日历** ——
+    daily 是习惯，天天都返回 True，日历那侧靠 `is_habit` 滤掉，不靠这里撒谎。
     """
     if not t:
         return False
-    if str(t.get("repeat") or "") != REPEAT_WEEKLY:
+    rep = str(t.get("repeat") or "")
+    anchor = str(t.get("date") or "")
+    if rep == REPEAT_DAILY:
+        # 锚点之前不算（"从下周一开始每天"），往后同样用 weekly 那把尺子收口
+        return str(anchor) <= str(date) <= weekly_horizon(anchor)
+    if rep != REPEAT_WEEKLY:
         return str(t.get("date") or "") == str(date)
-    wd = t.get("weekday") or iso_weekday_of(t.get("date") or "")
+    wd = t.get("weekday") or iso_weekday_of(anchor)
     if iso_weekday_of(date) != wd:
         return False
-    anchor = str(t.get("date") or "")
     # 锚点之前不算出现：学生说"从下周日开始"，不该把已经过去的周日也算进去
     if str(date) < anchor:
         return False
@@ -478,9 +507,10 @@ def todo_done_on(t: dict, date: str) -> bool:
     """这一天它算不算已经完成（重复待办按天判，一次性待办看 status）。"""
     if not t:
         return False
-    if str(t.get("repeat") or "") != REPEAT_WEEKLY:
-        return str(t.get("status") or "") == "done"
-    return str(date) in [str(x) for x in (t.get("done_dates") or [])]
+    if str(t.get("repeat") or "") in DAY_LOGGED_REPEATS:
+        # 习惯/每周都按天记：勾掉今天 ≠ 以后都不用做
+        return str(date) in [str(x) for x in (t.get("done_dates") or [])]
+    return str(t.get("status") or "") == "done"
 
 
 def add_todo(title: str, date: str, start: str, end: str,
@@ -490,8 +520,8 @@ def add_todo(title: str, date: str, start: str, end: str,
 
     :param date: 日期，形如 "2026-09-25"；repeat=weekly 时它是**第一次出现**的那天（锚点）
     :param start / end: 起止时间，形如 "14:00" / "15:30"
-    :param repeat: "" 一次性 / "weekly" 每周重复（老调用方不传就是 ""，行为不变）
-    :param weekday: 1..7；不传就从 date 推出来（"每个周天"这类话里日子已经定了）
+    :param repeat: "" 一次性 / "weekly" 每周重复 / "daily" 每天的习惯（见 `HABIT_REPEATS`）
+    :param weekday: 1..7；不传就从 date 推出来（"每个周天"这类话里日子已经定了）；daily 用不上
     """
     data = _sread("todos.json", {"todos": []})
     if str(repeat or "") not in REPEAT_VALUES:
@@ -507,7 +537,12 @@ def add_todo(title: str, date: str, start: str, end: str,
         "status": "planned",       # planned（待办） / done（已完成）—— 一次性待办用这个
         "created_at": _now(),
     }
-    if repeat == REPEAT_WEEKLY:
+    if repeat == REPEAT_DAILY:
+        # 习惯不需要 weekday（它每天都是那天），但必须给 done_dates ——
+        # 少了这个空列表，勾掉今天时那一路读不到键，会去翻整条 status（明天就没了）。
+        item["repeat"] = repeat
+        item["done_dates"] = []
+    elif repeat == REPEAT_WEEKLY:
         wd = int(weekday) if weekday else (iso_weekday_of(date) or 0)
         item["repeat"] = repeat
         item["weekday"] = wd if 1 <= wd <= 7 else 0
@@ -518,7 +553,11 @@ def add_todo(title: str, date: str, start: str, end: str,
 
 
 def list_todos(date: str | None = None) -> list:
-    """列出待办；给了 date 就只看那一天（**含每周重复落到那天的**），按开始时间排序。"""
+    """列出待办；给了 date 就只看那一天（**含重复/习惯落到那天的**，见 `todo_occurs_on`），按开始时间排序。
+
+    ⚠️ 这里是"这一天有哪些事"，不是"日历上画什么"：习惯（daily）照样在列，
+    要画日历的调用方自己按 `is_habit` 滤（`list_todos_in_month` 就是那么做的）。
+    """
     todos = _sread("todos.json", {"todos": []}).get("todos", [])
     if date:
         todos = [t for t in todos if todo_occurs_on(t, date)]
@@ -542,7 +581,10 @@ def list_todos_in_month(prefix: str) -> dict:
         day = _date(y, m, 1)
     except (ValueError, TypeError):
         return grouped
-    todos = list_todos()
+    todos = [t for t in list_todos() if not is_habit(t)]
+    # ⚠️ 这一行滤的是**习惯**：`todo_occurs_on` 对 daily 天天都返回 True（那是"今天要做的
+    # 一件事"的真话），而这个函数只服务日历月表的格子。习惯不进日历（用户 2026-10-13 拍板），
+    # 所以在取数这一侧滤掉，而不是叫 `todo_occurs_on` 对 daily 撒谎 —— 后者会把代办角标一起算没。
     while day.month == m:
         iso = day.isoformat()
         hit = [t for t in todos if todo_occurs_on(t, iso)]
@@ -572,21 +614,38 @@ def update_todo(tid: str, patch: dict) -> dict | None:
     return None
 
 
+def done_date_for(t: dict, on: str = "") -> str:
+    """勾"完成"该记在**哪一天**（判据只写这一处，两个确认入口都问它）。
+
+    传了日子就照他说的记；没传就记今天 —— 但今天不在它的出现日里
+    （锚点还没到 / 已经过了 3 个月上限）就退到锚点那天，
+    别把完成记到一个根本没安排过的日子上。
+    """
+    if on:
+        return str(on)
+    today = datetime.date.today().isoformat()
+    return today if todo_occurs_on(t, today) else str((t or {}).get("date") or "")
+
+
 def set_todo_done_on(tid: str, date: str, done: bool = True) -> dict | None:
     """把"完成/撤销完成"**落到具体某一天**。
 
     为什么单独一个函数而不是让调用方直接 patch status：
     重复待办的"这周做完了"和"以后都不做了"是两件事，前者只能记在那一天上
     （见 `done_dates`）；一次性待办没有"哪一天"的概念，仍旧翻 status。
-    传了 date 就按重复语义走，没传就按整条走 —— 老调用方一字不改照样对。
+    ⚠️ 2026-10-13 改：按天记的那一档（weekly/daily）**没传 date 也要按天记**
+      （退到 `done_date_for` 算出来的那天）。原来"没传就整条翻 status"这条老规矩
+      对它们是**空操作**：读侧一律问 `done_dates`，status 写了没人读 ——
+      真机上"背单词完成了"点完确认，明天那条照旧挂着，就是这个洞。
+    一次性待办（repeat 为空）行为一字未变。
     """
     data = _sread("todos.json", {"todos": []})
     for i, t in enumerate(data.get("todos", [])):
         if t.get("id") != tid:
             continue
-        if str(t.get("repeat") or "") == REPEAT_WEEKLY and date:
+        if str(t.get("repeat") or "") in DAY_LOGGED_REPEATS:
             days = [str(x) for x in (t.get("done_dates") or [])]
-            d = str(date)
+            d = done_date_for(t, date)
             if done and d not in days:
                 days.append(d)
             elif not done:
@@ -595,6 +654,7 @@ def set_todo_done_on(tid: str, date: str, done: bool = True) -> dict | None:
             # 整条 status 对重复待办没有意义，但别让它留着"done"骗人：
             # 只要还有没完成过的周，这条就该是 planned。这里不做"是否全做过"的推断，
             # 判完成一律走 todo_done_on(t, date)。
+            t["status"] = "planned"
         else:
             t["status"] = "done" if done else "planned"
         data["todos"][i] = t

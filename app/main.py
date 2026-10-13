@@ -45,7 +45,8 @@ from app.store import (
     get_conversation, append_conversation, clear_conversation,
     get_timetable_data, list_todos, list_todos_in_month,
     add_todo, update_todo, delete_todo, get_todo, save_timetable,
-    set_todo_done_on, REPEAT_NONE, REPEAT_WEEKLY, is_past_date,
+    set_todo_done_on, done_date_for, DAY_LOGGED_REPEATS,
+    REPEAT_NONE, REPEAT_WEEKLY, REPEAT_DAILY, is_past_date,
     add_workorder, list_workorders, update_workorder_status,
 )
 from app.modules.faq import SYSTEM_PROMPT as FAQ_PROMPT, build_tools as faq_tools
@@ -776,6 +777,21 @@ def _slots_answer(card: dict, lead: str = "") -> str:
             f"{lines}\n\n{tail}\n"
             f"想换个钟点：在确认条的「其他时间」里自己写一个也行（比如「周日下午三点到四点」）。"
         )
+    if (card.get("repeat") or "") == REPEAT_DAILY:
+        # 「我每天都要背单词」勾出来的是**一条每天重复的习惯**（2026-10-13 Prompt 02）。
+        # 话术有三件必须说清、少一件都会被他当成 bug：
+        #   ① 只建一条（不是每天建一条）；② 勾「完成」只算**当天**（不是以后都不用做）；
+        #   ③ 它**不画进日程格子**、只在「代办事项」那一栏出现 —— 这条最容易被误会成"没记上"。
+        tail = ("勾一个固定的时间段，点【加入日程】我**只建一条**——"
+                "以后**每天**它都会出现在你的「代办事项」里，不用你每天说一次。\n"
+                "⚠️ 勾「完成」只算**当天**：今天做完了，明天它还在；不想做了就删掉那一条。\n"
+                "习惯类**不画进日程格子**（不然每一天都占一格，越看越乱），在「代办事项」那一栏看它。")
+        return (
+            f"🔁 **每天** · **{title}**：{lead}"
+            f"它以后每天都要做，所以下面哪一天挑一段都行（避开了课和已有的安排）：\n\n"
+            f"{lines}\n\n{tail}\n"
+            f"想换个钟点：在确认条的「其他时间」里自己写一个也行（比如「晚上八点到八点半」）。"
+        )
     if pre:
         # 学生报了频次（"一周三次"）→ 前 pre 段已经替他勾上，话要说清，
         # 否则他以为系统把整周的安排都定了、或者还得自己再点三下。
@@ -868,16 +884,20 @@ def _slots_lead(persona_key: str | None) -> str:
 
 
 def _period_reject_answer(word: str) -> str:
-    """「每天/每月/每个周末…」这类周期的那句回话（**只写一份**）。
+    """「每月/每个周末/下个月…」这类周期的那句回话（**只写一份**）。
 
     三个出口都要用它（判定层的早退、`_offer_response` 这道漏斗、模型那一路的出口），
     抄三份迟早走样 —— 一处改了另一处没改，学生就会看到两种说法。
+    ⚠️ 「每天」2026-10-13 起**不再是**要被拦的说法了（`REPEAT_DAILY` 一条习惯，只进代办），
+       所以这里能给的出路从两条变成三条；少写一条就是当面对学生说"每天办不了"，
+       而系统其实办得了。
     """
     return (
-        f"🚫 「{word}」这种安排我**记不了**——一条日程只能落在**某一天**，"
-        f"或者**每周固定的某一天**（那样的话以后每个那天都会自己出现）。\n"
-        f"换这两种说法我马上就能办：\n"
+        f"🚫 「{word}」这种安排我**记不了**——一条日程只能落在**某一天**、"
+        f"**每周固定的某一天**，或者**每一天**（后两种都只建一条，以后自己出现）。\n"
+        f"换这三种说法我马上就能办：\n"
         f"· 「每周一背单词」→ 只建一条，以后每个周一自己冒出来；\n"
+        f"· 「每天都要背单词」→ 只建一条，以后每天出现在你的**代办清单**里（不占日程格子）；\n"
         f"· 「这一周要背三次」→ 在这一周里给你铺三段，你打勾。\n"
         f"只想排一次的话，说个日子（比如「今天背单词」），我立刻出确认条。")
 
@@ -909,9 +929,10 @@ def _offer_response(session_id: str, card: dict, message: str,
 
     ⚠️ 这里同时是**所有确定性出卡路径的唯一漏斗**，所以"表达不了的周期"这道否决
     必须在这儿再收一次口（2026-10-11 真机补）：判定层那条否决要求"某一档判成 add_todo"，
-    可「以后每天晨跑」这句两档都没出声、却照样被"学生报了事名没定时间"那一档接走，
-    挂出了一张**把"每天"扔掉**的二选一卡。判据看的是**学生原话**（`message`），
+    可「以后每月晨跑」这句两档都没出声、却照样被"学生报了事名没定时间"那一档接走，
+    挂出了一张**把"每月"扔掉**的二选一卡。判据看的是**学生原话**（`message`），
     不是卡片字段 —— 语义层重拼之后周期字样早没了。
+    （「以后每天晨跑」当年也在这个名单里，2026-10-13 起"每天"表达得了，它走 daily 那条支。）
     """
     _per = unsupported_period(message or "")
     if _per:
@@ -1050,7 +1071,7 @@ def _write_todo(card: dict) -> dict:
     否则聊天里点【确认】写进去的就还是普通一次性待办。
     """
     rep = (card.get("repeat") or "").strip()
-    if rep not in (REPEAT_NONE, REPEAT_WEEKLY):
+    if rep not in (REPEAT_NONE, REPEAT_WEEKLY, REPEAT_DAILY):
         rep = REPEAT_NONE
     return add_todo(
         card.get("title") or "待办", card.get("date") or "", card.get("start") or "",
@@ -1292,10 +1313,11 @@ async def _chat_impl(req: Request, meta: dict):
     # 而否决一张**本来就该出**的卡（"帮我安排周二的游泳"）比漏判更让学生恼火。
     _rule_veto = bool(_need_review and _sem_intent and _sem_intent != _rule_hit
                       and (_asks or _sem_intent == INTENT_CHAT))
-    # ★ 「每天 / 每月 / 每个周末 / 下个月」这类周期的**不分层否决**（判据见 planner.unsupported_period）。
+    # ★ 「每月 / 每个周末 / 下个月」这类周期的**不分层否决**（判据见 planner.unsupported_period）。
     #   规则层从来不接它，可**样本库/语义层能单独判成 add_todo**并出卡、还把这句学进样本库；
-    #   于是学生说"以后每天"，拿到的是一条"某一天一次"的待办（实测就是这么翻车的）。
-    #   这里只算"拦不拦"，怎么如实跟他说、给哪两种能办的说法，在下面那条确定性分支里。
+    #   于是学生说"以后每月"，拿到的是一条"某一天一次"的待办（实测就是这么翻车的）。
+    #   这里只算"拦不拦"，怎么如实跟他说、给哪几种能办的说法，在下面那条确定性分支里。
+    #   ⚠️ 「每天」2026-10-13 起从这个名单里**出去了**（一条 daily 习惯表达得了，只进代办不进日历）。
     _period = unsupported_period(message)
     _period_block = bool(_period) and (
         _rule_hit == INTENT_ADD_TODO or _sem_intent == INTENT_ADD_TODO)
@@ -1690,7 +1712,15 @@ async def _chat_impl(req: Request, meta: dict):
                     "options": [],
                     "awaiting_choice": False,
                 }
-            update_todo_status(done_prop.get("todo_id"), "done")
+            # 按天记的那一档（weekly/daily）不能整条翻 status —— 读侧一律问 done_dates，
+            # 翻 status 是空操作：真机"背单词完成了"点完确认，明天那条照旧挂着（2026-10-13 查到）。
+            # 记在哪一天由 `store.done_date_for` 一处定（今天算出现就记今天，否则记锚点），
+            # 这里不再自己猜；一次性待办走同一句也对：set_todo_done_on 内部按档位分流。
+            rep = str(target.get("repeat") or "")
+            logged = rep in DAY_LOGGED_REPEATS
+            # 日子不传 —— 判据只写在 `store.done_date_for` 一处，这里只复述它算出来的那天
+            day = done_date_for(target, "") if logged else (done_prop.get("date") or "")
+            set_todo_done_on(done_prop.get("todo_id"), "")
             summary = (done_prop.get("summary")
                        or f"{done_prop.get('title', '待办')}｜{done_prop.get('date', '')}"
                           f"{done_prop.get('start', '')}-{done_prop.get('end', '')}")
@@ -1701,6 +1731,14 @@ async def _chat_impl(req: Request, meta: dict):
                 "module": "planner",
                 "session_id": session_id,
                 "answer": (
+                    # 习惯/每周的完成是**记在某一天的**，回执必须说清记的是哪天、
+                    # 并且讲明"它还会出现" —— 不然他以为勾这一次就到底了。
+                    (f"✅ 已标记为完成：**{done_prop.get('title', '待办')}**｜"
+                     f"{day} 这一勾已记下，"
+                     + ("明天它还会出现在「代办事项」里（习惯按天记）。"
+                        if rep == REPEAT_DAILY else
+                        "下周同一个日子它还会出现（每周记一次）。"))
+                    if logged else
                     f"✅ 已标记为完成：**{done_prop.get('title', '待办')}**｜"
                     f"{done_prop.get('date', '')}（{done_prop.get('weekday', '')}）"
                     f"{done_prop.get('start', '')}-{done_prop.get('end', '')}。"
@@ -1720,7 +1758,7 @@ async def _chat_impl(req: Request, meta: dict):
             for it in items:
                 tid = it.get("todo_id") or ""
                 if tid and get_todo(tid) is not None:
-                    update_todo_status(tid, "done")
+                    set_todo_done_on(tid, "")   # 同上：按天记的那档别翻整条（哪天由 done_date_for 定）
                     ok_titles.append(it.get("title") or "待办")
                 else:
                     gone.append(it.get("title") or "待办")
@@ -2540,7 +2578,8 @@ async def _chat_impl(req: Request, meta: dict):
             "awaiting_choice": False,
         })
 
-    # ★ 「每天 / 每月 / 每个周末 / 下个月」这一类周期说法：**任何一档判成加待办都不许出卡**
+    # ★ 「每月 / 每个周末 / 下个月」这一类周期说法：**任何一档判成加待办都不许出卡**
+    #   （「每天」2026-10-13 起不在这儿了 —— 它现在表达得了：一条 daily 习惯，只进代办不进日历）
     #   （2026-10-11 补，判据在 planner.unsupported_period）。
     #   病根不是规则层读错了 —— 规则层从来不接这一类，是**样本库/语义层能绕过它单独接单**：
     #   用户原话「在下个月的每个周末三点开始大约三个小时」被样本库判成 add_todo、
@@ -2550,7 +2589,7 @@ async def _chat_impl(req: Request, meta: dict):
     #   ① 一处不分层的否决（规则/样本库/语义层哪档判的都拦）；
     #   ② 这条分支**不走 `_sem_done`**（它就是 `remember()` 学样本的那一步），
     #      否掉的句子绝不许再学进去 —— 否则同一个错会自己繁殖。
-    #   只做这两件，不去"听懂每天/每月"：一条日程只能落**某一天**或**每周固定某天**，
+    #   只做这两件，不去"听懂每月/每个周末"：一条日程只能落**某一天**、**每周固定某天**或**每天**，
     #   硬扩表达等于替学生造他没说要的几十条安排（判据同 `weekly_repeat_day` 的取舍）。
     if _period_block:
         return _period_reject_response(session_id, message, _period)
@@ -2619,6 +2658,11 @@ async def _chat_impl(req: Request, meta: dict):
                 + (f"这是**每周{_wd_bare}**都要做的事，我只建一条："
                    f"以后每个周{_wd_bare}它自己会出现在日程里。\n"
                    if proposal.get("repeat") == "weekly" else "")
+                # 「每天都要背单词 + 报了准点」同理：不说清"每天"和"不进日程"，
+                # 他会以为就排这一天，第二天在日程里找不到，判成系统没记上。
+                + (f"这是**每天**都要做的事，我只建一条："
+                   f"以后每天它都会出现在你的「代办事项」里（习惯不占日程格子）。\n"
+                   if proposal.get("repeat") == "daily" else "")
                 + f"下面点一下【确认加入】我就写进去，回一句「确认」也一样。")
             from app.agent.polish import polish_reply
             _card_answer = await polish_reply(
@@ -4142,7 +4186,7 @@ async def todo_add(req: Request):
         return JSONResponse({"error": f"{date} 已经过去了，不能往过去的日子里排待办"},
                             status_code=400)
     rep = (body.get("repeat") or "").strip()
-    if rep not in (REPEAT_NONE, REPEAT_WEEKLY):
+    if rep not in (REPEAT_NONE, REPEAT_WEEKLY, REPEAT_DAILY):
         rep = REPEAT_NONE
     item = add_todo(title, date, start, end,
                     note=(body.get("note") or "").strip(),
@@ -4235,11 +4279,12 @@ async def todo_add_batch(req: Request):
     sid = (body.get("session_id") or "").strip()
     title = (body.get("title") or "").strip() or "待办"
     note = (body.get("note") or "").strip()
-    # 「每个周天都写作业」这类卡勾出来的段，要写成**一条每周重复**的待办（2026-10-10）。
+    # 「每个周天都写作业」这类卡勾出来的段，要写成**一条每周重复**的待办（2026-10-10）；
+    # 「每天都要背单词」同理落一条 daily（2026-10-13）。
     # 白名单在这里、也在 store.add_todo 里各挡一次：认不得的值一律退回一次性，
-    # 免得前端哪天传个 "daily" 进来，库里就躺着一个没人会读的字段。
+    # 免得前端哪天传个新字样进来，库里就躺着一个没人会读的字段。
     repeat = (body.get("repeat") or "").strip()
-    if repeat not in (REPEAT_NONE, REPEAT_WEEKLY):
+    if repeat not in (REPEAT_NONE, REPEAT_WEEKLY, REPEAT_DAILY):
         repeat = REPEAT_NONE
     raw_slots = body.get("slots") if isinstance(body.get("slots"), list) else []
     other = (body.get("other") or "").strip()
@@ -4366,15 +4411,19 @@ async def todo_update(tid: str, req: Request):
     """改一条待办（目前主要用来标记完成 / 取消完成）。
 
     ⚠️ "完成"有两种问法，别混着用：
-      · **带 `on`（哪天）** —— 把完成落到那一天上：每周重复的待办记进 `done_dates`，
+      · **带 `on`（哪天）** —— 把完成落到那一天上：每周重复/每天的习惯记进 `done_dates`，
         一次性待办仍旧翻 status。这是给"这周做完了"用的。
-      · 不带 `on` —— 老行为，整条翻 status。
-      为什么必须有前者：一条每周日的待办，学生勾掉本周**不等于以后都不用做**；
+      · 不带 `on` —— 一次性待办整条翻 status；
+        按天记的那一档（weekly/daily）**2026-10-13 起也按天记**（退到 `done_date_for` 那天）。
+        原来这里"不带 on 就整条翻 status"对重复待办是个**空操作**：
+        读侧一律问 `done_dates`，status 写了没人读，学生点完确认第二天照旧挂着。
+      为什么必须按天记：一条每周日的待办，学生勾掉本周**不等于以后都不用做**；
       整条 done 会让它第二周就从日程里消失，那是最容易被当成 bug 的行为。
+    分流只写在 `store.set_todo_done_on` 一处，这个入口不再自己判档位。
     """
     body = await req.json()
     on = (body.get("on") or "").strip()
-    if on and "status" in body:
+    if "status" in body:
         done = str(body.get("status") or "").lower() in ("done", "true", "1")
         item = set_todo_done_on(tid, on, done)
         if not item:

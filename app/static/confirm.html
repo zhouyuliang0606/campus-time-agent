@@ -491,10 +491,14 @@ const KIND = {
       // repeat=weekly：这张卡勾出来的是**一条每周重复**的待办，不是"只排这一天"。
       // 后端在卡片上带这个字段（planner.build_todo_slots），前端必须显出来——
       // 不显示的话学生勾完发现日程里每周都冒出一件事，那就是 surprise。
+      // repeat=daily 更要显（2026-10-13）：它连"出现在日程里"都没有，
+      // 不写清"只进代办清单"，学生勾完在日历里找不到，只会判成"系统没记上"。
       const weekly = (p.repeat === "weekly");
-      return `<p class="summary">${weekly ? "🔁 " : ""}${esc(p.title || "待办")}</p>
+      const daily = (p.repeat === "daily");
+      return `<p class="summary">${weekly || daily ? "🔁 " : ""}${esc(p.title || "待办")}</p>
         <div class="meta">${esc(p.hint || "避开了课和已有的安排，挑一个方便的勾上（可以勾好几个）。")}</div>
         ${weekly ? '<div class="meta" style="color:#4f7cff;">每周重复 · 勾中的时段会**每周都出现**（只建一条，勾完成只算当周）</div>' : ""}
+        ${daily ? '<div class="meta" style="color:#4f7cff;">每天重复 · 只建一条，以后**每天出现在「代办事项」里**（勾完成只算当天；习惯不画进日程格子）</div>' : ""}
         <div class="slots">${rows || '<div class="empty">没有可用的空档。</div>'}</div>
         <div class="other">
           <label class="other-l" for="cfOther">其他时间（自己写一个）</label>

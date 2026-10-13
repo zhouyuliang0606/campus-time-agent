@@ -228,7 +228,14 @@
       const last = new Date(target.getFullYear(), target.getMonth() + 1, 0).getDate();
       return iso(new Date(target.getFullYear(), target.getMonth(), Math.min(base.getDate(), last)));
     }
+    // 「习惯」（每天类）—— 与 `store.HABIT_REPEATS`、student.html 同一份判据的翻译：
+    // todoOccurs 说真话（daily 天天都在），日历的渲染点问 isHabit 把它滤掉。
+    const HABIT_REPEATS = ["daily"];
+    function isHabit(t) { return HABIT_REPEATS.indexOf(t.repeat) >= 0; }
     function todoOccurs(t, dIso) {
+      if (t.repeat === "daily") {
+        return dIso >= t.date && dIso <= weeklyLimit(t.date);
+      }
       if (t.repeat === "weekly") {
         const wd = t.weekday || wdOfIso(t.date);
         return wdOfIso(dIso) === wd && dIso >= t.date && dIso <= weeklyLimit(t.date);
@@ -236,7 +243,7 @@
       return t.date === dIso;
     }
     function todoDoneOn(t, dIso) {
-      if (t.repeat === "weekly") return (t.done_dates || []).indexOf(dIso) >= 0;
+      if (t.repeat === "weekly" || t.repeat === "daily") return (t.done_dates || []).indexOf(dIso) >= 0;
       return t.status === "done";
     }
     function mondayOf(d) { const t = new Date(d); t.setDate(t.getDate() - (isoWd(d) - 1)); t.setHours(0, 0, 0, 0); return t; }
@@ -296,7 +303,7 @@
           items.push({ s, e, cls: "course", title: c.course, tm: c.start + "-" + c.end,
                        loc: c.location || "", lead: "" });
         });
-        todos.filter(t => todoOccurs(t, dIso)).forEach(t => {
+        todos.filter(t => !isHabit(t) && todoOccurs(t, dIso)).forEach(t => {
           const s = mins(t.start), e = mins(t.end);
           if (e <= s) return;
           items.push({ s, e, cls: todoDoneOn(t, dIso) ? "todo done" : "todo",
@@ -360,7 +367,7 @@
         const date = new Date(y, m, d);
         const dIso = iso(date);
         const wd = isoWd(date);
-        const list = todos.filter(t => todoOccurs(t, dIso));
+        const list = todos.filter(t => !isHabit(t) && todoOccurs(t, dIso));
         const isToday = dIso === todayIso;
         const isSel = dIso === selectedDate;
         // 像系统日历一样排：每天格子里直接列出**待办（按日期）+ 课程（按星期复现）**，
@@ -391,7 +398,7 @@
         box.innerHTML = `<div class="empty">点上面任意一天，查看当天安排了什么</div>`;
         return;
       }
-      const list = todos.filter(t => todoOccurs(t, selectedDate))
+      const list = todos.filter(t => !isHabit(t) && todoOccurs(t, selectedDate))
         .sort((a, b) => a.start.localeCompare(b.start));
       const d = parseISO(selectedDate);
       let html = `<h3>${selectedDate}（${WD[isoWd(d) - 1]}）的待办</h3>`;

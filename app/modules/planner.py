@@ -21,7 +21,7 @@ from app.agent.pending import is_confirmation
 from app.store import (
     add_todo, get_timetable, list_todos,
     save_timetable, update_todo,
-    REPEAT_NONE, REPEAT_WEEKLY, is_past_date,
+    REPEAT_NONE, REPEAT_WEEKLY, REPEAT_DAILY, is_past_date, todo_done_on,
 )
 from app.modules.student_persona import mock_phrase
 
@@ -129,7 +129,11 @@ def find_free_slots(date: str, min_minutes: int = 60) -> list:
                          to_minutes(c.get("end", "00:00")),
                          f"课程：{c.get('course', '')}"))
     for t in list_todos(date):
-        if t.get("status") == "done":
+        # ⚠️ 判"这条还占不占地方"必须问 `todo_done_on(t, 那一天)`，不能看整条 status：
+        # 重复/习惯待办的 status 永远是 planned（它的完成按天记在 done_dates 里），
+        # 照老写法 `status == "done"` 就永远跳不过它 —— 学生今天已经把单词背完了，
+        # 系统还把 21:00-21:30 当成占着、另给他挑别的时间。一次性待办两种写法等价。
+        if todo_done_on(t, date):
             continue
         busy.append((to_minutes(t.get("start", "00:00")),
                      to_minutes(t.get("end", "00:00")),
@@ -296,7 +300,7 @@ def parse_time_spec(text: str) -> dict:
     字段（读不出来一律 None / 空串，不猜）：
       date     点名了具体哪天（ISO）
       weekday  点名了"每周几"（1..7）
-      repeat   "" 一次性 / "weekly" 每周重复
+      repeat   "" 一次性 / "weekly" 每周重复 / "daily" 每天的习惯（daily 时 weekday 一定是 None）
       start    点名的开始钟点 "14:00"
       end      点名的结束钟点 "21:00"（「七点到九点」才有）
       minutes  点名的时长（「大概三个小时」=180；有 start+end 时按差算）
@@ -317,7 +321,8 @@ def parse_time_spec(text: str) -> dict:
         "start": start, "end": end, "minutes": minutes,
         "part": _part_said(t),
     }
-    spec["repeat"] = REPEAT_WEEKLY if spec["weekday"] else REPEAT_NONE
+    # 先 weekly 后 daily —— 这条判据只写在 `repeat_of` 里，这里只问它（红线 11b）
+    spec["repeat"] = repeat_of(t)
     spec["clock"] = bool(start)
     # ⚠️ 裸钟点（只说"三点"、没说上午下午）不可信：`_pick_span('三点开始')` 会给出 03:00，
     # 而 03:00 那段**真空着**（凌晨没课），pinned 逻辑就会把学生的作业排到凌晨三点。
@@ -622,7 +627,7 @@ def span_only_proposal(text: str, title: str = "", fallback_date: str = "") -> d
         "weekday": wd,
         "minutes": to_minutes(finish) - to_minutes(begin),
         # 同 `parse_add_todo`：说了"每周几"就要带上 repeat，不然这条只出现一次
-        "repeat": REPEAT_WEEKLY if weekly_repeat_day(text or "") else REPEAT_NONE,
+        "repeat": repeat_of(text),
         "summary": f"{name}｜{day}（{wd}）{begin}-{finish}",
     }
 
@@ -641,6 +646,8 @@ def build_todo_slots(title: str, slots: list, hint: str = "", preselect: int = 0
     `repeat="weekly"` = 这张卡勾出来的每一段都要写成**一条每周重复**的待办
     （2026-10-10 加，服务「每个周天都写作业」这类说法）。它必须一路传到
     `/api/todos/batch`，中途任何一处把它丢了，学生看到的就还是"只排这一周"。
+    `repeat="daily"` 同理，只是那条以后**每天**出现、且只进代办清单不进日历
+    （2026-10-13 加，服务「我每天都要背单词」）。
     """
     items = []
     for s in slots or []:
@@ -663,7 +670,8 @@ def build_todo_slots(title: str, slots: list, hint: str = "", preselect: int = 0
         "hint": hint,
         "preselect": pre,
         "repeat": repeat or "",
-        "summary": (f"{'每周重复 · ' if repeat == 'weekly' else ''}"
+        "summary": (f"{'每周重复 · ' if repeat == REPEAT_WEEKLY else ''}"
+                    f"{'每天 · ' if repeat == REPEAT_DAILY else ''}"
                     f"{title or '待办'}｜{len(items)} 个候选时段"
                     + (f"（已勾 {pre} 段）" if pre else "")),
     }
@@ -835,6 +843,11 @@ def carry_period(blob: str, message: str) -> str:
         add.append("每周" + "一二三四五六日天"[wd - 1])
     if any(w in msg for w in ("平时", "工作日")) and not any(w in blob for w in ("平时", "工作日")):
         add.append("工作日")
+    # 「每天」也要一起带过去（判据问 `daily_repeat`，不在这里再抄一份词表）：
+    # 学生先说「我每天都要背单词」被追问，再补一句「晚上九点」——
+    # 不带的话第二轮落库成的是一条**只有一次**的待办，"每天"当场丢了。
+    if daily_repeat(msg) and not daily_repeat(blob):
+        add.append("每天")
     return (blob + " " + " ".join(add)).strip() if add else blob
 
 
@@ -922,6 +935,26 @@ def todo_slots_proposal(text: str, max_slots: int = 3) -> dict | None:
         if bare_clock:
             hint = bare_clock + "\n" + hint
         return build_todo_slots(title, slots, hint=hint, preselect=0, repeat="weekly")
+    # ==== 「我每天都要背单词」：固定每天 + 无限重复 → 一条 repeat=daily 的**习惯** ====
+    # 与 weekly 的分工不在"铺几天"，在**出没出现在日历上**（用户 2026-10-13 拍板）：
+    # weekly 有固定星期几和钟点，是时间承诺，照旧画进日程；daily 没说哪天，
+    # 画进日历就是"以后每一天都占一格"，他要的是打卡不是格子 → 只进代办清单。
+    # 所以候选**随便哪天挑都行**（每天都重复，落在哪天只是"从哪天开始"这个锚点），
+    # 话术必须把"不进日历"说在明处 —— 不然他加完会在日程里找，找不到就说系统没记上。
+    if daily_repeat(t):
+        slots = candidate_slots(_REPEAT_PHRASE_RE.sub(" ", plain),
+                                max_slots=max_slots + 6, days_ahead=7)
+        if not slots:
+            return None
+        hint = (f"这是**每天**都要做的事：勾一个固定的时间段，以后每天出现在你的"
+                f"**代办清单**里（从 {slots[0]['date']} 起，勾完点【加入日程】我只建一条；"
+                f"习惯不画进日程格子，不然每一天都占一格，越看越乱）。")
+        _note = _clock_note(_REPEAT_PHRASE_RE.sub(" ", t), slots)
+        if _note:
+            hint = _note + "\n" + hint
+        if bare_clock:
+            hint = bare_clock + "\n" + hint
+        return build_todo_slots(title, slots, hint=hint, preselect=0, repeat=REPEAT_DAILY)
     # 「一周三次」且**没指定哪天** → 按一周 N 段排，前 N 段替他勾上。
     # 为什么要求"没指定哪天"：他要是说了「周四一周三次」，那两句本身就打架
     # （候选全挤在周四 = 一天三练），这种矛盾句宁可退回老路子只排那天，
@@ -1976,11 +2009,17 @@ _REPEAT_WEEKDAY_RE = re.compile(
 # ⚠️ 后面那个前瞻是必需的（2026-10-11 真机）：「每周一次大扫除」里的"一"是**次数**，
 # 不是星期几 —— 少了前瞻，这句会被读成"每周一"，系统替学生挑了个周一 19:00，
 # 还写成"每周重复"挂出来（他从来没说过周一）。
-# 擦标题时用这条：整串周期说法（含「以后/一直」这类前缀和「都/都要」这类尾巴）一起擦。
+# 擦标题/擦日子时用这条：整串周期说法（含「以后/一直」这类前缀和「都/都要」这类尾巴）一起擦。
 # 星期几那个字**可选** —— 「每周都写作业」里没点具体周几，标题照样不该留「每周都」。
+# ★ 什么叫"每天类"只写一份（`_DAILY_RE`），这条直接拼它的原文 ——
+#   另抄一份词表就是第二个病（红线 13e：词表一旦分叉，多出来的那截是死条目）。
+_DAILY_RE = re.compile(r"(?:每\s*一?天|天天|每日)")
 _REPEAT_PHRASE_RE = re.compile(
+    r"(?:"
     r"(?:以后|从今以后|今后|长期|一直|始终)?\s*(?:每|所有|全部)(?:一个|一|个)?\s*"
-    r"(?:周|星期|礼拜)(?:[" + _WD_CHARS + "末](?![点时:：]))?(?:都|都要|都会|得|会)?")
+    r"(?:周|星期|礼拜)(?:[" + _WD_CHARS + "末](?![点时:：]))?(?:都|都要|都会|得|会)?"
+    r"|(?:(?:以后|从今以后|今后|长期|一直|始终)\s*)?" + _DAILY_RE.pattern + r"(?:都|都要|都会|得|会)?"
+    r")")
 
 
 # ★ 倒装语序（2026-10-13 真机「周天早上去健身房每周」）：先点某天、句尾再补一句「每周」。
@@ -2021,6 +2060,34 @@ def weekly_repeat_day(text: str) -> int | None:
     return _WEEKDAY_NUM.get(m.group(1)) if m else None
 
 
+# ==== 每天类习惯（2026-10-13 用户 Prompt 02）====
+# 「我每天都要背单词」= 固定每天 + 无限重复 → 落成一条 repeat=daily。
+# 词表是上面的 `_DAILY_RE`（标题/日子擦除与这里共用一份，不另抄）。
+# 与 weekly 天然互斥：daily 不点名星期几（`weekly_repeat_day` 对「每天」返回 None）。
+# ⚠️ 不认「今天/明天/昨天」：那是具体某一天（走 date），不是每天重复 ——
+#   「每」是必需前缀，"今天"的"天"前面是"今"，实测这条正则不会在最左把它吃掉。
+def daily_repeat(text: str) -> bool:
+    """这句话是不是「每一天都要做」？（它不带星期几，落库就是一条 daily 习惯）"""
+    return bool(_DAILY_RE.search(text or ""))
+
+
+def repeat_of(text: str) -> str:
+    """这句话该落成哪一种 repeat —— **判据只写这一处**，五条出卡路径都问它。
+
+    顺序即规则：先 weekly 后 daily。一句里同时出现「每周几」和「每天」时，
+    点名了星期几的那半是更具体的承诺（有固定日子，该画进日历），
+    不许被 daily 抢成"不进日历的习惯"。
+    ⚠️ 别再在各调用点手写 `REPEAT_WEEKLY if weekly_repeat_day(...) else REPEAT_NONE` ——
+    那种写法每多一档 repeat 就要多改一处，漏一处就是"卡上写着每天、库里落成一次性"
+    （2026-10-11 真机三个缺口里的一条，接手指南红线 11b）。
+    """
+    if weekly_repeat_day(text):
+        return REPEAT_WEEKLY
+    if daily_repeat(text):
+        return REPEAT_DAILY
+    return REPEAT_NONE
+
+
 # ==== 明确不支持的周期说法（2026-10-10）====
 # 这些表达**规则层从来不接**（`wants_add_todo` 一律 False），但真机实测发现：
 # 样本库/语义层可以绕过规则层单独接单 —— 用户那句
@@ -2028,11 +2095,13 @@ def weekly_repeat_day(text: str) -> int | None:
 # 事名学成了「活动」，排出一条 15:00-18:00 的孤零零待办。
 # 所以判据要有一处**不分层**的收口：只要句子里出现下面这些说法，
 # 任何一档说"这是加待办"都不许出卡 —— 因为待办模型表达不了它
-# （每天/工作日=多个星期几、周末=两天、每两周/每月=非周周期、下个月=范围边界）。
+# （工作日=多个星期几、周末=两天、每两周/每月=非周周期、下个月=范围边界）。
+# ⚠️ 2026-10-13 摘掉「每天/天天/每日」三项：模型现在表达得了（`REPEAT_DAILY` 一条记录，
+#    只进代办不进日历 —— 用户 Prompt 02）。其余各项一律不动。
 # ⚠️ 不含「平时/工作日」：`candidate_slots` 的 workday_mode 早就支持"跨工作日摊开列"，
 #    把它们列进来会打掉现有能用的功能（test_28 那一类）。
 _UNSUPPORTED_PERIOD = (
-    "每天", "天天", "每日", "每个周末", "每周末", "每个星期末", "隔一天", "隔天",
+    "每个周末", "每周末", "每个星期末", "隔一天", "隔天",
     "每两周", "两周一次", "每月", "每个月", "一月一次", "下个月", "上个月", "每个月末",
 )
 # 「跨度 + 次数」的**结构**判据（词表抄不完：2026-10-11 真机就漏了「两周去一次」这种语序，
@@ -2840,6 +2909,19 @@ def wants_add_todo(text: str) -> bool:
     if (weekly_repeat_day(t) and _title_ok(_pick_title(t))
             and not any(k in t for k in ("吗", "？", "?", "够不", "是不是", "怎么样", "来得及"))):
         return True
+    # 「我每天都要背单词」「天天跑步」：说了"每一天"就是长期下单的硬信号（2026-10-13 Prompt 02）。
+    # 判据形状与上面 weekly 那条**并列**而不是套进来：它不点名星期几，`weekly_repeat_day` 返回 None。
+    # ⚠️ 实测过（施工单说"摘掉 `_UNSUPPORTED_PERIOD` 那三项就彻底放开"是**错的**）：
+    #   摘掉三项之后这几句 `wants_add_todo` 仍然是 False —— 拦它的不是否决表，是这里没有对应分支。
+    #   两句都要改，只改否决表会得到"不拦了，但也没接"：卡不出来，学生只看到一句通用废话。
+    # 疑问/感叹样照样不接（「每天都这么累有什么用」「每天几点起最好」不是下单）。
+    # ⚠️ 还要挡**否定开头**：「你每天都不回我消息」是吐槽，不是"每天做一件叫"不回我消息"的事"。
+    #   实测第一版就是被这句接走的（擦完标题剩「不回我消息」，`_title_ok` 还判它合法）。
+    if (daily_repeat(t) and _title_ok(_pick_title(t))
+            and not _pick_title(t).startswith(("不", "没", "别", "无"))
+            and not any(k in t for k in ("吗", "？", "?", "多少", "够不", "是不是", "怎么样",
+                                         "来得及", "有什么用", "为什么", "怎么办"))):
+        return True
     return bool(_pick_date(t) and _pick_span(t)[0]
                 and not looks_like_question(t))
 
@@ -2914,7 +2996,7 @@ def parse_add_todo(text: str) -> dict | None:
         # 以前只有"摊候选时段"那一路带 repeat，报了准点就走这一路 → 学生说了"每个周六"，
         # 拿到的却是一条**一次性**待办（2026-10-11 一批真机句子打出来的，三句都一样）。
         # `store.add_todo` 在 weekday 不传时按 date 推，所以这里只补 repeat 就够。
-        "repeat": REPEAT_WEEKLY if weekly_repeat_day(t) else REPEAT_NONE,
+        "repeat": repeat_of(t),
         "summary": f"{title}｜{date}（{_weekday_name(date)}）{start}-{end}",
     }
 
@@ -3020,7 +3102,7 @@ def auto_todo_proposal(text: str) -> dict | None:
         "weekday": wd,
         "minutes": slot["minutes"],
         "auto": True,           # 时间不是学生给的，是系统挑的 —— 话术里要说清楚
-        "repeat": REPEAT_WEEKLY if weekly_repeat_day(t) else REPEAT_NONE,
+        "repeat": repeat_of(t),
         "summary": f"{title}｜{date}（{wd}）{slot['start']}-{slot['end']}",
     }
 

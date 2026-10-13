@@ -5,8 +5,11 @@
      而学生要的是"以后每个周末"。规则层其实**从来不接**这一类（`wants_add_todo` 一律 False），
      接单的是**样本库/语义层** —— 它能绕过规则层单独判成 add_todo、出卡，
      还把这句**学进了样本库**（`_sem_done` 里那句 `remember`），于是同一个错会自己繁殖。
-     所以判据要有一处**不分层**的收口：句子里出现「每天/每月/每个周末/下个月…」这种
-     待办模型表达不了的周期时，**哪一档说"这是加待办"都不出卡**，并如实说清能接的是哪两种。
+     所以判据要有一处**不分层**的收口：句子里出现「每月/每个周末/下个月…」这种
+     待办模型表达不了的周期时，**哪一档说"这是加待办"都不出卡**，并如实说清能接的是哪几种。
+     ⚠️ 名单 2026-10-13 缩过一次：「每天」从这儿**出去了** —— 一条 `repeat=daily` 的
+     习惯表达得了（只进代办清单、不画进日程格子，见 test_39 的 D 批）。
+     闸门本身一条没松，只是例句换了人。
   ② 挂着上一轮候选卡（事名「写作业」）时说「周五晚上七点到九点值日」→ 卡片标题成了
      「值日写作业」。病根在 `parse_slot_text` 无条件把上一轮的事名**拼进这句一起解析**。
      他换了事情，系统却把上一轮的事情缝进名字里。
@@ -44,16 +47,19 @@ def batch_a_period_boundary():
     title("A 批 · unsupported_period：拦哪些、必须放哪些")
     from app.modules.planner import _UNSUPPORTED_PERIOD, unsupported_period
 
-    for text, word in (("每天背30个单词", "每天"),
-                       ("天天练琴", "天天"),
-                       ("每个月交一次电费", "每个月"),
+    # ⚠️ 例句 2026-10-13 换过：原来这里第一、二条是「每天背30个单词」「天天练琴」，
+    #   可"每天"现在**表达得了**（一条 daily 习惯，只进代办不进日历），
+    #   拿它当"拦得住"的例子，钉的就不是这道闸了。改抓「每月/每个周末/隔天」这些真表达不了的。
+    for text, word in (("每个月交一次电费", "每个月"),
                        ("每个周末去爬山", "每个周末"),
                        ("隔一天去跑步", "隔一天"),
                        ("在下个月的每个周末三点开始大约三个小时", "每个周末")):
         c.check(f"{text} → 认出「{word}」", unsupported_period(text) == word,
                 unsupported_period(text))
     for text in ("每周三下午两点开会", "每个周天都写作业", "一周去三次健身房",
-                 "这周六去爬山", "今晚八点排练"):
+                 "这周六去爬山", "今晚八点排练",
+                 # ★ 2026-10-13 新增这一档：每天类习惯表达得了，就不许再被这道闸拦下
+                 "每天背30个单词", "天天练琴", "每日英语打卡", "以后每天晨跑"):
         c.check(f"{text} → 不拦（这是能表达的：每周几 / 这一周N次 / 就这一天）",
                 unsupported_period(text) == "", unsupported_period(text))
     # 词表抄不完 → 结构性判据（2026-10-11 一批真机句子打出来的漏网之鱼）
@@ -97,7 +103,9 @@ def batch_b_veto_no_card_no_learning():
 
             n0 = len(_samples())
             t0 = len(list_todos())
-            r = cli.post("/api/chat", json={"message": "每天背30个单词",
+            # 旗舰句 2026-10-13 从「每天背30个单词」换成「每个月交一次电费」：
+            # 前者现在**该出卡**（daily 习惯），拿它钉"语义层判了也不许出卡"就自相矛盾了。
+            r = cli.post("/api/chat", json={"message": "每个月交一次电费",
                                             "session_id": "t42-b", "module": "planner"})
             d0 = r.json()
             ans = d0.get("answer") or ""
@@ -106,9 +114,9 @@ def batch_b_veto_no_card_no_learning():
                     not [o for o in (d0.get("options") or []) if isinstance(o, dict)],
                     d0.get("options"))
             c.check("回话里要说清这句为什么办不了（不是含糊一句「没听懂」）",
-                    "记不了" in ans and "每天" in ans, ans[:120])
-            c.check("要给出**两种能办的说法**（每周几 / 这一周N次），否则学生无路可走",
-                    "每周" in ans and "这一周" in ans, ans[:160])
+                    "记不了" in ans and "每个月" in ans, ans[:120])
+            c.check("要给出**三种能办的说法**（每周几 / 每天 / 这一周N次），否则学生无路可走",
+                    "每周" in ans and "这一周" in ans and "每天" in ans, ans[:200])
             c.check("这句**不许学进样本库**（学了就等于把同一个错存成模板）",
                     len(_samples()) == n0,
                     [s.get("text") for s in _samples()][n0:])
@@ -265,8 +273,9 @@ def batch_f_funnel_gates():
     c = Checker()
     title("F 批 · 出口漏斗：判定层没出声时，**出卡的地方**也得再判一次")
     # 为什么要有这一批（2026-10-11 一批真机句子打出来的）：判定层那条否决要求
-    # "某一档判成 add_todo"，可「以后每天晨跑」两档都没出声，却被"报了事名没定时间"
-    # 那一档接走，挂出一张**把"每天"扔掉**的二选一卡；模型那一路更离谱 ——
+    # "某一档判成 add_todo"，可「以后每月晨跑」两档都没出声，却被"报了事名没定时间"
+    # 那一档接走，挂出一张**把"每月"扔掉**的二选一卡；模型那一路更离谱 ——
+    # （例句 2026-10-13 从「每天」换成「每月」：每天现在表达得了，见 D 批。）
     # 工具里的 `period_reject` 只看模型自己传的参数，它换个说法就绕过了。
     import app.main as M
     from app.agent.pending import peek_pending
@@ -274,8 +283,8 @@ def batch_f_funnel_gates():
     card = {"kind": "todo_mode", "title": "晨跑", "summary": "晨跑｜还没定时间"}
     with sandbox():
         _no_key_settings()
-        r1 = M._offer_response("t42-f1", dict(card), "以后每天晨跑", "原话术", "🙋 二分卡")
-        c.check("学生原话里有「每天」→ `_offer_response` 把卡撤了（options 空）",
+        r1 = M._offer_response("t42-f1", dict(card), "以后每月晨跑", "原话术", "🙋 二分卡")
+        c.check("学生原话里有「每月」→ `_offer_response` 把卡撤了（options 空）",
                 r1.get("options") == [], r1.get("options"))
         c.check("回话换成如实说明，而不是原来那句「时间你自己定还是我帮你挑」",
                 "记不了" in (r1.get("answer") or ""), (r1.get("answer") or "")[:80])
@@ -286,10 +295,10 @@ def batch_f_funnel_gates():
                 len(r2.get("options") or []) == 1, r2.get("options"))
         c.check("对照：卡真挂进暂存了", peek_pending("t42-f2") is not None)
 
-        # 判定层没出声、却由模型/兜底那一段自己摊卡 —— 真机上「以后每天晨跑」就是这么
+        # 判定层没出声、却由模型/兜底那一段自己摊卡 —— 真机上这类句子就是这么
         # 挂出一张三段的候选卡的（无密钥时这段由 mock planner 走，形状一样，正好可测）。
         cli = make_client()
-        r3 = cli.post("/api/chat", json={"message": "以后每天晨跑",
+        r3 = cli.post("/api/chat", json={"message": "以后每月晨跑",
                                          "session_id": "t42-f3", "module": "planner"})
         d3 = r3.json()
         opts3 = [o for o in (d3.get("options") or []) if isinstance(o, dict)]
