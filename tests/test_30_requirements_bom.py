@@ -2,26 +2,28 @@
 
 **为什么会红**（2026-10-08 搬家到 `D:\\CampusTime` 后重建 venv 时撞上）：
 本文件是 UTF-8 且**每行依赖上面都写了中文注释**（README:204 特意说明了这点）。
-pip 读 requirements 用的是 `pip._internal.utils.encoding.auto_decode()`：
-它先看 BOM，**没有 BOM 就按系统码页解**。中文 Windows 的系统码页是 cp936(GBK)，
-于是 `pip install -r requirements.txt` 直接崩在这里：
+旧一代 pip 读 requirements 时先看 BOM，**没有 BOM 就按系统码页解**。
+中文 Windows 的系统码页是 cp936(GBK)，于是 `pip install -r requirements.txt` 直接崩在这里：
 
     UnicodeDecodeError: 'gbk' codec can't decode byte 0xab in position 6
     decoding with 'cp936' codec failed
 
-README 第 2 节「装依赖」就是这条命令，**评委在中文机器上照抄会在第一步卡死**，
-比少一个演示视频更糟（视频是加分项，装不上是复现失败）。
+修法只加 3 个字节：文件头补 UTF-8 BOM，中文注释原样保留，跨平台都正常。
 
-修法只加 3 个字节：文件头补 UTF-8 BOM。`auto_decode` 认出 BOM 后走 `utf-8-sig`，
-中文注释原样保留，跨平台都正常。
-
-⚠️ **别把 BOM 当"垃圾字符"清理掉** —— 清掉就等于把这个 bug 装回去。
+⚠️ **别把 BOM 当"垃圾字符"清理掉** —— 清掉就等于把这个 bug 装回去（旧 pip 上）。
 所以本护栏除了钉字节，还钉 README 里那句解释（改文档的人看得见原因）。
+
+⚠️ 第二条教训（2026-10-14，干净克隆 + 新 venv 实测）：**别摸 pip 的私有模块**。
+原来 B 批是 `from pip._internal.utils.encoding import auto_decode`，pip 26 把那模块挪走了
+（BOM 表现在在 `pip._internal.req.req_file.BOMS`），于是**装了新 pip 的机器上这条必红** ——
+克隆态 15 条红里有 2 条纯属自找的，跟产品代码一点关系没有。
+现在改走 pip 的公共 CLI（`--dry-run --no-index --no-deps`，不联网不装包）。
 """
 
 import os
 import subprocess
 import sys
+import tempfile
 
 import _utf8  # noqa: F401  本文件自己也要能在中国 Windows 上跑（同一个坑）
 
@@ -52,33 +54,36 @@ class Collector:
         print(f"\n=== {label} ===")
 
 
-def _decode_like_pip(data: bytes):
-    """跑 pip 自己的解码函数（不是我们自己猜），在子进程里跑以免吃到本进程的编码设置。"""
-    code = (
-        "import sys,json;"
-        "d=open(sys.argv[1],'rb').read();"
-        "from pip._internal.utils.encoding import auto_decode;"
-        "print(json.dumps({'ok':True,'text':auto_decode(d)[:40]}))"
-    )
-    try:
-        r = subprocess.run([sys.executable, "-c", code, REQ], capture_output=True, text=True, timeout=30)
-    except Exception as e:  # noqa: BLE001
-        return False, f"{type(e).__name__}: {e}"
-    if r.returncode != 0:
-        return False, (r.stderr or "").strip().splitlines()[-1] if r.stderr else "解码失败"
-    import json
+def _pip_reads(path):
+    """让 pip **用它自己的公共 CLI** 去读这份清单，返回 (退出码, 合并输出)。
 
-    try:
-        return True, json.loads(r.stdout.strip())["text"]
-    except Exception:  # noqa: BLE001
-        return False, r.stdout[:120]
+    ⚠️ 以前这里是 `from pip._internal.utils.encoding import auto_decode` —— 摸的是私有模块，
+    pip 26 把它挪走了（现在那套 BOM 表在 `pip._internal.req.req_file.BOMS`），
+    于是**装了新版 pip 的机器上这条断言必红**，2026-10-14 用干净克隆 + 新 venv 实测到：
+    克隆态 15 条红里有 2 条就是这么来的，跟产品代码一点关系没有。
+    公共 CLI 才是稳定接口，而且 `--dry-run --no-index --no-deps` 不联网、不装包（实测 1.2 秒），
+    走的正是"读文件 → 解码 → 解析"那一段 —— 当初崩的就是这一段。
+    """
+    env = {k: v for k, v in os.environ.items() if k not in ("PYTHONUTF8", "PYTHONIOENCODING")}
+    env["PYTHONUTF8"] = "0"          # 模拟中文 Windows 默认状态：让 pip 去吃系统码页，别让它替我们兜着
+    r = subprocess.run(
+        [sys.executable, "-m", "pip", "install", "--dry-run", "--no-index", "--no-deps", "-r", path],
+        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=180, env=env)
+    return r.returncode, (r.stdout or "") + (r.stderr or "")
 
 
+def _encoding_error(out: str) -> bool:
+    return any(k in out for k in ("UnicodeDecodeError", "UnicodeEncodeError", "codec", "gbk", "cp936"))
 def run():
     c = Collector()
     raw = open(REQ, "rb").read()
     # BOM 在不在都要能跑完剩下的批次：护栏要"红得清楚"，不能自己崩在后面批次前头
     body = raw[3:] if raw.startswith(BOM) else raw
+    readme = open(README, encoding="utf-8").read()
+    # 无 BOM 的副本放系统临时目录（**不进仓库**：既免得脏 git status，也免得哪天被误提交）
+    NO_BOM_COPY = os.path.join(tempfile.gettempdir(), "campustime_test30_nobom_requirements.txt")
+    with open(NO_BOM_COPY, "wb") as f:
+        f.write(body)
 
     # A. 字节层：BOM 必须在，且只在文件头出现一次
     c.batch("A. 字节层：BOM 就在那儿")
@@ -89,15 +94,31 @@ def run():
             body.decode("utf-8", "replace").splitlines()[0].lstrip("# ").startswith("后端"),
             body.decode("utf-8", "replace").splitlines()[0])
 
-    # B. 真跑 pip 的解码路径（故障就发生在这里）
-    c.batch("B. pip 的真实解码路径：auto_decode")
-    ok, text = _decode_like_pip(raw)
-    c.check("B1 pip 的 auto_decode 不再抛异常（原报障就是它崩）", ok, text)
-    c.check("B2 BOM 被认出来并剥掉，正文从注释开始（不是从乱码锘开始）",
-            ok and text.startswith("#"), repr(text[:12]))
-    # 反证：同一份内容去掉 BOM，按中文 Windows 的码页解必须失败——证明 BOM 不是摆设
+    # B. pip 真的读一遍（走公共 CLI，不摸它的私有模块 —— 见 `_pip_reads` 那段）
+    c.batch("B. pip 真的把这份清单读了一遍")
+    rc, out = _pip_reads(REQ)
+    c.check("B1 我们这份（带 BOM）pip 读通了：退出码 0、没有任何编码类报错",
+            rc == 0 and not _encoding_error(out), f"rc={rc} / {(out.strip().splitlines() or [''])[-1][:90]}")
+    c.check("B2 是真读到底，不是读到第一行就退（清单最后一项也报出来了）",
+            "python-multipart" in out, out[-200:] if out else "（没输出）")
+    # 反证一（与 pip 版本无关）：同一份内容去掉 BOM，按中文 Windows 的码页解必须炸
     c.check("B3 反向验证：把 BOM 拿掉、按 cp936(中文 Windows 码页) 解，必须炸",
             _must_fail_without_bom(body))
+    # 反证二（与 pip 版本**有关**，所以断言的是"文档与事实不许互相打脸"）：
+    # 实测 pip 24.2 读无 BOM 的这份会崩（UnicodeDecodeError / cp936），
+    # pip 26 起改成先按 UTF-8 试，就不崩了。README 要是只写"没 BOM 一定装不上"，
+    # 在新 pip 的机器上就成了吓唬人的假话 —— 所以两种情况下各有一句必须存在。
+    rc_nb, out_nb = _pip_reads(NO_BOM_COPY)
+    crashes = rc_nb != 0 and _encoding_error(out_nb)
+    if crashes:
+        c.check("B4 这台机器的 pip 仍按码页解（无 BOM 真崩）→ README 那句「BOM 别当垃圾清掉 + 码页」必须在",
+                "BOM" in readme and "码页" in readme and ("清掉" in readme or "别删" in readme),
+                f"pip 读无 BOM 副本 rc={rc_nb}")
+    else:
+        c.check("B4 这台机器的 pip 已经不靠 BOM（新版行为）→ README 必须写清这是版本差异，"
+                "别把它说成任何机器都必崩",
+                "26" in readme and ("兼容" in readme or "旧" in readme),
+                f"pip 读无 BOM 副本 rc={rc_nb}（没崩）")
 
     # C. 内容一字未动（防止加 BOM 时偷改了依赖行）
     c.batch("C. 只管编码，不许顺手改内容")
@@ -113,7 +134,6 @@ def run():
 
     # D. 原因要留在文档里，否则下一个人会把 BOM 当垃圾清掉
     c.batch("D. 文档里留了『为什么有 BOM』")
-    readme = open(README, encoding="utf-8").read()
     c.check("D1 README 提到了 BOM", "BOM" in readme, "没找到 BOM 字样")
     c.check("D2 README 说明了不加会怎样（中文 Windows / GBK 装不上）",
             ("GBK" in readme or "gbk" in readme) and "中文" in readme)

@@ -323,6 +323,11 @@ pip install -r requirements.txt
 > ```
 > UnicodeDecodeError: 'gbk' codec can't decode byte 0xab in position 6
 > ```
+> **版本边界（2026-10-14 用干净克隆 + 新 venv 实测）**：pip 24.2（Python 3.13.0 自带的那一代）
+> 无 BOM 确实崩在上面这句；**pip 26 起改成先按 UTF-8 试，就不崩了**。
+> BOM 仍然留着，一是为兼容旧 pip（很多人 `python -m venv` 之后根本不升级它），二是对新版毫无副作用。
+> 这条版本差异由 `tests/test_30_requirements_bom.py` 的 B4 钉着：
+> 它先看这台机器的 pip 到底崩不崩，再要求 README 写下对应那句实话 —— 文档与事实不许互相打脸。
 > 同理，测试结果里的 ✅ / ❌ 打在 GBK 控制台上也会抛 `UnicodeEncodeError` 把自测打断，
 > 所以 `tests/_utf8.py` 会把输出流固定成 UTF-8（`run_all.py` 还会把
 > `PYTHONIOENCODING=utf-8` 传给每一个子进程）。这两处都由 `tests/test_30_requirements_bom.py` 钉住。
