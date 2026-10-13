@@ -18,9 +18,12 @@
 ⚠️ 单独点名文件仍然会崩（`pytest tests/test_01_basic.py` → 还是 INTERNALERROR）：
 显式路径会绕过 `pytest.ini` 的 `python_files`。要看单批结果请用 `python tests/test_XX_*.py`。
 
-⚠️ 这条门目前是**红的**，而且不是这么改出来的：本机全量 14 条存量失败
-（`test_06`×10 + `test_23`×2 + `test_40`×2），根因是 `sandbox()` 不清
-`app/data/student/todos.json`，测试读的是真实演示数据。这件事在等拍板的账上。
+历史一笔（2026-10-14 已清）：这条门曾经**一直红着** —— 本机全量 14 条存量失败
+（`test_06`×10 + `test_23`×2 + `test_40`×2），根因是 `sandbox()` 复制真实演示数据，
+断言读的是"谁的库里恰好有几条、周表上恰好有什么课"。修法是**让依赖起始状态的批次
+在沙箱里自种一份已知数据**（`seed_todos` / `wipe_todos` / `write_timetable`），
+不是把演示数据 commit 进仓库、也不是一刀切清空。现在干净克隆（连 `app/data/student/`
+都没有）与开发机同为**失败 0 项** —— 它一红，就说明有人新写了条依赖起始状态却没自种的断言。
 """
 import os
 import subprocess
