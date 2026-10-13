@@ -2907,7 +2907,8 @@ def wants_add_todo(text: str) -> bool:
     # 老规则一律不接（实测 2026-10-10：这两句 wants_add_todo 都是 False，
     # 学生只能看着系统回一句通用废话）。疑问样照样不接（「每周日写作业来得及吗」是问句）。
     if (weekly_repeat_day(t) and _title_ok(_pick_title(t))
-            and not any(k in t for k in ("吗", "？", "?", "够不", "是不是", "怎么样", "来得及"))):
+            and not any(k in t for k in ("吗", "？", "?", "够不", "是不是", "怎么样", "来得及"))
+            and not _done_already_said(t)):
         return True
     # 「我每天都要背单词」「天天跑步」：说了"每一天"就是长期下单的硬信号（2026-10-13 Prompt 02）。
     # 判据形状与上面 weekly 那条**并列**而不是套进来：它不点名星期几，`weekly_repeat_day` 返回 None。
@@ -2920,7 +2921,8 @@ def wants_add_todo(text: str) -> bool:
     if (daily_repeat(t) and _title_ok(_pick_title(t))
             and not _pick_title(t).startswith(("不", "没", "别", "无"))
             and not any(k in t for k in ("吗", "？", "?", "多少", "够不", "是不是", "怎么样",
-                                         "来得及", "有什么用", "为什么", "怎么办"))):
+                                         "来得及", "有什么用", "为什么", "怎么办"))
+            and not _done_already_said(t)):
         return True
     return bool(_pick_date(t) and _pick_span(t)[0]
                 and not looks_like_question(t))
@@ -4567,6 +4569,11 @@ def build_retime_existing_proposal(text: str, sem: dict | None = None) -> dict:
         "end": finish,
         "weekday": wd,
         "minutes": to_minutes(finish) - to_minutes(begin),
+        # ★ 同 `retime_todo_proposal` 里那一条（本文件 3649 行附近）：换时间不许顺手
+        #   把"每天/每周"换没。这一条是"删旧 + 加新"，旧条目身上的 repeat 不接过来，
+        #   学生说「把背单词改到晚上十点」之后，那条**每天**的习惯就只剩这一天了
+        #   （2026-10-13 实测：新条目 repeat=None，而旧的那条已被删掉）。
+        "repeat": old.get("repeat") or REPEAT_NONE,
         "retimed": True,
         "old_todo_id": old_id,
         "summary": f"{title}｜{new_date}（{wd}）{begin}-{finish}",

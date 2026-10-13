@@ -222,6 +222,10 @@ def batch_e_three_layers_synced():
             "schTodos.filter(t => !isHabit(t) && todoOccurs(t, dIso))" in st)
     c.check("confirm.html 把 repeat 一路发给 /api/todos/batch",
             "repeat: p.repeat" in cf)
+    # 改期那张卡（todo_add / todo_pick）走的是 POST /api/todos，不在 batch 那条上 ——
+    # 少带 repeat 就正好把"删旧 + 加新"里的长期洗掉（F 组那两条行为断言验的是结果，这条钉形状）。
+    c.check("confirm.html 两处【确认加入】都把 repeat 发给 /api/todos",
+            cf.count("repeat: p.repeat") == 3, cf.count("repeat: p.repeat"))
     c.check("重复待办在日程上有可视标记（不然学生不知道它为什么每周都冒出来）",
             "🔁" in st and "🔁" in pl)
     c.check("勾完成时前端带上那一天", 'data-on=' in pl and 'body.on=on' in st.replace(" ", ""))
@@ -458,6 +462,21 @@ def batch_i_daily_habit():
             wants_add_todo("你每天都不回我消息") is False)
     c.check("问句不许被接（「每天几点起床最好」「每天都这么累有什么用」）",
             not wants_add_todo("每天几点起床最好") and not wants_add_todo("每天都这么累有什么用"))
+    # ⚠️ 本轮改 wants_add_todo 时**自己造出来的回归**（变异 Y13 钉着）：
+    #   「每天背单词完成了」既有"每天"又有"了"，新增那一档先接走 → 系统给他排一件
+    #   叫「背单词完成」的每天任务，而他是在报告今天做完了。
+    #   判据：周期那两档（weekly/daily）都要让路给已然（`_done_already_said`），
+    #   这条闸只加在周期档上，别加到整函数头上 ——「每天背单词 晚上9点」照样要接单。
+    c.check("已然句不许被当成新增：「每天背单词完成了」走完成那一族",
+            wants_add_todo("每天背单词完成了") is False, wants_add_todo("每天背单词完成了"))
+    c.check("对照：同一句去掉「了」就照旧是下单",
+            wants_add_todo("每天背单词") is True)
+    # 同一族的另一半：weekly 那档从 2026-10-10 起就有这个洞（本轮加 daily 时才撞出来，一起堵）。
+    # 「每周日写作业完成了」以前也被"每周几 + 事名"那条新增分支抢走 → 给他新排一件「写作业完成」。
+    c.check("同一族的另一半：「每周日写作业完成了」也不许当新增（weekly 档同样让路）",
+            wants_add_todo("每周日写作业完成了") is False, wants_add_todo("每周日写作业完成了"))
+    c.check("对照：weekly 去掉「了」照旧接单",
+            wants_add_todo("每周日都写作业") is True)
     c.check("闸门没被顺手放宽：每月 / 每个周末 照旧拦",
             unsupported_period("每个月交一次电费") == "每个月"
             and unsupported_period("每个周末去爬山") == "每个周末",
@@ -568,8 +587,34 @@ def batch_i_daily_habit():
         b = w.json()
         c.check("勾一段只写 1 条，且落的是 daily",
                 b.get("count") == 1 and (b.get("added") or [{}])[0].get("repeat") == REPEAT_DAILY, b)
+        # ==== F. 改期这一族：换钟点不许把"每天/每周"洗掉 ====
+        # 「把背单词改到晚上十点」走的是**删旧 + 加新**，新那条若不接住 repeat，
+        # 习惯就只剩这一天（2026-10-13 实测到的第二个洞，同一族的 weekly 也一样）。
+        for tag, title_, msg, sid, want in (
+                ("daily", "预习", "把预习改到晚上十点", "t39-rt-d", REPEAT_DAILY),
+                ("weekly", "钢琴课", "把钢琴课改到下午三点", "t39-rt-w", REPEAT_WEEKLY)):
+            add_todo(title_, _sun(0), "14:00", "15:30", repeat=want)
+            rr = cli.post("/api/chat", json={"message": msg, "session_id": sid,
+                                             "module": "planner"}).json()
+            rc = [o for o in (rr.get("options") or []) if isinstance(o, dict)]
+            c.check(f"[{tag}] 改期卡上还带着 repeat={want}",
+                    [o.get("kind") for o in rc] == ["todo_add"] and rc[0].get("repeat") == want,
+                    [(o.get("kind"), o.get("repeat")) for o in rc])
+            c.check(f"[{tag}] 回话说清「仍然是」哪一档（改期是删旧加新，不说不像没动）",
+                    ("仍然是每天" if want == REPEAT_DAILY else "仍然是每周")
+                    in (rr.get("answer") or ""), (rr.get("answer") or "").replace("\n", " ")[:80])
+            if rc:
+                w = cli.post("/api/todos", json={"title": rc[0]["title"], "date": rc[0]["date"],
+                                                 "start": rc[0]["start"], "end": rc[0]["end"],
+                                                 "old_todo_id": rc[0].get("old_todo_id") or "",
+                                                 "repeat": rc[0].get("repeat") or "",
+                                                 "session_id": sid})
+                got3 = [x for x in list_todos() if x["title"] == title_]
+                c.check(f"[{tag}] 点【确认】之后库里那条**还是** {want}（旧的已删、新的只剩一天就是没接住）",
+                        len(got3) == 1 and got3[0].get("repeat") == want,
+                        [(x["id"], x.get("repeat"), x["date"]) for x in got3])
 
-    # ==== F. 三份同步：判据一份 + 日历那几个点各滤一次 ====
+    # ==== G. 三份同步：判据一份 + 日历那几个点各滤一次 ====
     st = io.open(STUDENT, encoding="utf-8").read()
     pl = io.open(PLAN, encoding="utf-8").read()
     cf = io.open(CONFIRM, encoding="utf-8").read()

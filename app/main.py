@@ -2340,7 +2340,13 @@ async def _chat_impl(req: Request, meta: dict):
                  f"{_rt.get('old_label', '原时间')} 改到 "
                  f"**{_rt_prop['date']}（{_rt_prop['weekday']}）"
                  f"{_rt_prop['start']}-{_rt_prop['end']}**——\n"
-                 f"下面点【确认加入】我就改好（旧的那段会挪走）。"
+                 # 改的是习惯/每周那条就得说一句"还是每天/每周"：
+                 # 这一条是删旧加新，他不看到这句就会以为长期那半没了。
+                 + (f"它**仍然是每天**都要做的事（只改了钟点，勾完成还是只算当天）。\n"
+                    if _rt_prop.get("repeat") == REPEAT_DAILY else
+                    (f"它**仍然是每周{_rt_prop['weekday']}**都要做的事（只改了钟点）。\n"
+                     if _rt_prop.get("repeat") == REPEAT_WEEKLY else ""))
+                 + f"下面点【确认加入】我就改好（旧的那段会挪走）。"
                  f"回一句「确认」也一样。"),
                 "🕘 改期提案（系统判定）")
         if _rt_status == "many":

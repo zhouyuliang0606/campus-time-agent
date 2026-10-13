@@ -263,6 +263,10 @@ const KIND = {
       return api("POST", "/api/todos", {
         session_id: sid(), title: p.title, date: p.date,
         start: p.start, end: p.end, old_todo_id: p.old_todo_id || "",
+        // repeat 必须一起递过去：这张卡是"删旧 + 加新"实现的改期，
+        // 少带这一格，「每天背单词」改个钟头就只剩这一天（2026-10-13 实测）。
+        // 后端白名单认不得的值一律退回一次性，所以带空串是安全的。
+        repeat: p.repeat || "",
       });
     },
     doneText(p) {
@@ -280,6 +284,10 @@ const KIND = {
       return api("POST", "/api/todos", {
         session_id: sid(), title: p.title, date: p.date,
         start: p.start, end: p.end, old_todo_id: p.old_todo_id || "",
+        // repeat 必须一起递过去：这张卡是"删旧 + 加新"实现的改期，
+        // 少带这一格，「每天背单词」改个钟头就只剩这一天（2026-10-13 实测）。
+        // 后端白名单认不得的值一律退回一次性，所以带空串是安全的。
+        repeat: p.repeat || "",
       });
     },
     doneText(p) {
