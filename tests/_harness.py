@@ -85,7 +85,13 @@ class sandbox:
     #   `match_sample("图书馆几点关门")` 以 dice 0.444 ≥ 阈值 0.42 抢走了一句**提问**
     #   （`test_01`、`test_08` 各红一条），而测试根本没改过任何东西。
     #   清掉它不影响判定：内置种子 `_SEED_SAMPLES` 写在代码里，新实例照样有例句可依。
-    # ⚠️ `student/todos.json` 还没进来（那是要不要顺带修 7 条存量红的大刀，见指南红线 18）。
+    #
+    # ⚠️ `student/todos.json` / `student/timetable.json` **故意不在这里**（2026-10-14 定案）：
+    #   一刀切清空会让"得有数据才能验『删之前不动』"那一批反而红。
+    #   替代做法是**谁依赖起始状态谁自种**：`seed_todos()` / `wipe_todos()` /
+    #   `write_timetable()`（都只能在沙箱内调用，见 `_require_sandbox`）。
+    #   写新断言前记住这条：`sandbox()` 是"复制真实数据"，**不是空库** ——
+    #   不种就等于是拿用户今天手测到什么来判测试。
     SCRATCH = ("settings.json", "uploads.json", "uploads", "notices.json",
                "student_messages.json", "workorders.json", "intent_samples.json")
 
@@ -124,6 +130,90 @@ def data_path(*parts):
     """
     base = os.environ.get("CAMPUSTIME_DATA_DIR") or REAL_DATA_DIR
     return os.path.join(base, *parts)
+
+
+def _require_sandbox(what: str) -> str:
+    """种数据前先看一眼是不是在沙箱里 —— 不在就直接拒绝。
+
+    为什么要有这道闸：这几个 helper 是**整份覆盖写**，在沙箱外调用等于把
+    用户真实在用的演示数据清掉（他原话「每次修改都给我设置搞没了」就是这么来的）。
+    """
+    dest = os.environ.get("CAMPUSTIME_DATA_DIR")
+    if not dest:
+        raise RuntimeError(f"{what} 只能在 with sandbox(): 里调用（现在没有沙箱，会写到真实数据目录）")
+    return dest
+
+
+def seed_todos(todos: list) -> list:
+    """把**当前沙箱**的待办覆盖成这一份已知清单（人话：测试自己摆自己的赛前状态）。
+
+    为什么要有它（2026-10-14 整族扫）：`sandbox()` 是"复制真实数据"，不是空库 ——
+    同一批"数一数待办 / 找一节空课"的断言因此在两台机器上是两个世界：
+    开发机上库里 11 条（用户刚手测过），干净克隆里 0 条，
+    本机 13 条红、克隆 15 条红，其中一大半纯属这个（指南红线 18 记的就是这件事）。
+    **自种已知数据 = 两边都得绿**，而且比"清空"更强：断言要的"有几条可列"也照样成立。
+
+    每项最少写 `title/date/start/end`，其余按 `store.add_todo` 的形状补齐；
+    想留重复档就直接写 `repeat/weekday/done_dates`。返回写进去的那份（便于断言）。
+    """
+    import json
+
+    dest = _require_sandbox("seed_todos()")
+    full = []
+    for i, t in enumerate(todos or []):
+        item = {
+            "id": t.get("id") or f"seed{i:04d}",
+            "title": t.get("title", "待办"),
+            "date": t.get("date", ""),
+            "start": t.get("start", ""),
+            "end": t.get("end", ""),
+            "note": t.get("note", ""),
+            "category": t.get("category", ""),
+            "status": t.get("status", "planned"),
+            "created_at": t.get("created_at", "2026-01-01 00:00:00"),
+        }
+        for k in ("repeat", "weekday", "done_dates"):
+            if k in t:
+                item[k] = t[k]
+        full.append(item)
+    p = os.path.join(dest, "student", "todos.json")
+    os.makedirs(os.path.dirname(p), exist_ok=True)
+    with open(p, "w", encoding="utf-8") as f:
+        json.dump({"todos": full}, f, ensure_ascii=False, indent=2)
+    return full
+
+
+def wipe_todos() -> list:
+    """库里一条待办都没有（`seed_todos([])` 的别名，读代码时一眼看懂意图）。"""
+    return seed_todos([])
+
+
+# 一份"两种断言都喂得到"的已知周表：只有周六晚 19:00-21:00 一节《晚课·社团》。
+# 为什么长成这样：有的断言要"至少有一节课能撞"（撞课、被占的晚上、从模型回话里抠课），
+# 有的要"我点的钟点那天是空的"（15:00 / 07:00 必须真给出来）—— 一门晚课 + 其余全空，
+# 两边同时成立，而且**不依赖任何人的真实课表**（本机/克隆两种环境同一个结果）。
+#   要"一整份像真的课表"请用 `_e2e_env.demo_courses_from_json()`（源头是仓库里的
+#   `app/data/courses.json`，12 门课，克隆下来一模一样）；本文件这份只保证
+#   "有一个被占的晚上 + 其余全空"，够排空档那类断言用，别拿它当课表内容断言的靶子。
+SEED_COURSES = [{"day": 6, "start": "19:00", "end": "21:00",
+                 "course": "晚课·社团", "location": "体育馆"}]
+
+
+def write_timetable(courses: list, updated: str = "2026-01-01 00:00:00") -> list:
+    """把**当前沙箱**的周表覆盖成这一份已知课程（形状与 `store.save_timetable` 一致）。
+
+    为什么"覆盖"而不是"追加"：断言里那些"周六下午三点该给 15:00""晚上七点被课占了"
+    只在**知道那天有什么课**的前提下才成立；真实课表一改，断言就跟着变红（或被假绿掩盖）。
+    """
+    import json
+
+    dest = _require_sandbox("write_timetable()")
+    p = os.path.join(dest, "student", "timetable.json")
+    os.makedirs(os.path.dirname(p), exist_ok=True)
+    with open(p, "w", encoding="utf-8") as f:
+        json.dump({"updated_at": updated, "courses": courses}, f,
+                  ensure_ascii=False, indent=2)
+    return courses
 
 
 # 测试用的管理口令。真实环境里这串来自 .env 的 CAMPUSTIME_ADMIN_TOKEN，
