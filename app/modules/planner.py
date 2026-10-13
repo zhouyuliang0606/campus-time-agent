@@ -942,8 +942,19 @@ def todo_slots_proposal(text: str, max_slots: int = 3) -> dict | None:
     # 所以候选**随便哪天挑都行**（每天都重复，落在哪天只是"从哪天开始"这个锚点），
     # 话术必须把"不进日历"说在明处 —— 不然他加完会在日程里找，找不到就说系统没记上。
     if daily_repeat(t):
-        slots = candidate_slots(_REPEAT_PHRASE_RE.sub(" ", plain),
-                                max_slots=max_slots + 6, days_ahead=7)
+        # 锚点：说了「从今天/明天/下周一开始」就从那天起，没说就从今天起。
+        # ⚠️ 这句话既带着"每天"又带着"哪天开始"，直接丢给 candidate_slots 会被当成
+        #   "他点名了某一天"→ 只列那一天的空档（实测：候选只剩 1 段，还全在今天下午）。
+        #   习惯天天都做，所以这里把起手式连同那个日子一起摘掉去摊候选，
+        #   再用 anchor 把"比锚点早的那几天"滤掉 —— 摘和滤缺一半都不对。
+        anchor = start_anchor(t) or datetime.date.today().isoformat()
+        lead = max(0, (datetime.date.fromisoformat(anchor)
+                       - datetime.date.today()).days)
+        slots = [s for s in candidate_slots(_START_FORM_RE.sub(" ",
+                                            _REPEAT_PHRASE_RE.sub(" ", plain)),
+                                            max_slots=max_slots + 6,
+                                            days_ahead=7 + lead)
+                 if (s.get("date") or "") >= anchor]
         if not slots:
             return None
         hint = (f"这是**每天**都要做的事：勾一个固定的时间段，以后每天出现在你的"
@@ -2014,6 +2025,20 @@ _REPEAT_WEEKDAY_RE = re.compile(
 # ★ 什么叫"每天类"只写一份（`_DAILY_RE`），这条直接拼它的原文 ——
 #   另抄一份词表就是第二个病（红线 13e：词表一旦分叉，多出来的那截是死条目）。
 _DAILY_RE = re.compile(r"(?:每\s*一?天|天天|每日)")
+# ★ 「从今天开始 / 从明天起 / 从现在开始 / 自今天起 / 从下周一开始」这一串**起手式**。
+# 只从**事情名字**里擦，不许进日期解析那一步 —— 那句里的「今天/明天」正是"从哪天开始"的锚点，
+# 在 parse_time_spec 里擦了就不知道从哪天起（实测：「从明天开始每天背单词」的锚点必须是明天）。
+# 为什么要单独一条：不擦的话卡片标题就成了「从我要背单词」「从背单词」「自起练琴」——
+# 2026-10-13 拿用户原话量的，三句里两句带「从」字残渣（这洞比 daily 早，「从今天开始背单词」一样中招）。
+# ⚠️ 那个"日子"整块吃掉，别只吃「从」：只擦"从"的话，「从现在开始」会剩个「现」字在名字里。
+# ⚠️ 周几要连着限定词整块吃（「下周一 / 这周五 / 上周三」）——
+#    写成 `下[周天月]` 的话只吃两个字，「从下周一开始」剩「一」赖在名字里
+#    （实测标题成了「从背单词」）。
+_START_FORM_RE = re.compile(
+    r"(?:从|自|由)\s*(?:现在|今天|今晚|明天|明早|明晚|后天|大后天"
+    r"|(?:这|本|下|上|那)?(?:周|星期|礼拜)[一二三四五六日天]?"
+    r"|\d{1,2}\s*月\s*\d{1,2}\s*[日号])?"
+    r"\s*(?:开始|起始|起|以来|之后|以后)")
 _REPEAT_PHRASE_RE = re.compile(
     r"(?:"
     r"(?:以后|从今以后|今后|长期|一直|始终)?\s*(?:每|所有|全部)(?:一个|一|个)?\s*"
@@ -2069,6 +2094,18 @@ def weekly_repeat_day(text: str) -> int | None:
 def daily_repeat(text: str) -> bool:
     """这句话是不是「每一天都要做」？（它不带星期几，落库就是一条 daily 习惯）"""
     return bool(_DAILY_RE.search(text or ""))
+
+
+def start_anchor(text: str) -> str:
+    """「从今天/明天/下周一开始」那句里的**起始日**（没说就从今天起，回空串）。
+
+    ⚠️ 只能从起手式那一小截里取日子，**不许拿整句去 `_pick_date`**：
+    「以后天天背单词」整句抠会抠出 `2026-10-15` —— 因为「以后**天天**」四个字里连着
+    一个「后天」，被当成"后天"跳了两天（2026-10-13 拿用户原话实测到的）。
+    起手式是「从X开始/自X起」这种带介词的说法，「以后/长期」根本不该进日子判据。
+    """
+    m = _START_FORM_RE.search(text or "")
+    return _pick_date(m.group(0)) if m else ""
 
 
 def repeat_of(text: str) -> str:
@@ -2567,6 +2604,10 @@ def _strip_title_noise(text: str, keep_freq: bool = False) -> str:
     if _FREQ_RE.search(t) and not keep_freq:
         t = _COUNT_UNIT_RE.sub(" ", t)
         t = _WEEK_SCOPE_RE.sub(" ", t)
+    # 「从今天开始 / 从明天起 / 从现在开始」这串起手式先整块擦掉，
+    # 再擦周期说法 —— 顺序反了不行：先擦「每天」的话，「从今天开始每天背单词」
+    # 剩「从背单词」，那个「从」就再也擦不掉了（2026-10-13 用户原话实测）。
+    t = _START_FORM_RE.sub(" ", t)
     # 每周重复的整串说法一起擦掉。漏了它，「每个周天都加一个写作业的代办」的标题就会
     # 剩成「每个都写作业」（2026-10-10 用户截图里原样出现，很难看）——
     # 重复这件事现在由 repeat/weekday 字段承载，标题里没有它的位置。

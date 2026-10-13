@@ -488,6 +488,35 @@ def batch_i_daily_habit():
     c.check("一次解析就定档：repeat=daily 且 weekday 为空（不猜星期几）",
             sp["repeat"] == REPEAT_DAILY and sp["weekday"] is None and sp["start"] == "21:00", sp)
 
+    # ==== B-bis. 起手式「从X开始」：标题不许留「从」，起始日不许抠错 ====
+    # 用户给的原话三种说法都带起手式（从今天开始 / 以后 / 天天），两条都是实测出来的洞：
+    #   ① 标题留残渣：「从今天开始我要天天背单词」→ 卡片标题成了「从我要背单词」；
+    #   ② 起始日抠错：**整句**丢给 `_pick_date` 时，「以后天天」里连着的一个「后天」被读成日子，
+    #      「以后天天背单词」的锚点跳到了两天以后（所以 `start_anchor` 只准在起手式那一小截里取日子）。
+    from app.modules.planner import start_anchor
+    import datetime as _dt
+    _today = _dt.date.today().isoformat()
+    _tmr = (_dt.date.today() + _dt.timedelta(days=1)).isoformat()
+    c.check("标题擦净：从今天开始我要天天背单词 → 背单词",
+            _pick_title("从今天开始我要天天背单词") == "背单词",
+            _pick_title("从今天开始我要天天背单词"))
+    for s, want in (("从今天开始每天背单词", _today), ("从明天开始每天背单词", _tmr),
+                    ("自今天起每天练琴", _today)):
+        c.check(f"起始日认得：{s} → {want}", start_anchor(s) == want, start_anchor(s))
+    for s, why in (("以后天天背单词", "「以后天天」里连着「后天」，整句抠会跳两天"),
+                   ("每天都背单词", "没说起点"), ("长期每天背单词", "没说起点")):
+        c.check(f"起始日不许瞎抠：{s}（{why}）", start_anchor(s) == "", start_anchor(s))
+    c.check("起手式不误伤别的说法：「从图书馆回来」「重新开始」里没日子可擦",
+            start_anchor("从图书馆回来") == "" and start_anchor("重新开始一段关系") == "",
+            (start_anchor("从图书馆回来"), start_anchor("重新开始一段关系")))
+    c.check("说了起始日也照旧摊多天候选（以前只列那天一段，学生没得挑）",
+            len((P.todo_slots_proposal("从今天开始我要天天背单词") or {}).get("slots") or []) >= 3,
+            len((P.todo_slots_proposal("从今天开始我要天天背单词") or {}).get("slots") or []))
+    _sl = (P.todo_slots_proposal("从明天开始每天背单词") or {}).get("slots") or []
+    c.check("候选段一律不早于起始日（「从明天开始」不该给今天）",
+            bool(_sl) and all((s.get("date") or "") >= _tmr for s in _sl),
+            [s.get("date") for s in _sl][:4])
+
     # ==== C. 存储层：一条记录、天天出现、按天记完成、有头 ====
     with sandbox():
         set_settings({"api_key": "", "base_url": "https://api.deepseek.com", "model": "deepseek-chat"})
@@ -633,9 +662,9 @@ def batch_i_daily_habit():
             pl.count("!isHabit(t) && todoOccurs"))
     # 没滤习惯的调用点**只允许有这一个**：红角标数的是"今天还要打卡的条数"，
     # 它必须把 daily 算进来。日历那几处全都得带 !isHabit（上面两条计数钉着）。
-    c.check("student.html 不滤习惯的调用点只有角标那一个（别处漏一条=习惯钻进格子）",
-            st.count("=> todoOccurs(") == 1 and "todoOccurs(t, todayIso)" in st,
-            (st.count("=> todoOccurs("), "todoOccurs(t, todayIso)" in st))
+    c.check("student.html 不滤习惯的调用点只有两处：角标 + 今日框（都问的是今天）",
+            st.count("todoOccurs(t, todayIso)") == 2 and st.count("=> todoOccurs(") == 1,
+            (st.count("todoOccurs(t, todayIso)"), st.count("=> todoOccurs(")))
     c.check("plan.html 没有不滤习惯的调用点（它只有日历，没有代办角标）",
             pl.count("=> todoOccurs(") == 0, pl.count("=> todoOccurs("))
     c.check("confirm.html 的候选卡把 daily 显出来（不显就是 surprise）",
@@ -649,6 +678,17 @@ def batch_i_daily_habit():
             st.count('class="todo-badge"'))
     c.check("拉到待办的两处都刷角标（日程面板 + 代办列表）", st.count("updateTodoBadge(") == 3,
             st.count("updateTodoBadge("))
+    # ==== H. 今天要做：置顶 + 单独成框（用户 2026-10-13 原话「当天的任务置顶，单独框出来」）====
+    c.check("今日框先画、再画两组（顺序就是观感：第一眼是这个框）",
+            st.find('class="today-box"') < st.find('class="todo-group"') > 0
+            and st.find('id="todayBox"') > 0, st.find('class="today-box"'))
+    c.check("框里的排序是「没勾的在前」（他进来找的是还欠几件）",
+            "todoDoneOn(a, todayIso)?1:0) - (todoDoneOn(b, todayIso)" in st)
+    c.check("今日框用没滤习惯的那份判据（isToday 只在框这一处出现）",
+            st.count("var isToday = function") == 1 and "sorted.filter(isToday)" in st,
+            st.count("sorted.filter(isToday)"))
+    c.check("框的样式有浅色版也有玻璃档覆盖（深色页上不能留一块亮斑）",
+            ".today-box {" in st and "html.gx-glass .today-box" in st)
     return c
 
 

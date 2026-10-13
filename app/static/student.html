@@ -422,6 +422,13 @@
                 display: none; flex: none; }
   .sb-item .todo-badge { margin-left: auto; }
   .todo-group { font-size: 12px; color: #8a93a6; letter-spacing: .04em; margin: 4px 2px -2px; }
+  /* 「今天要做」单独一个框（用户 2026-10-13：当天的任务置顶、框出来）。
+     底色刻意和下面的分组行不一样：进这一栏第一眼要落到这个框上，不是先读一遍标题。
+     深色玻璃档下面另有一条走 token 的覆盖，别在这儿写死浅色值。 */
+  .today-box { border: 1px solid #c9d6ff; background: #f4f7ff; border-radius: 12px;
+               padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
+  .today-head { font-size: 13px; font-weight: 600; color: #3457d5; margin-bottom: 2px; }
+  .today-head b { font-size: 15px; }
   .todo-main { flex: 1; min-width: 0; }
   .todo-title { font-size: 14px; font-weight: 500; }
   .todo-sub { font-size: 12px; color: #8a93a6; margin-top: 2px; }
@@ -573,6 +580,10 @@ html.gx-glass .sidebar, html.gx-glass .topbar, html.gx-glass .composer { backgro
 html.gx-glass .tab.active { background: rgba(215,239,131,.20); color: var(--brand); border-color: rgba(215,239,131,.5); text-shadow: 0 1px 2px rgba(7,19,13,.6); }
 html.gx-glass .card, html.gx-glass #log, html.gx-glass .view, html.gx-glass .mod, html.gx-glass .dlg { background: var(--surface); }
 html.gx-glass .notice-item { border-top-color: var(--line); }
+  /* 「今天要做」那个框在玻璃档下跟着 token 走：写死的浅蓝底在深色页上会是一块亮斑。
+     边框交给透明度分层，别再画一圈亮边（那是"线框稿感"的来源） */
+html.gx-glass .today-box { background: var(--brand-soft); border-color: transparent; }
+html.gx-glass .today-head, html.gx-glass .today-head b { color: var(--brand); }
 html.gx-glass .tag { background: var(--brand-soft); color: var(--brand); }
 html.gx-glass .slot-row { background: rgba(255,255,255,.04); }
 html.gx-glass .slot-row:hover { background: var(--brand-soft); }
@@ -2698,16 +2709,34 @@ html.gx-glass[data-gx-refine="on"] .composer, html.gx-glass[data-gx-refine="on"]
             '<button class="todo-del" data-id="'+esc(t.id)+'">删除</button></div>';
         };
         var sorted=list.slice().sort(function(a,b){ return (a.date+a.start).localeCompare(b.date+b.start); });
-        // 分两组摆：单次任务 / 习惯（每天 + 每周）。分组口径就一条：**有没有重复档**
-        // （`t.repeat` 非空）。⚠️ 别把它和上面 `isHabit`（日历画不画）混为一谈 ——
+        var todayIso = isoD(new Date());
+        // ★ 今天要做的事**置顶、单独一个框**（用户 2026-10-13 原话：
+        //   「代办那一栏，当天的任务置顶，单独框出来」）。框里的排序按"还没勾的在前"，
+        //   他进这一栏第一眼要找的是还欠几件，不是已完成的那几行。
+        // ⚠️ 这里用**没滤习惯**的 `todoOccurs`：daily 天天都算今天要做的，
+        //    拿日历那份过滤结果来数就会把它漏掉（角标同一个道理）。
+        var isToday = function(t){ return todoOccurs(t, todayIso); };
+        var todaySet = sorted.filter(isToday);
+        todaySet.sort(function(a,b){
+          return ((todoDoneOn(a, todayIso)?1:0) - (todoDoneOn(b, todayIso)?1:0))
+                 || (a.start||"").localeCompare(b.start||"");
+        });
+        var rest = sorted.filter(function(t){ return !isToday(t); });
+        // 剩下的分两组：单次任务 / 习惯（每天 + 每周）。
+        // ⚠️ 分组口径是**有没有重复档**（`t.repeat` 非空），别和上面 `isHabit`（日历画不画）混为一谈 ——
         // weekly 进日历、也进习惯组，两者问的不是同一件事。
-        // 习惯**不画进日程格子**的那一档（daily），这一栏是它唯一看得见的位置，
-        // 所以给它自己的小标题，别和单次任务混成一锅。
-        var once = sorted.filter(function(t){ return !t.repeat; });
-        var habits = sorted.filter(function(t){ return !!t.repeat; });
+        var once = rest.filter(function(t){ return !t.repeat; });
+        var habits = rest.filter(function(t){ return !!t.repeat; });
         var html = "";
-        if (once.length) html += '<div class="todo-group">单次任务</div>' + once.map(rowHtml).join("");
-        if (habits.length) html += '<div class="todo-group">习惯（每天 / 每周 · 不占日程格子）</div>' + habits.map(rowHtml).join("");
+        if (todaySet.length) {
+          var undone = todaySet.filter(function(t){ return !todoDoneOn(t, todayIso); }).length;
+          html += '<div class="today-box" id="todayBox">'
+                + '<div class="today-head">今天要做 · '
+                + (undone ? '<b>' + undone + '</b> 件还没勾' : '都勾完了 ✓')
+                + '</div>' + todaySet.map(rowHtml).join("") + '</div>';
+        }
+        if (once.length) html += '<div class="todo-group">往后的单次任务</div>' + once.map(rowHtml).join("");
+        if (habits.length) html += '<div class="todo-group">习惯（今天不归它 · 每天 / 每周）</div>' + habits.map(rowHtml).join("");
         box.innerHTML = html;
         updateTodoBadge(list);
         box.querySelectorAll(".todo-done").forEach(function(cb){ cb.addEventListener("change", async function(){
