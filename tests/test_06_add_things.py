@@ -2726,12 +2726,19 @@ def test_context_inherit_and_half_sentence():
             _pick_title("我想去游泳，帮我安排时间"))
 
     # —— ② 离线 Mock 的闸门：半句话不许摊候选卡 ——
-    for half in ("好的", "嗯", "你帮我安排", "你帮我找一个合适的时间"):
-        r = mock_planner(half, [], "gentle")
-        kinds = [(o.get("kind"), o.get("title")) for o in (r.get("options") or [])]
-        c.check(f"没配密钥时：『{half}』只问要安排什么事，不许摊卡",
-                not kinds and "要安排的是什么事" in (r.get("answer") or ""),
-                f"{kinds} / {(r.get('answer') or '')[:36]}")
+    # ⚠️ 2026-10-14 克隆实测：这一档以前**在沙箱外**跑，读的是真实周表 ——
+    #    本机课表有课，答案是「要安排的是什么事」；干净克隆里周表是空的，
+    #    mock_planner 先劝人「你现在周表还是空的，先去上传课表」，四条一起红。
+    #    `mock_planner` 的回答分支吃周表，所以它也得有起始状态。
+    with sandbox():
+        seed_timetable()
+        wipe_todos()
+        for half in ("好的", "嗯", "你帮我安排", "你帮我找一个合适的时间"):
+            r = mock_planner(half, [], "gentle")
+            kinds = [(o.get("kind"), o.get("title")) for o in (r.get("options") or [])]
+            c.check(f"没配密钥时：『{half}』只问要安排什么事，不许摊卡",
+                    not kinds and "要安排的是什么事" in (r.get("answer") or ""),
+                    f"{kinds} / {(r.get('answer') or '')[:36]}")
 
     # —— ③ 走接口：图 2 那一幕（说了事名 → 回一句只带时间的话） ——
     with sandbox():
