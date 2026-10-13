@@ -27,7 +27,8 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from _harness import Checker, title, sandbox, make_client  # noqa: E402
+from _harness import (Checker, seed_todos, title, sandbox, make_client,  # noqa: E402
+                      SEED_COURSES, write_timetable)
 
 from app.agent import polish as _polish  # noqa: E402
 from app.agent.polish import polish_reply, has_promise  # noqa: E402
@@ -69,6 +70,12 @@ def _patch_client(reply: str, with_key: bool = True, delay: float = 0.0):
     def _restore():
         _client.DeepSeekClient, _cfg.get_llm_config = old
     return _restore
+
+
+def _d(offset):
+    """往后第 offset 天（种数据用；写死绝对日期过几天就成过去式了）。"""
+    import datetime
+    return (datetime.date.today() + datetime.timedelta(days=offset)).isoformat()
 
 
 def _say(client, msg, sid, module="planner"):
@@ -156,6 +163,16 @@ def test_3d_list_polish():
     with sandbox():
         client = make_client()
         from app.store import list_todos
+        # ★ 自己种待办：这批断言要的是「库里有一些待办」——
+        #   沙箱是复制真实数据，于是开发机上库里 11 条能过，
+        #   干净克隆里 0 条就变成「你目前还没有任何待办」，三条一起红。
+        #   种固定三条之后两边同为 3 条，「条数与库一致」才是真在比数。
+        write_timetable(SEED_COURSES)
+        seed_todos([
+            {"title": "交实验报告", "date": _d(0), "start": "10:00", "end": "11:00"},
+            {"title": "取快递", "date": _d(1), "start": "16:00", "end": "17:00"},
+            {"title": "值日", "date": _d(2), "start": "19:00", "end": "20:00"},
+        ])
         real = list_todos()
 
         b0 = _say(client, "看看我的待办", "t20-3d-nokey")

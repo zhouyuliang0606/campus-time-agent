@@ -29,7 +29,8 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from _harness import Checker, sandbox, title  # noqa: E402
+from _harness import (Checker, SEED_COURSES, sandbox, write_timetable, seed_todos,  # noqa: E402
+                      title)
 from app.modules.planner import find_free_slots  # noqa: E402
 
 PROJ_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -235,6 +236,12 @@ def main():
     # 整个文件共用一个沙箱：B 批要数待办、C 批要真写一条，
     # 都只能写在临时副本上（sandbox 是上下文管理器，退出即删）。
     with sandbox():
+        # ★ 自己种状态，别信"沙箱里恰好有什么"（2026-10-14 整族扫）：
+        #   C7 要一节真课程来撞，本机有演示课表就绿、干净克隆里课表是空的就红；
+        #   待办也清成已知的一份，B3「一条都没多」才是真的在数自己摆的桌子。
+        write_timetable(SEED_COURSES)
+        seed_todos([{"title": "已有的那条", "date": _dt.date.today().isoformat(),
+                    "start": "09:00", "end": "10:00"}])
         batch_structure(c)
         batch_behavior(c)
         batch_system_side(c)

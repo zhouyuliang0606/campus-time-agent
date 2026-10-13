@@ -20,7 +20,7 @@ import io
 
 import ast
 
-from _harness import Checker, make_client, sandbox, title
+from _harness import (Checker, SEED_COURSES, make_client, sandbox, write_timetable, title, wipe_todos)
 from app.store import set_settings
 
 PLANNER = "app/modules/planner.py"
@@ -94,50 +94,57 @@ def batch_b_clock_must_be_used():
     title("B 批 · 读到的钟点必须用满（这是这次重构的全部意义）")
     from app.modules import planner as P
 
-    day = _first_free_span("15:00", "16:30")
-    if day:
-        # 故意选"下午三点"而不是"晚上七点"：19:00 正好是"晚上"档的默认起点，
-        # 就算 pinned 那段没生效、退回三档默认，也会碰巧给出 19:00 —— 上一版就是这么假绿的。
-        # 15:00 不是任何档的起点，只有"真的用了学生点的钟点"才会出现。
-        slots = P.candidate_slots(f"{day} 下午三点复习", max_slots=3)
-        c.check(f"点名 15:00（非档起点）→ 必须真给 15:00 那天那段（{day}）",
-                any(s["start"] == "15:00" for s in slots),
-                [(s["start"], s["end"]) for s in slots])
-    else:
-        c.check("环境里找不到一个 15:00-16:30 空着的日子（①无法验）", False, "看课表")
+    # ★ 这一批以前**连沙箱都没进**（读的是真·演示数据），于是同一批断言两种环境两种红法：
+    #   开发机上「每周六下午三点」被一条真实周表的 14:00-15:30 挤成 15:30；
+    #   干净克隆里又"找不到一节被占的晚上"，②④两组直接放弃验证报红。
+    #   现在自己种一份已知周表（只有周六晚一门课）+ 清空待办 —— 两边都得同一个结果。
+    with sandbox():
+        write_timetable(SEED_COURSES)
+        wipe_todos()
+        day = _first_free_span("15:00", "16:30")
+        if day:
+            # 故意选"下午三点"而不是"晚上七点"：19:00 正好是"晚上"档的默认起点，
+            # 就算 pinned 那段没生效、退回三档默认，也会碰巧给出 19:00 —— 上一版就是这么假绿的。
+            # 15:00 不是任何档的起点，只有"真的用了学生点的钟点"才会出现。
+            slots = P.candidate_slots(f"{day} 下午三点复习", max_slots=3)
+            c.check(f"点名 15:00（非档起点）→ 必须真给 15:00 那天那段（{day}）",
+                    any(s["start"] == "15:00" for s in slots),
+                    [(s["start"], s["end"]) for s in slots])
+        else:
+            c.check("环境里找不到一个 15:00-16:30 空着的日子（①无法验）", False, "看课表")
 
-    day2 = _first_free_evening()
-    if day2:
-        slots2 = P.candidate_slots(f"{day2} 晚上七点到九点值日", max_slots=3)
-        c.check("有起止的点名（七点到九点）→ 终点也必须是 21:00，不是默认 90 分钟",
-                any(s["start"] == "19:00" and s["end"] == "21:00" for s in slots2),
-                [(s["start"], s["end"]) for s in slots2])
+        day2 = _first_free_evening()
+        if day2:
+            slots2 = P.candidate_slots(f"{day2} 晚上七点到九点值日", max_slots=3)
+            c.check("有起止的点名（七点到九点）→ 终点也必须是 21:00，不是默认 90 分钟",
+                    any(s["start"] == "19:00" and s["end"] == "21:00" for s in slots2),
+                    [(s["start"], s["end"]) for s in slots2])
 
-    # ④ 每周重复 + 点名钟点：每一段都得是学生点的那个钟点（否则"每周"就白认了）
-    rwd = P.todo_slots_proposal("每周六下午三点爬山")
-    rs = (rwd or {}).get("slots") or []
-    c.check("每周六下午三点 → 每段都是周六且 15:00 起",
-            bool(rs) and all(s["start"] == "15:00" and s.get("weekday") == "周六" for s in rs),
-            [(s.get("weekday"), s["start"]) for s in rs])
-    c.check("这张卡仍然是 weekly 重复", (rwd or {}).get("repeat") == "weekly",
-            (rwd or {}).get("repeat"))
+        # ④ 每周重复 + 点名钟点：每一段都得是学生点的那个钟点（否则"每周"就白认了）
+        rwd = P.todo_slots_proposal("每周六下午三点爬山")
+        rs = (rwd or {}).get("slots") or []
+        c.check("每周六下午三点 → 每段都是周六且 15:00 起",
+                bool(rs) and all(s["start"] == "15:00" and s.get("weekday") == "周六" for s in rs),
+                [(s.get("weekday"), s["start"]) for s in rs])
+        c.check("这张卡仍然是 weekly 重复", (rwd or {}).get("repeat") == "weekly",
+                (rwd or {}).get("repeat"))
 
-    occ = _first_busy_evening()
-    if occ:
-        card = P.todo_slots_proposal(f"{occ} 晚上七点到九点值日")
-        hint = (card or {}).get("hint", "")
-        c.check(f"被占的那天（{occ}）不许硬排出 19:00-21:00",
-                all(s["start"] != "19:00" or s["end"] != "21:00"
-                    for s in (card or {}).get("slots") or []),
-                [(s["start"], s["end"]) for s in (card or {}).get("slots") or []])
-        c.check("但必须说一句排不进去、并带上学生点的那个钟点（不许默默换时间）",
-                "排不进去" in hint and "19:00-21:00" in hint, hint[:110])
-    else:
-        c.check("环境里找不到一个 19:00-21:00 被占的日子（②无法验）", False, "看课表")
+        occ = _first_busy_evening()
+        if occ:
+            card = P.todo_slots_proposal(f"{occ} 晚上七点到九点值日")
+            hint = (card or {}).get("hint", "")
+            c.check(f"被占的那天（{occ}）不许硬排出 19:00-21:00",
+                    all(s["start"] != "19:00" or s["end"] != "21:00"
+                        for s in (card or {}).get("slots") or []),
+                    [(s["start"], s["end"]) for s in (card or {}).get("slots") or []])
+            c.check("但必须说一句排不进去、并带上学生点的那个钟点（不许默默换时间）",
+                    "排不进去" in hint and "19:00-21:00" in hint, hint[:110])
+        else:
+            c.check("环境里找不到一个 19:00-21:00 被占的日子（②无法验）", False, "看课表")
 
-    s3 = P.candidate_slots("下周六下午两点爬山 大概三个小时", max_slots=2)
-    c.check("「大概三个小时」→ 候选段按 180 分钟找，不是默认 90",
-            any(x["minutes"] >= 175 for x in s3), [(x["start"], x["minutes"]) for x in s3])
+        s3 = P.candidate_slots("下周六下午两点爬山 大概三个小时", max_slots=2)
+        c.check("「大概三个小时」→ 候选段按 180 分钟找，不是默认 90",
+                any(x["minutes"] >= 175 for x in s3), [(x["start"], x["minutes"]) for x in s3])
     return c
 
 
@@ -174,8 +181,11 @@ def batch_c_no_split_reading():
 def batch_d_e2e():
     c = Checker()
     title("D 批 · 端到端：说一句话，卡片上的时间就是那句话")
-    day = _first_free_evening()
     with sandbox():
+        # 先种已知周表再挑日子：不然是拿真实课表决定「哪天是空的」，本机与干净克隆会挑出不同的天
+        write_timetable(SEED_COURSES)
+        wipe_todos()
+        day = _first_free_evening()
         set_settings({"api_key": "", "base_url": "https://api.deepseek.com", "model": "m"})
         cli = make_client()
         r = cli.post("/api/chat", json={"message": f"{day} 晚上七点到九点值日",
@@ -232,61 +242,67 @@ def batch_e_bare_clock():
     c.check("parse_add_todo 对报了档的不误伤",
             (P.parse_add_todo("周日晚上七点开始写作业") or {}).get("start") == "19:00",
             P.parse_add_todo("周日晚上七点开始写作业"))
-    day = _first_free_span("15:00", "16:30")
-    if day:
-        held = {"kind": "todo_add", "title": "写作业", "date": day,
-                "start": "20:00", "end": "21:30"}
-        c.check(f"span_only_proposal：{day} 的「三点开始」不出单条卡",
-                P.span_only_proposal("三点开始大约三个小时", "写作业", day) is None,
-                P.span_only_proposal("三点开始大约三个小时", "写作业", day))
-        c.check("span_only_proposal：「下午三点」照旧出 15:00 那条（不是把钟点全扔了）",
-                (P.span_only_proposal("下午三点开始大约三个小时", "写作业", day) or {})
-                .get("start") == "15:00",
-                P.span_only_proposal("下午三点开始大约三个小时", "写作业", day))
-        c.check("retime_todo_proposal：「改成三点」不换成凌晨三点（宁可不改）",
-                P.retime_todo_proposal(held, "改成三点") is None,
-                P.retime_todo_proposal(held, "改成三点"))
-        c.check("retime_todo_proposal：「改成下午三点」照旧换成 15:00",
-                (P.retime_todo_proposal(held, "改成下午三点") or {}).get("start") == "15:00",
-                P.retime_todo_proposal(held, "改成下午三点"))
-    else:
-        c.check("环境里找不到一个 15:00-16:30 空着的日子（②的后半无法验）", False, "看课表")
+    # ★ 从这一行起要查「哪天空着」，所以整套挪进沙箱并先种已知周表：
+    #   以前这几条是在**真实课表/真实待办**上跑的 —— 开发机上「明天上午七点开会」
+    #   被一条真实待办挤到 15:40，干净克隆里又压根找不到被占的晚上，两种环境两种红法。
+    with sandbox():
+        write_timetable(SEED_COURSES)
+        wipe_todos()
+        day = _first_free_span("15:00", "16:30")
+        if day:
+            held = {"kind": "todo_add", "title": "写作业", "date": day,
+                    "start": "20:00", "end": "21:30"}
+            c.check(f"span_only_proposal：{day} 的「三点开始」不出单条卡",
+                    P.span_only_proposal("三点开始大约三个小时", "写作业", day) is None,
+                    P.span_only_proposal("三点开始大约三个小时", "写作业", day))
+            c.check("span_only_proposal：「下午三点」照旧出 15:00 那条（不是把钟点全扔了）",
+                    (P.span_only_proposal("下午三点开始大约三个小时", "写作业", day) or {})
+                    .get("start") == "15:00",
+                    P.span_only_proposal("下午三点开始大约三个小时", "写作业", day))
+            c.check("retime_todo_proposal：「改成三点」不换成凌晨三点（宁可不改）",
+                    P.retime_todo_proposal(held, "改成三点") is None,
+                    P.retime_todo_proposal(held, "改成三点"))
+            c.check("retime_todo_proposal：「改成下午三点」照旧换成 15:00",
+                    (P.retime_todo_proposal(held, "改成下午三点") or {}).get("start") == "15:00",
+                    P.retime_todo_proposal(held, "改成下午三点"))
+        else:
+            c.check("环境里找不到一个 15:00-16:30 空着的日子（②的后半无法验）", False, "看课表")
 
-    card = P.todo_slots_proposal("周日三点开始写作业") or {}
-    hint = card.get("hint", "")
-    c.check("候选卡摊得开（03:00 在找空档的时间窗之外，退回常规几档）",
-            bool(card.get("slots")) and all(s["start"] != "03:00"
-                                            for s in card["slots"]),
-            [(s["start"], s["end"]) for s in card.get("slots") or []])
-    c.check("但必须说一句「没说是上午还是下午」（不许什么都不说就摊档）",
-            "上午还是下午" in hint, hint[:140])
-    c.check("这一句**不许**说成「排不进去」—— 那是编理由，等于第二回骗学生",
-            "排不进去" not in hint, hint[:140])
+        card = P.todo_slots_proposal("周日三点开始写作业") or {}
+        hint = card.get("hint", "")
+        c.check("候选卡摊得开（03:00 在找空档的时间窗之外，退回常规几档）",
+                bool(card.get("slots")) and all(s["start"] != "03:00"
+                                                for s in card["slots"]),
+                [(s["start"], s["end"]) for s in card.get("slots") or []])
+        c.check("但必须说一句「没说是上午还是下午」（不许什么都不说就摊档）",
+                "上午还是下午" in hint, hint[:140])
+        c.check("这一句**不许**说成「排不进去」—— 那是编理由，等于第二回骗学生",
+                "排不进去" not in hint, hint[:140])
 
-    # ③ 排进去了就不许再多嘴问一句
-    c.check("报了档就不该出现「没说是上午还是下午」这句",
-            P._bare_clock_note("下午三点开始写作业") == "",
-            P._bare_clock_note("下午三点开始写作业"))
-    # ④ 「没排上」有两种真话，混着说就成了编理由：
-    #    窗口之内被课占了 → "有课或已有安排"；找空档的时间窗之外（07:00-22:00）→ 必须说"排不了"
-    win = P.todo_slots_proposal("明天早上六点半跑步") or {}
-    hint = win.get("hint", "")
-    c.check("窗口外的钟点（06:30）要说「排不了」并报出真正的时间窗",
-            bool(hint) and "排不了" in hint and "07:00-22:00" in hint, hint[:160])
-    c.check("这句**不许**说成「那个时间有课」—— 清早操场空得很，那是编理由",
-            "有课或已有安排" not in hint, hint[:160])
-    in_win = P.todo_slots_proposal("明天上午七点开会") or {}
-    c.check("对照：07:00 在窗口内，照旧**照他点的排**（这道闸不是把早课全拒了）",
-            any(s["start"] == "07:00" for s in in_win.get("slots") or []),
-            [(s["start"], s["end"]) for s in in_win.get("slots") or []])
-    occ = _first_busy_evening()
-    if occ:
-        busy = P.todo_slots_proposal(f"{occ} 晚上七点到九点值日") or {}
-        c.check(f"对照组：窗口内、真被课占了（{occ} 19:00-21:00）才说「有课或已有安排」",
-                "有课或已有安排" in (busy.get("hint") or ""),
-                (busy.get("hint") or "")[:120])
-    else:
-        c.check("环境里找不到一个 19:00-21:00 被占的日子（④的对照组无法验）", False, "看课表")
+        # ③ 排进去了就不许再多嘴问一句
+        c.check("报了档就不该出现「没说是上午还是下午」这句",
+                P._bare_clock_note("下午三点开始写作业") == "",
+                P._bare_clock_note("下午三点开始写作业"))
+        # ④ 「没排上」有两种真话，混着说就成了编理由：
+        #    窗口之内被课占了 → "有课或已有安排"；找空档的时间窗之外（07:00-22:00）→ 必须说"排不了"
+        win = P.todo_slots_proposal("明天早上六点半跑步") or {}
+        hint = win.get("hint", "")
+        c.check("窗口外的钟点（06:30）要说「排不了」并报出真正的时间窗",
+                bool(hint) and "排不了" in hint and "07:00-22:00" in hint, hint[:160])
+        c.check("这句**不许**说成「那个时间有课」—— 清早操场空得很，那是编理由",
+                "有课或已有安排" not in hint, hint[:160])
+        in_win = P.todo_slots_proposal("明天上午七点开会") or {}
+        c.check("对照：07:00 在窗口内，照旧**照他点的排**（这道闸不是把早课全拒了）",
+                any(s["start"] == "07:00" for s in in_win.get("slots") or []),
+                [(s["start"], s["end"]) for s in in_win.get("slots") or []])
+        occ = _first_busy_evening()
+        if occ:
+            busy = P.todo_slots_proposal(f"{occ} 晚上七点到九点值日") or {}
+            c.check(f"对照组：窗口内、真被课占了（{occ} 19:00-21:00）才说「有课或已有安排」",
+                    "有课或已有安排" in (busy.get("hint") or ""),
+                    (busy.get("hint") or "")[:120])
+        else:
+            c.check("环境里找不到一个 19:00-21:00 被占的日子（④的对照组无法验）", False, "看课表")
     return c
 
 
