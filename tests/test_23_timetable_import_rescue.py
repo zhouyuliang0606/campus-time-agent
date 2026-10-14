@@ -481,9 +481,10 @@ def batch_d_no_fake_todo_card():
         restore = _fake_model_env()
         try:
             _FakeEngine.answer = _TODO_PROSE
-            # 「我今晚该干点啥呢」—— 规则层判成问事（没认出口头加待办），
+            # 「帮我看看今晚」—— 规则层没接（既不是加待办也不是"该做什么"那一族，
+            # 2026-10-14 test_45 新加的判据不放行它），
             # 这一轮才真的落到「回答没给结构化结果 → 从话里补条」那一档。
-            d = _ask(client, "tt-4b", "我今晚该干点啥呢")
+            d = _ask(client, "tt-4b", "帮我看看今晚")
         finally:
             restore()
         todo = _todo_card(d.get("options"))
