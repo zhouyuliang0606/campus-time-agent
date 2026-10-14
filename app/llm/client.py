@@ -6,9 +6,55 @@
 """
 from typing import Any
 
+import asyncio
 import httpx
 
 from app.config import BaseUrlError, DEBUG, check_base_url_ssrf, get_llm_config
+
+# ==== 进程内共享 AsyncClient（2026-10-14 刀 2：别再每次调用重握手）====
+# 为什么必须共享：实测每次新建 client 的三笔成本 2188 / 1967 / 1987 ms，复用同一个 client 是
+# 679 / 574 / 450 ms —— **光 TCP+TLS 握手每次固定多付 ≈1.3~1.5 秒**。
+# 一句「食堂几点关门」要走三次模型往返（判定 + 引擎 + 带工具再想），重复握手合计 +4.2 秒，
+# 是这条链路上最大的可回收块。
+#
+# 为什么**按事件循环各留一份**，而不是全进程就一个（两条都是实测，不是推理）：
+#   ① 生产上 uvicorn 一个 worker 一个循环，永远只有 1 个条目 —— 复用的好处一分不少；
+#   ② 但"全进程一个"在本机实测会炸：写护栏时第一批在一个 `asyncio.run` 里建好连接、
+#      第二批换第二个循环去 `aclose()` 它，直接 `RuntimeError: Event loop is closed`
+#      （anyio → Windows proactor `call_soon`）。而测试里 `TestClient`、`asyncio.run`
+#      本来就一次一个循环 —— 44 个测试文件都在这个模式上跑，不留余地就等着偶发炸。
+# 死循环的条目在取用时顺手清掉（那些连接**不能**在别的循环里关，交给 GC 收 socket）。
+#
+# 懒初始化：第一次真要发请求时才建（`httpx.AsyncClient` 不会预先连网络），
+# 所以没配 Key 的实例、离线跑测试的进程都建不出东西来。
+_loop_clients: dict = {}
+_loop_locks: dict = {}
+
+
+async def _get_client() -> httpx.AsyncClient:
+    """拿到**当前事件循环专属**的共享 client；被关掉了或循环已经没了就重建一份。"""
+    global _loop_clients, _loop_locks
+    loop = asyncio.get_running_loop()
+    for dead in [lp for lp in _loop_clients if lp.is_closed()]:
+        _loop_clients.pop(dead, None)
+        _loop_locks.pop(dead, None)
+    lock = _loop_locks.get(loop)
+    if lock is None:
+        lock = asyncio.Lock()
+        _loop_locks[loop] = lock
+    client = _loop_clients.get(loop)
+    if client is None or client.is_closed:
+        async with lock:
+            client = _loop_clients.get(loop)
+            if client is None or client.is_closed:
+                client = httpx.AsyncClient(
+                    timeout=httpx.Timeout(30.0, connect=3.0),
+                    limits=httpx.Limits(max_connections=20,
+                                        max_keepalive_connections=10,
+                                        keepalive_expiry=30.0),
+                )
+                _loop_clients[loop] = client
+    return client
 
 
 class LLMError(Exception):
@@ -103,6 +149,8 @@ class DeepSeekClient:
         # 合法配法保持可用（要放行就设 CAMPUSTIME_LLM_ALLOW_PRIVATE=1，见 config.py）。
         # ⚠️ `base_url` 这一行拿的是**最终生效**的地址：管理后台填的、或学生自己在对话页
         # 填的都算。所以新写发请求的路径时，别绕过这里自己去拼 URL。
+        # ⚠️ 也别把它挪进 `_get_client()`：那儿只在建 client 时走一次，等于"第一次校验完就不管了"。
+        # 刀 2 的护栏（test_47）专门在数这个调用次数，两次请求必须跑两次闸门。
         try:
             base_url = check_base_url_ssrf(base_url)
         except BaseUrlError as e:
@@ -112,20 +160,24 @@ class DeepSeekClient:
                            "学生端请在「添加 / 修改 API」里把接口地址改成公网地址或留空。",
                            kind="blocked_address") from e
 
-        # 用异步 httpx 发 POST 请求到 /chat/completions。
-        # 超时拆成两段是有原因的：connect 3 秒足够判断"这台机器连不连得上那个地址"，
+        # 发请求：2026-10-14 刀 2 起用**进程内共享 client**（连接池 + keep-alive），
+        # 不再每次新建、每次重握手（理由与实测数字在文件头 `_get_client` 上面）。
+        # 超时值原样搬过去：connect 3 秒足够判断"这台机器连不连得上那个地址"，
         # 而 SSRF 探测的代价主要就在 connect（连不上要等 60 秒 = 一次探测慢到没人愿意扫）；
         # read 留 30 秒是因为带工具的长回答真的会慢（17 门课那种），一刀切几秒会误杀正常对话。
         try:
-            async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=3.0)) as client:
-                resp = await client.post(
-                    f"{base_url}/chat/completions",
-                    json=payload,
-                    headers=headers,
-                )
-                # 状态码不是 2xx 就抛异常（401 = Key 有问题，429 = 额度或限流）
-                resp.raise_for_status()
-                data = resp.json()
+            # ⚠️ 不能写成 `async with await _get_client() as client:` —— `async with` 退出时
+            #    会把这个共享实例关掉，keep-alive 当场失效（test_47 数的是服务端看到几条
+            #    连接，一退化就从 1 条变回 2 条）。
+            client = await _get_client()
+            resp = await client.post(
+                f"{base_url}/chat/completions",
+                json=payload,
+                headers=headers,
+            )
+            # 状态码不是 2xx 就抛异常（401 = Key 有问题，429 = 额度或限流）
+            resp.raise_for_status()
+            data = resp.json()
         except httpx.HTTPStatusError as e:
             code = e.response.status_code
             # ⚠️ 不把 `e` 原样拼进消息：httpx 的这句里带着**完整 URL**，

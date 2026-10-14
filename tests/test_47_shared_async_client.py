@@ -7,10 +7,14 @@
 改的只有传输层一处（全仓 `AsyncClient` 只在这里创建），SSRF 闸门、异常映射 kind、
 超时值、网关记账、润色与引擎的守卫全部不动。
 
-动手前先实测了施工单的两个假设（结论都记在下面的 C 批里，别信推理）：
-  · 模块级 `asyncio.Lock` 跨 `asyncio.run` 复用不炸（Python 3.13）；
-  · **已经建好 keep-alive 连接**的 client 拿到另一个事件循环里用也不炸（两笔都 200）
-    → 所以不需要"按事件循环分桶"那种多出来的设计。
+动手前实测了施工单的两个假设，**其中一个把我自己的结论打翻了**（改口记在这儿，别当推理看）：
+  · 模块级 `asyncio.Lock` 跨 `asyncio.run` 复用不炸 —— 这条成立；
+  · "已经建好 keep-alive 连接的 client 换个循环用也不炸" —— **不成立**。第一版按"全进程就一个
+    client"写，A 批在一个循环里建好连接、B 批换第二个循环去 `aclose()` 它，直接
+    `RuntimeError: Event loop is closed`（anyio → Windows proactor `call_soon`）。
+    于是改成**按事件循环各留一份**：生产上 uvicorn 一 worker 一循环，永远只有 1 个条目，
+    复用一分不少；测试里 `TestClient` / `asyncio.run` 本来就一次一个循环，各留一份才不串。
+    下面 C 批钉的就是"换循环不炸"。
 """
 import asyncio
 import http.server
@@ -39,6 +43,9 @@ class _CountingServer(http.server.BaseHTTPRequestHandler):
     connections = 0
     requests = 0
     lock = threading.Lock()
+    # ⚠️ 必须是 HTTP/1.1：默认的 1.0 会在每个响应后关连接，keep-alive 根本谈不起来，
+    #    那"两条请求复用一条连接"就永远测不到（第一版实测 2 条连接其实是这里造成的）。
+    protocol_version = "HTTP/1.1"
 
     def setup(self):
         # 一个 handler 实例 = 一条 TCP 连接（keep-alive 下同一条连接会处理多笔请求）
@@ -161,12 +168,15 @@ def batch_b_same_instance():
     c.check("旧 client 被关掉后，下一次自动重建（不会拿着死的继续用）", rebuilt, "")
 
     src = open("app/llm/client.py", encoding="utf-8").read()
+    # ⚠️ 形状断言先把注释行剔掉再数 —— 本仓库第三次踩"自己的注释把断言绊红"：
+    #    文件头那段注释里写了 `httpx.AsyncClient(...)` 这个字面串，数出来就成了 2 处。
+    code_src = "\n".join(ln for ln in src.splitlines() if not ln.lstrip().startswith("#"))
     c.check("全文件只有一处创建 AsyncClient（在共享工厂里，不在 chat 里）",
-            src.count("httpx.AsyncClient(") == 1
-            and "async with httpx.AsyncClient" not in src,
-            f"{src.count('httpx.AsyncClient(')} 处")
+            code_src.count("httpx.AsyncClient(") == 1
+            and "async with httpx.AsyncClient" not in code_src,
+            f"{code_src.count('httpx.AsyncClient(')} 处")
     c.check("超时值没动（connect=3.0 还在，read 30 秒还在）",
-            "Timeout(30.0, connect=3.0)" in src, "")
+            "Timeout(30.0, connect=3.0)" in code_src, "")
     for kind in ('kind="auth"', 'kind="rate_limited"', 'kind="unreachable"',
                  'kind="bad_format"', 'kind="no_key"'):
         c.check(f"异常映射一支没少：{kind}", kind in src, "")
@@ -187,12 +197,21 @@ def batch_c_loops():
     async def one():
         return (await C.DeepSeekClient().chat([{"role": "user", "content": "x"}])).get("content")
 
+    async def take():
+        return await C._get_client()
+
     try:
         r1 = asyncio.run(one())        # 循环 1
         r2 = asyncio.run(one())        # 循环 2（同一个共享 client、可能带着池里的连接）
         c.check("两个不同的事件循环各发一次，都成功（不报 Event loop is closed）",
                 r1 == "pong" and r2 == "pong", f"{r1} / {r2}")
         c.check("闸门在两个循环里都跑了（共 2 次）", hits["n"] == 2, f"{hits['n']} 次")
+        # 这条钉的就是"按事件循环各留一份"本身。退回全进程只留一个（变异 X3），
+        # 第二个循环就会拿到第一个那个带着死连接的实例 —— 今天实测是
+        # `RuntimeError: Event loop is closed`。
+        k1, k2 = asyncio.run(take()), asyncio.run(take())
+        c.check("两个循环各留一份（第二个循环不许拿第一个那份）", k1 is not k2,
+                f"同一实例? {k1 is k2}")
     except Exception as e:
         c.check("跨事件循环复用不该抛异常", False, f"{type(e).__name__}: {str(e)[:90]}")
     finally:
