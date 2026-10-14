@@ -107,6 +107,15 @@ class _StreamServer(http.server.BaseHTTPRequestHandler):
         if cls.mode == "deny":
             self._json_once(401, b'{"error":{"message":"bad key"}}')
             return
+        if cls.mode == "deny_stream":
+            # 只对**流式**鉴权失败，非流式照样回整段：
+            # 这是 M3 那条"把降级条件写宽"唯一能分辨出来的形状
+            #（若两种都回 401，退回非流式也会抛同一个错，变异与原文等价 → 测不出差别）
+            if body.get("stream"):
+                self._json_once(401, b'{"error":{"message":"stream denied"}}')
+                return
+            self._plain("整段答案（不该被用来顶替流式）")
+            return
         if cls.mode == "plain":
             self._plain(FULL)
             return
@@ -322,6 +331,21 @@ def batch_b_accounting_and_fallback():
             c.check("401 照常上抛 kind=auth（降级只给上游不支持流式用，鉴权错误不许静默）",
                     kind == "auth", kind or "没抛异常")
 
+            # 只对"流式"鉴权失败、非流式能成的那种上游：这才是"降级写宽"能露形的位置
+            _set_mode("deny_stream")
+            kind_w, toks_w = "", []
+            try:
+                async def go_w():
+                    async for ev in ModelGateway(user="内部:流式自检").stream(msgs):
+                        if ev["k"] == "token":
+                            toks_w.append(ev["v"])
+                asyncio.run(go_w())
+            except Exception as e:
+                kind_w = getattr(e, "kind", "")
+            c.check("上游只对 stream 回 401 时也必须上抛，不许偷偷退回非流式把坏 Key 当没事",
+                    kind_w == "auth" and toks_w == [],
+                    f"kind={kind_w or '没抛'} 退回来的内容={toks_w}")
+
             # 流到一半断了：已经吐过内容就**不许**再整段补一遍（同屏两遍是事故）
             _set_mode("truncate")
             toks4, kind4 = [], ""
@@ -395,6 +419,13 @@ def batch_c_negotiation():
 
 # ============================ D 批 · done 必须晚于守卫 ============================
 
+# 这句是 07 号施工单自己举的例子，实测**会走到 ReAct 引擎**（trace 里出现 🤔 思考）。
+# 换成「帮我加个游泳」会被规则层直接接走、一个 token 都不发 —— 那 D 批就变成测空气
+# （"测的必须是走到的"，本项目撞过好几轮的那条）。
+ENGINE_MSG = "图书馆几点关门"
+ENGINE_MODULE = "faq"
+
+
 def batch_d_guard_order():
     c = Checker()
     title("D. 本刀唯一要命的时序：token 是引擎原话的预览，done 必须是守卫修正后的权威答案")
@@ -405,18 +436,25 @@ def batch_d_guard_order():
         restore = None
         try:
             restore = _patch_client(CLAIM, with_key=True)
-            r = client.post("/api/chat", json={"message": "帮我加个游泳", "module": "planner",
+            r = client.post("/api/chat", json={"message": ENGINE_MSG,
+                                               "module": ENGINE_MODULE,
                                                "session_id": "t49-guard"},
                             headers={"Accept": "text/event-stream"})
             evs = _parse_sse(r.text)
             preview = "".join(e["v"] for e in evs if e.get("k") == "token")
             done = next((e["v"] for e in evs if e.get("k") == "done"), {})
+            phases = [str(t.get("phase")) for t in (done.get("trace") or []) if isinstance(t, dict)]
+            c.check("前提：这一句确实走到了 ReAct 引擎（trace 里有思考/最终回答）",
+                    any("思考" in p or "最终回答" in p for p in phases),
+                    json.dumps(phases[:4], ensure_ascii=False)[:110])
             c.check("流式预览确实是模型原话（token 不替守卫做主）",
                     "提案已发出" in preview, repr(preview)[:60])
             c.check("done.answer 是守卫修正后的版本（原话被换掉，幻觉不透传给学生）",
                     bool(str(done.get("answer") or "").strip())
                     and "提案已发出" not in str(done.get("answer")),
                     str(done.get("answer"))[:60])
+            c.check("守卫不只换话，还把该挂的卡补了出来（options 不空）",
+                    bool(done.get("options")), f"{len(done.get('options') or [])} 张")
             c.check("done 之后不能再有 token（防 done 后还在流的残缺回复）",
                     bool(evs) and evs[-1].get("k") == "done",
                     json.dumps([e.get("k") for e in evs][-3:]))
@@ -424,7 +462,8 @@ def batch_d_guard_order():
             # 同一条守卫在非流式那条路上也得同样生效（两个出口口径一致）
             restore()
             restore = _patch_client(CLAIM, with_key=True)
-            r2 = client.post("/api/chat", json={"message": "帮我加个游泳", "module": "planner",
+            r2 = client.post("/api/chat", json={"message": ENGINE_MSG,
+                                                "module": ENGINE_MODULE,
                                                 "session_id": "t49-guard2"})
             c.check("非流式那条路的 answer 同样被守卫换掉（两条出口口径一致）",
                     "提案已发出" not in str(r2.json().get("answer") or ""),
@@ -449,16 +488,20 @@ def batch_e_legacy_fakes():
             c.check("前提成立：全仓 227 处测试用的那个 FakeLLM 确实只有 chat（没有 chat_stream）",
                     not hasattr(FakeLLM, "chat_stream"),
                     "有 chat_stream" if hasattr(FakeLLM, "chat_stream") else "只有 chat")
-            restore = patch_llm("好，那就周二 16:00 去游泳。", with_key=True)
-            r = client.post("/api/chat", json={"message": "帮我加个游泳", "module": "planner",
+            restore = patch_llm("图书馆晚上九点半关门，周末到八点。", with_key=True)
+            r = client.post("/api/chat", json={"message": ENGINE_MSG,
+                                               "module": ENGINE_MODULE,
                                                "session_id": "t49-legacy"},
                             headers={"Accept": "text/event-stream"})
             evs = _parse_sse(r.text)
             ks = [e.get("k") for e in evs]
             c.check("没有 chat_stream 的桩不炸：SSE 里仍拿到 done（内部退回非流式整段）",
                     "done" in ks and bool(ks) and ks[-1] == "done", json.dumps(ks[:6]))
+            preview = "".join(e["v"] for e in evs if e.get("k") == "token")
             done = next((e["v"] for e in evs if e.get("k") == "done"), {})
-            c.check("退回那一段的内容一个字都不缺",
+            c.check("退回那一段照样逐字给到（预览就是整段，一个字不缺）",
+                    preview == "图书馆晚上九点半关门，周末到八点。", repr(preview)[:50])
+            c.check("done.answer 非空（学生看不见空白气泡）",
                     bool(str(done.get("answer") or "").strip()),
                     str(done.get("answer"))[:40])
         finally:
@@ -501,12 +544,21 @@ def batch_f_shape():
             "on_event" in eng_src.split("async def run(")[1][:260], "")
 
     stu = open("app/static/student.html", encoding="utf-8").read()
-    c.check("student.html 里打 /api/chat 的地方只剩一处（统一走那个 SSE helper）",
+    c.check("student.html 里打 /api/chat 的地方只剩一处（统一走 streamChat 那个 helper）",
             stu.count(CHAT_FETCH) == 1, f"{stu.count(CHAT_FETCH)} 处")
-    c.check("前端确实按 SSE 读（getReader + text/event-stream），且两处调用都接上",
+    c.check("前端确实按 SSE 读（getReader + text/event-stream），12 号施工单的 helper 名是 streamChat",
             "getReader(" in stu and "text/event-stream" in stu
-            and stu.count("chatPost(") >= 2,
-            f"chatPost( 出现 {stu.count('chatPost(')} 次")
+            and stu.count("streamChat(") >= 3,      # 1 处定义 + 2 处调用
+            f"streamChat( 出现 {stu.count('streamChat(')} 次")
+    # ⚠️ 这条钉的是**不变量**（预览用 token、定稿用 done 里的权威答案），不是施工单那段代码的字面形状：
+    #    本仓的实现是"删掉占位气泡再调 addMsg(d.answer)"，刻意不手抄第二份 addMsg 的 HTML
+    #    （施工单 §4.2 那段自己拼 whoHtml/bodyHtml/traceHtml = 两本账，traceOn() 一改就漂移）。
+    #    第一版写成 `"addMsg(botName(), d.answer" in stu`，被**上传课表那条**（同一串前缀）蒙过去，
+    #    变异 M7 把定稿换成预览拼串它照样绿 —— 现在钉整行形状，一处不多一处不少。
+    done_line = 'addMsg(botName(), d.answer, "bot", d.module, d.trace)'
+    c.check("done 必须覆盖预览：预览走 token 变量，定稿走 done 里的权威答案（整行形状只此一处）",
+            "bubble.textContent = streamed" in stu and stu.count(done_line) == 1,
+            f"整行出现 {stu.count(done_line)} 次")
     return c
 
 
