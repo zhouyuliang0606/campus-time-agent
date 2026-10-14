@@ -50,6 +50,39 @@ class AgentEngine:
         self.trace: list[dict] = []
         # 规划模块调 propose_slots 时，把候选结构化选项暂存这里，最后带给前端
         self.options: list[dict] = []
+        # 流式回调（07 号刀）：**默认 None**，那时引擎的行为与改前逐字一致。
+        # 为什么是回调而不是把 run() 改成异步生成器：`/api/chat` 的 JSON 出口被
+        # 227 处测试与 plan.html/station.html 读着，生成器化会一次性波及整仓；
+        # 只有 SSE 那一条新分支需要一个"边跑边推"的口子（test_49 F 批钉这条）。
+        self._on_event = None
+
+    async def _emit(self, event: dict) -> None:
+        """往流式出口推一个事件；没挂回调就是空操作。"""
+        if self._on_event is not None:
+            await self._on_event(event)
+
+    async def _trace(self, entry: dict) -> None:
+        """记一条思考轨迹，顺手推给流式出口（"卡死"变"在想"靠的就是这一步早发）。"""
+        self.trace.append(entry)
+        await self._emit({"k": "trace", "v": entry})
+
+    async def _ask(self, messages: list[dict]) -> dict:
+        """问模型一次：挂了回调就走流式（正文字一块块推出去），否则照旧整段拿。
+
+        ⚠️ 只有**最后一步**才有 content —— 前面几步模型都在调工具，那些步一个正文块
+           都不会吐（test_49 A 批专门钉过这条），所以不会出现"流了半句又去调工具"。
+        """
+        if self._on_event is None:
+            return await self.llm.chat(messages, tools=self._schemas(),
+                                       override=self.llm_override)
+        msg: dict | None = None
+        async for ev in self.llm.stream(messages, tools=self._schemas(),
+                                        override=self.llm_override):
+            if ev["k"] == "token":
+                await self._emit(ev)
+            else:
+                msg = ev["v"]
+        return msg or {"role": "assistant", "content": ""}
 
     def _schemas(self) -> list[dict] | None:
         """把所有工具翻译成模型能用的格式；没有工具就返回 None（模型只用文字回答）。"""
@@ -58,7 +91,7 @@ class AgentEngine:
         return [t.to_schema() for t in self.tools.values()]
 
     async def run(self, user_input: str, context: dict | None = None,
-                  history: list[dict] | None = None) -> dict:
+                  history: list[dict] | None = None, on_event=None) -> dict:
         """跑一轮 ReAct，返回 {answer: 最终回答, trace: 思考轨迹}。
 
         :param user_input: 用户这次说的话
@@ -66,7 +99,10 @@ class AgentEngine:
         :param history: 之前聊过的若干轮 [{role: user/assistant, content: ...}]。
                        带上它 Agent 才知道"上一轮我们商量到哪了"——比如提完一个
                        时间安排建议后，学生说"可以"，它得知道"可以"指的是哪个方案。
+        :param on_event: 可选的流式回调（`async def cb(event: dict)`）。给了就把
+                       `{"k":"token"|"trace"}` 边跑边推出去；不给就是改前那条路。
         """
+        self._on_event = on_event
         # 1) 组装对话历史：系统设定 + 可选背景 + 过往对话 + 本次问题
         messages: list[dict] = [{"role": "system", "content": self.system_prompt}]
         if context:
@@ -89,12 +125,10 @@ class AgentEngine:
         # 最多思考 6 轮，防止模型死循环（人话：想太久就停下，给个兜底回答）
         max_steps = 6
         for step in range(1, max_steps + 1):
-            self.trace.append({"step": step, "phase": "🤔 思考"})
+            await self._trace({"step": step, "phase": "🤔 思考"})
 
             # 2) 让模型基于当前历史回一句（可能含 tool_calls）
-            msg = await self.llm.chat(
-                messages, tools=self._schemas(), override=self.llm_override
-            )
+            msg = await self._ask(messages)
 
             # 3) 如果模型想调用工具
             if msg.get("tool_calls"):
@@ -108,7 +142,7 @@ class AgentEngine:
                     except Exception:
                         args = {}
 
-                    self.trace.append(
+                    await self._trace(
                         {"step": step, "phase": "🔧 调用工具", "action": fn_name, "args": args}
                     )
 
@@ -179,7 +213,7 @@ class AgentEngine:
                             "content": str(result),
                         }
                     )
-                    self.trace.append(
+                    await self._trace(
                         {
                             "step": step,
                             "phase": "📦 工具结果",
@@ -192,7 +226,7 @@ class AgentEngine:
 
             # 5) 模型没调工具，说明它觉得可以直接回答了
             answer = msg.get("content") or "（我这会儿没拿到回答，稍后再问我一次）"
-            self.trace.append({"step": step, "phase": "💡 最终回答", "answer": answer})
+            await self._trace({"step": step, "phase": "💡 最终回答", "answer": answer})
             return self._finish(answer)
 
         # 6) 超过步数限制仍没结论
