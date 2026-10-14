@@ -42,6 +42,8 @@ class _CountingServer(http.server.BaseHTTPRequestHandler):
 
     connections = 0
     requests = 0
+    # 收到的请求体（test_48 要看 `max_tokens` 到底有没有跟着发出去 —— 光看函数签名不算数）
+    bodies: list = []
     lock = threading.Lock()
     # ⚠️ 必须是 HTTP/1.1：默认的 1.0 会在每个响应后关连接，keep-alive 根本谈不起来，
     #    那"两条请求复用一条连接"就永远测不到（第一版实测 2 条连接其实是这里造成的）。
@@ -58,7 +60,13 @@ class _CountingServer(http.server.BaseHTTPRequestHandler):
         with cls.lock:
             cls.requests += 1
         n = int(self.headers.get("Content-Length") or 0)
-        self.rfile.read(n)
+        raw = self.rfile.read(n)
+        try:
+            with cls.lock:
+                cls.bodies.append(json.loads(raw.decode("utf-8") or "{}"))
+        except Exception:
+            with cls.lock:
+                cls.bodies.append({})
         body = json.dumps({"choices": [{"message": {"content": "pong"}}]},
                           ensure_ascii=False).encode("utf-8")
         self.send_response(200)
