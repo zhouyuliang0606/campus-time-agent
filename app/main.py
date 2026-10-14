@@ -2698,16 +2698,14 @@ async def _chat_impl(req: Request, meta: dict):
                    f"以后每天它都会出现在你的「代办事项」里（习惯不占日程格子）。\n"
                    if proposal.get("repeat") == "daily" else "")
                 + f"下面点一下【确认加入】我就写进去，回一句「确认」也一样。")
-            from app.agent.polish import polish_reply
-            _card_answer = await polish_reply(
-                {"intent": "add_todo", "title": proposal["title"],
-                 "date": proposal["date"], "weekday": proposal.get("weekday", ""),
-                 "start": proposal["start"], "end": proposal["end"],
-                 # 润色只许复述事实，所以"每周"这个事实也得给它 —— 少了这一格，
-                 # 它照着上面那段模板改写到"下一次"就没了，学生看不出来自己那条是长期的。
-                 "repeat": proposal.get("repeat") or "",
-                 "executed": False},
-                _card_fallback, override=model_config)
+            # ★ 卡片类出口**不润色**（2026-10-14 第一刀 B，用户点的"同类出口不一致"）。
+            #   上面那段 `_card_fallback` 就是系统按事实拼好的话 —— 连「这是每周六都要做的事，
+            #   我只建一条」这种最容易丢的说明都在里面，交给模型复述它只会把回复拖慢 3~4 秒
+            #   （实测这一档 3223ms），换不到任何信息量。
+            #   长列表出口（列待办）仍走润色，全仓只剩那一处润色调用。
+            #   ⚠️ 摘的是**位置**，不是守卫：承诺词/JSON 守卫在 polish 内部（另一处仍生效）、
+            #   引擎 claim 守卫与出口内脏保险都不许跟着删（test_46 D 批钉着四条）。
+            _card_answer = _card_fallback
             return _sem_done(_offer_response(
                 session_id, proposal, message, _card_answer,
                 "📝 生成待办提案（系统判定）"))

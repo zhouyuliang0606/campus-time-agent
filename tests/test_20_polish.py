@@ -15,8 +15,10 @@
 验证手段（对照式，防假绿）
 ====================
   · 单元：polish_reply 在 没key/有key/空回复/承诺词/超时 五种输入下的取舍；
-  · 端到端 3d、3c：打桩模型 → 润色话术出现；不打桩（沙箱无 key）→ 模板话术，
-    且**卡字段 == 迁移前的确定性解析**、**交给模型的事实 == 库里的真实列表**；
+  · 端到端 3d：打桩模型 → 润色话术出现；不打桩（沙箱无 key）→ 模板话术，
+    且**交给模型的事实 == 库里的真实列表**；
+    （3c 加待办卡片类 2026-10-14 第一刀 B 起**不再润色**，第四批已按新行为改口，
+     卡字段 == 迁移前的确定性解析这一条保留不变）
   · 反向验证：把 polish 拆成"永远返回 fallback" → 润色话术必须消失（证明断言盯着真链路）。
 
 全部跑在数据沙箱里，不碰真实演示数据。
@@ -214,7 +216,7 @@ def test_3d_list_polish():
 
 # ── 第四批：试点 2 · 3c 加待办 ──────────────────────────────────────────
 def test_3c_add_polish():
-    title("4. 试点 2（3c 加待办）：模板 → 润色，卡字段/写库不变")
+    title("4. 试点 2（3c 加待办）：卡片类已改回**不润色**，卡字段/写库不变")
     c = Checker()
     with sandbox():
         client = make_client()
@@ -229,8 +231,10 @@ def test_3c_add_polish():
             r()
         card = next((o for o in (b1.get("options") or [])
                      if isinstance(o, dict) and o.get("kind") == "todo_add"), None)
-        c.check("有 key → 出现模型润色话术",
-                b1["answer"] == "【润色】要不要把游泳排一下？", b1["answer"][:36])
+        c.check("有 key → 卡片类**不润色**（回的是系统事实文案，2026-10-14 第一刀 B 改口）",
+                "【润色】要不要把游泳排一下？" != b1["answer"]
+                and "要不要把 **游泳** 排进日程" in b1["answer"],
+                b1["answer"][:40])
         c.check("照旧出 todo_add 卡", card is not None,
                 _json.dumps(b1.get("options"), ensure_ascii=False)[:80])
         c.check("卡字段 == 迁移前的确定性解析（逐字段）",

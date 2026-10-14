@@ -45,18 +45,21 @@ def batch_a_shape():
             PL.POLISH_TIMEOUT <= 1.0, f"现在是 {PL.POLISH_TIMEOUT}")
 
     src = open("app/main.py", encoding="utf-8").read()
-    c.check("main 里 `await polish_reply(` 只剩 1 处（列待办）",
-            src.count("await polish_reply(") == 1,
-            f"{src.count('await polish_reply(')} 处：" +
-            str([ln.split("polish_reply")[0][:24] for ln in src.splitlines()
-                 if "await polish_reply(" in ln]))
+    # ⚠️ 形状断言一律**剔掉注释行**再比 —— 这仓库踩过两回：我自己的注释里引用了
+    #   那句代码，断言就把注释当调用点数进去，绿不绿全看注释怎么写（等于没测）。
+    code_lines = "\n".join(ln for ln in src.splitlines()
+                           if not ln.lstrip().startswith("#"))
+    n_calls = code_lines.count("= await polish_reply(")
+    c.check("main 里真正的润色调用只剩 1 处（列待办）", n_calls == 1,
+            f"{n_calls} 处：" + str([ln.strip()[:52] for ln in code_lines.splitlines()
+                                    if "= await polish_reply(" in ln]))
     # 确认卡那一档：从 _card_fallback 拼好到交出去，中间不许有润色
     i_fb = src.find("_card_fallback = (")
-    i_off = src.find("_offer_response(\n                session_id, proposal, message, _card_answer")
-    if i_off < 0:
-        i_off = src.find("session_id, proposal, message, _card_answer")
-    c.check("加待办确认卡这一档：_card_fallback → 交出之间没有 polish_reply",
-            0 < i_fb < i_off and "polish_reply(" not in src[i_fb:i_off],
+    i_off = src.find("session_id, proposal, message, _card_answer")
+    seg = "\n".join(ln for ln in src[i_fb:i_off].splitlines()
+                    if not ln.lstrip().startswith("#")) if 0 < i_fb < i_off else ""
+    c.check("加待办确认卡这一档：_card_fallback → 交出之间没有润色调用",
+            0 < i_fb < i_off and "polish_reply(" not in seg,
             f"_card_fallback 在 {i_fb}、交出在 {i_off}")
     # 超时分支一字节不许动（施工单 §2.1）
     body = inspect.getsource(PL.polish_reply)
