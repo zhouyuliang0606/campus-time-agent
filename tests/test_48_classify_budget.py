@@ -1,14 +1,19 @@
 """刀 3（A + B）：`max_tokens` 一路透传到判定层，并给判定装一根**会落地的**保险丝。
 
-施工单 11 号 §2.1 A：`client.chat` 加 `max_tokens` → 网关两处透传 → `intent` 传 64。
-它自己的诚实话写在 §2.1：合法输出约 38 token，**64 不会截断、也不提速**，
+施工单 11 号 §2.1 A：`client.chat` 加 `max_tokens` → 网关两处透传 → `intent` 传一个预算。
+它自己的诚实话也写在 §2.1：这顶帽**不提速**（生成时长由 TTFT + 实际输出长度决定），
 价值是"模型万一啰嗦/跑偏就硬截 + 顺手省钱" —— 所以本文件不拿它当延迟证据。
 
+§2.1 估的"合法输出约 38 token、预算给 64"与实测不符，本仓按实测改成 **128**：
+`app/data/llm_usage.jsonl` 里 882 笔打到上游且成功的语义判定，completion_tokens
+p50=43 / p90=57 / p99=86 / 最大 166 —— **64 会硬截掉 25 笔（2.8%）的正常判定输出**，
+那些句子就此静默掉回关键词表（是掉质量，不是省钱）。128 只截最跑偏的 0.2%。
+
 §2.2 B 原写「超时收紧到 2.0~2.5s，判定质量零损」—— **这条与实测矛盾，用户 2026-10-14 改判 6s**：
-`llm_usage.jsonl` 里 906 笔 `内部:语义判定` 的 `latency_ms`，**771 笔（85%）超过 2.5s**、
-p50 ≈ 3.7s、最长 9.1s。设 2.5s 不是提速，是把 85% 的判定**静默作废**、掉回关键词表。
-超时值最终取 **6.0s**：p50 之上、只砍最慢的一小截（约 6~8%），同时终结"没有超时 = 最坏占住
-客户端 30 秒读超时"这个真实风险。"失败/超时 → None → 掉回规则" 的语义（`main.py:1284-1285`）不变。
+同样这 882 笔的 latency_ms，p50=4.2s、p90=6.0s、最长 9.1s，**767 笔（87%）超过 2.5s**。
+设 2.5s 不是提速，是把 87% 的判定**静默作废**、掉回关键词表。超时值最终取 **6.0s**：
+p50 之上、只砍最慢的一档（91 笔 = 10.3%），同时终结"没有超时 = 最坏占住客户端 30 秒读超时"
+这个真实风险。"失败/超时 → None → 掉回规则" 的语义（`main.py:1284-1285`）不变。
 
 不做的：C 缩判定 prompt（用户拍板跳过）、流式（另单）、合并判定与引擎首调用（另单）。
 """
@@ -59,22 +64,22 @@ def batch_a_max_tokens():
         return _CountingServer.bodies[-1] if _CountingServer.bodies else {}
 
     try:
-        b1 = send_and_get_body("client", lambda: C.DeepSeekClient().chat(msgs, max_tokens=64))
-        c.check("client.chat(max_tokens=64) → 请求体里真有 max_tokens=64",
-                b1.get("max_tokens") == 64, json.dumps(b1, ensure_ascii=False)[:90])
+        b1 = send_and_get_body("client", lambda: C.DeepSeekClient().chat(msgs, max_tokens=128))
+        c.check("client.chat(max_tokens=128) → 请求体里真有 max_tokens=128",
+                b1.get("max_tokens") == 128, json.dumps(b1, ensure_ascii=False)[:90])
 
         b2 = send_and_get_body("client-no-kw", lambda: C.DeepSeekClient().chat(msgs))
-        c.check("不传就不该出现 max_tokens（引擎/润色的输出比 64 长，不能被顺手截断）",
+        c.check("不传就不该出现 max_tokens（引擎/润色的输出比这预算长，不能被顺手截断）",
                 "max_tokens" not in b2, json.dumps(list(b2), ensure_ascii=False)[:80])
 
         b3 = send_and_get_body("gateway", lambda: ModelGateway(user="内部:测试").chat(
-            msgs, max_tokens=64))
-        c.check("ModelGateway.chat 透传到位", b3.get("max_tokens") == 64,
+            msgs, max_tokens=128))
+        c.check("ModelGateway.chat 透传到位", b3.get("max_tokens") == 128,
                 json.dumps(b3, ensure_ascii=False)[:90])
 
         b4 = send_and_get_body("gateway-fn", lambda: GW.chat(
-            msgs, user="内部:测试", max_tokens=64))
-        c.check("模块级 gateway.chat 也透传（三处签名一路通）", b4.get("max_tokens") == 64,
+            msgs, user="内部:测试", max_tokens=128))
+        c.check("模块级 gateway.chat 也透传（三处签名一路通）", b4.get("max_tokens") == 128,
                 json.dumps(b4, ensure_ascii=False)[:90])
     finally:
         restore()
@@ -82,7 +87,11 @@ def batch_a_max_tokens():
         srv.shutdown()
 
     src = open("app/agent/intent.py", encoding="utf-8").read()
-    c.check("判定层调用带 max_tokens=64", "max_tokens=64" in src, "")
+    # 剔掉注释再比形状：否则注释里写一个 "max_tokens = 8" 都能把这条判红（本项目踩过两次）。
+    src_code = "\n".join(line.split("#")[0] for line in src.splitlines())
+    c.check("判定层的预算写成常量 = 128（64 会硬截掉 2.8% 的正常判定，见文件头实测）",
+            "max_tokens=CLASSIFY_MAX_TOKENS" in src_code
+            and "CLASSIFY_MAX_TOKENS = 128" in src_code, "")
     c.check("超时值写在 intent 层（不是散在调用方）",
             src.count("CLASSIFY_TIMEOUT") >= 2, f"{src.count('CLASSIFY_TIMEOUT')} 处")
     return c
@@ -94,7 +103,7 @@ def batch_b_fuse():
     title("B. 判定超时：8s 被砍、3.5s 放过（今天最坏能占 30 秒）")
     from app.agent import intent as I
     import app.llm.client as C
-    from test_20_polish import _patch_client
+    from test_20_polish import _FakeLLM, _patch_client
 
     async def run(delay):
         r = _patch_client(VERDICT, with_key=True, delay=delay)
@@ -118,6 +127,13 @@ def batch_b_fuse():
             bool(got_ok) and (got_ok or {}).get("intent") == "add_todo",
             json.dumps(got_ok, ensure_ascii=False)[:70])
     c.check("耗时确实等了模型（没被误砍）", ms_ok > 3000, f"{ms_ok:.0f} ms")
+    # 上一行证明"等到了"，这一行证明"模型那头真收到了预算"——
+    # 光看 intent.py 的源码形状抓不到"网关中途把参数丢了"这类回归。
+    # ⚠️ 这里必须写死 128，不许写 I.CLASSIFY_MAX_TOKENS：拿被测代码自己的常量当期望值 = 断言自证，
+    #    把常量改成 8（会把合法 JSON 截断）时这条照样绿。
+    c.check("判定这一跳真把 max_tokens=128 交给了模型（假货收到的值）",
+            _FakeLLM.last.get("max_tokens") == 128,
+            json.dumps(_FakeLLM.last, ensure_ascii=False))
     return c
 
 

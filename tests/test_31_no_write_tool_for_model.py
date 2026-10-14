@@ -110,7 +110,8 @@ class ScriptedLLM:
         self.args = json.dumps({"title": "偷写的待办", "date": date,
                                "start": start, "end": end}, ensure_ascii=False)
 
-    async def chat(self, messages, tools=None, tool_choice="auto", override=None):
+    async def chat(self, messages, tools=None, tool_choice="auto", override=None,
+                   max_tokens=None):
         self.turn += 1
         if self.turn == 1:
             # 模型这一轮实际拿到的工具清单（schema 名）——它连这个名字都不该见到

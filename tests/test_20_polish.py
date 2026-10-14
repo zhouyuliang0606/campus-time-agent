@@ -38,10 +38,18 @@ from app.agent.polish import polish_reply, has_promise  # noqa: E402
 
 class _FakeLLM:
     """假模型：照剧本回一句，可选延迟（用来测超时降级）。"""
+
+    # 最近一次被叫到时收到的参数，给"生产代码确实把某个参数传下来了"这类断言用。
+    # ⚠️ 假货的签名必须跟着真客户端走：这里漏一个 max_tokens，TypeError 会被判定层的
+    #    `except Exception` 吞成 None，于是"超时"断言以完全错误的理由通过（刀 3 第一天就踩了）。
+    last: dict = {}
+
     def __init__(self, reply: str, delay: float = 0.0):
         self._reply, self._delay = reply, delay
 
-    async def chat(self, messages, tools=None, tool_choice="auto", override=None):
+    async def chat(self, messages, tools=None, tool_choice="auto", override=None,
+                   max_tokens=None):
+        _FakeLLM.last = {"max_tokens": max_tokens}
         if self._delay:
             await asyncio.sleep(self._delay)
         return {"content": self._reply}

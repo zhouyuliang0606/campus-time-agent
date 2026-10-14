@@ -42,7 +42,8 @@ class _FakeLLM:
     def __init__(self, reply: str):
         self._reply = reply
 
-    async def chat(self, messages, tools=None, tool_choice="auto", override=None):
+    async def chat(self, messages, tools=None, tool_choice="auto", override=None,
+                   max_tokens=None):
         return {"content": self._reply}
 
 

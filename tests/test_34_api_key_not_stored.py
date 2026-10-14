@@ -46,7 +46,8 @@ class Recorder:
     last_usage = {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
     last_model = "rec-model"
 
-    async def chat(self, messages, tools=None, tool_choice="auto", override=None):
+    async def chat(self, messages, tools=None, tool_choice="auto", override=None,
+                   max_tokens=None):
         seen.append(dict(override or {}))
         return {"content": "好的。"}
 
@@ -60,7 +61,8 @@ class Exploder:
     def __init__(self, embed_at: int = 0):
         self.embed_at = embed_at
 
-    async def chat(self, messages, tools=None, tool_choice="auto", override=None):
+    async def chat(self, messages, tools=None, tool_choice="auto", override=None,
+                   max_tokens=None):
         key = (override or {}).get("api_key") or ""
         text = "request failed: Authorization: Bearer " + key
         if self.embed_at:

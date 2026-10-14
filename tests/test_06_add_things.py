@@ -715,7 +715,8 @@ def _proposal_tool_body():
             self.rounds = 0
             self.seen_tools: list[str] = []
 
-        async def chat(self, messages, tools=None, tool_choice="auto", override=None):
+        async def chat(self, messages, tools=None, tool_choice="auto", override=None,
+                   max_tokens=None):
             self.rounds += 1
             # 顺手记下引擎有没有把工具菜单递给模型
             self.seen_tools = [x["function"]["name"] for x in (tools or [])]

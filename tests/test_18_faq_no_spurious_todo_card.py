@@ -46,7 +46,8 @@ class _ToolCaller:
         self._tool_args = tool_args
         self._engine_calls = 0
 
-    async def chat(self, messages, tools=None, tool_choice="auto", override=None):
+    async def chat(self, messages, tools=None, tool_choice="auto", override=None,
+                   max_tokens=None):
         if tools:  # 引擎调用：带工具清单
             self._engine_calls += 1
             if self._engine_calls == 1:

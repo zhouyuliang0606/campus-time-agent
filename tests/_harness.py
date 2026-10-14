@@ -259,7 +259,11 @@ class FakeLLM:
     def __init__(self, reply: str):
         self._reply = reply
 
-    async def chat(self, messages, tools=None, tool_choice="auto", override=None):
+    # ⚠️ 签名要跟 `app.llm.client.DeepSeekClient.chat` 保持一致（刀 3 起了 max_tokens 就是这样）。
+    #    漏一个新参数不会在这里报错，而是被判定层的 `except Exception` 吞成"模型没答"→ 回 None，
+    #    于是依赖语义层的测试**以错误的理由**变绿或变红 —— 比直接崩难查得多。
+    async def chat(self, messages, tools=None, tool_choice="auto", override=None,
+                   max_tokens=None):
         return {"content": self._reply}
 
 

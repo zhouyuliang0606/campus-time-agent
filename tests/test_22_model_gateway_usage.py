@@ -52,7 +52,8 @@ class _Rec:
         self.last_model = model
         self.boom = boom
 
-    async def chat(self, messages, tools=None, tool_choice="auto", override=None):
+    async def chat(self, messages, tools=None, tool_choice="auto", override=None,
+                   max_tokens=None):
         if self.boom:
             raise RuntimeError(self.boom)
         return self.ret
@@ -302,7 +303,8 @@ class _VendorLLM:
         self._tool_name, self._tool_args = tool_name, tool_args
         self._engine_calls = 0
 
-    async def chat(self, messages, tools=None, tool_choice="auto", override=None):
+    async def chat(self, messages, tools=None, tool_choice="auto", override=None,
+                   max_tokens=None):
         if tools:
             self._engine_calls += 1
             if self._engine_calls == 1:
