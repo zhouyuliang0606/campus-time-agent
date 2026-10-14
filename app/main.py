@@ -5,6 +5,7 @@
           → engine 跑 ReAct 循环（必要时调工具）→ 返回回答 + 思考轨迹
 """
 import datetime
+import asyncio
 import json
 import os
 import re
@@ -12,7 +13,7 @@ import uuid
 from typing import Any
 
 from fastapi import Depends, FastAPI, File, Request, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.admin_guard import verify_admin
@@ -1187,11 +1188,26 @@ def _say_llm_error(e: Exception) -> str:
     return "⚠️ " + _STUDENT_LLM_WORDS.get(kind, _STUDENT_LLM_WORDS["unknown"])
 
 
+def _wants_sse(req: Request) -> bool:
+    """客户端**明确**要 SSE 才流式（`Accept: text/event-stream`），默认仍回今天那份 JSON。
+
+    为什么不无条件改成 SSE（施工单 §4.4 是直接改）：`/api/chat` 的读方不止学生端一处 ——
+    `plan.html:499`（课表导入）、`station.html:201`（快递客服）都是 `await r.json()`，
+    测试里更有 **227 处** `post("/api/chat", ...).json()`（35 个文件）。
+    无条件换出口 = 一次把这三族全弄红；协商 = 新增一条分支，老路一个字不动。
+    """
+    return "text/event-stream" in (req.headers.get("accept") or "")
+
+
+# 队列里的"结束"记号。不用 None：None 也可能是合法事件，撞上了就提前收尾（看不见的截断）
+_SSE_END = object()
+
+
 @app.post("/api/chat")
 async def chat(req: Request):
-    """对话入口。
+    """对话入口（两条出口：**默认 JSON**，客户端点名要 SSE 才流式）。
 
-    **本函数只干一件事：补一条"我把这句听成什么"再交出去。**
+    **本函数只干两件事：选出口 + 补一条"我把这句听成什么"再交出去。**
     真正的对话逻辑全在 `_chat_impl` 里 —— 它有一千多行、几十个 return，
     每条分支各回各的卡。想让"听成什么"**一条都不漏**，只能在这儿统一补：
     挨个 return 去加必然漏（实测就漏了"加待办缺细节（追问）"那条，
@@ -1200,9 +1216,72 @@ async def chat(req: Request):
     `meta` 是 `_chat_impl` 回填中间结论的小本子（目前只有判定层的 `read`）。
     用参数传而不是全局变量/上下文变量：同一时刻可能有多个请求在跑，
     全局量会串（A 学生的判定被写进 B 学生的回复）。
+
+    SSE 那条出口的**时序是本刀唯一的风险**（施工单 §4.4 原话"最易写错处"）：
+    `token`/`trace` 只是**引擎原话的预览**，`done.v` 必须是**跑完全套 claim 守卫之后**的权威答案
+    （`_no_card_answer()` 那一族"它自称已提交、其实库里没有"的纠正）。
+    所以这里不是"一条生成器从头 yield 到尾"，而是**后台把完整的 `_chat_impl` 跑完（事件顺手推进队列）
+    → 它返回了才发 done**：守卫与 done 的先后由代码结构保证，不靠"记得写在后面"。
+    """
+    if not _wants_sse(req):
+        return await _chat_json(req)
+
+    # ⚠️ **必须在开始响应之前把请求体读干净**（这行不是冗余，是本刀第一个真机 bug）：
+    #    响应一开始往外发，uvicorn 之后给这个连接的 `receive()` 就只有 `http.disconnect`，
+    #    后台任务里再 `await req.json()` 会当场抛 ClientDisconnect → 整句话被当成空请求，
+    #    学生看到的是"这句话我没听懂"。读一次就缓存进 `req._body`，
+    #    下面 `_chat_impl` 里那句 `await req.json()` 拿的是缓存，不会读第二遍。
+    try:
+        await req.body()
+    except Exception:
+        pass        # 读不动也照样往下走：_chat_impl 会按"请求体不合法"回 400 那句人话
+
+    q: asyncio.Queue = asyncio.Queue()
+
+    async def emit(ev: dict) -> None:
+        await q.put(ev)
+
+    async def _run() -> None:
+        try:
+            resp = await _chat_json(req, emit=emit)
+            if isinstance(resp, dict):
+                await q.put({"k": "done", "v": resp})
+            else:
+                # 走到这儿是"请求体本身没发对"那一族（400）。JSON 出口有状态码可回，
+                # 流式这边已经 200 了，只能给一句人话 —— 至少不白屏、不留半句。
+                await q.put({"k": "error", "v": {"answer": "这句话我没听懂，麻烦再说一遍。"}})
+        except Exception as e:
+            # 流式中途失败：**绝不**留半截当没事（前端据此把气泡整句换成一句人话）
+            await q.put({"k": "error", "v": {"answer": _say_llm_error(e)}})
+        finally:
+            await q.put(_SSE_END)
+
+    task = asyncio.create_task(_run())
+
+    async def gen():
+        try:
+            while True:
+                ev = await q.get()
+                if ev is _SSE_END:
+                    break
+                yield f"data: {json.dumps(ev, ensure_ascii=False)}\n\n"
+        finally:
+            # 学生中途关掉页面 → 这里会被取消；那个还在跑、还在烧额度的后台任务得收掉
+            if not task.done():
+                task.cancel()
+
+    return StreamingResponse(gen(), media_type="text/event-stream; charset=utf-8",
+                             headers={"Cache-Control": "no-cache",
+                                      "X-Accel-Buffering": "no"})
+
+
+async def _chat_json(req: Request, emit=None):
+    """JSON 出口的本体：跑 `_chat_impl` + 统一补"听成什么"。SSE 那条也复用它（两路口径必然一致）。
+
+    `emit` 只在 SSE 时有值，一路传到引擎的 `on_event`；**默认 None = 行为与改前逐字相同**。
     """
     meta: dict = {}
-    resp = await _chat_impl(req, meta)
+    resp = await _chat_impl(req, meta, emit=emit)
     read = meta.get("read")
     if read and isinstance(resp, dict):
         try:
@@ -1213,7 +1292,7 @@ async def chat(req: Request):
     return resp
 
 
-async def _chat_impl(req: Request, meta: dict):
+async def _chat_impl(req: Request, meta: dict, emit=None):
     """对话主体（人话：前端把用户的话发到这里，返回回答 + Agent 思考轨迹）。
 
     前端可以显式带 module 字段（如 {"message": "...", "module": "express"}）直接锁定模块，
@@ -3449,7 +3528,14 @@ async def _chat_impl(req: Request, meta: dict):
     # 大模型可能因为"没配 Key / Key 无效 / 网络不通"失败。
     # 与其让前端收到一个看不懂的 500，不如把原因说成人话，直接显示在对话里。
     try:
-        result = await engine.run(message, history=history)
+        if emit is None:
+            # 非流式那条：**调用形状与改前逐字相同**。测试里有 14 处假引擎写的是
+            # `async def run(self, message, history=None)`，多传一个参数就是 TypeError
+            # ——而 TypeError 会被下面那支 `except Exception` 咽成"这句没答成"，
+            # 红得一塌糊涂却看不出原因（刀 3 的假货签名教训，别再吃第二遍）。
+            result = await engine.run(message, history=history)
+        else:
+            result = await engine.run(message, history=history, on_event=emit)
     except LLMError as e:
         # 已知原因：密钥或网络问题。**日志和管理台留技术原文，学生只看到一句人话**
         print(f"[LLM] 本轮对话没答成（kind={getattr(e, 'kind', '?')}）：{e}")
