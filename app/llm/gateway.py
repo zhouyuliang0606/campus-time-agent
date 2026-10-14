@@ -231,8 +231,13 @@ class ModelGateway:
         tools: list[dict] | None = None,
         tool_choice: str = "auto",
         override: dict | None = None,
+        max_tokens: int | None = None,
     ) -> dict:
-        """发一次对话，返回标准化后的消息；无论成功失败都记一笔账。"""
+        """发一次对话，返回标准化后的消息；无论成功失败都记一笔账。
+
+        `max_tokens` 只是**往下透传**（网关不许自己给某一层加限制），语义见
+        `DeepSeekClient.chat`：现在只有判定层会传，引擎与润色不传。
+        """
         ov = override if override is not None else self.override
         client = self._get_client()
         model = self._current_model(ov)
@@ -241,7 +246,8 @@ class ModelGateway:
         err = ""
         p = c = t = 0
         try:
-            msg = await client.chat(messages, tools=tools, tool_choice=tool_choice, override=ov)
+            msg = await client.chat(messages, tools=tools, tool_choice=tool_choice,
+                                    override=ov, max_tokens=max_tokens)
             # 立刻取用量：这两行之间不能有 await，否则并发下会读到别人的数字。
             usage = getattr(client, "last_usage", None)
             model = getattr(client, "last_model", "") or model or "unknown"
@@ -291,10 +297,12 @@ async def chat(
     user: str = "",
     override: dict | None = None,
     client=None,
+    max_tokens: int | None = None,
 ) -> dict:
     """一次性调用的便捷入口（人话：不想自己 new 网关时用这个）。
 
     内部调用（语义判定、润色、后台测连通）走这里，user 传功能名。
     """
     gw = ModelGateway(user=user, override=override, client=client)
-    return await gw.chat(messages, tools=tools, tool_choice=tool_choice, override=override)
+    return await gw.chat(messages, tools=tools, tool_choice=tool_choice,
+                         override=override, max_tokens=max_tokens)

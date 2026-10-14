@@ -103,6 +103,7 @@ class DeepSeekClient:
         tools: list[dict] | None = None,
         tool_choice: str = "auto",
         override: dict | None = None,
+        max_tokens: int | None = None,
     ) -> dict:
         """发一次对话请求，返回模型的一条消息（人话：把上下文发给模型，模型回你一句）。
 
@@ -110,6 +111,10 @@ class DeepSeekClient:
         :param tools: 可选，告诉模型"你现在能调用哪些函数"（Agent 用得上）
         :param tool_choice: "auto" 表示模型自己决定要不要调用工具
         :param override: 可选，学生端自定义的 API 配置 {base_url, model, api_key}，优先于服务器配置
+        :param max_tokens: 可选，本次回答的生成长度上限。**只有明确要封顶的调用才传**
+            （现在唯一的使用方是判定层 `intent.classify_with_llm`：它只要一个几十词的 JSON，
+            模型偶尔啰嗦成一篇作文，那种就该硬截）。不传 = 用厂商默认。
+            ⚠️ 别给引擎/润色也设小值：它们正常输出本来就比判定层那几十 token 长得多，设了就是截答案。
         :return: 模型返回的消息字典，可能含 content（文字）或 tool_calls（要调工具）
         """
         # 本次调用要用配置：现用现取，管理员在后台改完立刻生效；学生端自定义 key 优先
@@ -129,6 +134,10 @@ class DeepSeekClient:
         if tools:
             payload["tools"] = tools
             payload["tool_choice"] = tool_choice
+        # 只有调用方**明确要封顶**才带这个字段（不带 = 厂商默认）。见 `chat` 的 max_tokens 说明：
+        # 判定层要，引擎/润色不能要。
+        if max_tokens is not None:
+            payload["max_tokens"] = max_tokens
 
         # 发请求前先自查：没配 Key 就别去打扰接口了，直接给个能照着做的提示
         if not api_key:
