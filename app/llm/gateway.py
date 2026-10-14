@@ -20,6 +20,10 @@ import uuid
 from app.store import log_llm_usage
 
 
+class _NoStream(Exception):
+    """内部暗号：这个客户端没有 `chat_stream`，`stream()` 走非流式退路时用它（不当错误看）。"""
+
+
 # ============ 一、跨厂商工具调用标准化 ============
 # 目标：不管上游是 OpenAI/DeepSeek/国产直通，还是 Claude、Gemini，
 # 出去的都长这样（OpenAI 风格）：
@@ -290,6 +294,103 @@ class ModelGateway:
                 pass
 
 
+    async def stream(
+        self,
+        messages: list[dict],
+        tools: list[dict] | None = None,
+        tool_choice: str = "auto",
+        override: dict | None = None,
+        max_tokens: int | None = None,
+    ):
+        """流式出口：逐块 yield `{"k":"token","v":文字}`，抽干后 yield `{"k":"message","v":整条消息}`。
+
+        与 `chat` 同口径的四件事（缺一条就是新 bug）：
+          · **记账**：同 user / key_source / latency_ms，usage 靠上游末块（`include_usage`）；
+          · **标准化**：整条消息照样过 `normalize_message`（各家工具调用长相不同，引擎只认一种）；
+          · **错误**：带 `kind` 的 `LLMError` 往上抛，由请求方翻成一句人话，这里不静默；
+          · **不反射地址**：错误消息过 `_redact`，密钥一律隐去。
+
+        降级只有一种情况：一块都还没吐出来、且失败原因是"这个上游不会流式"
+        （`upstream` / `bad_format`）→ 退回非流式 `chat`，整段当一块吐。
+        已经吐出过内容就不退 —— 否则同一句话会在学生屏幕上出现两遍。
+        """
+        ov = override if override is not None else self.override
+        client = self._get_client()
+        model = self._current_model(ov)
+        started = time.perf_counter()
+        status = "error"
+        err = ""
+        p = c = t = 0
+        emitted = False
+        try:
+            try:
+                if not hasattr(client, "chat_stream"):
+                    # 这个客户端不会流式（后台测连通塞的假货、以及全仓那批只有 chat 的桩都在这里退）。
+                    # ⚠️ 这是**明写的退路**，不是把签名漂移咽掉：退了照样整段给出、一个字不缺，
+                    #    而且 F/E 批专门钉着它（要钉的签名一致性在 test_48 那族断言上）。
+                    raise _NoStream
+                async for frag in client.chat_stream(messages, tools=tools,
+                                                     tool_choice=tool_choice,
+                                                     override=ov, max_tokens=max_tokens):
+                    if frag:
+                        emitted = True
+                        yield {"k": "token", "v": frag}
+                # 生成器抽干了才读这两样：中途 break 出去，last_message 只是半截
+                usage = getattr(client, "last_usage", None)
+                model = getattr(client, "last_model", "") or model or "unknown"
+                p, c, t = _tokens(usage)
+                msg = normalize_message(getattr(client, "last_message", None)
+                                        or {"role": "assistant", "content": ""})
+            except _NoStream:
+                msg = normalize_message(await client.chat(
+                    messages, tools=tools, tool_choice=tool_choice, override=ov,
+                    max_tokens=max_tokens))
+                usage = getattr(client, "last_usage", None)
+                p, c, t = _tokens(usage)
+                if msg.get("content"):
+                    yield {"k": "token", "v": msg["content"]}
+            except Exception as e:
+                if emitted or getattr(e, "kind", "") not in ("upstream", "bad_format"):
+                    raise
+                msg = normalize_message(await client.chat(
+                    messages, tools=tools, tool_choice=tool_choice, override=ov,
+                    max_tokens=max_tokens))
+                usage = getattr(client, "last_usage", None)
+                p, c, t = _tokens(usage)
+                if msg.get("content"):
+                    yield {"k": "token", "v": msg["content"]}
+            status = "ok"
+            yield {"k": "message", "v": msg}
+        except Exception as e:
+            # 与 chat 那份同款的隐密钥逻辑（两处各写一遍是因为改谁都可能漏另一处；
+            # 真要合并得先动 chat，本刀明令不动 chat）
+            student_key = (ov or {}).get("api_key")
+            try:
+                from app.config import get_llm_config
+
+                live = get_llm_config(override=ov).get("api_key")
+            except Exception:
+                live = student_key
+            err = _redact(str(e), live, student_key)
+            raise
+        finally:
+            try:
+                log_llm_usage({
+                    "user": self.user,
+                    "key_source": "student" if (ov or {}).get("api_key") else "server",
+                    "model": model or "unknown",
+                    "prompt_tokens": p,
+                    "completion_tokens": c,
+                    "total_tokens": t,
+                    "status": status,
+                    "latency_ms": int((time.perf_counter() - started) * 1000),
+                    "stream": 1,
+                    "error": err,
+                })
+            except Exception:
+                pass
+
+
 async def chat(
     messages: list[dict],
     tools: list[dict] | None = None,
@@ -306,3 +407,24 @@ async def chat(
     gw = ModelGateway(user=user, override=override, client=client)
     return await gw.chat(messages, tools=tools, tool_choice=tool_choice,
                          override=override, max_tokens=max_tokens)
+
+
+async def stream(
+    messages: list[dict],
+    tools: list[dict] | None = None,
+    tool_choice: str = "auto",
+    user: str = "",
+    override: dict | None = None,
+    client=None,
+    max_tokens: int | None = None,
+):
+    """流式便捷入口（与模块级 `chat` 对称）。**目前只有引擎这一路会用**。
+
+    ⚠️ 语义判定、润色、后台测连通**不许挪到这里**：判定只要一个几十 token 的 JSON，
+    流式对它零收益（那 4.2 秒在首字之前，不在首字之后），还会把 test_48 那套
+    "看请求体/看等了多久"的断言全数作废。
+    """
+    gw = ModelGateway(user=user, override=override, client=client)
+    async for ev in gw.stream(messages, tools=tools, tool_choice=tool_choice,
+                              override=override, max_tokens=max_tokens):
+        yield ev

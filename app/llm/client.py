@@ -7,6 +7,8 @@
 from typing import Any
 
 import asyncio
+import json
+
 import httpx
 
 from app.config import BaseUrlError, DEBUG, check_base_url_ssrf, get_llm_config
@@ -88,6 +90,9 @@ class DeepSeekClient:
         # 所以不用加锁）。没拿到就是 None，记账按 0 处理，绝不因此让对话失败。
         self.last_usage: dict | None = None
         self.last_model: str = ""
+        # 流式用的那扇窗：`chat_stream` 抽干之后，拼好的整条消息在这里
+        # （异步生成器没法 return 一个值给 `async for`，只能留个窗口，与上面两个同套路）。
+        self.last_message: dict | None = None
 
     def _config(self, override: dict | None = None) -> tuple[str, str, str]:
         """取本次调用要用配置（人话：现用现取，保证后台改完即时生效）。
@@ -225,3 +230,145 @@ class DeepSeekClient:
             print(f"[DEBUG] 模型返回：{'调用工具 ' + str(has_tool) if has_tool else '纯文字回答'}")
 
         return message
+
+    async def chat_stream(
+        self,
+        messages: list[dict],
+        tools: list[dict] | None = None,
+        tool_choice: str = "auto",
+        override: dict | None = None,
+        max_tokens: int | None = None,
+    ):
+        """发一次**流式**请求，边生成边把文字片段吐出来（人话：让学生看见字在冒，不是看转圈）。
+
+        `chat()` 的三条约定这里一条都不能少，缺一条就是新 bug：
+          · 配置现用现取、**SSRF 闸门每次调用都过**、没配 Key 直接抛 `no_key`；
+          · 失败一律抛带 `kind` 的 `LLMError` 往上传（不在这里静默兜住，上层要发一句人话）；
+          · 走完把整条消息放进 `self.last_message`、用量放进 `self.last_usage`（网关取去记账）。
+
+        协议：上游回 OpenAI 风格 SSE —— 一行 `data: {...}` 一块，最后一行 `data: [DONE]`。
+        `stream_options.include_usage` 让**最后一块带上 usage**，否则流式这一路记账全是 0
+        （2026-10-14 实测 deepseek-chat 认，末块确实回 usage）。
+
+        ⚠️ 这是个异步生成器：调用方必须 `async for` 把它抽干，`last_message` 才是完整的；
+           中途 break 出去，拼了一半的消息就丢了（网关的 `stream()` 是抽干后再取）。
+        """
+        api_key, base_url, model = self._config(override=override)
+        self.last_usage = None
+        self.last_model = model
+        self.last_message = None
+
+        payload: dict[str, Any] = {
+            "model": model,
+            "messages": messages,
+            "temperature": 0.3,
+            "stream": True,
+            "stream_options": {"include_usage": True},
+        }
+        if tools:
+            payload["tools"] = tools
+            payload["tool_choice"] = tool_choice
+        if max_tokens is not None:
+            payload["max_tokens"] = max_tokens
+
+        if not api_key:
+            raise LLMError(
+                "还没配置大模型密钥。两种办法任选其一："
+                "① 在项目根目录复制 .env.example 为 .env，填入 DEEPSEEK_API_KEY 后重启；"
+                "② 进管理控制台的「API 配置」卡片在线填写（不用重启）。",
+                kind="no_key",
+            )
+
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+            "Accept": "text/event-stream",
+        }
+
+        # 与 chat() 同一个闸门、同一个位置：**每次调用**、发请求之前。挪进 `_get_client()`
+        # 等于只在校验第一次（test_49 专门数它的调用次数）。
+        try:
+            base_url = check_base_url_ssrf(base_url)
+        except BaseUrlError as e:
+            print(f"[LLM] 上游地址被 SSRF 闸门拦下（流式）：{e}")
+            raise LLMError("接口地址不合规（默认不允许指向内网/保留地址；确需本地模型请设环境变量"
+                           " CAMPUSTIME_LLM_ALLOW_PRIVATE=1）。管理端请检查「API 配置」，"
+                           "学生端请在「添加 / 修改 API」里把接口地址改成公网地址或留空。",
+                           kind="blocked_address") from e
+
+        pieces: list[str] = []
+        # 流式把一次工具调用切成好几块送来，按 index 拼回去（缺这块，引擎就永远调不了工具）。
+        calls: dict[int, dict] = {}
+        saw_chunk = False
+
+        try:
+            client = await _get_client()
+            # 流式的读超时比非流式宽（60s）：一个字一个字蹦，整段生成时间可能超过单次 30s 上限；
+            # connect 仍 3 秒 —— "这台机器连不连得上"这件事不该因为流式就变慢。
+            async with client.stream(
+                "POST", f"{base_url}/chat/completions",
+                json=payload, headers=headers,
+                timeout=httpx.Timeout(60.0, connect=3.0),
+            ) as resp:
+                resp.raise_for_status()
+                async for line in resp.aiter_lines():
+                    if not line or not line.startswith("data:"):
+                        continue        # 空行是 SSE 的分块分隔符，注释行以 ":" 开头，都跳过
+                    data = line[5:].strip()
+                    if data == "[DONE]":
+                        break
+                    try:
+                        obj = json.loads(data)
+                    except Exception:
+                        continue
+                    if obj.get("usage"):
+                        self.last_usage = obj["usage"]
+                    for ch in (obj.get("choices") or []):
+                        saw_chunk = True
+                        delta = ch.get("delta") or {}
+                        frag = delta.get("content")
+                        if frag:
+                            pieces.append(frag)
+                            yield frag
+                        for tc in (delta.get("tool_calls") or []):
+                            slot = calls.setdefault(int(tc.get("index") or 0),
+                                                    {"id": "", "name": "", "args": []})
+                            if tc.get("id"):
+                                slot["id"] = tc["id"]
+                            fn = tc.get("function") or {}
+                            if fn.get("name"):
+                                slot["name"] = fn["name"]
+                            if fn.get("arguments"):
+                                slot["args"].append(str(fn["arguments"]))
+        except httpx.HTTPStatusError as e:
+            code = e.response.status_code
+            # 与 chat() 同口径：消息里不带 URL、不反射地址（这句话会回到请求方眼前）
+            if code in (401, 403):
+                raise LLMError(f"大模型拒绝了请求（HTTP {code}）：API Key 无效或已过期，请检查你填的密钥。",
+                               kind="auth") from e
+            if code == 429:
+                raise LLMError(f"大模型限流了（HTTP 429）：请求太密或额度用尽，稍等一会儿再试。",
+                               kind="rate_limited") from e
+            raise LLMError(f"大模型接口出错（HTTP {code}）。", kind="upstream") from e
+        except httpx.RequestError as e:
+            print(f"[LLM] 连不上上游（流式）{base_url}：{type(e).__name__}: {e}")
+            raise LLMError("连不上大模型服务，请检查网络，或到管理控制台确认接口地址是否可用。",
+                           kind="unreachable") from e
+
+        if not saw_chunk:
+            # 连上了、200，但一行 choices 都没有：多半是接口地址填成了不是模型服务。
+            # 与 chat() 里那个 `bad_format` 分支同一含义，别让它静默变成"回了个空"。
+            raise LLMError("大模型服务的返回内容不是预期的应答格式（接口地址可能填错了）。",
+                           kind="bad_format")
+
+        content = "".join(pieces)
+        msg: dict[str, Any] = {"role": "assistant", "content": content}
+        if calls:
+            msg["tool_calls"] = [
+                {"id": s["id"], "type": "function",
+                 "function": {"name": s["name"], "arguments": "".join(s["args"])}}
+                for _, s in sorted(calls.items())
+            ]
+        self.last_message = msg
+        if DEBUG:
+            print(f"[DEBUG] 流式返回：{len(pieces)} 块 / {'带工具调用' if calls else '纯文字'}")
