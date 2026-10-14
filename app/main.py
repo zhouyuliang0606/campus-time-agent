@@ -2265,6 +2265,32 @@ async def _chat_impl(req: Request, meta: dict):
                 pass
         return resp
 
+    # ★ 「今晚安排点啥」这类**问该做什么**的句子：给一句实在的空档建议，**不建卡、不写库**。
+    #   用户 2026-10-14 定的做法（原话：「这种是问事情闲聊的，不入库」；三个走法里他挑了
+    #   "不建卡，但给一句实在的建议"）。
+    #   判据只有一份（`planner._asking_what_to_do`：句里带疑问代词 **且** 剥掉时间/动作后
+    #   剩下的那串本身就是疑问串；在删东西的、在查现有清单的两类当场排除）。
+    #   「你帮我安排」这种**没疑问代词**的半句话不在这儿——它照旧走 3c 的追问档，
+    #   那句「要安排的是什么事？」有 test_06 十五批钉着。
+    #   ⚠️ 位置必须在**列表档之前**（2026-10-14 真机实测出来的顺序问题）：开发机的样本库
+    #   早就把「今晚安排点啥」学成了 list_todo，排到列表档后面就永远轮不到这档，
+    #   学生看到的是一句「📋 你目前的待办（共 11 条）」——他没在看清单，他在问该做什么。
+    #   ⚠️ 也**不走 `_sem_done`**（同下面周期否决那条的理由）：`_sem_done` 里面是
+    #   `remember()` 学样本那一步 —— 把一句问话学成模板，下次近似说法照着错。
+    if _asking_what_to_do(message):
+        answer, _free = what_to_do_suggestion(message)
+        append_conversation(session_id, "user", message)
+        append_conversation(session_id, "assistant", answer)
+        return {
+            "module": "planner",
+            "session_id": session_id,
+            "answer": answer,
+            "trace": [{"step": 1, "phase": "🤔 这句在问『该做什么』→ 报空档，不替他决定",
+                       "answer": "没出卡、没写库，也没把这句学进去"}],
+            "options": [],
+            "awaiting_choice": False,
+        }
+
     # 3d) **读我已有待办（纯读，不写库、不弹窗）**
     #     学生说「我的代办呢」「看看我的代办」「待办列表」「代办显示不出来」这类话，
     #     没有任何"加/删"意图，就是想看一眼现在有哪些待办。
@@ -2601,33 +2627,6 @@ async def _chat_impl(req: Request, meta: dict):
     #   硬扩表达等于替学生造他没说要的几十条安排（判据同 `weekly_repeat_day` 的取舍）。
     if _period_block:
         return _period_reject_response(session_id, message, _period)
-
-    # ★ 「今晚安排点啥」这类**问该做什么**的句子：给一句实在的空档建议，**不建卡、不写库**。
-    #   用户 2026-10-14 定的做法（原话：「这种是问事情闲聊的，不入库」；三个走法里他挑了
-    #   "不建卡，但给一句实在的建议"）。
-    #   判据只有一份（`planner._asking_what_to_do`：句里带疑问代词 **且** 剥掉时间/动作后
-    #   剩下的那串本身就是疑问串；在删东西的、在查现有清单的两类当场排除），
-    #   「你帮我安排」这种**没疑问代词**的半句话不在这儿——它照旧走下面的追问档，
-    #   那句「要安排的是什么事？」有 test_06 十五批钉着。
-    #   手上挂着卡时也一样回这句：上面那几档 3c-pre* 已经先把"回复卡片"的话接走了
-    #   （报钟点、选"我自己挑"…），走到这儿说明确实是在问主意。
-    #   ⚠️ 位置必须在 3c 之前：这句里带"安排"（`_ADD_INTENT`），排到 3c 后面永远轮不到，
-    #   现象就是实测到的那张标题写着「点啥」的候选时段卡。
-    #   ⚠️ 也**不走 `_sem_done`**（同上面周期否决那条的理由）：`_sem_done` 里面是
-    #   `remember()` 学样本那一步 —— 把一句问话学成 add_todo 模板，下次近似说法照错。
-    if _asking_what_to_do(message):
-        answer, _free = what_to_do_suggestion(message)
-        append_conversation(session_id, "user", message)
-        append_conversation(session_id, "assistant", answer)
-        return {
-            "module": "planner",
-            "session_id": session_id,
-            "answer": answer,
-            "trace": [{"step": 1, "phase": "🤔 这句在问『该做什么』→ 报空档，不替他决定",
-                       "answer": "没出卡、没写库，也没把这句学进去"}],
-            "options": [],
-            "awaiting_choice": False,
-        }
 
     # ⚠️ 末尾的 `and not wants_add_course(message)` 是「加课优先于加待办」的硬闸门：
     # 学生说"周一早上加一节高数课"时，语义层（样本库/大模型）很可能把它判成 add_todo，

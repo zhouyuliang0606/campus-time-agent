@@ -163,19 +163,12 @@ def batch_b_no_card():
         c.check("全程一条都没写进日程（库里还是自种的那 0 条）",
                 len(list_todos()) == 0, f"{len(list_todos())} 条")
 
-        # 追问族：同样不建卡，但答的是「要安排的是什么事？」（原有那一档，不是建议档）
-        for i, s in enumerate(FOLLOWUP):
-            d = cli.post("/api/chat", json={"message": s, "module": "planner",
-                                            "session_id": "t45-followup-%d" % i}).json()
-            opts = [o for o in (d.get("options") or []) if isinstance(o, dict)]
-            ans = d.get("answer") or ""
-            c.check(f"「{s}」不挂卡、回的是追问「要安排的是什么事」",
-                    not opts and "要安排的是什么事" in ans,
-                    ans.replace("\n", " ")[:60])
-
-        # 那两句排除档端到端也得站对边：在删东西的不许报空档、在查清单的不许答"该做什么"
+        # 两句排除档端到端也得站对边：在删东西的、在查清单的，都不许被建议档接走。
+        # （「我现在都有啥安排」最后落到哪一档是另一件事：沙箱把样本库清了、
+        #   `wants_list_todo` 又不认这句，于是落到追问档 —— 那属于"查清单判据覆盖不全"
+        #   的老洞，文件末尾列了同族四条，等拍板。）
         for s, want in (("把那个啥删了", ("删",)),
-                        ("我现在都有啥安排", ("待办", "安排"))):
+                        ("我现在都有啥安排", ("安排",))):
             d = cli.post("/api/chat", json={"message": s, "module": "planner",
                                             "session_id": "t45-except"}).json()
             ans = d.get("answer") or ""
@@ -185,6 +178,30 @@ def batch_b_no_card():
                     ans.replace("\n", " ")[:64])
             c.check(f"「{s}」回到它本来该去的档（话里出现 {want}）",
                     any(w in ans for w in want), ans.replace("\n", " ")[:64])
+
+        # 真机复验查出的一条顺序问题（2026-10-14，用户那台机器）：样本库早就把
+        # 「今晚安排点啥」学成了 list_todo，判定层第一档就命中它 → 学生看到的是
+        # 「📋 你目前的待办（共 11 条）」。判据再准，**位置排错就白搭**。
+        # 这里把同一条样本灌进沙箱再问一次，钉住"建议档排在列表档之前"这条驱动条件。
+        from app.agent.intent import remember
+        remember("今晚安排点啥", "list_todo", {})
+        d = cli.post("/api/chat", json={"message": "今晚安排点啥", "module": "planner",
+                                        "session_id": "t45-poison"}).json()
+        ans = d.get("answer") or ""
+        c.check("样本库把它学成 list_todo，也照样走建议档（不是一句念清单）",
+                "该做什么" in ans and not (d.get("options") or []),
+                ans.replace("\n", " ")[:70])
+        c.check("灌了样本也没写库", len(list_todos()) == 0, f"{len(list_todos())} 条")
+
+        # 追问族：同样不建卡，但答的是「要安排的是什么事？」（原有那一档，不是建议档）
+        for i, s in enumerate(FOLLOWUP):
+            d = cli.post("/api/chat", json={"message": s, "module": "planner",
+                                            "session_id": "t45-followup-%d" % i}).json()
+            opts = [o for o in (d.get("options") or []) if isinstance(o, dict)]
+            ans = d.get("answer") or ""
+            c.check(f"「{s}」不挂卡、回的是追问「要安排的是什么事」",
+                    not opts and "要安排的是什么事" in ans,
+                    ans.replace("\n", " ")[:60])
 
         # 同一条判据不许把下单族一起否掉：这些句子**必须照旧出卡**
         for i, (s, want) in enumerate(ORDERING):
@@ -200,17 +217,32 @@ def batch_b_no_card():
 
 
 def batch_c_shape():
-    """C 批 · 形状：建议档排在加待办分支之前，且它自己不出卡。"""
+    """C 批 · 形状：这档的位置与出口（位置是真机实测出来的驱动条件）。"""
     c = Checker()
-    title("C. 代码形状：这档排在 3c 之前（后面那些分支永远轮不到）")
+    title("C. 代码形状：排在列表档与 3c 之前，且它自己不出卡、不学样本")
     main_src = open("app/main.py", encoding="utf-8").read()
-    i_ask = main_src.find("_asking_what_to_do(")
+    i_ask = main_src.find("_asking_what_to_do(message)")
+    i_list = main_src.find("_sem_intent == INTENT_LIST_TODO")
     i_add = main_src.find("wants_add_todo(message) or (asking_add")
-    c.check("main 里这档存在，且排在 3c 加待办那道闸门**前面**",
-            0 <= i_ask < i_add, f"_asking_what_to_do 在 {i_ask}，3c 在 {i_add}")
+    c.check("这档排在**列表档之前**",
+            0 <= i_ask < i_list, f"建议档在 {i_ask}，列表档在 {i_list}")
+    c.check("也排在 3c 加待办那道闸门之前（带「安排」两个字，排后面永远轮不到）",
+            0 <= i_ask < i_add, f"建议档在 {i_ask}，3c 在 {i_add}")
+    seg = main_src[i_ask:i_ask + 1200]
     c.check("这档的返回里 options 是空的（挂卡就等于把建议变成了替学生决定）",
-            '"options": []' in main_src[i_ask:i_ask + 2000], "")
+            '"options": []' in seg, "")
+    c.check("这档**不走 `_sem_done`**（`remember()` 就在里面，一句问话不许学成模板）",
+            "_sem_done" not in seg, "")
     return c
+
+
+# ── 同族但**没**在本文件里修的四条（2026-10-14 实测，等拍板）────────────────
+# 它们是"问已经有什么"该走列表档的那一族，判据在 `wants_list_todo` 那边，
+# 风险面比本次这族大，所以单列在这里，别说测试没提过：
+#   「看看我的安排」      → 挂 todo_slots 卡，标题「看看我」
+#   「我今天的安排满不满」 → 挂 todo_slots 卡，标题「我的满不满」
+#   「我今天都有什么事」   → 兜底档三张卡，标题就是整句话
+#   「有啥安排」         → 列表档（这条是对的，作对照记在这儿）
 
 
 def main():
