@@ -53,8 +53,13 @@ def batch_b_other_chat_bypasses():
     # 主聊天通道本身不许被改坏：sendMsg 里必须有 renderOptions
     stu = open("app/static/student.html", encoding="utf-8").read()
     seg = _seg(stu, "async function sendMsg", "finally {")
+    # 2026-10-15 刀 07 起 sendMsg 改成 SSE：变量从 `data` 改叫 `d`（done 信封），
+    # 渲染仍在 done 回调里，所以这条跟着改名 —— 不变量是"options 一定被渲染出来"，
+    # 而不是"某个变量叫什么"。（同类的"断言文案与改名不同步"账：test_23 那条 6a。）
     c.check("sendMsg 主通道仍把 options 渲染出来",
-            "renderOptions(el, data.options)" in seg)
+            "renderOptions(el, d.options)" in seg)
+    c.check("而且是在 done 回调里渲染（不是拿流式预览当定稿）",
+            "onDone: function (d)" in seg and "renderOptions(el, d.options)" in seg.split("onDone:")[1])
     return c
 
 

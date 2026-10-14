@@ -1777,6 +1777,59 @@ html.gx-glass[data-gx-refine="on"] .composer, html.gx-glass[data-gx-refine="on"]
     const thinkingEl = document.getElementById("thinking");
     function showThinking(show) { thinkingEl.classList.toggle("show", !!show); }
 
+    // ---- SSE 流式读取（07/12 号刀）：只负责"读流 + 分发"，不判定任何业务 ----
+    // 后端是**协商式**的：请求带 `Accept: text/event-stream` 才流式，否则仍回老 JSON
+    //（main.py 的 _wants_sse）。所以这里必须兼容两种回法，见下面那段 content-type 判断。
+    // 事件协议：{"k":"token","v":片段} · {"k":"trace",...}（权威轨迹在 done 里，过程忽略）
+    //          {"k":"done","v":与老 JSON 完全同构} · {"k":"error","v":{answer:一句人话}}
+    async function streamChat(body, handlers) {
+      const onToken = handlers.onToken || function () {};
+      const onDone = handlers.onDone || function () {};
+      const onError = handlers.onError || function () {};
+      const BAD = "哎呀，管家这边遇到了点小状况，请稍后再试或换个说法～";
+      let resp;
+      try {
+        resp = await fetch("/api/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "Accept": "text/event-stream" },
+          body: JSON.stringify(body),
+        });
+      } catch (e) { onError({ answer: "哎呀，网络好像开小差了，请稍后再试～" }); return; }
+      if (!resp.ok) { onError({ answer: BAD }); return; }
+      // 服务端没按 SSE 回（进程还是旧代码、或中间层把流改了）：照老样子读 JSON，别把聊天整段弄没
+      if ((resp.headers.get("content-type") || "").indexOf("text/event-stream") < 0) {
+        try { const j = await resp.json(); onDone(j || {}); } catch (e) { onError({ answer: BAD }); }
+        return;
+      }
+      const reader = resp.body.getReader();
+      const dec = new TextDecoder("utf-8");
+      let buf = "", settled = false;
+      try {
+        while (true) {
+          const r = await reader.read();
+          if (r.done) break;
+          buf += dec.decode(r.value, { stream: true });
+          let i;
+          // SSE 用空行分块；一块里可能有好几行
+          while ((i = buf.indexOf("\n\n")) >= 0) {
+            const block = buf.slice(0, i);
+            buf = buf.slice(i + 2);
+            block.split("\n").forEach(function (line) {
+              if (line.indexOf("data:") !== 0) return;
+              let ev;
+              try { ev = JSON.parse(line.slice(5).trim()); } catch (e) { return; }
+              if (!ev || !ev.k) return;
+              if (ev.k === "token") { if (ev.v) onToken(ev.v); }
+              else if (ev.k === "done") { settled = true; onDone(ev.v || {}); }
+              else if (ev.k === "error") { settled = true; onError(ev.v || { answer: BAD }); }
+            });
+          }
+        }
+      } catch (e) { /* 流断了也算没定稿，交给下面那句 */ }
+      // 流到一半断了、一个字没定稿 → 必须给一句人话，绝不能留半截当没事（红线：不白屏）
+      if (!settled) onError({ answer: "哎呀，网络好像开小差了，请稍后再试～" });
+    }
+
     async function sendMsg(msg, moduleOverride) {
       if (!msg || !msg.trim()) return;
       addMsg("我", msg);
@@ -1798,28 +1851,48 @@ html.gx-glass[data-gx-refine="on"] .composer, html.gx-glass[data-gx-refine="on"]
         if (pk) body.persona = pk;
         const mc = (function(){ try { return JSON.parse(localStorage.getItem("ct_model_cfg") || "null"); } catch(e){ return null; } })();
         if (mc && mc.api_key) body.model_config = mc;
-        const resp = await fetch("/api/chat", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body),
+        // 先占一条空的 bot 气泡，流式的 token 直接往里塞（首字即显，"卡死"变成"在想"）
+        const ph = addMsg(botName(), "", "bot");
+        const bubble = ph.querySelector(".bubble");
+        let streamed = "";
+        const scrollBoth = function () {
+          log.scrollTop = log.scrollHeight;
+          const st2 = log.closest(".stage");
+          if (st2) st2.scrollTop = st2.scrollHeight;
+        };
+        await streamChat(body, {
+          onToken: function (v) { streamed += v; bubble.textContent = streamed; scrollBoth(); },
+          onError: function (v) {
+            ph.remove();
+            addMsg(botName(), (v && v.answer) || "哎呀，管家这边遇到了点小状况，请稍后再试或换个说法～");
+          },
+          onDone: function (d) {
+            ph.remove();
+            if (!d || d.error) {
+              addMsg(botName(), "哎呀，管家这边遇到了点小状况，请稍后再试或换个说法～");
+              return;
+            }
+            // ⚠️ 这里必须用 **done 里的权威答案**重建气泡，而不是把刚才拼好的 token 当定稿：
+            //    token 只是引擎原话的预览，`done.answer` 才是那族 claim 守卫
+            //    （「它自称已帮你加好，可库里一条都没有」→ `_no_card_answer()` / 补卡）跑完之后的版本。
+            //    删掉占位气泡再调 addMsg，而不是手抄一份 addMsg 的 HTML —— 两本账一定漂移
+            //    （traceOn() 的开关、模块标签、renderTrace 的形状都在 addMsg 那一份里）。
+            const el = addMsg(botName(), d.answer, "bot", d.module, d.trace);
+            // 规划模块回了候选 → 渲染成可勾选卡片（学生点卡片才真正写入日程）
+            if (d.options && d.options.length) renderOptions(el, d.options);
+            // 课表可能在刚才这一轮里被改了（学生直接在聊天框回了"确认"），
+            // 正在看的日程面板要刷成最新的，不然学生还会再来问"我怎么找不到"
+            const sched = document.getElementById("view-schedule");
+            if (sched && sched.style.display !== "none") loadScheduleView();
+            // 人设规矩：普通对话不上报管理端，只有学生确认的工单才进管理端（见 submitWorkOrderToServer）
+          },
         });
-        const data = await resp.json();
-        showThinking(false);
-        if (data.error) addMsg(botName(), "哎呀，管家这边遇到了点小状况，请稍后再试或换个说法～");
-        else {
-          const el = addMsg(botName(), data.answer, "bot", data.module, data.trace);
-          // 规划模块回了候选 → 渲染成可勾选卡片（学生点卡片才真正写入日程）
-          if (data.options && data.options.length) renderOptions(el, data.options);
-          // 课表可能在刚才这一轮里被改了（学生直接在聊天框回了"确认"），
-          // 正在看的日程面板要刷成最新的，不然学生还会再来问"我怎么找不到"
-          const sched = document.getElementById("view-schedule");
-          if (sched && sched.style.display !== "none") loadScheduleView();
-          // 人设规矩：普通对话不上报管理端，只有学生确认的工单才进管理端（见 submitWorkOrderToServer）
-        }
+        // 收尾保险：既没 done 也没 error（不可能，但留手）→ 别把空气泡留在屏幕上
+        if (ph.parentNode && !streamed) ph.remove();
       } catch (e) {
-        showThinking(false);
         addMsg(botName(), "哎呀，网络好像开小差了，请稍后再试～");
       } finally {
+        showThinking(false);
         send.disabled = false;
       }
     }
@@ -2126,10 +2199,16 @@ html.gx-glass[data-gx-refine="on"] .composer, html.gx-glass[data-gx-refine="on"]
         };
         const pk = localStorage.getItem("campustime_persona");
         if (pk) body.persona = pk;
-        const d = await (await fetch("/api/chat", {
-          method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body),
-        })).json();
+        // 这条路径也接 SSE（12 号施工单 §4.5 明令的两处之一）。
+        // ⚠️ 但**不照它 §4.3 那段替换代码抄**：那份只更新状态栏、把下面 `addMsg + renderOptions`
+        //    两行丢了 —— 而这两行正是 2026-10-07 报障「第一次不弹第二次追问才弹」的修复本体
+        //    （见下面那段留痕注释）。这里只换取数方式，渲染一律照旧。
+        let d = null;
+        await streamChat(body, {
+          onDone: function (x) { d = x || {}; },
+          onError: function (x) { d = { answer: (x && x.answer) || "读取课表时出了点小状况，请重试或换个说法～" }; },
+        });
+        d = d || { answer: "已请求管家读取课表" };
         st.textContent = (d.options || []).length
           ? "管家已给出课表提案，请在下方确认条上点【确认修改】"
           : (d.answer || "已请求管家读取课表");
