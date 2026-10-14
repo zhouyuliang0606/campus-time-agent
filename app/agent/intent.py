@@ -32,6 +32,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import datetime
 import json
 import os
@@ -475,6 +476,20 @@ def _intent_system() -> str:
 confidence 是你对自己判断的把握（0~1）。"""
 
 
+# 判定层的两根预算（2026-10-14 刀 3 · A+B）。数字来自 `app/data/llm_usage.jsonl` 里
+# **882 笔真打到上游且成功**的「内部:语义判定」（剔掉测试假货写的那些 0-token 笔）：
+#   latency_ms       p50 4.2s / p90 6.0s / p95 6.5s / 最长 9.1s —— **87% 超过 2.5 秒**
+#   completion_tokens p50 43 / p90 57 / p99 86 / 最大 166
+# 据此两条看着合理的"优化"都不成立：
+#   · 超时收到 2.0~2.5s ≠ 提速，是**静默作废 87% 的判定**、让它们掉回关键词表；
+#   · 预算收到 64（施工单按"合法输出约 38 token"估的）会硬截掉 **25 笔 / 2.8%** 的正常输出。
+# 所以取：超时 6 秒 —— 只砍最慢的 10.3%，同时终结"这里原来根本没超时、最坏占满客户端 30 秒"；
+# 预算 128 —— p99 之上留一半余量，只截真正跑偏的 0.2%，它是安全网和省钱阀，**不是延迟杠杆**。
+# 语义不变：超时 = 跟"模型挂了"同一条路 —— 返回 None，让上层掉回规则/兜底。
+CLASSIFY_TIMEOUT = 6.0
+CLASSIFY_MAX_TOKENS = 128
+
+
 async def classify_with_llm(text: str, history: list | None = None,
                             override: dict | None = None,
                             client=None) -> dict | None:
@@ -517,7 +532,12 @@ async def classify_with_llm(text: str, history: list | None = None,
         msgs.append({"role": "user", "content": t})
 
     try:
-        reply = await gateway.chat(msgs, override=override)
+        # 判定这一层拿不到任何写库接口，所以"超时"不需要任何保证一致性：
+        # 超时与"模型挂了"走同一条路 —— 抛出来被下面 `except Exception` 兜住 → 回 None。
+        reply = await asyncio.wait_for(
+            gateway.chat(msgs, override=override, max_tokens=CLASSIFY_MAX_TOKENS),
+            timeout=CLASSIFY_TIMEOUT,
+        )
     except Exception:
         return None
 
