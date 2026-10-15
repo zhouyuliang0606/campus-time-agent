@@ -37,6 +37,25 @@ REAL_DATA_DIR = os.path.join(PROJ_DIR, "app", "data")
 if PROJ_DIR not in sys.path:
     sys.path.insert(0, PROJ_DIR)
 
+# ==== 进程级隔离模型流水账（#47，2026-10-15 实测后定的做法）====
+# 为什么必须在 **import _harness 时**就装，而不是只往 sandbox() 里加：
+# `store._path()` 每次调用都重读数据目录 env，所以**沙箱内本来就不碰真实账本**
+# （探针实测：切了 `CAMPUSTIME_DATA_DIR` 再记一笔，真实 `llm_usage.jsonl` 一行没多）。
+# 真漏的是**没包 sandbox() 的那几批** —— 真实账本里 760 笔桩模型 `m`，
+# 按 user 一分：`内部:话术润色` 630、`内部:流式自检` 56、`内部:语义判定` 40、`内部:测试` 30、
+# `ssrf-probe` 4，全是直接调网关/客户端就记账的那种批。默认值不在进程层换掉，那 760 笔的源头治不到。
+# 沙箱内再把它指到沙箱自己那份（读账本的那几个测试语义零变化 —— test_50 A 批两头都钉了）。
+USAGE_SANDBOX_DIR = tempfile.mkdtemp(prefix="campustime-usage-")
+os.environ.setdefault("CAMPUSTIME_USAGE_FILE",
+                      os.path.join(USAGE_SANDBOX_DIR, "llm_usage.jsonl"))
+
+
+def _drop_usage_dir():
+    shutil.rmtree(USAGE_SANDBOX_DIR, ignore_errors=True)
+
+
+atexit.register(_drop_usage_dir)
+
 
 class Checker:
     """人话：一个打分员。check(这一项名字, 过了没)，最后自己汇总。"""
@@ -109,6 +128,11 @@ class sandbox:
             elif os.path.exists(p):
                 os.remove(p)
         os.environ["CAMPUSTIME_DATA_DIR"] = dest
+        # 账本也跟着沙箱走：读得到（copytree 带进来的那份 + 本批新写的），
+        # 但一个字节都不落到真实账本上。存一下外面的值，出去时**恢复**而不是 pop ——
+        # 外面那层是进程级临时账本（见文件头），pop 掉会让沙箱外的批又开始往真实文件写。
+        self._prev_usage = os.environ.get("CAMPUSTIME_USAGE_FILE")
+        os.environ["CAMPUSTIME_USAGE_FILE"] = os.path.join(dest, "llm_usage.jsonl")
         # 万一测试中途崩了，退出进程时也保证删掉，不留垃圾
         atexit.register(self._clean)
         return dest
@@ -122,6 +146,9 @@ class sandbox:
         if getattr(self, "tmp", None) and os.path.isdir(self.tmp):
             shutil.rmtree(self.tmp, ignore_errors=True)
         os.environ.pop("CAMPUSTIME_DATA_DIR", None)
+        if getattr(self, "_prev_usage", None) is not None:
+            os.environ["CAMPUSTIME_USAGE_FILE"] = self._prev_usage
+            self._prev_usage = None
         print("\n[临时数据目录已删除，真实演示数据没被碰过]")
 
 

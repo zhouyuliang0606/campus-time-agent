@@ -711,7 +711,17 @@ USAGE_FILE = "llm_usage.jsonl"
 
 
 def _usage_path() -> str:
-    return _path(USAGE_FILE)
+    """模型流水账的位置。
+
+    `CAMPUSTIME_USAGE_FILE` 有值就直取它（绝对路径），否则跟着数据目录走 ——
+    数据目录本身每次调用重读 env，所以测试沙箱（`CAMPUSTIME_DATA_DIR`）一改，账本就跟着进临时目录。
+    那第一条 env 是给**另一种场景**准备的：跑测试但**没进沙箱**的那几批
+    （润色/网关自检那种直接记一笔的），光靠数据目录隔离不住，会把桩模型 `m` 写进真实账本
+    （2026-10-15 实测真实账本里 760 笔 `model:"m"`，630 笔来自话术润色那族）。
+    ⚠️ 生产不设这个 env，所以生产记账仍落在数据目录下那份账本（管理端读的就是它，
+    test_50 B 批专门钉这条回落 —— 把生产一起隔离掉等于让管理端静默失明）。
+    """
+    return os.environ.get("CAMPUSTIME_USAGE_FILE") or _path(USAGE_FILE)
 
 
 def log_llm_usage(record: dict) -> None:
@@ -721,7 +731,8 @@ def log_llm_usage(record: dict) -> None:
     这个函数**对外承诺不抛异常**：记账是旁路，对话才是主线。
     """
     try:
-        os.makedirs(_data_dir(), exist_ok=True)
+        # 建的是**账本所在的那个目录**：env 指到别处时，`_data_dir()` 那个目录可能根本不该建
+        os.makedirs(os.path.dirname(_usage_path()) or ".", exist_ok=True)
         row = dict(record or {})
         row.setdefault("ts", _now())
         with open(_usage_path(), "a", encoding="utf-8") as f:
