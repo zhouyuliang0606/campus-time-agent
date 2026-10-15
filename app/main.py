@@ -3887,6 +3887,15 @@ async def workorder_create(req: Request):
         return JSONResponse({"error": "问题类型不能为空"}, status_code=400)
     item = add_workorder(kind=kind, desc=(body.get("desc") or "").strip(),
                          source=body.get("source") or "panel")
+    # 决策A（#18 单子 1）：**双写在同一个函数里** —— 工单落一条，学生消息那边也补一条，
+    # 管理端「🛠️ 学生工单」和「📥 学生消息」两个视图都看得见，不用前端各调一次接口
+    #（前端调两处 = 两本账，漏一处就静默少一条，是本项目反复栽过的形状）。
+    # ⚠️ 已知缺口、本单不解决：没有学生身份体系，这条消息**认不出是谁报的**，
+    #    内容也只有"类型｜描述"而不是完整上下文（账号体系见 EXPLAIN.md 六）。
+    add_message(module="workorder",
+                message=f"{kind}｜{(body.get('desc') or '').strip() or '（无补充描述）'}",
+                answer=f"已立案（工单 {item['id']}），状态：{item.get('status') or '待处理'}",
+                kind="report")
     # 聊天里点卡上报的：清掉那张确认卡（面板表单提交没有 session，不受影响）
     sid = (body.get("session_id") or "").strip()
     if sid and (body.get("source") or "panel") == "chat":

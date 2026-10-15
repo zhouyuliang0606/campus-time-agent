@@ -55,8 +55,13 @@ def _now() -> str:
     return datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
-def add_message(module: str, message: str, answer: str) -> dict:
-    """记一条学生消息（人话：学生说了啥、在哪个模块、管家怎么答的，存进收件箱）。"""
+def add_message(module: str, message: str, answer: str, kind: str = "chat") -> dict:
+    """记一条学生消息（人话：学生说了啥、在哪个模块、管家怎么答的，存进收件箱）。
+
+    `kind` 是给"这条是从哪儿来的"打的标签：`chat`=学生端每轮自己存档的对话，
+    `report`=工单立案时**双写**的那条（管理端「学生工单」和「学生消息」两个视图都要看得见）。
+    默认 `"chat"` 是刻意的：`/api/student-message` 那个旧调用点一个字没改，行为也不该变。
+    """
     msgs = _read("student_messages.json", [])
     item = {
         "id": uuid.uuid4().hex[:8],
@@ -64,15 +69,24 @@ def add_message(module: str, message: str, answer: str) -> dict:
         "module": module or "",
         "message": message,
         "answer": answer or "",
+        "kind": kind or "chat",
     }
     msgs.append(item)
     _write("student_messages.json", msgs)
     return item
 
 
-def list_messages() -> list:
-    """列出学生消息，倒序（最新在前），方便管理员看。"""
-    return list(reversed(_read("student_messages.json", [])))
+def list_messages(kind: str | None = None) -> list:
+    """列出学生消息，倒序（最新在前），方便管理员看。
+
+    给了 `kind` 就只返回那一路；**没 kind 字段的老条目按 `chat` 算** ——
+    它们本来就是对话，直接丢掉会让管理端那张表"突然少几行"，那是最容易被当成 bug 的现象。
+    """
+    msgs = _read("student_messages.json", [])
+    if kind is None:
+        return list(reversed(msgs))
+    return list(reversed([m for m in msgs
+                          if (m.get("kind") or "chat") == kind]))
 
 
 # ============ 工单（人话：学生确认上报的问题，管理员能在管理端看到的正式记录） ============
