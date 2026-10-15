@@ -1643,7 +1643,7 @@ html.gx-glass[data-gx-refine="on"] .composer, html.gx-glass[data-gx-refine="on"]
       if (confirmPageOk && wos.length === 1) {
         const hint = document.createElement("div");
         hint.className = "opt-hint";
-        hint.textContent = "📮 上报管理端提案（点下面这条确认条上的【确认上报】才会生成工单，点【取消】不上报）：";
+        hint.textContent = "📮 上报驿站提案（点下面这条确认条上的【确认上报】才会生成工单，点【取消】不上报）：";
         wrap.appendChild(hint);
         container.appendChild(wrap);
         openConfirm(wos[wos.length - 1], container);
@@ -1654,14 +1654,14 @@ html.gx-glass[data-gx-refine="on"] .composer, html.gx-glass[data-gx-refine="on"]
         hint.className = "opt-hint";
         hint.textContent = wos.length > 1
           ? `📮 有 ${wos.length} 张上报工单提案，点选你要上报的那一张确认：`
-          : "📮 上报管理端提案（确认后立即生成工单，点取消不上报）：";
+          : "📮 上报驿站提案（确认后立即生成工单，点取消不上报）：";
         wrap.appendChild(hint);
         wos.forEach(wo => {
           const card = document.createElement("div");
           card.className = "opt-card checked";
           const info = document.createElement("div");
           info.className = "info";
-          info.innerHTML = `<b>${esc(wo.summary || "上报管理端")}</b>`;
+          info.innerHTML = `<b>${esc(wo.summary || "上报驿站")}</b>`;
           card.appendChild(info);
           wrap.appendChild(card);
         });
@@ -1884,7 +1884,7 @@ html.gx-glass[data-gx-refine="on"] .composer, html.gx-glass[data-gx-refine="on"]
             // 正在看的日程面板要刷成最新的，不然学生还会再来问"我怎么找不到"
             const sched = document.getElementById("view-schedule");
             if (sched && sched.style.display !== "none") loadScheduleView();
-            // 人设规矩：普通对话不上报管理端，只有学生确认的工单才进管理端（见 submitWorkOrderToServer）
+            // 人设规矩：普通对话不上报驿站，只有学生确认的工单才立案（管理端也看得见，是监督位；见 submitWorkOrderToServer）
           },
         });
         // 收尾保险：既没 done 也没 error（不可能，但留手）→ 别把空气泡留在屏幕上
@@ -2223,7 +2223,7 @@ html.gx-glass[data-gx-refine="on"] .composer, html.gx-glass[data-gx-refine="on"]
         //      否则"后端出了卡、学生看不到"这类问题会从任何一个旁路冒出来。
         const _ttEl = addMsg(botName(), d.answer || "已收到课表，正在读取。", "bot", "planner", d.trace);
         if (d.options && d.options.length) renderOptions(_ttEl, d.options);
-        // 按人设规矩：导入课表属于规划操作，不上报管理端；学生确认后才会真正写入
+        // 按人设规矩：导入课表属于规划操作，不上报驿站；学生确认后才会真正写入
       } catch (e) {
         st.textContent = "哎呀，网络好像开小差了，请稍后再试";
       }
@@ -2282,7 +2282,7 @@ html.gx-glass[data-gx-refine="on"] .composer, html.gx-glass[data-gx-refine="on"]
       localStorage.setItem("campustime_workorders", JSON.stringify(list));
       document.getElementById("woDesc").value = "";
       renderWorkOrders();
-      // 同步上报服务端：管理端（/admin）能看到这条工单记录并跟进处理
+      // 同步上报服务端：驿站端（/station）与管理端（/admin）都读同一份工单台账
       try {
         const r = await fetch("/api/workorders", {
           method: "POST",

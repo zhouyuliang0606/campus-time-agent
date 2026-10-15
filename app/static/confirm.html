@@ -216,9 +216,9 @@ const KIND = {
   work_order_report: {
     // 快递/外卖丢失破损 → 学生点【确认上报】才由系统写工单（不经过模型，守住写库红线）。
     // 卡是可取消的提案：点【取消】一个字都不写。补充描述可选，留空也能上报。
-    icon: "📮", title: "上报管理端", confirm: "确认上报", danger: false,
+    icon: "📮", title: "上报驿站", confirm: "确认上报", danger: false,
     render(p) {
-      return `<p class="summary">${esc(p.summary || "上报管理端")}</p>
+      return `<p class="summary">${esc(p.summary || "上报驿站")}</p>
         <div class="meta">点【确认上报】即生成工单，管理员会在管理端看到并处理；
           点【取消】不上报，数据一点都不会动。</div>
         <div class="other">
@@ -243,7 +243,7 @@ const KIND = {
     },
     doneText(p, r) {
       const id = (r && r.workorder && r.workorder.id) || "";
-      return `✅ 工单已上报管理端（编号 ${esc(String(id))}）：${esc(p.wo_kind || "疑似丢件")}。`
+      return `✅ 工单已上报驿站（编号 ${esc(String(id))}）：${esc(p.wo_kind || "疑似丢件")}。`
         + (r && r.workorder && r.workorder.desc ? ` —— ${esc(r.workorder.desc)}` : "")
         + "。管理员会尽快处理，进度可在快递面板的「我提交过的工单」里看到。";
     },

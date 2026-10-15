@@ -83,6 +83,20 @@
       border-radius: 10px; cursor: pointer; font-size: 18px; line-height: 1;
     }
     .attach:hover { background: #e8f8f6; }
+    /* 待处理问题（学生报的快递/外卖问题流到驿站，#18 单子 2） */
+    .wo { background: #fff; border: 1px solid #e6ebf5; border-radius: 12px; padding: 12px 14px; margin-bottom: 14px; }
+    .woHead { font-size: 14px; font-weight: 600; color: #1f2733; }
+    .woHead .cnt { font-weight: 400; color: #6a7388; font-size: 12px; margin-left: 6px; }
+    .woItem { display: flex; gap: 10px; align-items: flex-start; border-top: 1px dashed #e6ebf5; padding: 9px 0; font-size: 13px; }
+    .woItem .body { flex: 1; }
+    .woItem .kind { font-weight: 600; }
+    .woItem .meta { color: #8a93a5; font-size: 11px; margin-top: 2px; }
+    .woItem .st { font-size: 11px; border-radius: 6px; padding: 1px 6px; background: #fff1f0; color: #cf1322; }
+    .woItem .st.doing { background: #fff7e6; color: #d46b08; }
+    .woItem .st.done { background: #f6ffed; color: #389e0d; }
+    .woItem button { border: 1px solid #d8def0; background: #fff; color: #17b8a6; border-radius: 7px; font-size: 11px; padding: 3px 8px; cursor: pointer; }
+    .woItem button:hover { background: #e8f8f6; }
+    .woEmpty { color: #8a93a5; font-size: 12px; padding-top: 8px; }
   </style>
 </head>
 <body>
@@ -100,6 +114,15 @@
       <div>
         <button class="refresh" id="refreshPersona">刷新人格</button>
       </div>
+    </div>
+
+    <!-- 学生报的快递/外卖问题流到驿站（#18 单子 2）：能看、能改处理状态 -->
+    <div class="wo">
+      <div class="woHead">🛠️ 待处理问题
+        <span class="cnt" id="woCount">加载中…</span>
+        <button class="refresh" id="refreshWo" style="float:right;font-size:12px;">刷新</button>
+      </div>
+      <div id="woList"><div class="woEmpty">正在读台账…</div></div>
     </div>
 
     <div class="hint">点下面的快捷操作让客服干活，或直接提问（回复都用上面这个人格的语气）。</div>
@@ -170,6 +193,68 @@
       // 在系统消息里留一条痕迹，演示时能看出"刚刷新过"
       addMsg("系统", "已重新读取客服人格配置（管理员刚改的人设立即生效，无需重启）", "sys");
     });
+
+    // ---------- 待处理问题（学生确认上报的快递/外卖问题，#18 单子 2） ----------
+    // 数据来自 /api/station/workorders（演示级不挂口令，理由与限制写在 main.py 那一段注释里）。
+    // 轮询 5000ms —— 跟管理台 loadMessages / loadWorkOrders 那两条同一个节奏（admin.html:588-590 实测就是 5000），
+    // 不是拍的：两端节奏不一致会出现"管理端已看到、驿站还空着"那种演示事故。
+    const WO_NEXT = { "待处理": "处理中", "处理中": "已解决", "已解决": "待处理" };
+
+    function woCls(s) {
+      return s === "已解决" ? "st done" : (s === "处理中" ? "st doing" : "st");
+    }
+
+    async function loadWorkorders() {
+      const box = document.getElementById("woList");
+      const cnt = document.getElementById("woCount");
+      try {
+        const d = await (await fetch("/api/station/workorders")).json();
+        const list = d.workorders || [];
+        const open = list.filter(w => w.status !== "已解决").length;
+        cnt.textContent = list.length ? `共 ${list.length} 条，未结 ${open} 条` : "暂无";
+        if (!list.length) {
+          box.innerHTML = '<div class="woEmpty">还没有学生报障。学生确认上报后会落到这里。</div>';
+          return;
+        }
+        box.innerHTML = "";
+        list.slice(0, 20).forEach(w => {
+          const st = w.status || "待处理";
+          const el = document.createElement("div");
+          el.className = "woItem";
+          // 一律走 esc()（全站唯一转义来源）：kind/desc 都是学生写的话，不转义就是 XSS 入口
+          el.innerHTML = `<div class="body">
+            <div><span class="kind">${esc(w.kind || "其他问题")}</span>
+              <span class="${woCls(st)}">${esc(st)}</span></div>
+            <div>${esc(w.desc || "（学生没补充描述）")}</div>
+            <div class="meta">${esc(w.ts || "")} · 来源 ${esc(w.source || "")} · 编号 ${esc(w.id || "")}</div>
+          </div>`;
+          const b = document.createElement("button");
+          b.textContent = "改成「" + (WO_NEXT[st] || "待处理") + "」";
+          b.addEventListener("click", async () => {
+            b.disabled = true;
+            try {
+              const r = await (await fetch("/api/station/workorders/"
+                + encodeURIComponent(w.id || "") + "/status", {
+                method: "POST", headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ status: WO_NEXT[st] || "待处理" }),
+              })).json();
+              if (r.error) addMsg("系统", "改状态没成功：" + r.error, "sys");
+            } catch (e) {
+              addMsg("系统", "改状态时网络出问题了", "sys");
+            }
+            loadWorkorders();
+          });
+          el.appendChild(b);
+          box.appendChild(el);
+        });
+      } catch (e) {
+        cnt.textContent = "读取失败";
+        box.innerHTML = '<div class="woEmpty">读不到待处理问题（服务没起来？）</div>';
+      }
+    }
+    document.getElementById("refreshWo").addEventListener("click", loadWorkorders);
+    setInterval(loadWorkorders, 5000);
+    loadWorkorders();
 
     // ---------- 对话 ----------
     function addMsg(who, content, kind, trace, module) {

@@ -467,9 +467,11 @@ def test_persona_rules_and_workorders():
         c.check("规矩①输出要求：简洁/不暴露内部报错/不输出低俗内容",
                 all(k in main_src for k in ("不冗长废话", "禁止把系统内部报错", "低俗")))
         c.check("规矩②工单：只有快递/外卖这类才两步走（先问是否上报、确认才推送）",
-                "上报给管理端" in main_src and "绝不推送管理端" in main_src)
-        c.check("规矩②补充：增减课程/增删待办属学生自主管理，一律不上报管理端",
-                "一律不上报管理端" in main_src)
+                "上报给驿站" in main_src and "绝不推送驿站" in main_src)
+        # 2026-10-16 #18 单子 2：报障去向从"管理端"改成"驿站"，这条跟着改字面 ——
+        # 钉的仍然是**两步走这件事**（先问、确认才推），不是钉那个名词。
+        c.check("规矩②补充：增减课程/增删待办属学生自主管理，一律不上报驿站",
+                "一律不上报驿站" in main_src)
         c.check("规矩③隔离：确认前不写库、只影响当前学生",
                 "学生确认之前数据库绝不会变" in main_src and "只影响当前学生" in main_src)
         c.check("规矩③补充：点弹窗是优先方式、回确认文字是备选方式，都由系统执行",
@@ -488,7 +490,7 @@ def test_persona_rules_and_workorders():
         takeout_src = (proj / "app" / "modules" / "takeout.py").read_text(encoding="utf-8")
         for name, s in (("快递", express_src), ("外卖", takeout_src)):
             c.check(f"{name}提示含上报规则（先问确认、没确认不许调工具）",
-                    "先问一句：「是否上报给管理端？」" in s and "绝不许调用 submit_work_order" in s)
+                    "先问一句：「是否上报给驿站？」" in s and "绝不许调用 submit_work_order" in s)
             c.check(f"{name}模块注册了 submit_work_order 工具", '"submit_work_order"' in s)
 
         # —— 规划模块：预览确认制写进提示与工具描述 ——

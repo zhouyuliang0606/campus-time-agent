@@ -200,13 +200,13 @@ ASSISTANT_RULES = """
    被问"你是什么模型 / 你是不是 GPT / DeepSeek / 智谱"，只答
    「我是校园时间管家，底层的实现我不清楚」，既不编厂商也不编型号，也不反过来强调"我很先进"；
    绝不输出暴力、低俗、煽动类内容。
-2. 上报工单：不是学生的每句话都上报管理端。**只有**学生提出快递丢失、外卖遗失这类
+2. 上报工单：不是学生的每句话都上报驿站。**只有**学生提出快递丢失、外卖遗失这类
    需要管理员协助处理的问题时，才走这个流程，且必须两步：
-     ① 先问一句「要不要上报给管理端？」；
+     ① 先问一句「要不要上报给驿站？」；
      ② 学生明确确认上报，工单才推送到管理端收件箱。
-   学生说不上报（或没表态）→ 只在学生这段对话里记着，**绝不推送管理端**。
+   学生说不上报（或没表态）→ 只在学生这段对话里记着，**绝不推送驿站**。
    反过来：**增减课程、增删日常待办属于学生本人自主管理自己的日程，
-   这类请求一律不上报管理端**，也别提"要先上报"这种话。
+   这类请求一律不上报驿站**，也别提"要先上报"这种话。
 3. 个人数据隔离：每个学生的数据相互独立，你的操作只影响当前学生。你可以生成
    **增减课程、增删待办的变更提案**，但学生确认之前数据库绝不会变；
    修改课表走 propose_course_change / propose_timetable_change 提案
@@ -215,7 +215,7 @@ ASSISTANT_RULES = """
    **工具箱里没有任何写入工具**——落库不是你的活，你只出提案、如实转述系统的结果。
    ⛔ 日程修改只走提案这一条路。学生点确认条上的【确认】是优先方式，
       在聊天框回确认类文字是备选方式，两者都由**系统**写入。
-   ⛔ 禁止说"自己办不到、权限不够、需要先上报管理端"这类话——
+   ⛔ 禁止说"自己办不到、权限不够、需要先上报管理端/上报驿站"这类话——
       增删课程和待办是学生自主管理个人日程，出提案的工具本来就在工具箱里；
       也禁止让学生去界面上手动删课（界面上没有那个入口，
       说了就是把学生指到死路，学生只会回一句"我怎么找不到"）。
@@ -1531,7 +1531,7 @@ async def _chat_impl(req: Request, meta: dict, emit=None):
     if _wo_kind:
         _wo_card = {
             "kind": "work_order_report",
-            "summary": f"上报管理端：{_wo_kind}",
+            "summary": f"上报驿站：{_wo_kind}",
             "wo_kind": _wo_kind,
             "desc": "",
         }
@@ -1549,7 +1549,7 @@ async def _chat_impl(req: Request, meta: dict, emit=None):
             "module": "express",
             "session_id": session_id,
             "answer": (
-                "📮 听起来你的快递/外卖可能出了问题。要不要**上报管理端**立案跟进？\n"
+                "📮 听起来你的快递/外卖可能出了问题。要不要**上报驿站**立案跟进？\n"
                 "下面这条确认条点【确认上报】就会生成工单（也可填补充描述）；"
                 "点【取消】就不上报，数据一点都不会动。"
             ),
@@ -3906,6 +3906,24 @@ async def workorder_create(req: Request):
     return {"ok": True, "workorder": item}
 
 
+_WO_STATUSES = ("待处理", "处理中", "已解决")
+
+
+def _workorder_status_response(wo_id: str, body: dict):
+    """改工单状态这件事的**唯一实现**，管理端与驿站两个入口共用。
+
+    两处各写一遍校验就是两本账：将来加一档"已关闭"只会改到一个地方，另一个入口
+    就悄悄把合法值判成 400（这类"两份状态表"的账本项目已经吃过几次）。
+    """
+    status = (body.get("status") or "").strip()
+    if status not in _WO_STATUSES:
+        return JSONResponse({"error": "status 只能是 待处理/处理中/已解决"}, status_code=400)
+    item = update_workorder_status(wo_id, status)
+    if not item:
+        return JSONResponse({"error": "工单不存在"}, status_code=404)
+    return {"ok": True, "workorder": item}
+
+
 @app.get("/api/workorders", dependencies=[Depends(verify_admin)])
 async def workorder_list():
     """管理端查看全部工单（倒序）。"""
@@ -3916,13 +3934,29 @@ async def workorder_list():
 async def workorder_set_status(wo_id: str, req: Request):
     """管理员处理工单后更新状态（待处理/处理中/已解决）。"""
     body = await req.json()
-    status = (body.get("status") or "").strip()
-    if status not in ("待处理", "处理中", "已解决"):
-        return JSONResponse({"error": "status 只能是 待处理/处理中/已解决"}, status_code=400)
-    item = update_workorder_status(wo_id, status)
-    if not item:
-        return JSONResponse({"error": "工单不存在"}, status_code=404)
-    return {"ok": True, "workorder": item}
+    return _workorder_status_response(wo_id, body)
+
+
+# ============ 驿站侧接口（#18 单子 2：学生报的快递/外卖问题**流到驿站**） ============
+# ⚠️ 演示级：下面两个口子**不挂管理口令** —— 做法照 `/api/persona` 的 GET（驿站页要能直接显示），
+#    不是漏了鉴权。本机演示人人可看 ≠ 公网可以这样开：真要上线得给驿站补一道自己的口令/账号，
+#    跟"学生端没有账号体系"是同一件待办（EXPLAIN.md 六已列）。
+# 为什么仍然读写同一份 workorders.json（而不是搬去"驿站专存"）：
+#   ① 写库路径只有一条，"谁处理"是视图与状态的事，不是存储的事；
+#   ② 管理端留一份监督，正是 18 号单子留给用户拍板那一问 —— 要"只落驿站"不用改存储，
+#      把管理端那两个入口摘掉即可；现在**保留**，因为删它才是产品决定，且管理端那些护栏测试依赖它。
+
+@app.get("/api/station/workorders")
+async def station_workorder_list():
+    """驿站看到的报障列表（倒序，最新在前）。"""
+    return {"workorders": list_workorders()}
+
+
+@app.post("/api/station/workorders/{wo_id}/status")
+async def station_workorder_set_status(wo_id: str, req: Request):
+    """驿站处理完改状态 —— 与管理端同一个 store 函数，两个视图不会各说各话。"""
+    body = await req.json()
+    return _workorder_status_response(wo_id, body)
 
 
 @app.post("/api/admin/notify", dependencies=[Depends(verify_admin)])
