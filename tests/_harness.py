@@ -115,7 +115,11 @@ class sandbox:
     #   写新断言前记住这条：`sandbox()` 是"复制真实数据"，**不是空库** ——
     #   不种就等于是拿用户今天手测到什么来判测试。
     SCRATCH = ("settings.json", "uploads.json", "uploads", "notices.json",
-               "student_messages.json", "workorders.json", "intent_samples.json")
+               "student_messages.json", "workorders.json", "intent_samples.json",
+               # 低代码那两项也是同一性质：演示时管理员真会建一项叫「失物招领」的服务，
+               # 带进沙箱就会让 test_53 里"合法定义该落库"因为**撞名**而红 —— 看着像功能坏了，
+               # 其实是测试拿用户今天手测到什么当起点。删掉后 store 会自动回到内置种子。
+               "services.json", "custom")
 
     def __enter__(self):
         self.tmp = tempfile.mkdtemp(prefix="campustime-test-")
