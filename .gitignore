@@ -50,6 +50,12 @@ app/data/llm_usage.jsonl
 # 注意：app/data/kb.json 是"入库的种子知识库"，有意保留版本管理，
 # 管理员在后台改条目后会出现 diff —— 这是知识内容本身，值得被记录。
 app/data/workorders.json
+# ===== 驿站低代码：一句话生成的服务定义 + 各服务的登记台账（#18 单子 3） =====
+# 与 intent_samples.json 同性质：内置种子写在 store.py 的 _SEED_SERVICES 里，
+# 文件删了能重新长出来；驿站管理员现场试出来的句子/学生留的信息不进仓库（隐私 + 噪声）。
+app/data/services.json
+app/data/custom/
+
 app/data/student_messages.json
 server.log
 # 本地起 uvicorn 的临时日志（.uvicorn_dev.log / .uvicorn_live.log 等）

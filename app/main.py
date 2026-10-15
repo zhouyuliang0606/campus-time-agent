@@ -37,6 +37,8 @@ from app.upload import UploadError, extract_text, ext_supported, unsupported_rea
 from app.modules.schedule import SYSTEM_PROMPT as SCHEDULE_PROMPT, build_tools as schedule_tools
 from app.store import (
     add_message, list_messages, add_notice, list_notices,
+    list_services, get_service, validate_service_def, add_service,
+    list_custom_records, add_custom_record,
     list_kb, add_kb_entry, update_kb_entry, delete_kb_entry,
     get_persona, set_persona,
     get_settings, set_settings,
@@ -3957,6 +3959,116 @@ async def station_workorder_set_status(wo_id: str, req: Request):
     """驿站处理完改状态 —— 与管理端同一个 store 函数，两个视图不会各说各话。"""
     body = await req.json()
     return _workorder_status_response(wo_id, body)
+
+
+# ============ 驿站低代码：一句话 → 一项新服务（#18 单子 3，创新点落地） ============
+# 边界只有一条，但它决定这个功能能不能留：
+#   **模型只生成"服务定义"这份数据，绝不生成可执行代码。**
+#   生成物必须过 store.validate_service_def 的白名单，只有过校验的才进 services.json；
+#   之后所有动作都走固定路径（驿站点【登记】→ 确定性接口 → 写 custom/<id>.json）。
+#   全项目这条路没有 eval / exec / importlib，也不给生成的服务注册任何写库工具 ——
+#   "服务能扩展"如果不配这套闸，就等于"任何人说一句话就能往这台服务器里塞代码"。
+
+_SERVICE_PROMPT = """你在为一个校园驿站系统按管理员的一句话定义一项新服务。
+只输出一个 JSON 对象，不要任何解释、不要 Markdown 代码围栏。字段必须是这些（一个都不能多）：
+  "name": 服务名，不超过 12 个字，如「失物招领」
+  "triggers": 学生会怎么说这件事，3~6 条短语
+  "collect_fields": 登记时要向学生收集的字段名，2~5 条，如「丢失地点」「物品描述」
+  "reply_template": 登记完成后回给学生的一句话
+  "table": 台账归类，一个词，如 lostfound / repair
+例子（只抄结构，内容按管理员那句话来）：
+{"name":"失物招领","triggers":["我丢了饭卡","捡到东西交哪"],"collect_fields":["丢失物品","丢失地点","大概时间"],"reply_template":"已登记，找到后会通知你来驿站领。","table":"lostfound"}
+"""
+
+
+def _extract_json_obj(raw: str) -> dict | None:
+    """从模型回话里抠出那一个 JSON 对象（做法照判定层：抠不出来就当失败，不猜）。"""
+    if not raw:
+        return None
+    m = re.search(r"\{.*\}", raw, re.S)
+    if not m:
+        return None
+    try:
+        obj = json.loads(m.group(0))
+    except Exception:
+        return None
+    return obj if isinstance(obj, dict) else None
+
+
+@app.get("/api/station/services")
+async def station_services_list():
+    """驿站端服务列表（内置那项 + 低代码新增的）。"""
+    return {"services": list_services()}
+
+
+@app.post("/api/station/services")
+async def station_service_create(req: Request):
+    """管理员一句话 → 生成一份服务定义 → 过白名单 → 落库成为可用服务。
+
+    失败一律**不落库**：没有密钥 / 模型没回出 JSON / 字段不合法，都回一句人话，
+    不许出现"存了半份定义、界面上看得见但登记必炸"。
+    """
+    body = await req.json()
+    idea = (body.get("description") or "").strip()
+    if not idea:
+        return JSONResponse({"error": "先说一句你想加什么服务"}, status_code=400)
+    if len(idea) > 200:
+        return JSONResponse({"error": "这句话太长了（限 200 字），说短一点更准"}, status_code=400)
+    try:
+        gateway = ModelGateway(user="内部:低代码建服务")
+        # max_tokens 上限：定义就那么点大，模型开始写散文就该硬截（同判定层那一手的用法）
+        reply = await gateway.chat(
+            [{"role": "system", "content": _SERVICE_PROMPT},
+             {"role": "user", "content": f"管理员的话：{idea}"}],
+            max_tokens=400,
+        )
+    except LLMError as e:
+        print(f"[低代码] 生成服务定义失败（kind={getattr(e, 'kind', '?')}）：{e}")
+        return JSONResponse({"error": _say_llm_error(e)}, status_code=502)
+    draft = _extract_json_obj((reply or {}).get("content") or "")
+    if not draft:
+        return JSONResponse({"error": "管家这次没给出规规矩矩的服务定义，请换个说法再试一次。"},
+                            status_code=502)
+    clean, why = validate_service_def(draft)
+    if not clean:
+        return JSONResponse({"error": f"生成的定义不合规矩：{why}"}, status_code=400)
+    return {"ok": True, "service": add_service(clean)}
+
+
+@app.get("/api/station/services/{sid}/records")
+async def station_service_records(sid: str):
+    """某项服务已登记的记录（服务不存在 → 404，不返回空列表装"什么都没发生"）。"""
+    if not get_service(sid):
+        return JSONResponse({"error": "没有这项服务"}, status_code=404)
+    return {"records": list_custom_records(sid)}
+
+
+@app.post("/api/station/services/{sid}/records")
+async def station_service_record(sid: str, req: Request):
+    """登记一条（人话：管理员在驿站端点【登记】，系统按服务定义把字段存进台账）。
+
+    这是**确定性写库**：调用方是点了按钮的人，不是模型 —— 所以它不进确认漏斗，
+    但也因此字段要在这里判干净：服务不存在 404、必填字段一个不许少、值过长就地截断。
+    """
+    svc = get_service(sid)
+    if not svc:
+        return JSONResponse({"error": "没有这项服务"}, status_code=404)
+    body = await req.json()
+    fields = body.get("fields") if isinstance(body, dict) else None
+    if not isinstance(fields, dict):
+        return JSONResponse({"error": "登记内容得是一组字段"}, status_code=400)
+    want = [str(x) for x in (svc.get("collect_fields") or [])]
+    missing = [k for k in want if not str(fields.get(k) or "").strip()]
+    if missing:
+        return JSONResponse({"error": "这些信息还没填：" + "、".join(missing)}, status_code=400)
+    stray = [k for k in fields if k not in want]
+    if stray:
+        # 多给的字段不收：不然"往台账里塞任意键"就成了低代码服务的副作用
+        return JSONResponse({"error": "这些字段不属于这项服务：" + "、".join(sorted(stray)[:4])},
+                            status_code=400)
+    item = add_custom_record(sid, fields, svc=svc)
+    return {"ok": True, "record": item,
+            "reply": str(svc.get("reply_template") or "已登记。")}
 
 
 @app.post("/api/admin/notify", dependencies=[Depends(verify_admin)])

@@ -856,6 +856,150 @@ def summarize_llm_usage(limit_recent: int = 50) -> dict:
     }
 
 
+# ============ 驿站低代码：一句话生成的「服务定义」与它的登记记录（#18 单子 3） ============
+# 三件事先想清楚，注释留在这儿，因为这是本项目**创新点落地**的那块，评审一定会问：
+#   ① 模型在这里只产**数据**（一份服务定义），绝不产代码 —— 这条路没有 eval/exec/动态导入，
+#      生成物只能过白名单校验、再经确定性接口生效（红线 4「模型碰不到写库」的延伸）。
+#   ② 每个字段都要白名单校验（未知字段 / 超长 / 带尖括号一律拒）：
+#      "能新增服务"如果不带校验，等于"能往别人页面里注入任意字符串"。
+#   ③ 服务定义是**运行时数据**（与 intent_samples.json 同性质）：内置种子写在代码里，
+#      文件删了能重新长出来；驿站管理员现场试出来的句子也不进仓库。
+
+SERVICES_FILE = "services.json"
+CUSTOM_DIR = "custom"
+
+# 第 1 项内置服务就是原来那句"快递/外卖问题处理" —— 它现在也走同一张表，
+# 这样"低代码新增"不是特例，而是这套结构的第 2、第 3 项。
+_SEED_SERVICES = [
+    {
+        "id": "pkgloss",
+        "name": "快递/外卖问题处理",
+        "triggers": ["快递丢了", "包裹没找到", "外卖丢失", "取件码查不到"],
+        "collect_fields": ["单号或取件码", "大概时间", "丢失地点"],
+        "reply_template": "已登记，驿站会按你留的信息去找，找到后放驿站等你取。",
+        "table": "workorders",
+        "created_at": "内置",
+    },
+]
+
+# 字段白名单：不在表里的键一律拒（"多给一个字段"不能变成"多存一个字段"）
+SERVICE_FIELDS = {
+    "name": (1, 20),
+    "triggers": (1, 10),
+    "collect_fields": (1, 8),
+    "reply_template": (1, 200),
+    "table": (1, 20),
+}
+SERVICE_ITEM_MAX = 24          # 列表里每一项的字符上限
+CUSTOM_VALUE_MAX = 60          # 一条登记里每个字段值的上限
+
+
+def list_services() -> list:
+    """服务定义列表；文件不在或坏了就用内置种子（删了也能长回来，不靠提交数据）。"""
+    rows = _read(SERVICES_FILE, None)
+    if not isinstance(rows, list) or not rows:
+        return [dict(s) for s in _SEED_SERVICES]
+    return rows
+
+
+def get_service(sid: str) -> dict | None:
+    return next((s for s in list_services() if s.get("id") == sid), None)
+
+
+def _bad_service_field(key: str, val) -> str:
+    """单字段校验，返回错误原因（空串 = 通过）。"""
+    lo, hi = SERVICE_FIELDS[key]
+    if isinstance(val, list):
+        if not (lo <= len(val) <= hi):
+            return f"{key} 数量要在 {lo}~{hi} 条之间"
+        for v in val:
+            if not isinstance(v, str) or not v.strip():
+                return f"{key} 里每一项都得是非空文字"
+            if len(v) > SERVICE_ITEM_MAX:
+                return f"{key} 里有超过 {SERVICE_ITEM_MAX} 字的项"
+            if "<" in v or ">" in v:
+                # 前端本来就一律 esc()（全站唯一转义来源），这里再拦一道：
+                # 带标签的字符串不该有机会进到任何展示路径
+                return f"{key} 里不许带尖括号"
+        return ""
+    if not isinstance(val, str) or not val.strip():
+        return f"{key} 要写成非空文字"
+    if not (lo <= len(val) <= hi):
+        return f"{key} 长度要在 {lo}~{hi} 之间"
+    if "<" in val or ">" in val:
+        return f"{key} 里不许带尖括号"
+    return ""
+
+
+def validate_service_def(obj: dict) -> tuple:
+    """候选服务定义过白名单。返回 (规范化后的定义, 错误原因)，错误时定义是 None。
+
+    为什么是"拒"而不是"尽力修好"：这份定义是**模型按驿站管理员一句话生成**的，
+    它多塞字段、把整段描述塞进 name、顺手写一段 HTML，都不该被默默接受 ——
+    存进去之后每一个读它的界面都要重新踩一次坑。
+    """
+    if not isinstance(obj, dict):
+        return None, "服务定义得是一个对象"
+    extra = [k for k in obj if k not in SERVICE_FIELDS and k != "id"]
+    if extra:
+        return None, "有不认识的字段：" + "、".join(sorted(extra)[:4])
+    clean: dict = {}
+    for key in SERVICE_FIELDS:
+        val = obj.get(key)
+        if isinstance(val, list):
+            val = [str(v).strip() for v in val if str(v).strip()]
+        elif isinstance(val, str):
+            val = val.strip()
+        why = _bad_service_field(key, val)
+        if why:
+            return None, why
+        clean[key] = val
+    taken = {str(s.get("name") or "") for s in list_services()}
+    if clean["name"] in taken:
+        return None, f"已经有一个叫「{clean['name']}」的服务了，换个名字或先删掉它"
+    clean["id"] = (str(obj.get("id") or "").strip() or uuid.uuid4().hex[:8])
+    clean["created_at"] = _now()
+    return clean, ""
+
+
+def add_service(defn: dict) -> dict:
+    """存一份**已经过校验**的服务定义（校验只在 validate_service_def 一处，别写第二份规则）。"""
+    rows = list_services()
+    rows.append(defn)
+    _write(SERVICES_FILE, rows)
+    return defn
+
+
+def list_custom_records(sid: str) -> list:
+    """某个自定义服务下已登记的记录（倒序）。"""
+    rows = _read(os.path.join(CUSTOM_DIR, f"{sid}.json"), [])
+    return list(reversed(rows)) if isinstance(rows, list) else []
+
+
+def add_custom_record(sid: str, fields: dict, svc: dict | None = None) -> dict:
+    """登记一条到 `custom/<service_id>.json`。
+
+    ⚠️ 这条路径**只允许确定性接口调用**（驿站管理员点【登记】这个明确动作）。
+    不给模型注册任何写这里的工具 —— 一注册，"低代码生成的服务"就自带写库能力了。
+    """
+    svc = svc or get_service(sid) or {}
+    want = [str(x) for x in (svc.get("collect_fields") or [])]
+    clean: dict = {}
+    for k in want:
+        v = str((fields or {}).get(k) or "").strip()
+        clean[k] = v[:CUSTOM_VALUE_MAX]
+    item = {"id": uuid.uuid4().hex[:8], "ts": _now(), "service": sid,
+            "name": svc.get("name") or "", "fields": clean}
+    rows = _read(os.path.join(CUSTOM_DIR, f"{sid}.json"), [])
+    if not isinstance(rows, list):
+        rows = []
+    # `_write` 只保证数据根目录在，子目录得自己建（第一次登记时 custom/ 还不存在）
+    os.makedirs(_path(CUSTOM_DIR), exist_ok=True)
+    rows.append(item)
+    _write(os.path.join(CUSTOM_DIR, f"{sid}.json"), rows)
+    return item
+
+
 def clear_llm_usage() -> int:
     """清空流水（人话：管理员点"清空"按钮）。返回被清掉多少条。"""
     n = len(read_llm_usage())
