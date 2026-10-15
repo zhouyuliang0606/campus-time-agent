@@ -97,6 +97,19 @@
     .woItem button { border: 1px solid #d8def0; background: #fff; color: #17b8a6; border-radius: 7px; font-size: 11px; padding: 3px 8px; cursor: pointer; }
     .woItem button:hover { background: #e8f8f6; }
     .woEmpty { color: #8a93a5; font-size: 12px; padding-top: 8px; }
+    /* 低代码新增服务（#18 单子 3） */
+    .svcAdd { display: flex; gap: 8px; margin-top: 10px; }
+    .svcAdd input { flex: 1; padding: 9px 11px; border: 1px solid #d8def0; border-radius: 9px; font-size: 13px; }
+    .svcAdd button { padding: 0 16px; border: none; border-radius: 9px; background: #17b8a6; color: #fff; cursor: pointer; font-size: 13px; }
+    .svcAdd button:disabled { opacity: .6; cursor: progress; }
+    .svc { border-top: 1px dashed #e6ebf5; padding: 9px 0; font-size: 13px; }
+    .svc .nm { font-weight: 600; }
+    .svc .pill { display: inline-block; font-size: 11px; background: #e8f8f6; color: #17b8a6; border-radius: 6px; padding: 1px 6px; margin: 0 4px 3px 0; }
+    .svc .tb { font-size: 11px; color: #8a93a5; }
+    .svc form { margin-top: 6px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+    .svc form input { padding: 6px 8px; border: 1px solid #d8def0; border-radius: 7px; font-size: 12px; width: 150px; }
+    .svc form button { padding: 6px 12px; border: none; border-radius: 7px; background: #17b8a6; color: #fff; font-size: 12px; cursor: pointer; }
+    .svc .last { font-size: 12px; color: #389e0d; margin-top: 5px; }
   </style>
 </head>
 <body>
@@ -123,6 +136,19 @@
         <button class="refresh" id="refreshWo" style="float:right;font-size:12px;">刷新</button>
       </div>
       <div id="woList"><div class="woEmpty">正在读台账…</div></div>
+    </div>
+
+    <!-- 低代码新增服务：管理员一句话 → 模型只产"服务定义"这份数据 → 过白名单才落库（#18 单子 3） -->
+    <div class="wo">
+      <div class="woHead">🧩 服务（可低代码新增）
+        <span class="cnt" id="svcCount">加载中…</span>
+        <button class="refresh" id="refreshSvc" style="float:right;font-size:12px;">刷新</button>
+      </div>
+      <div class="svcAdd">
+        <input id="svcIdea" placeholder="说一句话就行，例如：加一个失物招领，学生丢了饭卡可以登记" />
+        <button id="svcGo">生成服务</button>
+      </div>
+      <div id="svcList"><div class="woEmpty">正在读服务清单…</div></div>
     </div>
 
     <div class="hint">点下面的快捷操作让客服干活，或直接提问（回复都用上面这个人格的语气）。</div>
@@ -255,6 +281,114 @@
     document.getElementById("refreshWo").addEventListener("click", loadWorkorders);
     setInterval(loadWorkorders, 5000);
     loadWorkorders();
+
+    // ---------- 低代码新增服务（#18 单子 3，创新点那块饼的落地处） ----------
+    // 流程：管理员一句话 → POST /api/station/services → 模型**只产一份"服务定义"数据**
+    // → 服务端过白名单校验（不合规直接 400，连库都不进）→ 立刻出现在下面这张表里、当场能登记。
+    // ⚠️ 这里刻意没有"预览草稿再点保存"那一步：那要先存一份没收口的定义，
+    //    等于给"半份服务"开门；现在能存在的定义都是过校验的，界面直接用它，演示也更直。
+    let svcSig = null;   // 上一次真正渲染进 DOM 的清单（JSON 串）
+    async function loadServices() {
+      const box = document.getElementById("svcList");
+      const cnt = document.getElementById("svcCount");
+      try {
+        const d = await (await fetch("/api/station/services")).json();
+        const list = d.services || [];
+        const sig = JSON.stringify(list);
+        // 5 秒一次的轮询不许把管理员刚敲进登记表单的字抹掉：清单没变就不重建 DOM；
+        // 变了但有人在填（有焦点或有内容）也先跳过，svcSig 不更新 → 填完下一轮自动补渲染。
+        // 真机踩出来的：不挡就会在点【登记一条】那一瞬把按钮 detach 掉，提交直接失败。
+        if (sig === svcSig || box.querySelector("input:focus, input:not(:placeholder-shown)")) return;
+        svcSig = sig;
+        cnt.textContent = `共 ${list.length} 项`;
+        if (!list.length) { box.innerHTML = '<div class="woEmpty">还没有服务。</div>'; return; }
+        box.innerHTML = "";
+        list.forEach(s => {
+          const el = document.createElement("div");
+          el.className = "svc";
+          const trig = (s.triggers || []).map(t => `<span class="pill">${esc(t)}</span>`).join("");
+          const fields = (s.collect_fields || []).map(f => String(f));
+          el.innerHTML = `<div><span class="nm">${esc(s.name || "未命名")}</span>
+              <span class="tb">台账 ${esc(s.table || "-")} · id ${esc(String(s.id || ""))}</span></div>
+            <div>${trig}</div>`;
+          const form = document.createElement("form");
+          const inputs = fields.map(f => {
+            const i = document.createElement("input");
+            i.placeholder = f;
+            i.name = "f_" + f;
+            i.required = true;
+            form.appendChild(i);
+            return { f: f, el: i };
+          });
+          const b = document.createElement("button");
+          b.type = "submit";
+          b.textContent = "登记一条";
+          form.appendChild(b);
+          const last = document.createElement("div");
+          last.className = "last";
+          form.addEventListener("submit", async ev => {
+            ev.preventDefault();
+            b.disabled = true;
+            const payload = {};
+            inputs.forEach(x => { payload[x.f] = x.el.value.trim(); });
+            try {
+              const r = await (await fetch("/api/station/services/"
+                + encodeURIComponent(String(s.id || "")) + "/records", {
+                method: "POST", headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ fields: payload }),
+              })).json();
+              if (r.error) { last.style.color = "#cf1322"; last.textContent = "没登记成：" + r.error; }
+              else {
+                last.style.color = "#389e0d";
+                last.textContent = (r.reply || "已登记。") + "（记录号 " + (r.record && r.record.id) + "）";
+                inputs.forEach(x => { x.el.value = ""; });
+              }
+            } catch (e) {
+              last.style.color = "#cf1322";
+              last.textContent = "登记时网络出问题了";
+            }
+            b.disabled = false;
+          });
+          el.appendChild(form);
+          el.appendChild(last);
+          box.appendChild(el);
+        });
+      } catch (e) {
+        cnt.textContent = "读取失败";
+        svcSig = null;   // 读失败后必须允许下次重建，否则这句报错会一直挂着
+        box.innerHTML = '<div class="woEmpty">读不到服务清单（服务没起来？）</div>';
+      }
+    }
+
+    document.getElementById("refreshSvc").addEventListener("click", loadServices);
+    document.getElementById("svcGo").addEventListener("click", async () => {
+      const idea = document.getElementById("svcIdea");
+      const btn = document.getElementById("svcGo");
+      const txt = (idea.value || "").trim();
+      if (!txt) { return; }
+      btn.disabled = true;
+      btn.textContent = "生成中…";
+      try {
+        const r = await (await fetch("/api/station/services", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ description: txt }),
+        })).json();
+        if (r.error) { addMsg("系统", "没能生成服务：" + r.error, "sys"); }
+        else {
+          addMsg("系统", `已新增服务「${r.service.name}」（id ${r.service.id}），`
+            + `要收的字段：${(r.service.collect_fields || []).join("、")}。在上方那张表里就能直接登记。`,
+            "sys");
+          idea.value = "";
+          loadServices();
+        }
+      } catch (e) {
+        addMsg("系统", "生成服务时网络出问题了", "sys");
+      }
+      btn.disabled = false;
+      btn.textContent = "生成服务";
+    });
+    setInterval(loadServices, 5000);
+    loadServices();
 
     // ---------- 对话 ----------
     function addMsg(who, content, kind, trace, module) {
