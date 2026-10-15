@@ -197,13 +197,20 @@ def batch_c_shape_pinned():
 def batch_d_title_carry():
     c = Checker()
     title("D 批 · 事名不串味：这句自己报了名就不许借上一轮的")
+    from datetime import date, timedelta
+
     from app.modules.planner import parse_add_todo, parse_slot_text
+
+    # 锚点日期**不许写死字面量**（这里原来钉着 "2026-10-15"）：跨过零点它就变成"昨天"，
+    # 而"待办不许落在过去的日子"（红线 17）会正确地把那张卡判成 None ——
+    # 2026-10-16 00:0x 全量那 2 条红就是这么来的，红的是测试自己过期，不是代码回归。
+    anchor = (date.today() + timedelta(days=3)).isoformat()
 
     # 先把病根本身钉住：老写法（把上一轮事名拼进这句）会抠出什么
     old = parse_add_todo("周五晚上七点到九点值日 写作业")
     c.check("病根复刻：拼着解析就会得到「值日写作业」（证明下面那条不是假绿）",
             (old or {}).get("title") == "值日写作业", (old or {}).get("title"))
-    got = parse_slot_text("周五晚上七点到九点值日", "写作业", "2026-10-15") or {}
+    got = parse_slot_text("周五晚上七点到九点值日", "写作业", anchor) or {}
     c.check("「周五晚上七点到九点值日」挂着「写作业」→ 卡片名就是「值日」",
             got.get("title") == "值日", got.get("title"))
     c.check("摘要里也不许留旧事名（卡片其他地方同样会露出来）",
@@ -215,14 +222,14 @@ def batch_d_title_carry():
     # 反方向：只报时间、没报名的事，**必须**照旧沿用上一轮那件事
     for text, want in (("晚上七点到八点", "健身"), ("周六", "健身"),
                        ("下午两点到三点", "健身"), ("周六 19:00-20:00", "健身")):
-        p = parse_slot_text(text, want, "2026-10-15") or {}
+        p = parse_slot_text(text, want, anchor) or {}
         c.check(f"只报时间「{text}」→ 事名仍沿用上一轮「{want}」（没报名才借）",
                 p.get("title") == want, p.get("title"))
 
     # 「随便啦」这种既没时间也没事情的：不许硬造一个名字出来
     c.check("「随便啦」（没有时间没有事）→ 不出卡，交给调用方说「这行没认出来」",
-            parse_slot_text("随便啦", "健身", "2026-10-15") is None,
-            parse_slot_text("随便啦", "健身", "2026-10-15"))
+            parse_slot_text("随便啦", "健身", anchor) is None,
+            parse_slot_text("随便啦", "健身", anchor))
     return c
 
 
