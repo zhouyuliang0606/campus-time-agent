@@ -378,6 +378,9 @@ def test_vendor_e2e():
                           ("gemini", "Gemini")):
         with sandbox():
             client = make_client()
+            # 基线要在**这个沙箱里**取：干净克隆里是 0，开发机上会带着真实流水进来（copytree），
+            # 所以只有比"多没多几行"才是环境无关的判据。
+            before = len(read_llm_usage())
             restore = _patch_vendor(sem, vendor, "propose_todo_tool", args)
             try:
                 body = client.post("/api/chat", json={
@@ -396,11 +399,15 @@ def test_vendor_e2e():
                         f"{card.get('start')}-{card.get('end')}")
             rows = read_llm_usage()
             # ⚠️ 这一句「帮我加个游泳周四19:00」走的是**确定性分支**（规则层自己
-            # 就解析得出来，压根没去问模型），所以流水里是"内部:语义判定"这类
-            # 功能名，不会出现会话 id。会记会话 id 的是**引擎那条路**，
-            # 单独在第四批里验。这里只钉住"这次对话确实过了网关"。
-            c.check(f"{label} 口音 → 这次对话进了用量流水", len(rows) > 0,
-                    str(len(rows)))
+            # 就解析得出来，压根没去问模型）。所以这里量的是"这次对话**没多开**模型调用"。
+            # 原来写的是 `len(rows) > 0`（"这次对话进了用量流水"）—— 那是**假绿**：
+            # 沙箱是 copytree 真实 app/data，开发机上那份 1489 行流水会跟着进沙箱，
+            # 于是不管有没有调模型都恒成立；干净克隆里没有那份流水，三条一起红。
+            # 实测（同一棵树两个环境各跑一遍，只看 delta）：本机 0 行、克隆 0 行 ——
+            # 也就是"过了网关"这个前提**从来就不成立**，卡片是规则层给的。
+            # 记账本身有没有坏不靠这里证明，第三批 16 项专门钉它。
+            c.check(f"{label} 口音 → 这句由规则层自己解出来，一次模型都不调（流水不多行）",
+                    len(rows) == before, f"对话前 {before} → 对话后 {len(rows)}")
     return c.summary("第六批（三家口音端到端）")
 
 
