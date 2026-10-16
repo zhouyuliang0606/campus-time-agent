@@ -1013,7 +1013,9 @@ html.gx-glass[data-gx-refine="on"] .composer, html.gx-glass[data-gx-refine="on"]
     // 其余模块照旧，不顺手改既有显示（别的测试钉着它们）。
     function moduleTag(m) {
       if (!m) return "";
-      return String(m).indexOf("custom:") === 0 ? "驿站服务" : String(m);
+      const s = String(m);
+      // 后端回的是 `custom:<服务id>`，本地回执只有 `custom` 这个裸前缀 —— 两种都不许原样印
+      return (s === "custom" || s.indexOf("custom:") === 0) ? "驿站服务" : s;
     }
 
     function addMsg(who, content, kind, module, trace) {
@@ -1088,10 +1090,23 @@ html.gx-glass[data-gx-refine="on"] .composer, html.gx-glass[data-gx-refine="on"]
       const d = e.data;
       if (!d || d.source !== "campustime-confirm") return;
       if (d.type === "applied") {
-        // ④ 入库成功后自动刷新课表/待办面板——学生不用手动刷新
         removeCfWrap();
-        addMsg(botName(), "✅ 已经按你的确认改好了，日程已刷新。", "bot", "planner");
-        loadScheduleView();
+        // 回执**必须按提案的类型说**：以前这里不分类型一律回
+        // "✅ 已经按你的确认改好了，日程已刷新。" —— 真机上点【确认登记】（失物招领）
+        // 和点【确认上报】（工单）都收到这句，而学生的日程一个字都没动。
+        // 报好消息跟报坏消息一样不许说假话（红线 8/16 同族）。
+        if (d.kind === "custom_record") {
+          // 用的是**这项服务自己写的那句话**（管理员在驿站端定的回执），不是通用一句"已提交"
+          addMsg(botName(), "✅ " + (d.reply || "已登记。")
+            + (d.record_id ? "（记录号 " + d.record_id + "）" : ""), "bot", "custom");
+        } else if (d.kind === "work_order_report") {
+          addMsg(botName(), "✅ 已上报驿站：工单已生成，进度可以在快递面板的"
+            + "「我提交过的工单」里看到。", "bot", "express");
+        } else {
+          addMsg(botName(), "✅ 已经按你的确认改好了，日程已刷新。", "bot", "planner");
+          // ④ 入库成功后自动刷新课表/待办面板——只有真的动了课表/待办才刷
+          loadScheduleView();
+        }
       } else if (d.type === "cancelled") {
         // 取消：清空课表这种高危提案必须通知后端作废（留着会变成后门），
         // 其余提案原样保留——学生随后在聊天里回一句"确认"还能接着执行。

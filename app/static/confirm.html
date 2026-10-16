@@ -728,8 +728,11 @@ okBtn.addEventListener("click", async () => {
   try {
     const r = await k.apply(current);
     showDone(k.doneText(current, r));
-    // 通知父页面：写入成功，请刷新课表/待办面板
-    tellParent("applied", { kind: current.kind });
+    // 通知父页面：写入成功。顺手把**回执要说什么**一起带过去 ——
+    // 父页面原先不分类型一律回"日程已刷新"，登记和工单都被它说成了假话。
+    tellParent("applied", { kind: current.kind,
+                            reply: (r && r.reply) || "",
+                            record_id: (r && r.record && r.record.id) || "" });
   } catch (e) {
     showError(e.message || "执行失败");
   }
