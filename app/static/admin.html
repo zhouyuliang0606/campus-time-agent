@@ -64,6 +64,31 @@
     .pill.ok { background: #e8f7ef; color: #2fa36b; }
     .pill.err { background: #fdecec; color: #e0414a; }
 
+    /* ===== 归档（#29 软删）===== */
+    /* 已归档那几行只在「看已归档」点开时出现：整行压暗 + 一个灰标签，
+       让人一眼看出"这条是收起来的"，而不是混在未办的里面继续喊你有活。 */
+    .msg.arch { opacity: .62; background: #fbfbfd; border-style: dashed; }
+    .archTag { font-size: 11px; background: #eef2ff; color: #6a7388; border-radius: 6px; padding: 1px 6px; }
+    .archLine { display: flex; align-items: center; gap: 8px; font-size: 12px; color: #8a93a6; margin-top: 8px; }
+    .archLine button {
+      padding: 3px 10px; border: 1px solid #d8def0; border-radius: 7px; background: #fff;
+      cursor: pointer; font-size: 12px; color: #4a5366;
+    }
+    .archLine button:hover { background: #f4f6fb; }
+
+    /* 确认框（自绘）：本页原先用原生 confirm()，连点几次会被浏览器拦「阻止此页面创建更多对话框」；
+       归档是要想一下的动作，不能被那个拦截吞掉，所以这里只留这一份实现。 */
+    .mask { display: none; position: fixed; inset: 0; background: rgba(20,26,45,.45); z-index: 200; align-items: center; justify-content: center; }
+    .mask.show { display: flex; }
+    .dlg { background: #fff; border-radius: 14px; width: min(430px, 92vw); padding: 18px; box-shadow: 0 20px 60px rgba(20,26,45,.28); }
+    .dlg-head { font-size: 15px; font-weight: 600; color: #1f2733; margin-bottom: 8px; }
+    .dlg-body { font-size: 13.5px; color: #4a5366; line-height: 1.7; }
+    .dlg-warn { background: #fff7e6; border: 1px dashed #ffd591; border-radius: 9px; padding: 9px 11px; font-size: 12.5px; color: #8a6d3b; margin-top: 8px; }
+    .dlg-foot { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
+    .dlg-btn { border: none; border-radius: 9px; padding: 9px 16px; font-size: 13px; cursor: pointer; }
+    .dlg-btn.ghost { background: #f0f3fa; color: #4a5366; }
+    .dlg-btn.danger { background: #e24b4a; color: #fff; }
+
     /* ============ 三栏外壳（结构与 station/student 同构，配色走管理端橙红） ============ */
     .shell { display: flex; height: 100vh; overflow: hidden; }
     .sidebar {
@@ -190,7 +215,8 @@
           <div class="card">
             <div class="toolbar">
               <h2 style="margin:0;">🛠️ 学生工单</h2>
-              <span class="small">学生确认上报的问题（快递/外卖），随收件箱每 5 秒刷新</span>
+              <span class="small">学生确认上报的问题（快递/外卖），随收件箱每 5 秒刷新
+                <span class="small" id="woArchStatus"></span></span>
             </div>
             <div id="woBox"><div class="empty">暂无工单</div></div>
           </div>
@@ -201,7 +227,8 @@
           <div class="card">
             <div class="toolbar">
               <h2 style="margin:0;">📥 学生消息收件箱</h2>
-              <span class="small">学生消息存档 <button class="btn" id="refresh" style="margin:0;padding:4px 10px;font-size:12px;">手动刷新</button></span>
+              <span class="small">学生消息存档 <button class="btn" id="refresh" style="margin:0;padding:4px 10px;font-size:12px;">手动刷新</button>
+                <span class="small" id="msgArchStatus"></span></span>
             </div>
             <div id="inbox"><div class="empty">暂无学生消息</div></div>
           </div>
@@ -332,6 +359,21 @@
       </div><!-- /stage -->
     </main>
   </div><!-- /shell -->
+
+  <!-- 自绘确认框：归档/清空这类要想一下的动作都走它（一份 askConfirm 实现，见脚本末尾） -->
+  <div id="confirmMask" class="mask">
+    <div class="dlg" role="dialog" aria-modal="true">
+      <div class="dlg-head" id="cfHead"></div>
+      <div class="dlg-body">
+        <p id="cfBody" style="margin:0;line-height:1.6;"></p>
+        <div class="dlg-warn" id="cfWarn" style="display:none;"></div>
+      </div>
+      <div class="dlg-foot">
+        <button class="dlg-btn ghost" id="cfCancel">取消</button>
+        <button class="dlg-btn danger" id="cfOk">确定</button>
+      </div>
+    </div>
+  </div>
 
   <script src="/static/esc.js"></script>
   <script>
@@ -569,22 +611,25 @@
     async function loadWorkOrders() {
       const box = document.getElementById("woBox");
       try {
-        const data = await (await adminFetch("/api/workorders")).json();
-        const list = data.workorders || [];
+        // 一次拉全（含已归档），在**这一处**分开摆：默认只把未归档的当"活"，
+        // 归档的只在点开「已归档 N 条」时列出来 —— 未归档/已归档各判一遍就会两本账。
+        const data = await (await adminFetch("/api/workorders?include_archived=1")).json();
+        const all = data.workorders || [];
+        const live = all.filter(w => !w.archived);
+        const arch = all.filter(w => w.archived);
         // ⚠️ 画角标必须在下面那句"空就 return"之前：放到后面，一条不剩的时候红点会永远挂在上一轮的数上
         //     —— 而这颗点正是把工单挪进左栏之后，"在别的档也看得见有没有活"的唯一补偿。
-        paintWoBadge(list.filter(w => w.status !== "已解决").length);
-        if (!list.length) { box.innerHTML = '<div class="empty">暂无工单</div>'; return; }
-        box.innerHTML = list.map(w => `
-          <div class="msg">
-            <div class="top"><span class="tag">${esc(w.kind)}</span><span>${esc(w.ts)} · 来源：${w.source === "panel" ? "面板表单" : "聊天确认"}</span></div>
-            <div class="q">${esc(w.desc || "（无补充描述）")}</div>
-            <div class="a">状态：<b>${esc(w.status)}</b>
-              <button class="mini" data-wo="${esc(w.id)}" data-st="处理中">标为处理中</button>
-              <button class="mini" data-wo="${esc(w.id)}" data-st="已解决">标为已解决</button>
-            </div>
-          </div>`).join("");
-        box.querySelectorAll(".mini").forEach(b => b.addEventListener("click", async () => {
+        //     归档的那几条**不算活**（收了还喊有 N 条待处理，等于把按钮的效果吞掉）。
+        paintWoBadge(live.filter(w => w.status !== "已解决").length);
+        if (!all.length) { box.innerHTML = '<div class="empty">暂无工单</div>'; return; }
+        box.innerHTML = live.map(w => woRow(w, false)).join("")
+          + (arch.length ? `<div class="archLine">🗄 已归档 ${arch.length} 条`
+            + `<button data-toggle-arch="1">${showArchWo ? "藏起来" : "看一看"}</button>`
+            + `<span class="small">归档=从列表收起，台账里那条一个字节没少，可随时放回</span></div>` : "")
+          + (showArchWo ? arch.map(w => woRow(w, true)).join("") : "");
+        // ⚠️ 选择器要带 `[data-wo]`：这一片里现在还有【归档】【放回】两种 .mini，
+        //    笼统地 querySelectorAll(".mini") 会把状态处理绑到它们身上（dataset.st 是 undefined → 那个口回 400）。
+        box.querySelectorAll(".mini[data-wo]").forEach(b => b.addEventListener("click", async () => {
           await adminFetch("/api/workorders/" + encodeURIComponent(b.dataset.wo) + "/status", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -592,27 +637,132 @@
           });
           loadWorkOrders();
         }));
+        bindArchButtons(box, "/api/workorders/", loadWorkOrders,
+          t => `这条工单是「${t.kind}」${t.desc ? "：" + t.desc : ""}。`,
+          "学生上报的问题也会跟着从收件箱收起（那边是同一件事的另一本账）。台账里那条还在，可随时放回。",
+          "woArchStatus");
+        const tg = box.querySelector("[data-toggle-arch]");
+        if (tg) tg.addEventListener("click", () => { showArchWo = !showArchWo; loadWorkOrders(); });
       } catch (e) {
         paintWoBadge(null);   // 读不到就把红点摘掉：拿着上一分钟的数喊"还有几条"，比不喊更坏
         box.innerHTML = '<div class="empty">工单加载失败，稍后自动重试</div>';
       }
     }
 
+    // 一行工单（archived=true 时压暗并把按钮换成【放回】）。学生写的话一律 esc() 后再进 DOM。
+    function woRow(w, archived) {
+      return `
+          <div class="msg${archived ? " arch" : ""}">
+            <div class="top"><span class="tag">${esc(w.kind)}</span><span>${esc(w.ts)} · 来源：${w.source === "panel" ? "面板表单" : "聊天确认"}</span>
+              ${archived ? '<span class="archTag">已归档 ' + esc(w.archived_at || "") + "</span>" : ""}</div>
+            <div class="q">${esc(w.desc || "（无补充描述）")}</div>
+            <div class="a">状态：<b>${esc(w.status)}</b>
+              ${archived
+                ? `<button class="mini" data-arch="${esc(w.id)}" data-undo="1" data-kind="${esc(w.kind)}" data-desc="${esc(w.desc || "")}">放回</button>`
+                : `<button class="mini" data-wo="${esc(w.id)}" data-st="处理中">标为处理中</button>
+                   <button class="mini" data-wo="${esc(w.id)}" data-st="已解决">标为已解决</button>
+                   <button class="mini danger" data-arch="${esc(w.id)}" data-kind="${esc(w.kind)}" data-desc="${esc(w.desc || "")}">🗑 归档</button>`}
+            </div>
+          </div>`;
+    }
+
     // ---------- 学生消息收件箱 ----------
     async function loadMessages() {
-      const data = await (await adminFetch("/api/admin/messages")).json();
+      const data = await (await adminFetch("/api/admin/messages?include_archived=1")).json();
       const box = document.getElementById("inbox");
-      const msgs = data.messages || [];
-      paintMsgCount(msgs.length);   // 同样画在"空就 return"之前
-      if (!msgs.length) { box.innerHTML = '<div class="empty">暂无学生消息</div>'; return; }
-      box.innerHTML = msgs.map(m => {
-        const name = MODULE_NAMES[m.module] || m.module || "未指定";
-        return `<div class="msg">
-          <div class="top"><span class="tag">${esc(name)}</span><span>${esc(m.ts)}</span></div>
+      const all = data.messages || [];
+      const live = all.filter(m => !m.archived);
+      const arch = all.filter(m => m.archived);
+      paintMsgCount(live.length);   // 同样画在"空就 return"之前，而且**只数没归档的**
+      if (!all.length) { box.innerHTML = '<div class="empty">暂无学生消息</div>'; return; }
+      box.innerHTML = live.map(m => msgRow(m, false)).join("")
+        + (arch.length ? `<div class="archLine">🗄 已归档 ${arch.length} 条`
+          + `<button data-toggle-arch="1">${showArchMsg ? "藏起来" : "看一看"}</button>`
+          + `<span class="small">归档=从列表收起，存档文件里那条没动</span></div>` : "")
+        + (showArchMsg ? arch.map(m => msgRow(m, true)).join("") : "");
+      bindArchButtons(box, "/api/admin/messages/", loadMessages,
+        t => `这条消息来自「${t.kind}」：${t.desc}`,
+        "归档只收这一条。它要是某张工单的双写记录，**不会**反过来把工单也收掉 —— 要一起收请去工单那边按【归档】。",
+        "msgArchStatus");
+      const tg = box.querySelector("[data-toggle-arch]");
+      if (tg) tg.addEventListener("click", () => { showArchMsg = !showArchMsg; loadMessages(); });
+    }
+
+    function msgRow(m, archived) {
+      const name = MODULE_NAMES[m.module] || m.module || "未指定";
+      const label = (m.message || "").slice(0, 40);
+      return `<div class="msg${archived ? " arch" : ""}">
+          <div class="top"><span class="tag">${esc(name)}</span><span>${esc(m.ts)}</span>
+            ${archived ? '<span class="archTag">已归档 ' + esc(m.archived_at || "") + "</span>" : ""}</div>
           <div class="q">🎓 学生：${esc(m.message)}</div>
-          <div class="a">🤖 管家：${esc(m.answer || "（无回答）")}</div>
+          <div class="a">🤖 管家：${esc(m.answer || "（无回答）")}
+            ${archived
+              ? `<button class="mini" data-arch="${esc(m.id)}" data-undo="1" data-kind="${esc(name)}" data-desc="${esc(label)}">放回</button>`
+              : `<button class="mini danger" data-arch="${esc(m.id)}" data-kind="${esc(name)}" data-desc="${esc(label)}">🗑 归档</button>`}
+          </div>
         </div>`;
-      }).join("");
+    }
+
+    // ---------- 归档：一张自绘确认框 + 一份按钮绑定（工单与消息共用） ----------
+    let showArchWo = false;    // 「看已归档」开关：两张表各记各的，别互相串
+    let showArchMsg = false;
+    const cfMask = document.getElementById("confirmMask");
+
+    function askConfirm(opts) {
+      return new Promise(resolve => {
+        document.getElementById("cfHead").textContent = opts.title || "确定吗？";
+        document.getElementById("cfBody").textContent = opts.body || "";
+        const warn = document.getElementById("cfWarn");
+        warn.textContent = opts.warn || "";
+        warn.style.display = opts.warn ? "" : "none";
+        document.getElementById("cfOk").textContent = opts.okText || "确定";
+        cfMask.classList.add("show");
+        document.getElementById("cfCancel").focus();
+        const okBtn = document.getElementById("cfOk");
+        const cancelBtn = document.getElementById("cfCancel");
+        // 用 onclick 赋值而不是 addEventListener：这框会被反复打开，绑上去的监听器会一层层攒着，
+        // 第二次按【确定】就同时跑好几个回调（这一页还有 5 秒轮询在跑，最容易撞上）。
+        const done = (v) => {
+          cfMask.classList.remove("show");
+          okBtn.onclick = null; cancelBtn.onclick = null; cfMask.onclick = null;
+          resolve(v);
+        };
+        okBtn.onclick = () => done(true);
+        cancelBtn.onclick = () => done(false);
+        cfMask.onclick = (e) => { if (e.target === cfMask) done(false); };
+      });
+    }
+    document.addEventListener("keydown", e => {
+      if (e.key === "Escape" && cfMask.classList.contains("show")) {
+        document.getElementById("cfCancel").click();
+      }
+    });
+
+    function bindArchButtons(box, urlPrefix, reload, describeFn, warnText, statusId) {
+      box.querySelectorAll("[data-arch]").forEach(b => b.addEventListener("click", async () => {
+        const undo = b.dataset.undo === "1";
+        const ok = await askConfirm({
+          title: undo ? "把这条放回列表？" : "归档这一条？",
+          body: describeFn(b.dataset) + (undo ? "放回后它重新出现在列表里。" : ""),
+          warn: undo ? "" : warnText,
+          okText: undo ? "放回" : "归档",
+        });
+        if (!ok) return;
+        const st = document.getElementById(statusId);
+        try {
+          const r = await (await adminFetch(urlPrefix + encodeURIComponent(b.dataset.arch) + "/archive", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ archived: !undo }),
+          })).json();
+          if (r.error) { if (st) st.textContent = "❌ " + r.error; return; }
+          if (st) {
+            st.textContent = undo ? "已放回 1 条。"
+              : "已归档 1 条" + (r.mirrored_messages ? `（连同 ${r.mirrored_messages} 条双写的学生消息一起收起）` : "，台账里那条还在，可放回。");
+          }
+        } catch (e) { if (st) st.textContent = "❌ 归档时网络出问题了：" + e.message; }
+        reload();
+      }));
     }
 
     document.getElementById("publish").addEventListener("click", publish);
@@ -686,9 +836,17 @@
     }
 
     async function clearUsage() {
-      const st = document.getElementById("usageStatus");
-      if (!confirm("确定清空全部用量记录吗？只清统计流水，不动任何待办/课表/会话。")) return;
+      // 原来这里是原生 confirm()：改成走同一份 askConfirm —— 一页里留两种确认框，
+      // 迟早有人以为"那个也会弹出自绘的那个"；而且原生框连点几次会被浏览器拦掉。
+      const ok = await askConfirm({
+        title: "清空全部用量记录？",
+        body: "只清统计流水（app/data/llm_usage.jsonl），不动任何待办/课表/会话。",
+        warn: "这一条是**真删**，和工单/消息的「归档」不一样：流水清完就没了。",
+        okText: "清空流水",
+      });
+      if (!ok) return;
       const d = await (await adminFetch("/api/admin/usage/clear", { method: "POST" })).json();
+      const st = document.getElementById("usageStatus");
       st.textContent = "✅ " + (d.message || "已清空");
       loadUsage();
       setTimeout(() => { st.textContent = ""; }, 4000);
