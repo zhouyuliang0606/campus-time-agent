@@ -1008,10 +1008,18 @@ html.gx-glass[data-gx-refine="on"] .composer, html.gx-glass[data-gx-refine="on"]
         rows.join("") + "</details>";
     }
 
+    // 气泡上那个小标签：低代码那一路后端回的是 `custom:<服务id>`，
+    // 把一串 id 印给学生既没意义、又是技术内脏（红线 8），统一显示成"驿站服务"；
+    // 其余模块照旧，不顺手改既有显示（别的测试钉着它们）。
+    function moduleTag(m) {
+      if (!m) return "";
+      return String(m).indexOf("custom:") === 0 ? "驿站服务" : String(m);
+    }
+
     function addMsg(who, content, kind, module, trace) {
       const el = document.createElement("div");
       el.className = "msg " + (kind === "sys" ? "sys" : (who === "我" ? "user" : "bot"));
-      let html = `<div class="who">${esc(who)}${module ? `<span class="tag">${esc(module)}</span>` : ""}</div>`;
+      let html = `<div class="who">${esc(who)}${module ? `<span class="tag">${esc(moduleTag(module))}</span>` : ""}</div>`;
       html += `<div class="bubble">${richText(content)}</div>`;
       // 思考轨迹跟着助手的回复一起出现（系统提示那类不挂，它不是"思考"）。
       // 默认展示：它是学生核对"它有没有听错"的唯一凭据（见 .trace 的注释）。
@@ -1666,6 +1674,22 @@ html.gx-glass[data-gx-refine="on"] .composer, html.gx-glass[data-gx-refine="on"]
           wrap.appendChild(card);
         });
         container.appendChild(wrap);
+        return;
+      }
+
+      // ---- ②-ter 低代码服务登记提案（#22 单子 4）：点【确认登记】才由系统写台账 ----
+      const crds = options.filter(o => o.kind === "custom_record");
+      if (confirmPageOk && crds.length) {
+        const one = crds[crds.length - 1];
+        const hint = document.createElement("div");
+        hint.className = "opt-hint";
+        // 走 textContent：服务名是管理员运行时生成的数据，这页的规矩是
+        // "数据要么 esc() 要么 textContent"，属性/innerHTML 位置一个都不许裸拼。
+        hint.textContent = "📝 「" + (((one && one.name) || "这项服务")) + "」登记确认："
+          + "点【确认登记】才会写进驿站台账，点【取消】一个字都不写。";
+        wrap.appendChild(hint);
+        container.appendChild(wrap);
+        openConfirm(one, container);
         return;
       }
 

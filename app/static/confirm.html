@@ -78,6 +78,18 @@
      "这个选项可以由我来自行补充"，不给他这条路，几段候选不合意就只能放弃。 */
   .other { margin-top: 10px; padding-top: 10px; border-top: 1px dashed #e3e8f5; }
   .other-l { display: block; font-size: 12.5px; font-weight: 600; color: #4a5675; margin-bottom: 5px; }
+
+  /* 低代码服务的登记表单（#22 单子 4）：字段是运行时数据（collect_fields），
+     一项服务两三个、另一项五六个都可能，所以样式给通用一份，不逐服务写死。 */
+  .cf-fields { margin-top: 10px; }
+  .cf-fields label {
+    display: block; font-size: 12.5px; font-weight: 600; color: #4a5675; margin: 8px 0 4px;
+  }
+  .cf-fields input {
+    width: 100%; padding: 8px 10px; font: inherit; font-size: 13px;
+    border: 1px solid #d8def0; border-radius: 9px; box-sizing: border-box; outline: none;
+  }
+  .cf-fields input:focus { border-color: #9fbcff; }
   .other input {
     width: 100%; padding: 8px 11px; font-size: 13px; color: #2a3350;
     border: 1px solid #d8def0; border-radius: 9px; background: #fff;
@@ -246,6 +258,40 @@ const KIND = {
       return `✅ 工单已上报驿站（编号 ${esc(String(id))}）：${esc(p.wo_kind || "疑似丢件")}。`
         + (r && r.workorder && r.workorder.desc ? ` —— ${esc(r.workorder.desc)}` : "")
         + "。管理员会尽快处理，进度可在快递面板的「我提交过的工单」里看到。";
+    },
+  },
+  custom_record: {
+    // 低代码服务的登记确认条（#22 单子 4）。
+    // 字段名与顺序都来自**服务定义**（field_order），前端不另写一份字段表 ——
+    // 两项服务收的东西不一样，写死一份就等于"新服务必须改前端"，低代码白做。
+    icon: "📝", title: "登记这一条", confirm: "确认登记", danger: false,
+    render(p) {
+      const f = p.fields || {};
+      const order = (p.field_order && p.field_order.length)
+        ? p.field_order : Object.keys(f);
+      const inputs = order.map((k, i) => `
+        <label for="cfCus${i}">${esc(String(k))}</label>
+        <input id="cfCus${i}" data-f="${esc(String(k))}" type="text"
+          value="${esc(String(f[k] || ""))}" autocomplete="off">`).join("");
+      return `<p class="summary">${esc(p.name || "登记")}</p>
+        <div class="meta">${esc(p.summary || "点【确认登记】才会写进台账")}</div>
+        <div class="cf-fields">${inputs}</div>
+        <div class="meta" style="margin-top:8px;">
+          缺的补一下；点【确认登记】才写进台账，点【取消】一个字都不写。</div>`;
+    },
+    async apply(p) {
+      const fields = {};
+      document.querySelectorAll(".cf-fields input[data-f]").forEach(el => {
+        fields[el.getAttribute("data-f")] = el.value.trim();
+      });
+      return api("POST", "/api/custom/records",
+        { session_id: sid(), service: p.service, fields });
+    },
+    doneText(p, r) {
+      const id = (r && r.record && r.record.id) || "";
+      // 回执用的是**服务自己定义的那句话**（管理员在驿站端写的），不是通用一句"已提交"
+      const reply = (r && r.reply) || p.reply || "已登记。";
+      return `✅ ${esc(reply)}${id ? `（记录号 ${esc(String(id))}）` : ""}`;
     },
   },
   todo_add: {

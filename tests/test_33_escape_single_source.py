@@ -158,7 +158,10 @@ def batch_single_source(ck):
 # 所以有人改回裸插值当场就红，报的也正是那一条。
 REQUIRED = [
     ("student.html", "${esc(who)}", "聊天泡的 who（昵称来自 localStorage）"),
-    ("student.html", "${esc(module)}", "聊天泡的 module 标签（**来自后端返回**）"),
+    # 2026-10-16 #22 单子 4：这处从 `${esc(module)}` 换成 `${esc(moduleTag(module))}` ——
+    # 低代码那一路后端回的是 `custom:<服务id>`，原样印给学生既没意义又是技术内脏，
+    # 所以先映射成"驿站服务"再转义。**转义这一层没少**，只是多包了一层纯函数。
+    ("student.html", "${esc(moduleTag(module))}", "聊天泡的 module 标签（**来自后端返回**）"),
     ("student.html", "'+esc(p.key)+'", "设置页性格卡片的 data-key（属性位置，来自接口）"),
     ("student.html", "${esc(p.label)}", "快递状态标签（接口数据，旧版裸进 innerHTML）"),
     ("student.html", "${esc(p.arrived_at)}", "快递到件时间（接口数据）"),
@@ -296,6 +299,11 @@ ALLOWED_RAW = {
     "woCls(st)": "class 名。woCls 是个只回三个字面量的映射（st 无论是什么都只会落进 "
                  "\"st done\"/\"st doing\"/\"st\" 之一），学生看的状态文本同一行走 esc(st)",
     "trig": "触发词 pills，构造时就地转义过（map 里对每一项调 esc，test_53 C 批钉着那句）",
+    # 2026-10-16 #22 单子 4：登记确认条的字段表单。字段是**运行时数据**（服务定义的
+    # collect_fields），一项服务两三个、另一项五六个，所以先 map 成一段 HTML 再整体插进容器。
+    # 不是"漏了一处裸插值"：label / data-f / value 三个位置都在 map 里面各自 esc 过，
+    # test_54 B 批钉的就是那一句（三条全带 esc）。
+    "inputs": "登记字段输入框，map 里逐字段 esc 了 label/data-f/value 之后才 join 起来",
 }
 DATE_MATH = re.compile(r"^\{?d\.get(Month|Date)\(\) \+? ?1?\}$")
 
