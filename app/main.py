@@ -38,7 +38,8 @@ from app.modules.schedule import SYSTEM_PROMPT as SCHEDULE_PROMPT, build_tools a
 from app.store import (
     add_message, list_messages, add_notice, list_notices,
     list_services, get_service, validate_service_def, add_service,
-    list_custom_records, add_custom_record,
+    list_custom_records, add_custom_record, service_of_module,
+    is_custom_module, match_service_by_trigger, custom_module,
     list_kb, add_kb_entry, update_kb_entry, delete_kb_entry,
     get_persona, set_persona,
     get_settings, set_settings,
@@ -60,6 +61,8 @@ from app.modules.express import packages_view as express_packages_view
 from app.modules.takeout import orders_view as takeout_orders_view
 from app.modules.files import build_tools as files_tools
 from app.modules.station import build_system_prompt as STATION_PROMPT, build_tools as station_tools
+# 低代码服务（#22 单子 4）：提示与工具箱都**按那份运行时定义现算**，所以这里导入的是函数本身
+from app.modules.custom import custom_prompt, custom_tools
 # planner 也是"可调用提示"：每次对话都要把**今天的日期**动态拼进去，
 # 否则学生说"明天"，AI 根本算不出是哪一天
 from app.modules.planner import (
@@ -176,6 +179,19 @@ REGISTRY: dict[str, tuple[Any, Any]] = {
 }
 # 没命中任何模块时的兜底提示
 DEFAULT_PROMPT = "你是校园时间管家，一个友好、靠谱的校园 AI 助手。"
+
+
+def _module_handled(module: str | None) -> bool:
+    """「这个 module 有人接得住吗」——主链路两处判据**只写这一份**。
+
+    两种合法：`REGISTRY` 里登记过的固定模块，或者低代码的 `custom:<真实存在的id>`。
+    ⚠️ 这两处以前都直接写 `in REGISTRY`，低代码接进来之后必须一起改：
+    只改一处会出现"路由给了 custom、主链路又不认"的中间态 ——
+    那句话会被悄悄打回 faq，测试看着绿、真机答非所问（本项目最贵的那类 bug）。
+    """
+    if not module:
+        return False
+    return module in REGISTRY or service_of_module(module) is not None
 
 # 统一追加给每个模块的"现在是哪天几点"。
 # 为什么必须在这一层加、而不是各模块自己写：原先**只有 planner** 的提示里注了基准日期，
@@ -1364,13 +1380,18 @@ async def _chat_impl(req: Request, meta: dict, emit=None):
     #  代价说明：只在"规则没接住"或"规则想办事、可这话像是在问"时才多问一次，
     #  常规下单句（"加个健身"）依旧零 API 调用。
     _explicit_module = body.get("module")
-    if not (_explicit_module and _explicit_module in REGISTRY):
+    # 显式栏目也要过同一道"有人接得住"的判据（`_module_handled`）：
+    # 低代码那一路的前端可以直接带 `module: "custom:<id>"` 说话，那是合法的；
+    # 但**不存在的 id 一样进不来** —— 显式指定不等于免检。
+    if not _module_handled(_explicit_module):
         _explicit_module = None
 
     _rule_hit = _rule_intent(message)
     _asks = looks_like_question(message)
     # 已经在"问答型栏目"里说话，本身就是一个强类型信号（比如「校园问答」那一栏）。
-    _qa_view = _explicit_module in _QA_MODULES
+    # 低代码那一路也算这类栏目：它不是 planner，规则层要是想替学生排日程，一样得先复核。
+    _qa_view = (_explicit_module in _QA_MODULES
+                or service_of_module(_explicit_module) is not None)
     _need_review = bool(_rule_hit) and (_asks or _qa_view)
     _sem = None
     if (_rule_hit is None or _need_review) and not is_confirmation(message):
@@ -1457,18 +1478,41 @@ async def _chat_impl(req: Request, meta: dict, emit=None):
     # 1) 归哪个模块管：**显式栏目 > 语义层 > 关键词兜底**。
     #    学生在哪个栏目说话，本身就是最强的类型信号；他没指定时才轮到判定层。
     module_key = _explicit_module or _sem_module
-    if not (module_key and module_key in REGISTRY):
+    if not (module_key and _module_handled(module_key)):
         module_key = await router.route(message, override=model_config, sem=_sem)
-    if module_key not in REGISTRY:
+    if not _module_handled(module_key):
         module_key = DEFAULT_MODULE
 
-    # 2) 取该模块的系统提示和工具箱（提示可能是函数，按需调用以拼入最新人格）
-    prompt_src, build_tools = REGISTRY.get(module_key, (DEFAULT_PROMPT, lambda: {}))
+    # 1a) 触发词是**硬信号**（红线 5：硬信号得单独提前，光靠判定层判对不够）。
+    #     为什么光有 `router` 那一档不够：配了密钥时语义层几乎总会给出一个合法 module
+    #     （`faq` 也算合法），于是 1460 那次 `router.route()` **根本不会被调用** ——
+    #     触发词档只在"没密钥 / 判定层落空"时才生效，真机上能不能命中全看模型心情，那不叫确定性。
+    #     但它也不许抢：只在"这句还没被认成别的事要办"（意图为空或 chat）时接管，
+    #     并且问句一律不接管（复用 `looks_like_question`，不另写判据）。
+    if not is_custom_module(module_key) and not looks_like_question(message):
+        _eff_intent = _sem_intent or _rule_hit
+        if _eff_intent in (None, INTENT_CHAT):
+            _svc_hit = match_service_by_trigger(message)
+            if _svc_hit:
+                module_key = custom_module(_svc_hit["id"])
+
+    # 1b) 低代码那一路（#22 单子 4）：module 是 `custom:<服务id>`，**它的"注册表"就是 services.json**。
+    #     提示和工具箱都按这份运行时数据现算 —— 管理员改了定义，下一句就生效，不用重启；
+    #     而且这里能进来越过这道闸，本身就说明 service_id 是真实存在的（`_module_handled` 回查过）。
+    _custom_svc = service_of_module(module_key)
+    if _custom_svc:
+        prompt_src = lambda s=_custom_svc: custom_prompt(s)          # noqa: E731
+        build_tools = lambda s=_custom_svc: custom_tools(s)          # noqa: E731
+    else:
+        prompt_src, build_tools = REGISTRY.get(module_key, (DEFAULT_PROMPT, lambda: {}))
     base_prompt = prompt_src() if callable(prompt_src) else prompt_src
     # 统一拼上"你会读文件"的说明 + 学生助手人设规矩 + 闲聊守则，每个模块都生效
     prompt = base_prompt + _now_block() + FILE_HINT + ASSISTANT_RULES + CHITCHAT_RULES
-    # 学生端选了性格，且不是驿站模块（驿站用管理员配的人格），就把性格腔调拼进去
-    if persona_key and module_key != "station":
+    # 学生端选了性格，且不是驿站模块（驿站用管理员配的人格），就把性格腔调拼进去。
+    # ⚠️ 低代码服务**也不叠学生性格**：这项服务的语气是驿站定下来的（"登记员"），
+    #    再叠一层"热情活泼/冷淡"只会让同一项服务在不同学生面前长得不一样，
+    #    管理员那句"登记完回什么话"也就不作数了。
+    if persona_key and module_key != "station" and not _custom_svc:
         prompt += "\n" + persona_block(persona_key)
 
     # 工具箱 = 模块自己的工具 + 通用的文件读取工具。
@@ -4058,6 +4102,25 @@ async def station_service_records(sid: str):
     return {"records": list_custom_records(sid)}
 
 
+def _custom_field_errors(svc: dict, fields) -> str:
+    """「这条登记能不能落库」的唯一判据 —— 驿站端与学生端**共用一份**。
+
+    两处各写一遍迟早一份松（本项目反复吃过），所以收在这儿：
+    不是字典 / 缺必填 / 多给键（往台账里塞任意键不能是低代码的副作用）。
+    返回一句人话；空串表示可以写。
+    """
+    if not isinstance(fields, dict):
+        return "登记内容得是一组字段"
+    want = [str(x) for x in (svc.get("collect_fields") or [])]
+    missing = [k for k in want if not str(fields.get(k) or "").strip()]
+    if missing:
+        return "这些信息还没填：" + "、".join(missing)
+    stray = [k for k in fields if k not in want]
+    if stray:
+        return "这些字段不属于这项服务：" + "、".join(sorted(stray)[:4])
+    return ""
+
+
 @app.post("/api/station/services/{sid}/records")
 async def station_service_record(sid: str, req: Request):
     """登记一条（人话：管理员在驿站端点【登记】，系统按服务定义把字段存进台账）。
@@ -4069,19 +4132,52 @@ async def station_service_record(sid: str, req: Request):
     if not svc:
         return JSONResponse({"error": "没有这项服务"}, status_code=404)
     body = await req.json()
-    fields = body.get("fields") if isinstance(body, dict) else None
-    if not isinstance(fields, dict):
-        return JSONResponse({"error": "登记内容得是一组字段"}, status_code=400)
-    want = [str(x) for x in (svc.get("collect_fields") or [])]
-    missing = [k for k in want if not str(fields.get(k) or "").strip()]
-    if missing:
-        return JSONResponse({"error": "这些信息还没填：" + "、".join(missing)}, status_code=400)
-    stray = [k for k in fields if k not in want]
-    if stray:
-        # 多给的字段不收：不然"往台账里塞任意键"就成了低代码服务的副作用
-        return JSONResponse({"error": "这些字段不属于这项服务：" + "、".join(sorted(stray)[:4])},
-                            status_code=400)
-    item = add_custom_record(sid, fields, svc=svc)
+    why = _custom_field_errors(svc, body.get("fields") if isinstance(body, dict) else None)
+    if why:
+        return JSONResponse({"error": why}, status_code=400)
+    item = add_custom_record(sid, body["fields"], svc=svc)
+    return {"ok": True, "record": item,
+            "reply": str(svc.get("reply_template") or "已登记。")}
+
+
+@app.post("/api/custom/records")
+async def custom_record_confirm(req: Request):
+    """学生点了确认卡 → **系统**把这条登记写进 `custom/<服务id>.json`（#22 单子 4 的执行端）。
+
+    这条链路是"自定义服务真正能用"的那一半：判定层认得出、模型出得了卡，
+    但**写入这一步没有一行经过模型** —— 模型手里那个 `propose_custom_record` 只会产卡。
+
+    三道硬判据，缺一道这道口就是开放的写入口：
+      1. **暂存里必须真有一张这张服务、这个会话的 `custom_record` 卡**。
+         凭空 POST 一个 service_id + fields 是登记不进去的：那张"纸"是系统的授权凭据。
+      2. 字段按那份服务定义收口（与学生/驿站同一份判据 `_custom_field_errors`）。
+      3. 服务不存在 → 404；卡已经不在了 → 一句人话的 409，**不假装登记成功**。
+    """
+    body = await req.json()
+    sid = str(body.get("session_id") or "").strip()
+    service_id = str(body.get("service") or "").strip()
+    svc = get_service(service_id)
+    if not svc:
+        return JSONResponse({"error": "没有这项服务"}, status_code=404)
+
+    entry = peek_pending(sid) if sid else None
+    cards = [o for o in ((entry or {}).get("options") or [])
+             if isinstance(o, dict) and o.get("kind") == "custom_record"
+             and str(o.get("service") or "") == service_id]
+    if not cards:
+        # 卡没了 = 超时、或者已经点过一次。这里绝不能"那就直接写一条"——
+        # 那等于这张口在没有提案的情况下也能写库，红线 1 当场作废。
+        return JSONResponse({"error": "那张确认条已经不在了（超时了或已经登记过）。"
+                                      "再跟我说一次这件事，我重新挂一张。"},
+                            status_code=409)
+    why = _custom_field_errors(svc, body.get("fields"))
+    if why:
+        return JSONResponse({"error": why}, status_code=400)
+
+    item = add_custom_record(service_id, body["fields"], svc=svc)
+    # 一次点确认 = 一张卡用掉。整个会话的暂存清空（与工单那条同一收尾方式，
+    # 免得下一句"确认"又把这这张卡当成还没办的再写一遍）。
+    clear_pending(sid)
     return {"ok": True, "record": item,
             "reply": str(svc.get("reply_template") or "已登记。")}
 
