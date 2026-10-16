@@ -602,7 +602,16 @@
       loadKB();
     }
     async function deleteKB(i) {
-      if (!confirm("确定删除这条知识库条目？")) return;
+      // 这页第三处原生 confirm（前一处是 clearUsage）：一并并到 askConfirm，
+      // 不然"一页里两种确认框"就是字面成立——而且措辞得说清这是**真删**，
+      // 跟工单/消息那个可以放回的「归档」不是一回事。
+      const ok = await askConfirm({
+        title: "删除这条知识库条目？",
+        body: "删除的是知识库里的这一条问答，学生端校园问答立刻不再命中它。",
+        warn: "这条是**真删**，不像工单/消息的归档能放回；要恢复只能重新添加。",
+        okText: "删除",
+      });
+      if (!ok) return;
       await adminFetch("/api/admin/kb/" + i, { method: "DELETE" });
       loadKB();
     }
@@ -640,7 +649,7 @@
         bindArchButtons(box, "/api/workorders/", loadWorkOrders,
           t => `这条工单是「${t.kind}」${t.desc ? "：" + t.desc : ""}。`,
           "学生上报的问题也会跟着从收件箱收起（那边是同一件事的另一本账）。台账里那条还在，可随时放回。",
-          "woArchStatus");
+          "woArchStatus", loadMessages);   // 级联改到收件箱 → 那张表也立刻重画
         const tg = box.querySelector("[data-toggle-arch]");
         if (tg) tg.addEventListener("click", () => { showArchWo = !showArchWo; loadWorkOrders(); });
       } catch (e) {
@@ -683,7 +692,7 @@
       bindArchButtons(box, "/api/admin/messages/", loadMessages,
         t => `这条消息来自「${t.kind}」：${t.desc}`,
         "归档只收这一条。它要是某张工单的双写记录，**不会**反过来把工单也收掉 —— 要一起收请去工单那边按【归档】。",
-        "msgArchStatus");
+        "msgArchStatus", loadWorkOrders);   // 反向同理（虽然消息归档不动工单，两张表始终一起对齐）
       const tg = box.querySelector("[data-toggle-arch]");
       if (tg) tg.addEventListener("click", () => { showArchMsg = !showArchMsg; loadMessages(); });
     }
@@ -738,7 +747,7 @@
       }
     });
 
-    function bindArchButtons(box, urlPrefix, reload, describeFn, warnText, statusId) {
+    function bindArchButtons(box, urlPrefix, reload, describeFn, warnText, statusId, alsoReload) {
       box.querySelectorAll("[data-arch]").forEach(b => b.addEventListener("click", async () => {
         const undo = b.dataset.undo === "1";
         const ok = await askConfirm({
@@ -756,12 +765,19 @@
             body: JSON.stringify({ archived: !undo }),
           })).json();
           if (r.error) { if (st) st.textContent = "❌ " + r.error; return; }
+          // 级联动了几条镜像必须写在回执上 —— 只说"已放回 1 条"而对面那张表没跟着动，
+          // 看的人只能自己去翻收件箱（真机第一版就是这么露馅的）。
+          const n = r.mirrored_messages || 0;
           if (st) {
-            st.textContent = undo ? "已放回 1 条。"
-              : "已归档 1 条" + (r.mirrored_messages ? `（连同 ${r.mirrored_messages} 条双写的学生消息一起收起）` : "，台账里那条还在，可放回。");
+            st.textContent = undo
+              ? `已放回 1 条${n ? `（连同 ${n} 条双写的学生消息一起放回）` : "，列表里重新看得见。"}`
+              : `已归档 1 条${n ? `（连同 ${n} 条双写的学生消息一起收起）` : "，台账里那条没动，可放回。"}`;
           }
         } catch (e) { if (st) st.textContent = "❌ 归档时网络出问题了：" + e.message; }
         reload();
+        // 工单↔消息是同一件事的两本账：动了这一张，**另一张也立刻重画**，
+        // 不然点完归档的这几秒里，收件箱还挂着那条已经收起的消息（等 5 秒轮询才对上）。
+        if (alsoReload) alsoReload();
       }));
     }
 
