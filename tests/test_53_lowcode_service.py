@@ -237,6 +237,23 @@ def batch_c_redlines():
     c.check("轮询先比清单签名：没变不重建 DOM，有人在填（焦点/有内容）也跳过这一轮",
             "sig === svcSig" in st and "input:focus, input:not(:placeholder-shown)" in st
             and "svcSig = sig" in st, "")
+    # #24 决策①：驿站端要看得见学生登记进来的条目（读接口本来就有，缺的是界面）
+    c.check("驿站端列了「学生登记条目」：占位块 + 单独一轮读台账 + 定时刷（不是只刷服务定义）",
+            'recs.className = "recs"' in st and "async function loadRecords()" in st
+            and '"/api/station/services/"' in st and "setInterval(svcTick, 5000)" in st, "")
+    # 内置那项的台账是「待处理问题」那块，不该再摆一个必然为空的 custom 清单误导人
+    c.check("内置那项（table=workorders）不摆「学生登记条目」块（它的账在工单那块）",
+            'if (String(s.table || "") !== "workorders")' in st, "")
+    lr = st[st.index("async function loadRecords()"):st.index('document.getElementById("refreshSvc")')]
+    c.check("登记条目的渲染只用 textContent/createElement（innerHTML 那一次是清空）；"
+            "模板字符串拼给 textContent 是安全的，禁的是别的注入口子",
+            lr.count("innerHTML") == 1 and 'rec.innerHTML = "";' in lr
+            and "line.textContent" in lr
+            and not any(w in lr for w in ("insertAdjacentHTML", "outerHTML", "document.write",
+                                          "eval(", "new Function")),
+            f"innerHTML {lr.count('innerHTML')} 次")
+    c.check("只读不做状态修改：服务定义里没有状态字段，页面就不许假装能改（要做得先给定义加状态）",
+            "status" not in lr, "")
     # ⚠️ 别写 `"svcSig = null" in st` 就完事 —— 那句在 `let svcSig = null` 的声明里也有，
     # 拆掉 catch 里的复位照样绿（变异 V2 第一次就是这么蒙过去的）。要钉就钉"它在哪一段"。
     stn = st.replace("\r\n", "\n")

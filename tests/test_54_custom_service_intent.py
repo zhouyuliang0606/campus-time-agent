@@ -367,13 +367,37 @@ def batch_b1_tool_makes_card():
         c.check("系统提示里带着这项服务的名字和要收的字段（现算，不是写死）",
                 "失物招领" in pr and "物品描述" in pr and "严禁说" in pr, "")
 
-        # 优先级诚实写下来：句子里带「报修」这类硬信号时，**先出工单卡**（既有分支排在引擎之前）
-        got2 = client.post("/api/chat", json={"message": "宿舍空调坏了，帮我报修",
-                                              "session_id": "T54-card-2"})
+        # ★ 优先级（#24 决策②）：「报修」在 `_WORK_ORDER_RE` 里是硬信号，但一句既有
+        #   自定义服务触发词、又有「报修」的话，**归服务**，不再被通用工单劫走。
+        #   对照组（下面那条）把服务摘掉，同一句立刻退回工单 —— 证明变的只有"有没有人接管"。
+        sem_repair = json.dumps({"module": "custom:rep1", "intent": "custom_record",
+                                 "confidence": 0.9}, ensure_ascii=False)
+        r5 = _patch_tool_model(sem_repair, "propose_custom_record",
+                               {"fields": {"宿舍楼": "3 号楼", "坏了什么": "空调"}})
+        try:
+            got2 = client.post("/api/chat", json={
+                "message": "宿舍空调坏了，帮我报修", "session_id": "T54-card-2"})
+        finally:
+            r5()
         kinds2 = [o.get("kind") for o in (got2.json().get("options") or [])
                   if isinstance(o, dict)]
-        c.check("带「报修」这种既有硬信号的句子照旧先走工单上报（新档不抢既有分支）",
-                "work_order_report" in kinds2 and "custom_record" not in kinds2, str(kinds2))
+        c.check("有「宿舍报修」这项服务接管时，含「报修」的这句归服务（通用工单不再劫持）",
+                "custom_record" in kinds2 and "work_order_report" not in kinds2, str(kinds2))
+
+        # 对照组：**把这项服务摘掉**，同一句必须立刻退回工单上报（兜底没被动过）
+        from app import store as _st
+        _keep = _st.list_services()
+        with open(data_path("services.json"), "w", encoding="utf-8") as _fh:
+            json.dump([s for s in _keep if s.get("id") != "rep1"], _fh, ensure_ascii=False)
+        got2b = client.post("/api/chat", json={
+            "message": "宿舍空调坏了，帮我报修", "session_id": "T54-card-2b"})
+        kinds2b = [o.get("kind") for o in (got2b.json().get("options") or [])
+                   if isinstance(o, dict)]
+        c.check("同一句、没有服务接管 → 照旧出工单上报卡（兜底一字未动）",
+                "work_order_report" in kinds2b and "custom_record" not in kinds2b, str(kinds2b))
+        # 原样写回（不用 `_seed()` 再建一遍：那会把 lost1 也追加成重复项）
+        with open(data_path("services.json"), "w", encoding="utf-8") as _fh:
+            json.dump(_keep, _fh, ensure_ascii=False)
 
         # ★ 这条才是"确定性"的证据：**模型把这句当成闲聊**（intent=chat、module=faq，
         #   也就是语义层根本没选服务），只要句子里有管理员写下的触发原话，仍然归到那项服务。
