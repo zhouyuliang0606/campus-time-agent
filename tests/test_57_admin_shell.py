@@ -103,15 +103,23 @@ def batch_c_badges():
     st = code_of(F.read_text(encoding="utf-8")).replace("\r\n", "\n")
     full = F.read_text(encoding="utf-8").replace("\r\n", "\n")
     lw = full[full.index("async function loadWorkOrders()"):full.index("async function loadMessages()")]
+    lm = full[full.index("async function loadMessages()"):full.index("async function loadUsage()")]
+    # ⚠️ 顺序钉**不认变量名**：#29 归档把那两张表的局部变量从 list/msgs 改成了 all，
+    #    照原样钉 `if (!list.length)` 就当场 ValueError 崩掉（连 ❌ 都不打，退出码 1 ——
+    #    判"绿"只看 ❌ 会把崩当成过，这一轮我就这么骗了自己一次）。认形状：`if (!<任何东西>.length)`。
+    def _gate(seg, name):
+        m = re.search(r"if \(!\w+\.length\)", seg)
+        assert m, name + "：这段里找不到「空列表就 return」那道闸 —— 它被改掉了？"
+        return m.start()
+
     c.check("红点画在「空列表就 return」之前（放后面则一条不剩时红点永远挂在上一轮的数上）",
-            lw.index("paintWoBadge(") < lw.index("if (!list.length)"),
-            f"paint@{lw.index('paintWoBadge(')} return@{lw.index('if (!list.length)')}")
+            lw.index("paintWoBadge(") < _gate(lw, "loadWorkOrders"),
+            f"paint@{lw.index('paintWoBadge(')} 闸@{_gate(lw, 'loadWorkOrders')}")
     cat = lw[lw.index("} catch (e) {"):]
     c.check("工单读不到时把红点摘掉（拿上一分钟的数喊「还有几条」比不喊更坏）",
             "paintWoBadge(null)" in cat, "")
-    lm = full[full.index("async function loadMessages()"):full.index("async function loadUsage()")]
     c.check("消息计数同样画在早退之前",
-            lm.index("paintMsgCount(") < lm.index("if (!msgs.length)"), "")
+            lm.index("paintMsgCount(") < _gate(lm, "loadMessages"), "")
     c.check("红与灰是两套类（.sb-num 带 .show / .sb-cnt 带 .hide），不许合成一个「万能角标」糊语义",
             ".sb-num.show { display: inline-block; }" in full and ".sb-cnt.hide { display: none; }" in full, "")
     c.check("未结判据与驿站端同一个写法（status !== 已解决），两页各一套迟早算出两个数",

@@ -144,8 +144,10 @@ def batch_b_shape():
     store_src = open("app/store.py", encoding="utf-8").read()
     c.check("add_message 的第 4 个参数有默认值（不传就是 chat，向后兼容写在签名上）",
             'answer: str, kind: str = "chat"' in store_src, "")
-    c.check("list_messages 支持按 kind 过滤且默认 None（默认行为不许变）",
-            "def list_messages(kind: str | None = None)" in store_src, "")
+    c.check("list_messages 支持按 kind 过滤且默认 None（默认行为不许变）；"
+            "#29 加了 include_archived 之后**两个默认值都得是「不改变老行为」的那一侧**",
+            "def list_messages(kind: str | None = None, include_archived: bool = False) -> list:" in store_src,
+            store_src[store_src.index("def list_messages"):][:78])
     return c
 
 
