@@ -55,12 +55,17 @@ def _now() -> str:
     return datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
-def add_message(module: str, message: str, answer: str, kind: str = "chat") -> dict:
+def add_message(module: str, message: str, answer: str, kind: str = "chat",
+                ref: str = "") -> dict:
     """记一条学生消息（人话：学生说了啥、在哪个模块、管家怎么答的，存进收件箱）。
 
     `kind` 是给"这条是从哪儿来的"打的标签：`chat`=学生端每轮自己存档的对话，
     `report`=工单立案时**双写**的那条（管理端「学生工单」和「学生消息」两个视图都要看得见）。
     默认 `"chat"` 是刻意的：`/api/student-message` 那个旧调用点一个字没改，行为也不该变。
+
+    `ref` 只有 `report` 那一路会带：**指向立案那条工单的 id**。
+    归档工单时要靠它找到这条镜像一起收起 —— 认字符串（回话里那句「工单 xxx」）只是
+    给加这个字段之前登进去的老记录兜的，两条都在，不批量迁移文件（同 #27 那个 `status` 的处理）。
     """
     msgs = _read("student_messages.json", [])
     item = {
@@ -71,18 +76,25 @@ def add_message(module: str, message: str, answer: str, kind: str = "chat") -> d
         "answer": answer or "",
         "kind": kind or "chat",
     }
+    if ref:
+        item["ref"] = str(ref)
     msgs.append(item)
     _write("student_messages.json", msgs)
     return item
 
 
-def list_messages(kind: str | None = None) -> list:
+def list_messages(kind: str | None = None, include_archived: bool = False) -> list:
     """列出学生消息，倒序（最新在前），方便管理员看。
 
     给了 `kind` 就只返回那一路；**没 kind 字段的老条目按 `chat` 算** ——
     它们本来就是对话，直接丢掉会让管理端那张表"突然少几行"，那是最容易被当成 bug 的现象。
+
+    `include_archived`（#29 归档）：默认**不含**已归档的。过滤只写在这一处 ——
+    管理端两张表与驿站端都从这儿读，一处藏一处不藏就会变成"同一条东西两个地方看见的不一样"。
     """
     msgs = _read("student_messages.json", [])
+    if not include_archived:
+        msgs = [m for m in msgs if not m.get("archived")]
     if kind is None:
         return list(reversed(msgs))
     return list(reversed([m for m in msgs
@@ -115,9 +127,12 @@ def add_workorder(kind: str, desc: str, source: str = "chat") -> dict:
     return item
 
 
-def list_workorders() -> list:
-    """列出全部工单，倒序（最新在前）。"""
-    return list(reversed(_read("workorders.json", [])))
+def list_workorders(include_archived: bool = False) -> list:
+    """列出全部工单，倒序（最新在前）。已归档的默认不出现（判据同 `list_messages`）。"""
+    items = _read("workorders.json", [])
+    if not include_archived:
+        items = [w for w in items if not w.get("archived")]
+    return list(reversed(items))
 
 
 def update_workorder_status(wo_id: str, status: str) -> dict | None:
@@ -129,6 +144,61 @@ def update_workorder_status(wo_id: str, status: str) -> dict | None:
             _write("workorders.json", items)
             return it
     return None
+
+
+def set_message_archived(mid: str, archived: bool = True) -> dict | None:
+    """把一条学生消息**归档**（收起来）或放回。
+
+    ⚠️ 这是**软删**：文件里那条一个字节都不少，只多/去掉 `archived` 与 `archived_at`。
+    工单与消息都是"学生报过什么"的证据，硬删掉就再也对不上账（评审问起来查不到就是查不到）。
+    """
+    msgs = _read("student_messages.json", [])
+    for m in msgs:
+        if str(m.get("id") or "") == str(mid):
+            _stamp(m, archived)
+            _write("student_messages.json", msgs)
+            return m
+    return None
+
+
+def set_workorder_archived(wo_id: str, archived: bool = True) -> tuple | None:
+    """归档一条工单，并**把双写那条学生消息一起收起**。
+
+    返回 `(工单, 一起收起的消息条数)`；找不到那条工单返回 None。
+    为什么是一个函数而不是两个接口：`add_workorder` 那边是**同一个函数里写两张表**（决策A 的双写），
+    收起也必须在这一个函数里做 —— 拆成两个口让前端各调一次 = 漏一次就静默留一条孤儿消息。
+    老记录认那条镜像只有"回话里那句「工单 {id}」"可认（`ref` 字段是这轮才加的），
+    两支都留着，且不迁移文件（同 #27 那个 `status` 的处理）。
+    """
+    items = _read("workorders.json", [])
+    hit = None
+    for it in items:
+        if str(it.get("id") or "") == str(wo_id):
+            _stamp(it, archived)
+            hit = it
+            break
+    if hit is None:
+        return None
+    _write("workorders.json", items)
+    msgs = _read("student_messages.json", [])
+    changed = 0
+    for m in msgs:
+        if str(m.get("ref") or "") == str(wo_id) or f"工单 {wo_id}" in (m.get("answer") or ""):
+            _stamp(m, archived)
+            changed += 1
+    if changed:
+        _write("student_messages.json", msgs)
+    return hit, changed
+
+
+def _stamp(item: dict, archived: bool) -> None:
+    """打/摘归档标记（一处实现，两张表共用，免得两份写法各漂一半）。"""
+    if archived:
+        item["archived"] = True
+        item["archived_at"] = _now()
+    else:
+        item.pop("archived", None)
+        item.pop("archived_at", None)
 
 
 def add_notice(title: str, content: str, attachment: dict | None = None) -> dict:

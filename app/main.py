@@ -53,6 +53,7 @@ from app.store import (
     set_todo_done_on, done_date_for, DAY_LOGGED_REPEATS,
     REPEAT_NONE, REPEAT_WEEKLY, REPEAT_DAILY, is_past_date,
     add_workorder, list_workorders, update_workorder_status,
+    set_workorder_archived, set_message_archived,
 )
 from app.modules.faq import SYSTEM_PROMPT as FAQ_PROMPT, build_tools as faq_tools
 from app.modules.express import SYSTEM_PROMPT as EXPRESS_PROMPT, build_tools as express_tools
@@ -3934,9 +3935,13 @@ async def student_message(req: Request):
 
 
 @app.get("/api/admin/messages", dependencies=[Depends(verify_admin)])
-async def admin_messages():
-    """管理员端拉取学生消息收件箱（倒序，最新在前）。"""
-    return {"messages": list_messages()}
+async def admin_messages(include_archived: bool = False):
+    """管理员端拉取学生消息收件箱（倒序，最新在前）。
+
+    `include_archived=1` 才会带上已归档的那些 —— 默认收起（#29）。过滤本身在
+    `store.list_messages` 那一处，不在这里再判一遍（两处各判 = 迟早一处藏一处不藏）。
+    """
+    return {"messages": list_messages(include_archived=include_archived)}
 
 
 # ============ 工单（学生确认上报的问题 → 管理端可见的正式记录） ============
@@ -3962,7 +3967,7 @@ async def workorder_create(req: Request):
     add_message(module="workorder",
                 message=f"{kind}｜{(body.get('desc') or '').strip() or '（无补充描述）'}",
                 answer=f"已立案（工单 {item['id']}），状态：{item.get('status') or '待处理'}",
-                kind="report")
+                kind="report", ref=item["id"])
     # 聊天里点卡上报的：清掉那张确认卡（面板表单提交没有 session，不受影响）
     sid = (body.get("session_id") or "").strip()
     if sid and (body.get("source") or "panel") == "chat":
@@ -3992,9 +3997,43 @@ def _workorder_status_response(wo_id: str, body: dict):
 
 
 @app.get("/api/workorders", dependencies=[Depends(verify_admin)])
-async def workorder_list():
-    """管理端查看全部工单（倒序）。"""
-    return {"workorders": list_workorders()}
+async def workorder_list(include_archived: bool = False):
+    """管理端查看全部工单（倒序）。已归档的默认收起（#29），`include_archived=1` 才带出来。"""
+    return {"workorders": list_workorders(include_archived=include_archived)}
+
+
+@app.post("/api/workorders/{wo_id}/archive", dependencies=[Depends(verify_admin)])
+async def workorder_archive(wo_id: str, req: Request):
+    """归档 / 放回一条工单 —— **软删**：台账里那条一个字节不少，只多/摘 `archived`。
+
+    为什么是"管理端独有 + 软删"这两条（用户 2026-10-16 拍板）：
+      · 工单与消息都是"学生报过什么"的证据，硬删就再也对不上账；
+      · 驿站端 `/api/station/*` 是**免口令**的（演示级，见下面那段注释），
+        免口令还能收台账 = 任何人不用口令就能清工单，这道口子不开。
+    双写那条学生消息在 `set_workorder_archived` 里**一起**收起（不在这里再调一次消息接口）。
+    """
+    body = await req.json()
+    archived = bool(body.get("archived", True))
+    hit = set_workorder_archived(wo_id, archived)
+    if not hit:
+        return JSONResponse({"error": "工单不存在"}, status_code=404)
+    item, mirrored = hit
+    return {"ok": True, "workorder": item, "mirrored_messages": mirrored}
+
+
+@app.post("/api/admin/messages/{mid}/archive", dependencies=[Depends(verify_admin)])
+async def message_archive(mid: str, req: Request):
+    """归档 / 放回一条学生消息（同 #29：软删、要口令）。
+
+    ⚠️ 只动这一条，**不会反过来去动它引用的工单** ——
+    删镜像消息不该让案底消失；要连案底一起收起，走上面那条工单的归档口。
+    """
+    body = await req.json()
+    archived = bool(body.get("archived", True))
+    item = set_message_archived(mid, archived)
+    if not item:
+        return JSONResponse({"error": "这条消息不存在"}, status_code=404)
+    return {"ok": True, "message": item}
 
 
 @app.post("/api/workorders/{wo_id}/status", dependencies=[Depends(verify_admin)])
