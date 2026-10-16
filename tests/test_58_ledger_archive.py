@@ -187,7 +187,10 @@ def batch_d_shape():
     c.check("消息那个灰计数同样只数 live，不拿全量凑数",
             "paintMsgCount(live.length)" in page, "")
     c.check("界面上把性质写在脸上：说清「归档=台账里那条没动、可放回」",
-            "台账里那条没动，可放回" in page and "归档时网络出问题了" in page, "")
+            "台账里那条没动，可放回" in page and "归档没成功：" in page, "")
+    # ⚠️ 这一句在 #28 改过口：原来钉的是「归档时网络出问题了」。那条措辞被 #28 单子 2 判定为甩锅
+    #     （收口之后这些 catch 还会接住 HTTP 404/500，再说"网络"就是把服务端的事推给网线）。
+    #     记在这儿，是为了下次它红的时候不必从头查一遍是回归还是有人改回了措辞。
     # 真机第一版露馅的地方：工单归档级联改了收件箱，但那块表要等 5 秒轮询才对上 ——
     # 点完按钮的这几秒里"已经收起来的消息"还挂在对面那张表上。
     c.check("动完一张表立刻重画对面那张（级联的效果不许等轮询）",
@@ -195,6 +198,150 @@ def batch_d_shape():
             and '", loadMessages)' in page and '", loadWorkOrders)' in page, "")
     c.check("放回的回执也报镜像条数（只说「已放回 1 条」= 把级联那一半藏起来）",
             "连同 ${n} 条双写的学生消息一起放回" in page and "mirrored_messages" in page, "")
+    return c
+
+
+def _fn_body(text, name, tag):
+    """按花括号配对截出一个函数体；截不出来直接抛，不返回空串装绿。"""
+    key = "function " + name + "("
+    if text.count(key) != 1:
+        raise AssertionError(f"{tag}：函数锚点不唯一（{text.count(key)} 处）——{key}")
+    i = text.index(key)
+    j = text.index("{", i)
+    depth = 0
+    for k in range(j, len(text)):
+        if text[k] == "{":
+            depth += 1
+        elif text[k] == "}":
+            depth -= 1
+            if depth == 0:
+                return text[i:k + 1]
+    raise AssertionError(f"{tag}：函数 {name} 的花括号没闭合，截不出函数体")
+
+
+def _action_span(text, anchor, tag):
+    """从某个动作的 fetch 那句起，**连着它自己的 catch 块**一起截出来。
+
+    ⚠️ 必须把 catch 块包进窗口：这一族要看的就是"失败的那一支写了什么"。
+    截到 `catch (` 就停（第一版就是这么写的），措辞断言永远看不到 catch 体，
+    红的是断言自己，不是代码 —— 真机跑出来才发现这条假红。
+    """
+    n = text.count(anchor)
+    if n != 1:
+        raise AssertionError(f"{tag}：锚点不唯一（{n} 处）——{anchor[:48]}")
+    i = text.index(anchor)
+    j = text.find("catch (", i)
+    if j < 0:
+        raise AssertionError(f"{tag}：这一段没有 try/catch，锚点后头找不到 catch——{anchor[:48]}")
+    k = text.index("{", j)
+    depth = 0
+    for p in range(k, len(text)):
+        if text[p] == "{":
+            depth += 1
+        elif text[p] == "}":
+            depth -= 1
+            if depth == 0:
+                return text[i:p + 1]
+    raise AssertionError(f"{tag}：catch 块的花括号没闭合——{anchor[:48]}")
+
+
+def batch_e_honest_failure():
+    """#28：点了「归档」屏幕上却写着「已归档 1 条」——这一批钉的就是**谎报成功**这一族。
+
+    事故的引信是判据选错了字段：非 2xx 时 FastAPI 回的是 {"detail":"Not Found"}，
+    正文里**没有 error 字段**，于是 `if (r.error)` 走的是"没 error 就是成功"那一支。
+    修法按项目自己的纪律走：判据只许一份 —— 管理端收口在 adminFetch 一处，
+    驿站端那四处就地守门（本单不许给 station 抽公共 fetch 层，见 §3 单子 3 的警示）。
+    """
+    c = Checker()
+    title("E. 非 2xx 不许当成功（#28 谎报成功收口）")
+    adm_raw = open("app/static/admin.html", encoding="utf-8").read()
+    stn_raw = open("app/static/station.html", encoding="utf-8").read()
+    adm = _strip(adm_raw)
+    stn = _strip(stn_raw)
+
+    # ---- 引信本身：服务端那个形状（这是"实测的前提"，不是推测） ----
+    with sandbox():
+        cli = make_client()
+        r = cli.post("/api/workorders/nope/this-route-does-not-exist", json={})
+        body = r.json() or {}
+        c.check("钉住前提：路由不存在时回的是「非 2xx + 正文里没有 error 字段」——"
+                "所以只看 r.error 的调用方一定会把它当成功（改口的话写在这儿，下次红了一查就知道）",
+                r.status_code == 404 and "error" not in body and "detail" in body,
+                f"{r.status_code} {str(body)[:70]}")
+
+    # ---- 单子 1：收口在 adminFetch 一处，且顺序不能反 ----
+    # ⚠️ 一律用 find() 拿下标、把"找不到"写成一条 ❌，别用 index()：
+    #     变异 M1 就是把那一整支删掉，index 会抛 ValueError 把整批打断——**崩不算红**（本仓教训 4f）。
+    i401 = adm.find("resp.status === 401")
+    iok = adm.find("if (!resp.ok)")
+    itext = adm.find("resp.text()")
+    c.check("非 2xx 在 adminFetch 这一处变成异常，而且排在 401/403 那支**之后**"
+            "（顺序倒了就把「服务器没设口令 / 口令不对」那句专属话术盖掉了，人不知道该干什么）",
+            i401 >= 0 and iok > i401 and 'throw new Error("HTTP " + resp.status' in adm,
+            f"401@{i401} ok@{iok}")
+    c.check("404 那句要把最可能的原因说出来（这次的真相就是服务还在跑旧代码），"
+            "不能只甩一个 HTTP 404",
+            "resp.status === 404" in adm and "多半是服务还在跑旧代码" in adm, "")
+
+    # ---- 单子 1 的副作用：成功路径不许被多读一次正文 ----
+    c.check("成功路径不许提前读正文：resp.text() 全页只许出现 1 次，且它在 if (!resp.ok) 里面"
+            "（在函数开头顺手读一次，调用方的 resp.json() 就全报 body already read —— 那是把好路打坏）",
+            itext >= 0 and adm.count("resp.text()") == 1 and 0 <= iok < itext,
+            f"出现 {adm.count('resp.text()')} 次，位置 @{itext}")
+
+    # ---- 单子 1 的边界：归档那条不许绕过收口自己去判 ----
+    fab = _fn_body(adm, "bindArchButtons", "E 批")
+    c.check("归档按钮的成功判据不许只有 if (r.error)：它必须走 adminFetch（判据只有收口那一份），"
+            "也不许绕开收口自己 fetch",
+            "adminFetch(" in fab and "fetch(" not in fab.replace("adminFetch(", "")
+            and "if (r.error)" in fab, "")
+
+    # ---- 补漏：非 2xx 变成异常之后，没有 catch 的动作点就是"点了没反应"换了个原因 ----
+    # 施工单原话是"它们原有的 catch 会接住异常"，实测那 7 个动作函数**一个 catch 都没有**
+    # （证据与口径见 ai-prompts/2026-10-17-ticket28-honest-failure.md）。
+    for fn, word in (("publish", "发布没成功"), ("saveApi", "保存没成功"), ("testApi", "测试没成功"),
+                     ("savePersona", "保存人设没成功"), ("saveKB", "存知识库没成功"),
+                     ("deleteKB", "删除没成功"), ("clearUsage", "清空没成功")):
+        body = _fn_body(adm, fn, "E 批")
+        c.check(f"动作函数 {fn}() 就地接住异常并写明「{word}」"
+                f"（收口后它抛的是异常不是 error 字段，不接就等于没回执）",
+                "catch (" in body and word + "：" in body, f"体长 {len(body)}")
+    wo_cb = _action_span(adm, '.mini[data-wo]', "E 批")
+    c.check("工单【标为处理中/已解决】那个回调也接住了：它虽然写在 loadWorkOrders 的 try 里，"
+            "但注册在 try 内、**执行在 try 外**（异步回调早跑出那个动态范围），不就地接就是没反应",
+            "try {" in wo_cb and "catch (" in wo_cb and "状态没改成" in wo_cb, f"窗口 {len(wo_cb)} 字")
+    lmsg = _action_span(adm, 'adminFetch("/api/admin/messages?include_archived=1")', "E 批")
+    c.check("收件箱读不到时把灰计数摘掉、原因写在列表位置（挂着上一分钟的「共 N 条」也是谎报的一种）。"
+            "⚠️ 位置有讲究：不许写在 msgArchStatus 上，那个节点是【归档/放回】回执待的地方，"
+            "而本函数每 5 秒跑一次 —— 写上去等于每 5 秒把人刚看到的回执擦掉",
+            "catch (" in lmsg and "paintMsgCount(null)" in lmsg and "收件箱读不到" in lmsg
+            and "msgArchStatus" not in lmsg, "")
+
+    # ---- 单子 3：驿站端那四处同形守门（就地补，没抽公共 fetch 层） ----
+    for tag, anchor in (("改工单状态", 'encodeURIComponent(w.id || "") + "/status"'),
+                        ("登记一条", 'encodeURIComponent(String(s.id || "")) + "/records"'),
+                        ("改登记状态", 'encodeURIComponent(String(item.id || "")) + "/status"'),
+                        ("生成服务", 'fetch("/api/station/services", {'),
+                        # 施工单 §3 只点了 4 处，整族扫又找到一处同形状的：/api/chat 回 500 时
+                        # 正文里只有 detail，`if (data.error)` 判不到 → 客服"回"了一句空话。
+                        ("问客服一句话", 'body: JSON.stringify({ message: msg, module: "station" })')):
+        span = _action_span(stn, anchor, "E 批·驿站端" + tag)
+        c.check(f"驿站端「{tag}」这一处补了 HTTP 级守门，且 if (r.error) 退成了 else if（不再当兜底）",
+                "!resp.ok" in span and "else if" in span and "httpFailReason(" in span,
+                f"片段 {len(span)} 字")
+    c.check("这一处守门只算原因、不改请求怎么发：全页只有 5 处 !resp.ok，且没有新增 fetch 包装函数"
+            "（施工单 §3 明确不许顺手抽公共层）",
+            stn.count("!resp.ok") == 5 and "function httpFailReason(" in stn
+            and "async function stationFetch" not in stn, f"!resp.ok={stn.count('!resp.ok')}")
+
+    # ---- 单子 2：措辞不许把服务端的事推给网线 ----
+    c.check("两页的动作类回执里不再出现「网络出问题」这种说法"
+            "（收口后这些 catch 还接得住 HTTP 404/500，再说网络就是甩锅）",
+            "网络出问题" not in adm and "网络出问题" not in stn, "")
+    c.check("聊天那一档的「网络或接口异常」留着：它接的是 /api/chat 的流式与断连，"
+            "本来就分不清网络还是服务端，不算这一族的谎报（钉住边界，免得下次整族扫时被顺手改掉）",
+            "网络或接口异常" in stn, "")
     return c
 
 
@@ -207,6 +354,7 @@ def main():
     code |= batch_b_cascade().summary("B 批（双写级联两支都认）")
     code |= batch_c_gates().summary("C 批（闸门与边界）")
     code |= batch_d_shape().summary("D 批（形状与前端）")
+    code |= batch_e_honest_failure().summary("E 批（非 2xx 不许当成功）")
     return code
 
 
