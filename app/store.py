@@ -319,13 +319,23 @@ def set_settings(data: dict) -> dict:
 # 正文存在 uploads/<id>.txt，元信息存在 uploads.json。
 # 分开存是为了让 uploads.json 保持能人肉阅读，不会被大段正文撑爆。
 
-UPLOAD_DIR = os.path.join(DATA_DIR, "uploads")
+# ⚠️ 上传目录**每次现算**，不在导入时定死（文件头那条 DATA_DIR 的老坑，这里是同一个根）：
+#    原来写的是 `UPLOAD_DIR = os.path.join(DATA_DIR, "uploads")`，模块一导入就把路径焊死在真实
+#    `app/data/uploads/` 上 —— 于是测试沙箱（CAMPUSTIME_DATA_DIR 指到临时目录）里上传的文件
+#    **仍然落进真实目录**。`_harness` 的 SCRATCH 里一直列着 "uploads"，说明沙箱从头就假设它被隔离，
+#    只有写入方没做到：2026-10-16 实测两轮全量往真实目录里堆了 30 个测试文件才发现。
+#    拼路径一律走 `_upload_dir()`，下面那个名字只给人瞄一眼默认值。
+def _upload_dir() -> str:
+    return os.path.join(_data_dir(), "uploads")
+
+
+UPLOAD_DIR = _upload_dir()
 MAX_UPLOAD_BYTES = 5 * 1024 * 1024  # 单个文件上限 5MB，防止演示机被撑爆
 
 
 def _upload_body_path(fid: str) -> str:
     """提取出来的文字放在这里（AI 读的就是这份）。"""
-    return os.path.join(UPLOAD_DIR, fid + ".txt")
+    return os.path.join(_upload_dir(), fid + ".txt")
 
 
 def save_upload(filename: str, content: str, raw: bytes | None = None) -> dict:
@@ -337,7 +347,7 @@ def save_upload(filename: str, content: str, raw: bytes | None = None) -> dict:
 
     :param raw: 文件原始字节；不传就只有文字、没有原件可下载
     """
-    os.makedirs(UPLOAD_DIR, exist_ok=True)
+    os.makedirs(_upload_dir(), exist_ok=True)
     fid = uuid.uuid4().hex[:12]
     # 1) 提取出的文字
     with open(_upload_body_path(fid), "w", encoding="utf-8") as f:
@@ -345,7 +355,7 @@ def save_upload(filename: str, content: str, raw: bytes | None = None) -> dict:
     # 2) 原件（保留原始后缀，下载回去才打得开）
     ext = os.path.splitext(filename or "")[1].lower()
     if raw is not None:
-        with open(os.path.join(UPLOAD_DIR, fid + ext), "wb") as f:
+        with open(os.path.join(_upload_dir(), fid + ext), "wb") as f:
             f.write(raw)
 
     item = {
@@ -391,7 +401,7 @@ def get_upload_raw_path(fid: str) -> str | None:
     meta = get_upload_meta(fid)
     if not meta or not meta.get("has_raw"):
         return None
-    p = os.path.join(UPLOAD_DIR, fid + (meta.get("ext") or ""))
+    p = os.path.join(_upload_dir(), fid + (meta.get("ext") or ""))
     return p if os.path.exists(p) else None
 
 

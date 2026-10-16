@@ -47,6 +47,32 @@ with sandbox():
     d = client.get(f"/api/uploads/{f1['id']}/download")
     c.check("下载原件成功", d.status_code == 200 and "8:00" in d.text)
 
+    title("3b. 上传的文件必须落在**当前数据目录**里（沙箱隔离，别污染演示环境）")
+    # 2026-10-16 实测到的真事：原来 `UPLOAD_DIR = os.path.join(DATA_DIR, "uploads")` 在导入时就定死，
+    # 沙箱把 CAMPUSTIME_DATA_DIR 换了目录，上传却仍然写进真实 `app/data/uploads/` ——
+    # 两轮全量往里堆了 30 个测试文件才被发现。`_harness` 的 SCRATCH 一直列着 "uploads"，
+    # 也就是说沙箱从头就假设这件事是隔离好的，只有写入方没做到（与 #47 那条账本没隔离同根）。
+    import app.store as S
+    inside = os.path.exists(data_path("uploads", f1["id"] + ".txt"))
+    outside = os.path.exists(os.path.join(S._DEFAULT_DATA_DIR, "uploads", f1["id"] + ".txt"))
+    c.check("正文落在沙箱里", inside, data_path("uploads", f1["id"] + ".txt"))
+    c.check("真实 app/data/uploads/ 里**没有**这个测试文件（有就说明上传目录又漂回导入时那个值了）",
+            not outside, os.path.join(S._DEFAULT_DATA_DIR, "uploads", f1["id"] + ".txt"))
+    # 带原件的那一条（gbk.txt 有原件可下载）：原件也不许漏到真实目录
+    real_up_dir = os.path.join(S._DEFAULT_DATA_DIR, "uploads")
+    stray_raw = [f for f in (os.listdir(real_up_dir) if os.path.isdir(real_up_dir) else [])
+                 if f.startswith(f2["id"])]
+    c.check("带原件的上传：原件落在沙箱里、真实目录里一个都没有",
+            not stray_raw and os.path.exists(data_path("uploads", f2["id"] + ".txt")),
+            f"真实目录漏出：{stray_raw}")
+    src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "app", "store.py"),
+               encoding="utf-8").read()
+    src_code = "\n".join(ln.split("#")[0] for ln in src.splitlines())
+    c.check("形状：拼上传路径只许走 _upload_dir()（每次现读 env），不许再用导入时那个 UPLOAD_DIR",
+            "os.path.join(_upload_dir()" in src_code and "os.path.join(UPLOAD_DIR" not in src_code,
+            f"_upload_dir {src_code.count('os.path.join(_upload_dir()')} 处 / "
+            f"UPLOAD_DIR {src_code.count('os.path.join(UPLOAD_DIR')} 处")
+
     title("4. API 配置读取与脱敏")
     s = client.get("/api/admin/settings").json()
     c.check("读取配置", "base_url" in s["settings"])
