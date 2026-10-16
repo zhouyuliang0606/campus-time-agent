@@ -397,8 +397,10 @@
     // 之前页面只摆了登记表单，没摆台账 —— 驿站就成了"往里扔但看不见"的黑洞。
     // 标签写中性话：这张表**两个写入方**（学生点确认、驿站管理员现场登记）都落在这里，
     // 叫"学生登记"会把管理员自己登记的那几条说成不是他们登的。
-    // 只读展示：服务定义里**没有**状态字段（`collect_fields` 收的是内容，不是流程状态），
-    // 所以这里不做"顺手改状态"——要给登记条目加状态，得先给服务定义加状态，那是另一单。
+    // 只读展示 → 现在带**处理状态**（#27）：状态是**流程**不是内容，所以它不进 `collect_fields`，
+    // 由系统在登记时给「待处理」，词表与上面「待处理问题」共用同一份（后端 _WO_STATUSES）。
+    // ⚠️ 已知边界：下面只列**最新 5 条**（rows.slice(0, 5)），第 6 条往外的记录点不到改状态按钮 ——
+    //    翻页是另一件事，本单不动这个上限，先写在这儿免得下一位以为"全部都能改"。
     // ⚠️ 渲染一律用 textContent / createElement，学生填的内容一个字都不进 innerHTML。
     async function loadRecords() {
       for (const rec of document.querySelectorAll("#svcList .recs")) {
@@ -428,7 +430,36 @@
             .map(k => k + "：" + f[k]);
           const line = document.createElement("div");
           line.className = "recRow";
+          // ⚠️ 先把正文写进 textContent，**再** append 子节点：
+          //    反过来（先 append 再赋 textContent）会把刚加进去的按钮整块擦掉。
           line.textContent = (item.ts || "") + "｜" + (bits.join("；") || "（没填内容）");
+          // 状态芯片 + 改状态按钮：与上面「待处理问题」那块共用 WO_NEXT / woCls，
+          // 两块表的词与长相都一致（不会出现"工单叫已解决、登记叫已处理"这种自己都对不上）。
+          const st = item.status || "待处理";   // 老记录没有 status 键 → 显示"待处理"，不迁移文件
+          const tail = document.createElement("div");
+          tail.style.cssText = "margin-top:3px;display:flex;gap:6px;align-items:center;";
+          const chip = document.createElement("span");
+          chip.className = woCls(st);
+          chip.textContent = st;
+          const sbtn = document.createElement("button");
+          sbtn.textContent = "改成「" + (WO_NEXT[st] || "待处理") + "」";
+          sbtn.addEventListener("click", async () => {
+            sbtn.disabled = true;
+            try {
+              const r = await (await fetch("/api/station/services/" + encodeURIComponent(sid)
+                + "/records/" + encodeURIComponent(String(item.id || "")) + "/status", {
+                method: "POST", headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ status: WO_NEXT[st] || "待处理" }),
+              })).json();
+              if (r.error) addMsg("系统", "改状态没成功：" + r.error, "sys");
+            } catch (e) {
+              addMsg("系统", "改状态时网络出问题了", "sys");
+            }
+            svcTick();    // 改完立刻重读，节奏与工单那块（loadWorkorders）一致
+          });
+          tail.appendChild(chip);
+          tail.appendChild(sbtn);
+          line.appendChild(tail);
           rec.appendChild(line);
         });
       }
