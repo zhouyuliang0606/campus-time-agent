@@ -134,6 +134,15 @@ def batch_c_shape():
             "不挂管理口令" in seg and "上线" in seg, "")
     c.check("驿站那两个路由确实没挂 verify_admin（挂了就不是驿站能用的口）",
             "verify_admin" not in seg, "")
+    # 这块台账也是 5 秒轮询整块重建 —— 真机上第二次撞到同一个坑（这次是待处理问题那块）：
+    # 点【改成「处理中」】时报 "Node is detached from document"，清单一变按钮就被换掉。
+    # 钉的是驱动条件：签名没变不重建；有请求在飞也不重建；读失败允许下次重建。
+    st = pathlib.Path("app/static/station.html").read_text(encoding="utf-8").replace("\r\n", "\n")
+    c.check("轮询先比清单签名，且改状态的请求在飞时不重建（不然点下去没反应）",
+            "sig === woSig || woBusy" in st and "woSig = sig" in st
+            and "woBusy = true" in st and "woBusy = false" in st, "")
+    c.check("读失败时签名复位（否则下次好数据因「签名没变」不再渲染，报错条挂死）",
+            'cnt.textContent = "读取失败";\n        woSig = null' in st, "")
     return c
 
 
