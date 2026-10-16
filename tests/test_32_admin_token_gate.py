@@ -199,10 +199,20 @@ def batch_wiring(c):
         "PUT /api/admin/kb/{index}", "DELETE /api/admin/kb/{index}", "POST /api/persona",
         "GET /api/admin/settings", "POST /api/admin/settings", "POST /api/admin/settings/test",
         "GET /api/admin/usage", "POST /api/admin/usage/clear",
+        # #29 归档：两张台账的"收起来"都只挂管理端。这条清单是**逐条承认**用的，
+        # 新增一个挂门口必须在这儿留名（E2 就是为了让"顺手加个口忘了挂门/挂错面"当场红）。
+        "POST /api/workorders/{wo_id}/archive", "POST /api/admin/messages/{mid}/archive",
     }
     got = _guarded_routes()
-    c.check("E2 挂门的接口正好是这 14 个（多一个少一个都算错）", got == expect,
+    c.check("E2 挂门的接口正好是这 16 个（多一个少一个都算错）", got == expect,
             f"多挂：{sorted(got - expect)}｜漏挂：{sorted(expect - got)}")
+    # #29 的另一半：归档**只许**在管理端。驿站端 `/api/station/*` 是免口令的（演示级），
+    # 免口令还能收台账 = 任何人不用口令就能清工单，所以这条反向钉死。
+    station_seg = mn[mn.index("# ============ 驿站侧接口"):mn.index('@app.post("/api/admin/notify"')] \
+        if "# ============ 驿站侧接口" in mn else ""
+    c.check("E2b 驿站端那一段里**没有**归档口（免口令的面不许扩大到改台账）",
+            station_seg and "archive" not in station_seg,
+            "station 段里出现了 archive")
     c.check("E3 学生上报工单那条没挂门（用户点名要保留开放）",
             "POST /api/workorders" not in got)
     c.check("E4 处理工单那条挂了（同一段里这两行最容易看走眼）",

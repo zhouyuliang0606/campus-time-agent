@@ -331,6 +331,8 @@ def allowed(expr):
         return True
     if e.endswith(".length"):
         return True
+    if re.fullmatch(r'\w+ \? "[^"]*" : "[^"]*"', e):
+        return True          # 开关文案：两端都是写死的字符串字面量，插进去的不是任何数据（#29 那两个「看/藏」）
     return False
 
 
