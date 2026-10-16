@@ -573,8 +573,25 @@ def batch_b3_shape():
     c.check("学生端认得 custom_record 这张卡（走既有确认页通道，没新造一套卡片组件）",
             'o.kind === "custom_record"' in st and "openConfirm(one, container)" in st, "")
     c.check("`custom:<id>` 不印给学生看（标签映射成『驿站服务』，转义那一层还在）",
-            'indexOf("custom:") === 0 ? "驿站服务"' in st
+            's === "custom" || s.indexOf("custom:") === 0) ? "驿站服务"' in st
             and "${esc(moduleTag(module))}" in st, "")
+    # ★ 回执不许说假话：真机上点【确认登记】之后，学生页原本回的是
+    #   "✅ 已经按你的确认改好了，日程已刷新。" —— 学生的日程一个字都没动。
+    #   （这条不是低代码独有的 bug，工单上报同样被它说错过；一起收在按类型分支里。）
+    #   ⚠️ 断言按**区域**切，不用全文计数：我自己写的注释里就引用了那句假回执原文，
+    #   全文数"出现几次"会把我自己的注释算进去（本项目第五次踩"拿注释当代码判"）。
+    a = st[st.index('if (d.type === "applied")'):st.index('else if (d.type === "cancelled")')]
+    cus = a[a.index('if (d.kind === "custom_record")'):
+             a.index('} else if (d.kind === "work_order_report")')]
+    c.check("确认完成的回执按提案类型分路（登记 / 工单 / 其余走日程那条）",
+            'd.kind === "custom_record"' in a and 'd.kind === "work_order_report"' in a
+            and "} else {" in a, f"{a.count('d.kind === ')} 条具名分支")
+    c.check("登记那条回执里不出现「日程」、也不刷日程面板（说了就是谎报）",
+            "日程" not in cus and "loadScheduleView" not in cus
+            and "d.reply" in cus, cus[:100])
+    c.check("确认页把回执（服务自己那句话 + 记录号）带给父页面",
+            'tellParent("applied", { kind: current.kind,' in cf
+            and "record_id: (r && r.record && r.record.id)" in cf, "")
     return c
 
 

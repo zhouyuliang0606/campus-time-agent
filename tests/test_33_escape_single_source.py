@@ -298,6 +298,11 @@ ALLOWED_RAW = {
     # ⚠️ 是"审过之后收进白名单"，不是"漏改" —— 判据在下面那两句里能就地看到。
     "woCls(st)": "class 名。woCls 是个只回三个字面量的映射（st 无论是什么都只会落进 "
                  "\"st done\"/\"st doing\"/\"st\" 之一），学生看的状态文本同一行走 esc(st)",
+    # 2026-10-16 #22 单子 4：确认完成后的回执。record_id 是后端生成的 8 位十六进制、
+    # reply 是服务自己写的话术（已过 validate_service_def 的尖括号闸），两者都不是自由输入；
+    # 整条消息只进 addMsg 的 text 通道（不是直接 innerHTML 拼），所以这里不重复转义。
+    "d.record_id": "回执里的记录号：后端 uuid 生成的 8 位十六进制，不含任何用户输入",
+    "d.reply": "回执那句话来自**服务定义自己写的** reply_template，落库前已过 validate_service_def 白名单（尖括号一律拒），不是自由文本",
     "trig": "触发词 pills，构造时就地转义过（map 里对每一项调 esc，test_53 C 批钉着那句）",
     # 2026-10-16 #22 单子 4：登记确认条的字段表单。字段是**运行时数据**（服务定义的
     # collect_fields），一项服务两三个、另一项五六个，所以先 map 成一段 HTML 再整体插进容器。
