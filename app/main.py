@@ -147,6 +147,21 @@ STATIC_DIR = os.path.join(BASE_DIR, "app", "static")
 app = FastAPI(title="校园时间管家 CampusTime", version="0.1.0")
 check_config()
 
+
+# —— 请求体解码失败的收口（全项目一处，2026-10-16 #22 单子 5）——
+# 病根是真机撞出来的：从 Git Bash 的 curl 发一句中文过去，那壳按控制台码页（GBK）把字节发出去，
+# `req.json()` 当场抛 UnicodeDecodeError → 未捕获 → **500 + 服务端整段 traceback**。
+# 全项目 23 处 `await req.json()`（都在这份文件里）是同一个形状，逐个包 try 迟早有一份松，
+# 所以走 Starlette 的异常处理器：**一处登记，处处生效**。
+# 为什么是 400 不是 422：422 是"字段不合形"（结构化合件校验给的），
+# 而这里是"这句我压根没解开"，语义不同，前端要的话术也不同。
+# 鉴权不会被这层放宽：依赖（`verify_admin`）在函数体之前跑，
+# 没口令就是 401，轮不到解码这一步 —— 那条由 test_55 B 批专门钉着。
+@app.exception_handler(json.JSONDecodeError)
+@app.exception_handler(UnicodeDecodeError)
+async def _bad_request_body(request: Request, exc: Exception):
+    return JSONResponse({"error": "请求体没能解开：要的是 UTF-8 编码的 JSON。"}, status_code=400)
+
 # —— 模块注册表（人话：每个模块在这里登记一下，路由命中后就能取用）——
 # 学生端四个模块：我的日程 / 校园问答 / 快递 / 外卖。以后加驿站侧、管理台照此加一行。
 REGISTRY: dict[str, tuple[Any, Any]] = {
