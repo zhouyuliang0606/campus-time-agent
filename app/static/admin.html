@@ -348,6 +348,7 @@
           <input id="kk" placeholder="如：游泳馆, 预约, 场馆" />
           <button class="btn" id="kbSave">添加条目</button>
           <button class="btn ghost" id="kbCancel" style="display:none;" onclick="cancelKB()">取消编辑</button>
+          <div class="small" id="kbStatus" style="margin-top:8px;"></div>
         </div>
         <div>
           <div class="small" style="margin-bottom:6px;">已有条目（编辑/删除即时生效）</div>
@@ -408,6 +409,29 @@
           : "🔒 口令不对（401）" + (body.detail ? "：" + body.detail : ""), true);
         throw new Error("管理口令未通过");
       }
+      // ⚠️ 非 2xx 一律在**这一处**变成异常。
+      //    真机教训（2026-10-16 深夜）：路由不存在时 FastAPI 回的是 {"detail":"Not Found"}，
+      //    里面**没有 error 字段**，调用方那套 `if (r.error)` 会把它当成成功——
+      //    管理端【🗑 归档】点了"没反应"，状态行还写着"已归档 1 条"（谎报成功比没反应更坏）。
+      //    收口在这儿，下面各调用点一个都不用改判据：它们各自的 catch 会如实报 ❌。
+      //    必须放在 401/403 那支**之后**——那一支有自己的话术（服务器没设口令 / 口令不对），
+      //    被通用分支盖掉人就不知道该干什么了。
+      if (!resp.ok) {
+        let detail = "";
+        try {
+          // 只在失败时读一次正文：成功路径碰了它，调用方的 resp.json() 就报 body already read。
+          const raw = await resp.text();
+          try {
+            const j = JSON.parse(raw);
+            detail = j.detail || j.error || "";
+          } catch (notJson) {
+            detail = raw.slice(0, 80);   // 不是 JSON（网关错误页/HTML）就截前 80 字
+          }
+        } catch (unreadable) { /* 正文读不出来就算了：状态码本身已经够用 */ }
+        const hint = resp.status === 404
+          ? "（接口不存在 —— 多半是服务还在跑旧代码，重启一次再试）" : "";
+        throw new Error("HTTP " + resp.status + (detail ? "：" + detail : "") + hint);
+      }
       adminLocked = false;
       return resp;
     }
@@ -466,11 +490,15 @@
       if (!title && !content && !noticeAttachment) {
         status.textContent = "标题、内容、附件至少要填一个"; return;
       }
-      const resp = await adminFetch("/api/admin/notify", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ title, content, attachment: noticeAttachment }),
-      });
-      const data = await resp.json();
+      // 这一档原先没有 catch：非 2xx 收口到 adminFetch 之后，它会变成未处理的拒绝——
+      // 点【发布通知】照样"没反应"，只是换了个原因。补就地 catch，把原因写在状态行上。
+      let data;
+      try {
+        data = await (await adminFetch("/api/admin/notify", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ title, content, attachment: noticeAttachment }),
+        })).json();
+      } catch (e) { status.textContent = "❌ 发布没成功：" + e.message; return; }
       if (data.ok) {
         status.textContent = "✅ 已发布：" + (title || "(无标题)") + (noticeAttachment ? "（含附件）" : "");
         document.getElementById("ntitle").value = "";
@@ -511,22 +539,29 @@
     async function saveApi() {
       const st = document.getElementById("apistatus");
       st.textContent = "⏳ 保存中…";
-      const r = await adminFetch("/api/admin/settings", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          api_key: document.getElementById("akey").value.trim(),
-          base_url: document.getElementById("abase").value.trim(),
-          model: document.getElementById("amodel").value.trim(),
-        }),
-      });
-      const d = await r.json();
+      // 非 2xx 现在由 adminFetch 抛异常。以前这里直接读 body，服务端回 403/500 时
+      // d.message 是空的，那句 "✅ " 就是这么谎报成功的。
+      let d;
+      try {
+        d = await (await adminFetch("/api/admin/settings", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            api_key: document.getElementById("akey").value.trim(),
+            base_url: document.getElementById("abase").value.trim(),
+            model: document.getElementById("amodel").value.trim(),
+          }),
+        })).json();
+      } catch (e) { st.textContent = "❌ 保存没成功：" + e.message; return; }
       st.textContent = "✅ " + (d.message || "已保存");
       loadApiSettings();
     }
     async function testApi() {
       const st = document.getElementById("apistatus");
       st.textContent = "⏳ 正在用当前配置问大模型一句…";
-      const d = await (await adminFetch("/api/admin/settings/test", { method: "POST" })).json();
+      let d;
+      try {
+        d = await (await adminFetch("/api/admin/settings/test", { method: "POST" })).json();
+      } catch (e) { st.textContent = "❌ 测试没成功：" + e.message; return; }
       st.textContent = (d.ok ? "✅ " : "❌ ") + (d.message || "");
     }
 
@@ -546,11 +581,17 @@
         tone: document.getElementById("ptone").value.trim(),
         rules: document.getElementById("prules").value.trim(),
       };
-      const r = await adminFetch("/api/persona", {
-        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(p),
-      });
-      const d = await r.json();
-      if (d.ok) document.getElementById("pstatus").textContent = "✅ 已保存，驿站客服下次对话即用新人设：" + (d.persona.name || "");
+      // 这一档以前只有 if (d.ok)：没成功时状态行一个字都不写，和"点了没反应"看不出差别。
+      const st = document.getElementById("pstatus");
+      let d;
+      try {
+        d = await (await adminFetch("/api/persona", {
+          method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(p),
+        })).json();
+      } catch (e) { st.textContent = "❌ 保存人设没成功：" + e.message; return; }
+      st.textContent = d.ok
+        ? "✅ 已保存，驿站客服下次对话即用新人设：" + ((d.persona && d.persona.name) || "")
+        : "❌ 保存人设没成功：" + (d.error || "服务端没给出原因");
     }
 
     // ---------- 知识库管理 ----------
@@ -593,11 +634,16 @@
       const a = document.getElementById("ka").value.trim();
       const k = document.getElementById("kk").value;
       if (!q || !a) { alert("问题和答案不能为空"); return; }
-      if (editingKb === null) {
-        await adminFetch("/api/admin/kb", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ question: q, answer: a, keywords: k }) });
-      } else {
-        await adminFetch("/api/admin/kb/" + editingKb, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ question: q, answer: a, keywords: k }) });
-      }
+      // 以前这里失败就是"什么都没写、列表照旧"——看着像没生效也像生效了，全靠猜。
+      const st = document.getElementById("kbStatus");
+      try {
+        if (editingKb === null) {
+          await adminFetch("/api/admin/kb", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ question: q, answer: a, keywords: k }) });
+        } else {
+          await adminFetch("/api/admin/kb/" + editingKb, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ question: q, answer: a, keywords: k }) });
+        }
+      } catch (e) { st.textContent = "❌ 存知识库没成功：" + e.message; return; }
+      st.textContent = "✅ 已存，下面列表已刷新";
       cancelKB();
       loadKB();
     }
@@ -612,7 +658,11 @@
         okText: "删除",
       });
       if (!ok) return;
-      await adminFetch("/api/admin/kb/" + i, { method: "DELETE" });
+      const st = document.getElementById("kbStatus");
+      try {
+        await adminFetch("/api/admin/kb/" + i, { method: "DELETE" });
+      } catch (e) { st.textContent = "❌ 删除没成功：" + e.message; return; }
+      st.textContent = "✅ 第 " + i + " 条已删除";
       loadKB();
     }
 
@@ -639,11 +689,21 @@
         // ⚠️ 选择器要带 `[data-wo]`：这一片里现在还有【归档】【放回】两种 .mini，
         //    笼统地 querySelectorAll(".mini") 会把状态处理绑到它们身上（dataset.st 是 undefined → 那个口回 400）。
         box.querySelectorAll(".mini[data-wo]").forEach(b => b.addEventListener("click", async () => {
-          await adminFetch("/api/workorders/" + encodeURIComponent(b.dataset.wo) + "/status", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ status: b.dataset.st }),
-          });
+          // ⚠️ 这个回调虽然写在 loadWorkOrders 的 try 里，但**注册**在 try 里、**执行**在 try 外
+          //     —— 异步回调真正跑的时候那个 try 早就退出了。非 2xx 收口后不就地接住，
+          //     点【标为处理中】就是"没反应 + 控制台一条未处理拒绝"，和归档那次一模一样。
+          const st = document.getElementById("woArchStatus");
+          try {
+            await adminFetch("/api/workorders/" + encodeURIComponent(b.dataset.wo) + "/status", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ status: b.dataset.st }),
+            });
+            if (st) st.textContent = "";
+          } catch (e) {
+            if (st) st.textContent = "❌ 状态没改成「" + b.dataset.st + "」：" + e.message;
+            return;
+          }
           loadWorkOrders();
         }));
         bindArchButtons(box, "/api/workorders/", loadWorkOrders,
@@ -677,8 +737,19 @@
 
     // ---------- 学生消息收件箱 ----------
     async function loadMessages() {
-      const data = await (await adminFetch("/api/admin/messages?include_archived=1")).json();
       const box = document.getElementById("inbox");
+      let data;
+      try {
+        data = await (await adminFetch("/api/admin/messages?include_archived=1")).json();
+      } catch (e) {
+        // 工单那一档读不到会写明"加载失败"并把红点摘掉，收件箱原来什么都没有 ——
+        // 同一个形状的两张表，坏起来得说一样的话：这里也摘计数 + 把原因摆在列表位置。
+        // ⚠️ 写进 box 而不是 msgArchStatus：那个节点是【归档/放回】回执待的地方，
+        //     而本函数每 5 秒跑一次，写在它上面等于每 5 秒把人刚看到的回执擦掉。
+        paintMsgCount(null);
+        box.innerHTML = '<div class="empty">收件箱读不到：' + esc(String(e.message || e)) + "（稍后自动重试）</div>";
+        return;
+      }
       const all = data.messages || [];
       const live = all.filter(m => !m.archived);
       const arch = all.filter(m => m.archived);
@@ -773,7 +844,7 @@
               ? `已放回 1 条${n ? `（连同 ${n} 条双写的学生消息一起放回）` : "，列表里重新看得见。"}`
               : `已归档 1 条${n ? `（连同 ${n} 条双写的学生消息一起收起）` : "，台账里那条没动，可放回。"}`;
           }
-        } catch (e) { if (st) st.textContent = "❌ 归档时网络出问题了：" + e.message; }
+        } catch (e) { if (st) st.textContent = "❌ 归档没成功：" + e.message; }
         reload();
         // 工单↔消息是同一件事的两本账：动了这一张，**另一张也立刻重画**，
         // 不然点完归档的这几秒里，收件箱还挂着那条已经收起的消息（等 5 秒轮询才对上）。
@@ -861,8 +932,11 @@
         okText: "清空流水",
       });
       if (!ok) return;
-      const d = await (await adminFetch("/api/admin/usage/clear", { method: "POST" })).json();
       const st = document.getElementById("usageStatus");
+      let d;
+      try {
+        d = await (await adminFetch("/api/admin/usage/clear", { method: "POST" })).json();
+      } catch (e) { st.textContent = "❌ 清空没成功：" + e.message; return; }
       st.textContent = "✅ " + (d.message || "已清空");
       loadUsage();
       setTimeout(() => { st.textContent = ""; }, 4000);
