@@ -156,6 +156,38 @@ class sandbox:
         print("\n[临时数据目录已删除，真实演示数据没被碰过]")
 
 
+class pin_now:
+    """把 planner 眼里的"现在"钉到某个钟点（with 这一段里有效），用来去掉**墙上时钟耦合**。
+
+    为什么需要这个：带「今晚」的句子要出候选时段卡，得同时满足"替他挑的那一段 ≥ 90 分钟"
+    和"起手不早于 now+30 分钟"。于是晚上八点半以后跑测试，今晚剩下的窗口不足 90 分钟，
+    **卡一张也出不来** —— 同一份代码白天绿、夜里红，看着像回归。
+    2026-10-16 实测：20:38 起 `test_23` 红 3 条、`test_45` 红 2 条，
+    拿改动之前的提交 `b00b635` 单跑一模一样 → 坐实是**断言自己依赖几点几分跑的**，不是功能坏了。
+
+    用法要成对（只钉"白天该出卡"那一头，"把挑时段整个关掉"也能蒙过去）：
+    钉 19:00 验出卡，再钉一次 21:40 验它**老实说排不下**。
+    """
+
+    def __init__(self, hour: int, minute: int = 0):
+        self.minutes = hour * 60 + minute
+        self._saved = None
+        self._planner = None
+
+    def __enter__(self):
+        from app.modules import planner
+        self._planner = planner
+        self._saved = planner._now_minutes
+        planner._now_minutes = lambda: self.minutes
+        return self.minutes
+
+    def __exit__(self, *exc):
+        if self._planner is not None and self._saved is not None:
+            self._planner._now_minutes = self._saved
+        self._saved = None
+        return False   # 不吞异常
+
+
 def data_path(*parts):
     """拼出**当前生效**数据目录下的路径，比如 data_path('kb.json')。
 

@@ -20,7 +20,7 @@
 import inspect
 import re
 
-from _harness import (SEED_COURSES, Checker, make_client, sandbox, title,
+from _harness import (SEED_COURSES, Checker, make_client, pin_now, sandbox, title,
                       wipe_todos, write_timetable)
 
 code = 0
@@ -204,13 +204,34 @@ def batch_b_no_card():
                     ans.replace("\n", " ")[:60])
 
         # 同一条判据不许把下单族一起否掉：这些句子**必须照旧出卡**
-        for i, (s, want) in enumerate(ORDERING):
-            d = cli.post("/api/chat", json={"message": s, "module": "planner",
-                                            "session_id": "t45-do-%d" % i}).json()
-            opts = [o for o in (d.get("options") or []) if isinstance(o, dict)]
-            c.check(f"「{s}」照旧出卡，卡上是「{want}」",
-                    bool(opts) and any(o.get("title") == want for o in opts),
-                    str([(o.get("kind"), o.get("title")) for o in opts]))
+        # ⚠️ 钉钟点（2026-10-16 实测出来的耦合）：族里有两句带「今晚」，而"替他挑一段"要求
+        #   now+30 之后还剩 ≥ AUTO_SLOT_LENGTH(90) 分钟 —— 于是**晚上八点半以后跑这批必然 0 张卡**，
+        #   白天绿、夜里红。拿改动前的提交 b00b635 单跑做 A/B 一模一样，坐实是断言依赖"几点跑的"，
+        #   不是功能回归。钉到上午 = 任何时候跑都一样（下面还有一条钉 21:30 的成对断言）。
+        with pin_now(10, 0):
+            for i, (s, want) in enumerate(ORDERING):
+                d = cli.post("/api/chat", json={"message": s, "module": "planner",
+                                                "session_id": "t45-do-%d" % i}).json()
+                opts = [o for o in (d.get("options") or []) if isinstance(o, dict)]
+                c.check(f"「{s}」照旧出卡，卡上是「{want}」（钉现在 10:00）",
+                        bool(opts) and any(o.get("title") == want for o in opts),
+                        str([(o.get("kind"), o.get("title")) for o in opts]))
+
+        # 成对断言：同一句钉到 20:40（now+30=21:10，今晚只剩 50 分钟，够不着 90 那一段）→
+        # **不该硬塞卡**，也不该吹"已经排好"。为什么不是钉更晚：更晚连 10 分钟都塞不下，
+        # 那条断言就变成空断言（变异 X2 把门槛降到 10 分钟也不见红 —— 挑时刻要挑"只差门槛"那一点）。
+        # 只有上面那条的话，"把挑时段整个关掉"也能蒙成绿（见指南 4u：快慢/有卡没卡要成对）。
+        with pin_now(20, 40):
+            late = cli.post("/api/chat", json={"message": "今晚去健身怎么样", "module": "planner",
+                                               "session_id": "t45-do-late"}).json()
+        late_opts = [o for o in (late.get("options") or []) if isinstance(o, dict)]
+        late_ans = (late.get("answer") or "").replace("\n", " ")
+        c.check("同一句钉到 20:40（21:10 起手只剩 50 分钟，够不着 90）→ 不硬塞候选时段卡",
+                not any(o.get("kind") == "todo_slots" for o in late_opts),
+                str([(o.get("kind"), o.get("title")) for o in late_opts]))
+        c.check("而回话也不许说「已经排好 / 已写入」（空档不够就承认排不下，别糊弄学生）",
+                "已排好" not in late_ans and "已写入" not in late_ans and "已经排好" not in late_ans,
+                late_ans[:52])
         c.check("下单族这一轮写库条数仍然为 0（只出卡、没确认）",
                 len(list_todos()) == 0, f"{len(list_todos())} 条")
     return c

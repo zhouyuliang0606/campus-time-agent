@@ -20,7 +20,7 @@
    planner 会在 `mock_planner` 提前返回（skill 坑表：探针验错地方 = 走了离线 Mock），
    根本到不了出卡兜底；假引擎则是为了钉死"模型没调工具"这条确定性路径。
 """
-from _harness import (Checker, SEED_COURSES, make_client, sandbox, title,
+from _harness import (Checker, SEED_COURSES, make_client, pin_now, sandbox, title,
                       wipe_todos, write_timetable)
 from app.modules.planner import looks_like_timetable_import, timetable_courses_from_reply
 
@@ -456,7 +456,12 @@ def batch_d_no_fake_todo_card():
         restore = _fake_model_env()
         try:
             _FakeEngine.answer = _TODO_PROSE
-            d = _ask(client, "tt-4", "今晚去健身怎么样")
+            # ⚠️ 钉钟点（2026-10-16 实测出来的耦合，不是洁癖）：这句带「今晚」，
+            #   而"替他挑一段"要求 now+30 之后还剩 ≥ AUTO_SLOT_LENGTH(90) 分钟，
+            #   所以**晚上八点半以后跑测试必然 0 张卡** —— 拿改动前的提交 b00b635 做 A/B 一模一样，
+            #   证明是断言依赖"几点跑的"，不是功能回归。钉到上午 = 任何时候跑都一样。
+            with pin_now(10, 0):
+                d = _ask(client, "tt-4", "今晚去健身怎么样")
         finally:
             restore()
         kinds = [o.get("kind") for o in (d.get("options") or []) if isinstance(o, dict)]
@@ -472,6 +477,25 @@ def batch_d_no_fake_todo_card():
         #   不是回归。所以"补条那条路没被改坏"必须另起一个**真走得到**的用例：4c-bis。
         c.check("（记录规格）「今晚去健身怎么样」走的是候选时段，不是补条",
                 "todo_slots" in kinds, str(kinds))
+
+        # 成对断言（只有上面那条的话，"把挑时段整个关掉"也能蒙成绿）：钉到 20:40 ——
+        # now+30=21:10，今晚只剩 50 分钟，够不着 AUTO_SLOT_LENGTH(90) 那一段，
+        # 这时**该老实不出卡**，而不是硬塞一段过了 22:00 的钟点，也不是吹"已经排好了"。
+        # （挑时刻要挑"只差门槛"那一点：钉更晚连 10 分钟都塞不下，断言就变空的。）
+        restore2 = _fake_model_env()
+        try:
+            _FakeEngine.answer = _TODO_PROSE
+            with pin_now(20, 40):
+                late = _ask(client, "tt-4-late", "今晚去健身怎么样")
+        finally:
+            restore2()
+        late_kinds = [o.get("kind") for o in (late.get("options") or []) if isinstance(o, dict)]
+        late_ans = (late.get("answer") or "").replace("\n", " ")
+        c.check("同一句钉到 20:40（21:10 起手只剩 50 分钟，够不着 90）→ 不硬塞候选时段卡",
+                "todo_slots" not in late_kinds, str(late_kinds))
+        c.check("而回话也不许说「已经排好 / 已写入」（空档不够就承认排不下，别糊弄学生）",
+                "已排好" not in late_ans and "已写入" not in late_ans and "已经排好" not in late_ans,
+                late_ans[:52])
 
     # 4c-bis 补条那一档本身：规则层没接住的话，系统才从模型回话里补出 todo_add
     with sandbox():
