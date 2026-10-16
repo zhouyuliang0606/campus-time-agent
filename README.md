@@ -280,7 +280,7 @@ CampusTime/
 │   │   ├── plan.html           我的日程：周表（1 分钟 = 1 像素定位）+ 月表；冲突时段自动并排分栏
 │   │   ├── confirm.html        确认弹窗页
 │   │   ├── settings.html       助手设置：改名 + 选聊天性格
-│   │   ├── admin.html          管理控制台：API 配置 / 知识库 / 客服人格 / 发布通知 / 学生消息收件箱
+│   │   ├── admin.html          管理控制台（三栏：工单/消息/通知/知识库/用量/API/人格，口令条常驻顶栏）
 │   │   └── station.html        驿站商户端
 │   └── data/                   种子数据（courses / kb / express / takeout 入库演示；runtime 数据已在 .gitignore）
 ├── tests/                      分主题测试 + 一键总账（批数与项数不写死，跑一次即知）
