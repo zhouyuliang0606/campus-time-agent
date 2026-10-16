@@ -693,18 +693,33 @@
           //     —— 异步回调真正跑的时候那个 try 早就退出了。非 2xx 收口后不就地接住，
           //     点【标为处理中】就是"没反应 + 控制台一条未处理拒绝"，和归档那次一模一样。
           const st = document.getElementById("woArchStatus");
+          let d = {};
           try {
-            await adminFetch("/api/workorders/" + encodeURIComponent(b.dataset.wo) + "/status", {
+            d = await (await adminFetch("/api/workorders/" + encodeURIComponent(b.dataset.wo) + "/status", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ status: b.dataset.st }),
-            });
-            if (st) st.textContent = "";
+            })).json();
+            // #29 拍板：「已解决」= 办完了 = 从列表收起。于是点完这个按钮**那一行会消失** ——
+            // 不说清"去哪了、怎么回来"，它就是"点了没反应"的第二个形状。
+            // ⚠️ 措辞里不许出现"删除"：归档是软删，台账里那条一个字节没少。
+            if (st) {
+              const n = d.mirrored_messages || 0;
+              st.textContent = d.auto_archived
+                ? "已标为「" + b.dataset.st + "」，并从列表收起（上方「🗄 已归档」那一行里看得见，可随时放回）"
+                  + (n ? "；连同 " + n + " 条双写的学生消息一起收起。" : "；台账里那条没动。")
+                : d.auto_unarchived
+                  ? "已改回「" + b.dataset.st + "」，并从归档里放回，列表里重新看得见。"
+                  : "已标为「" + b.dataset.st + "」。";
+            }
           } catch (e) {
             if (st) st.textContent = "❌ 状态没改成「" + b.dataset.st + "」：" + e.message;
             return;
           }
           loadWorkOrders();
+          // 状态驱动的归档**同样**级联到收件箱那张表（走的是同一个 set_workorder_archived），
+          // 所以对面那张也得立刻重画 —— #29 真机露馅的那一课，同一个形状，不许等 5 秒轮询。
+          if (d.auto_archived || d.auto_unarchived) loadMessages();
         }));
         bindArchButtons(box, "/api/workorders/", loadWorkOrders,
           t => `这条工单是「${t.kind}」${t.desc ? "：" + t.desc : ""}。`,
@@ -843,6 +858,12 @@
             st.textContent = undo
               ? `已放回 1 条${n ? `（连同 ${n} 条双写的学生消息一起放回）` : "，列表里重新看得见。"}`
               : `已归档 1 条${n ? `（连同 ${n} 条双写的学生消息一起收起）` : "，台账里那条没动，可放回。"}`;
+            // #29 §6 那个死角照实写在回执里，别夹带私货：手动放回一条「已解决」的工单，
+            // 它就变成"已解决但没归档"（与"办完就收起"不一致）。
+            // 修法**不是**偷偷把状态改成"处理中"（那等于改用户的数据），而是把话说明白。
+            if (undo && r.workorder && r.workorder.status === "已解决") {
+              st.textContent += " 这条的状态还是「已解决」——下次改它的状态时，它会被自动收起。";
+            }
           }
         } catch (e) { if (st) st.textContent = "❌ 归档没成功：" + e.message; }
         reload();

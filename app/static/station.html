@@ -461,17 +461,24 @@
           b.addEventListener("click", async () => {
             b.disabled = true;
             woBusy = true;
+            const to = WO_NEXT[st] || "待处理";   // 这一次要点过去的那一档
             try {
               const resp = await fetch("/api/station/workorders/"
                 + encodeURIComponent(w.id || "") + "/status", {
                 method: "POST", headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ status: WO_NEXT[st] || "待处理" }),
+                body: JSON.stringify({ status: to }),
               });
               // 非 2xx 一律按失败办。守门看 HTTP 层而不是 body 的 r.ok：网关错误页不是 JSON，
               // 那种情况会先在 .json() 里抛，等不到读 body。
               const r = await resp.json().catch(() => ({}));
               if (!resp.ok) addMsg("系统", "改状态没成功：" + httpFailReason(resp, r), "sys");
               else if (r.error) addMsg("系统", "改状态没成功：" + r.error, "sys");
+              // #29：标成「已解决」会**自动**从驿站这块列表里收起 —— 那一行就此不见。
+              // 不写一句"去哪了、在哪儿能找回来"，驿站管理员看到的就等于"东西凭空消失"（措辞里不许有"删除"）。
+              else if (r.auto_archived) addMsg("系统", "已标为「" + to + "」，这条已从驿站列表收起"
+                + "（驿站不显示已收起的；管理端「🗄 已归档」那一行里看得见、可放回；台账里那条没动）", "sys");
+              else if (r.auto_unarchived) addMsg("系统", "已改回「" + to
+                + "」，并从归档里放回，列表里重新看得见", "sys");
             } catch (e) {
               addMsg("系统", "改状态没成功：" + e.message, "sys");
             }
