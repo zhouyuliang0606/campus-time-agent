@@ -131,10 +131,21 @@
 
 | 施工单原件（= 快照的"输入"） | 主题 | 同一件事的会话快照（= 落地与偏离） |
 |---|---|---|
+| `2026-10-14-ticket05-red-batch-self-seeded-dropin.md` | 05 测试红批「沙箱自种最小数据」（快照正文把它记作**用户给的附件**，路径完整可核） | `2026-10-14-red-batch-self-seeded-sandbox.md` |
+| `2026-10-14-ticket07-sse-streaming-dropin.md` | 07 流式输出（SSE）**最终**落地施工单：只改传输层、不删任何 LLM 调用与护栏 | `2026-10-15-sse-streaming.md` |
+| `2026-10-14-ticket09-knife1-polish-off-path-dropin.md` | 09 第一刀 B：把润色从「关键路径白等 3~4s」里摘掉 | `2026-10-14-knife1-polish-off-critical-path.md` |
+| `2026-10-14-ticket10-knife2-shared-client-dropin.md` | 10 刀 2：共享 AsyncClient（连接池 + keep-alive）砍掉重复握手 | `2026-10-14-knife2-shared-async-client.md` |
+| `2026-10-14-ticket11-knife3-classify-budget-dropin.md` | 11 刀 3：判定层瘦身 + 与规则并行（两根预算：超时保险丝 + `max_tokens`） | `2026-10-14-knife3-classify-budget.md` |
+| `2026-10-15-ticket12-frontend-sse-dropin.md` | 12 前端 SSE 接入：让学生端真正"看见"流式 | `2026-10-15-sse-streaming.md` |
 | `2026-10-15-ticket47-usage-ledger-sandbox-dropin.md` | #47 模型流水账两头隔离（含 `m` 这笔"假模型"的来源排查与修法） | `2026-10-15-usage-ledger-isolation.md` |
 | `2026-10-16-ticket18-dual-write-station-lowcode-dropin.md` | #18 三张单子：决策A 双写 / 驿站接活 / 驿站低代码 | `2026-10-16-lowcode-station-service.md` |
 | `2026-10-16-ticket22-three-followups-dropin.md` | #22 三单：低代码接判定层 / 非 UTF-8 回 400 而非 500 / 驿站改状态真机验证 | `2026-10-16-ticket22-three-followups.md` |
 | `2026-10-16-ticket24-two-decisions-brief.md` | #24 两件拍板：驿站列学生登记条目 / 自定义服务优先于通用工单 | `2026-10-16-ticket24-two-decisions.md` |
+
+> **两份原件没入库，原因照实写在这里**（免得有人翻到写作侧的目录时对不上）：
+> - `07_流式输出_SSE_落地prompt.md`（同日 12:38 那版）是**草稿**，当天 23:17 又被"最终落地施工单"取代；
+>   仓库快照引用的是**最终**那份 —— 施工单也讲"只留一份有效的"，草稿不入档案。
+> - `25 / 26 / 27` 号（驿站三栏布局、三条老账核对、登记条目状态）**还没交付给执行侧**，等各自快照落定时同批入库。
 
 ### WorkBuddy 侧对话节选（决定轮次）
 
