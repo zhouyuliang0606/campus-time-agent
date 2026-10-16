@@ -141,8 +141,16 @@ def batch_c_shape():
     c.check("轮询先比清单签名，且改状态的请求在飞时不重建（不然点下去没反应）",
             "sig === woSig || woBusy" in st and "woSig = sig" in st
             and "woBusy = true" in st and "woBusy = false" in st, "")
-    c.check("读失败时签名复位（否则下次好数据因「签名没变」不再渲染，报错条挂死）",
-            'cnt.textContent = "读取失败";\n        woSig = null' in st, "")
+    # ⚠️ #25 把「共 N 条，未结 M 条」收成 paintWoCount 之后，这里不能再钉"相邻两行"那种字面串了
+    #    （原句 `cnt.textContent = "读取失败";\n woSig = null` 中间如今插进了收角标那两行 ——
+    #     那是正当改动，但断言得跟着换成"钉这一段"，不然就是拿措辞绊红）。
+    #    钉的是**catch 这一段里有这三件事**：文案改了、角标收了、签名复位了。
+    lw = st[st.index("async function loadWorkorders()"):st.index('document.getElementById("refreshWo")')]
+    cat = lw[lw.index("} catch (e) {"):]
+    c.check("读失败那一路三件都做了：文案「读取失败」+ 角标收掉（不留着上一分钟的红点骗人）+ 签名复位"
+            "（否则下次好数据因「签名没变」不再渲染，报错条挂死）",
+            'woCount").textContent = "读取失败"' in cat and 'woSig = null' in cat
+            and 'getElementById("woNum")' in cat and 'remove("show")' in cat, "")
     return c
 
 
