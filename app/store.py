@@ -970,6 +970,53 @@ def add_service(defn: dict) -> dict:
     return defn
 
 
+# ── 低代码服务在学生端的"名字"（#22 单子 4：接进判定层）───────────────────
+# module 用 `custom:<服务id>` 这种带前缀的写法，而不是复用 lostfound/repair 那种固定键：
+# 判定层给的 service_id **必须回查 services.json 才算数**，模型编一个名字就直接丢弃 ——
+# 否则"模型说这句归哪个服务管"就成了新的入口，红线 1 白守。
+CUSTOM_MODULE_PREFIX = "custom:"
+
+
+def custom_module(sid: str) -> str:
+    """服务 id → 判定层用的 module 名。"""
+    return f"{CUSTOM_MODULE_PREFIX}{sid}"
+
+
+def service_of_module(module: str) -> dict | None:
+    """module 名 → 服务定义。不是低代码模块、或**服务不存在**，一律回 None。"""
+    m = (module or "").strip()
+    if not m.startswith(CUSTOM_MODULE_PREFIX):
+        return None
+    return get_service(m[len(CUSTOM_MODULE_PREFIX):])
+
+
+def is_custom_module(module: str) -> bool:
+    return service_of_module(module) is not None
+
+
+def match_service_by_trigger(text: str) -> dict | None:
+    """关键词兜底那一档：这句话里出现了哪个服务的触发词（**最长的那个**算赢）。
+
+    只读 `services.json`，零成本、离线也能跑。
+    ⚠️ 内置那项「快递/外卖问题处理」(table=workorders) **不参与**这句到卡片的自动路由：
+    它描述的是"上报工单"那条**已有链路**（工单落 workorders.json、由驿站处理），
+    而这里命中了会去挂"登记一条"的卡、写 custom/<id>.json —— 两套台账不是一回事。
+    真机上「快递丢了」必须照旧出工单上报卡，这条由 test_54 钉着。
+    """
+    t = (text or "").strip().lower()
+    if not t:
+        return None
+    best: tuple | None = None
+    for svc in list_services():
+        if str(svc.get("table") or "") == "workorders":
+            continue
+        for trig in (svc.get("triggers") or []):
+            s = str(trig or "").strip().lower()
+            if s and s in t and (best is None or len(s) > best[0]):
+                best = (len(s), svc)
+    return best[1] if best else None
+
+
 def list_custom_records(sid: str) -> list:
     """某个自定义服务下已登记的记录（倒序）。"""
     rows = _read(os.path.join(CUSTOM_DIR, f"{sid}.json"), [])

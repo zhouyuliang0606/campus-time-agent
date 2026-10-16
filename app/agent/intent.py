@@ -49,12 +49,13 @@ INTENT_FIND_CARD = "find_card"        # 在找刚才那张确认卡 / 弹窗
 INTENT_RETIME = "retime_todo"         # 想把已排好的某件事换个时间
 INTENT_DONE = "done_todo"             # 想把一条已有的待办标记为已完成
 INTENT_CLEAR_TIMETABLE = "clear_timetable"   # 想清空课表
+INTENT_CUSTOM_RECORD = "custom_record"       # 想把一件事**登记到驿站开的某项服务**（失物招领…）
 INTENT_CHAT = "chat"                  # 以上都不是
 
 KNOWN_INTENTS = (
     INTENT_ADD_TODO, INTENT_REMOVE_TODO, INTENT_LIST_TODO,
     INTENT_FIND_CARD, INTENT_RETIME, INTENT_DONE,
-    INTENT_CLEAR_TIMETABLE, INTENT_CHAT,
+    INTENT_CLEAR_TIMETABLE, INTENT_CUSTOM_RECORD, INTENT_CHAT,
 )
 
 # ── 类型（module）白名单 ─────────────────────────────────────────────────────
@@ -103,6 +104,7 @@ INTENT_MEANING = {
     INTENT_RETIME: "改时间",
     INTENT_DONE: "标记完成",
     INTENT_CLEAR_TIMETABLE: "清空课表",
+    INTENT_CUSTOM_RECORD: "登记一件事（驿站开的服务）",
     INTENT_CHAT: "问事 / 闲聊",
 }
 
@@ -134,6 +136,24 @@ def module_hint(intent: str | None, fallback: str = DEFAULT_MODULE) -> str:
     got = INTENT_MODULE.get(intent or "")
     return got if got in MODULE_KEYS else (
         fallback if fallback in MODULE_KEYS else DEFAULT_MODULE)
+
+
+def module_ok(module: str) -> bool:
+    """「这个 module 是不是真的有人接」——**判据只写这一处**。
+
+    固定那十个键写在 `MODULE_KEYS` 里；低代码那一路是 `custom:<服务id>`，
+    它的合法性**不看字符串像不像**，而是回查 `services.json`（见 `store.service_of_module`）：
+    服务不存在就回 False。这条是 #22 单子 4 的红线 ——
+    语义层是可以被 prompt 影响的，如果"长得像 custom:xxx"就算数，
+    模型编一个服务名就能把一句话送到一条没人核对的执行路径上。
+
+    ⚠️ 判定层/路由/主链路**都得调这个函数**，别各写一份 `in MODULE_KEYS`：
+    那份数一旦不一致，就会出现"某一档认、某一档不认"的中间态（最难查的那类 bug）。
+    """
+    if module in MODULE_KEYS:
+        return True
+    from app import store
+    return store.is_custom_module(module or "")
 
 
 # ── 「这句话是在问，还是在让我办事」────────────────────────────────────────
@@ -407,6 +427,37 @@ def match_sample(text: str) -> dict | None:
 #   现在两件事一次问清：先分"这是问还是办"，再给 module 和 intent。
 _MODULE_LINES = "\n".join(f"- {k}：{v}" for k, v in MODULE_MEANING.items())
 
+
+def custom_service_lines() -> str:
+    """把驿站**低代码建出来的服务**列进类型识别器的提示（每次现算，管理员随时会新加一项）。
+
+    为什么必须现算：这些服务是运行时数据（`services.json`），写死在提示里就等于
+    "只有建服务那天存在的那几项能被认出来"，那和低代码的意义正好相反。
+
+    ⚠️ 内置那项（table=workorders）不列：它描述的是**已经实现的工单上报链路**，
+    让模型去选它只会把「快递丢了」从工单卡拐到"登记一条"的卡上，两套台账不是一回事。
+    服务名/触发词是模型生成的文本（已经过 `validate_service_def` 白名单，不带尖括号），
+    进提示是安全的 —— 而且**管理员本来就是这个系统的可信配置方**：他能建服务，
+    也就能影响这一档的分类，但他影响不到写库那条路（那条一个工具都没给模型）。
+    """
+    from app import store
+    rows = [s for s in store.list_services()
+            if str(s.get("table") or "") != "workorders" and s.get("id")]
+    if not rows:
+        return ""
+    lines = []
+    for s in rows:
+        trig = "、".join(str(t) for t in (s.get("triggers") or [])[:4])
+        fields = "、".join(str(f) for f in (s.get("collect_fields") or []))
+        lines.append(f"- {store.custom_module(s['id'])}：{s.get('name') or ''}"
+                     f"（学生会这么说：{trig or '（没给触发词）'}；要收的信息：{fields or '—'}）")
+    return ("\n这些是**驿站管理员自己开的服务**，module 也可以原样填上面那一整串（别改写、别简写）：\n"
+            + "\n".join(lines)
+            + "\n学生是**要把一件事登记到这类服务**（丢东西要登记、东西坏了要报修）时，"
+              "module 填那串 `custom:...`、intent 填 `custom_record`；"
+              "他只是在**问**（失物去哪领/几点办公）就照旧 intent=`chat`。\n")
+
+
 def _intent_system() -> str:
     """类型识别器的系统提示。**每次调用现算**，因为里面带着基准日期。
 
@@ -431,9 +482,9 @@ def _intent_system() -> str:
 重要：你**不负责安排时间、不负责写日程、也不负责回答**，那些由系统另做。
 你只输出两样：这句话归哪个类型管（module）、他想干什么（intent）。
 
-可选 module（**只能**从这里挑一个，不许自造）：
+可选 module（**只能**从这里挑一个，不许自造 —— 下面「驿站自己开的服务」那一组也算在这个集合里）：
 {_MODULE_LINES}
-
+{custom_service_lines()}
 可选 intent（**只能**从这里挑一个，不许自造）：
 - add_todo：想把一件事**排进日程/待办**（说没说时间都算，比如"我想去撸串""帮我记一下交电费"）
 - remove_todo：想删掉一条已有的待办
@@ -442,6 +493,8 @@ def _intent_system() -> str:
 - retime_todo：想把已经排好的某件事换个时间
 - done_todo：想把一条已有的待办标记为**已完成**（"把游泳标记完成""勾掉交电费""游泳做完了"），**不是删除、也不是新增**，module 一律给 planner
 - clear_timetable：想清空课表
+- custom_record：想把一件事**登记到驿站开的某项服务**里（丢了东西要登记、东西坏了要报修…）。
+  这一条**只有 module 填了那一串 `custom:...` 才算数**；module 是 faq/别的，就说明你没听懂归谁管，改填 chat
 - chat：以上都不是（闲聊、问校园规定、查课表、查快递、查外卖…）
 
 判断要领（这几条是**闸门**，请当硬规则执行）：
@@ -569,8 +622,16 @@ async def classify_with_llm(text: str, history: list | None = None,
     # 类型：白名单之外的一律不认（模型偶尔会顺着"卡"字想成校园卡、给出个野模块名），
     # 这时**按意图推一个**——加待办必归 planner，纯 chat 才回落到 faq。
     module = (data.get("module") or "").strip()
-    if module not in MODULE_KEYS:
+    if not module_ok(module):
         module = module_hint(intent)
+    # ★ 低代码那条intent 必须**绑到一个真实存在的服务**上才作数：
+    #   模型给了 custom_record 却配了个不存在的 service_id（或给了 faq）→ 整条丢弃。
+    #   丢弃的意思就是"这一档没结论"，调用方照旧往下走 —— 宁可漏判，不替学生办错事（红线 3）。
+    #   为什么单独钉这一条：`custom:<任意串>` 长得太像合法值，只校验前缀等于没校验。
+    if intent == INTENT_CUSTOM_RECORD:
+        from app import store
+        if store.service_of_module(module) is None:
+            return None
 
     title = (data.get("title") or "").strip()
     # 「我要去吃火锅」→ title 得真像一件事才行。模型偶尔会把"吃火锅"写成

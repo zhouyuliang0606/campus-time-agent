@@ -20,7 +20,7 @@
 """
 from app.agent.intent import (
     DEFAULT_MODULE, INTENT_CHAT, INTENT_MODULE, MODULE_KEYS, classify_with_llm,
-    match_sample, module_hint,
+    match_sample, module_hint, module_ok,
 )
 from app.llm.client import DeepSeekClient
 
@@ -80,7 +80,7 @@ class Router:
         可他要办的是**待办**，该归 planner。不传（None）就是老行为，调用方零影响。
         """
         # ① 调用方已经判好了（module 合法才算数）
-        if (sem or {}).get("module") in MODULE_KEYS:
+        if (sem or {}).get("module") and module_ok(sem["module"]):
             return sem["module"]
 
         # ② 样本库：零成本、离线也能用，先问它
@@ -88,7 +88,7 @@ class Router:
             hit = match_sample(user_input)
             if hit:
                 mod = hit.get("module") or module_hint(hit.get("intent"))
-                if mod in MODULE_KEYS:
+                if module_ok(mod):
                     return mod
         except Exception:
             pass
@@ -97,7 +97,7 @@ class Router:
         try:
             fresh = await classify_with_llm(user_input, override=override,
                                             client=self.llm)
-            if (fresh or {}).get("module") in MODULE_KEYS:
+            if (fresh or {}).get("module") and module_ok(fresh["module"]):
                 return fresh["module"]
         except Exception:
             pass
@@ -108,6 +108,23 @@ class Router:
         #    句子里没有关键词而落到默认的 faq（`/classify` 冒烟时就撞见了这一幕）。
         if intent_hint and intent_hint != INTENT_CHAT and intent_hint in INTENT_MODULE:
             return INTENT_MODULE[intent_hint]
+
+        # ④b 驿站低代码服务的触发词（#22 单子 4）。排在 ⑤ 那张通用关键词表**之前**、
+        #     ②③④ **之后**：它是"这句正好是某个服务自己写的说法"，比单字命中精确；
+        #     但又不如样本库/语义层/明确意图有依据。顺序挪了就等于换了判据强度。
+        #     ⚠️ 内置那项（table=workorders）在 `store.match_service_by_trigger` 里就被排除了，
+        #     「快递丢了」照旧落到 ⑤ 的 express → 后面那条工单上报硬分支。
+        #     ⚠️ **问句否决**：学生问「空调坏了怎么办」「失物去哪领」是在问流程，不是在下达登记，
+        #     照旧复用 `looks_like_question`（不另写一套判据，同红线 12/13 的教训）。
+        try:
+            from app import store
+            from app.agent.intent import looks_like_question
+            svc = None if looks_like_question(user_input) else \
+                store.match_service_by_trigger(user_input)
+            if svc:
+                return store.custom_module(svc["id"])
+        except Exception:
+            pass
 
         # ⑤ 关键词兜底（旧的那张 50 多词表，位置从"第一"降到"最后"）
         text = (user_input or "").lower()
