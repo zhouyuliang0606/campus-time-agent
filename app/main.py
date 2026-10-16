@@ -1589,7 +1589,12 @@ async def _chat_impl(req: Request, meta: dict, emit=None):
     #   卡是可取消的提案：学生点【确认上报】才写工单（走 /api/workorders，系统写库，
     #   不经过模型，守住"写库只归系统"的红线）；点【取消】什么都不做。
     _wo_kind = looks_like_work_order_report(message)
-    if _wo_kind:
+    # ★ 2026-10-16 #24 决策②：**自定义服务优先于通用工单**（红线 21 的下半场）。
+    #   「报修」这个词在 `_WORK_ORDER_RE` 里是硬信号，而它恰好也是很多自建服务的正题
+    #   （宿舍报修、设施报修…）。前面刚把这句归到 `custom:<宿舍报修>`，这里再劫持走，
+    #   管理员建的服务就永远接不到活 —— 通用兜底不该盖过"用户明确说要接管这句话"的服务。
+    #   没有自定义服务接管时（`module_key` 不是 custom）行为一字不变：照旧出上报卡。
+    if _wo_kind and not is_custom_module(module_key):
         _wo_card = {
             "kind": "work_order_report",
             "summary": f"上报驿站：{_wo_kind}",
