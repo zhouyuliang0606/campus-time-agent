@@ -868,6 +868,10 @@ def summarize_llm_usage(limit_recent: int = 50) -> dict:
 SERVICES_FILE = "services.json"
 CUSTOM_DIR = "custom"
 
+# 登记记录的**新记录初始态** —— 与工单共用同一套状态词（合法值的唯一来源是 main._WO_STATUSES）。
+# 这里只写这一个字面量：由护栏钉住"它就是那三态里的第一个"，跨层不许各写一套状态表。
+CUSTOM_STATUS_NEW = "待处理"
+
 # 第 1 项内置服务就是原来那句"快递/外卖问题处理" —— 它现在也走同一张表，
 # 这样"低代码新增"不是特例，而是这套结构的第 2、第 3 项。
 _SEED_SERVICES = [
@@ -1023,11 +1027,15 @@ def list_custom_records(sid: str) -> list:
     return list(reversed(rows)) if isinstance(rows, list) else []
 
 
-def add_custom_record(sid: str, fields: dict, svc: dict | None = None) -> dict:
+def add_custom_record(sid: str, fields: dict, svc: dict | None = None,
+                      status: str = "") -> dict:
     """登记一条到 `custom/<service_id>.json`。
 
     ⚠️ 这条路径**只允许确定性接口调用**（驿站管理员点【登记】这个明确动作）。
     不给模型注册任何写这里的工具 —— 一注册，"低代码生成的服务"就自带写库能力了。
+
+    `status` 是**流程状态**、不是学生填的内容：默认由系统给「待处理」，
+    它绝不出现在 `collect_fields` 里（进了会被 `_custom_field_errors` 判成 stray 字段直接 400）。
     """
     svc = svc or get_service(sid) or {}
     want = [str(x) for x in (svc.get("collect_fields") or [])]
@@ -1036,7 +1044,8 @@ def add_custom_record(sid: str, fields: dict, svc: dict | None = None) -> dict:
         v = str((fields or {}).get(k) or "").strip()
         clean[k] = v[:CUSTOM_VALUE_MAX]
     item = {"id": uuid.uuid4().hex[:8], "ts": _now(), "service": sid,
-            "name": svc.get("name") or "", "fields": clean}
+            "name": svc.get("name") or "", "fields": clean,
+            "status": str(status or CUSTOM_STATUS_NEW)}
     rows = _read(os.path.join(CUSTOM_DIR, f"{sid}.json"), [])
     if not isinstance(rows, list):
         rows = []
@@ -1045,6 +1054,25 @@ def add_custom_record(sid: str, fields: dict, svc: dict | None = None) -> dict:
     rows.append(item)
     _write(os.path.join(CUSTOM_DIR, f"{sid}.json"), rows)
     return item
+
+
+def update_custom_record_status(sid: str, rid: str, status: str) -> dict | None:
+    """改一条登记记录的处理状态；找不到那条记录返回 None。
+
+    形状与 `update_workorder_status` 一致（读全量 → 改一条 → 整份写回），
+    老记录**没有** `status` 键也照改 —— 写进去就把它补上了，不做批量迁移。
+    不建子目录：能读到 `rows` 就说明 `custom/` 已经在（读不到时 `_read` 给默认 `[]`，那一支直接 None）。
+    """
+    path = os.path.join(CUSTOM_DIR, f"{sid}.json")
+    rows = _read(path, [])
+    if not isinstance(rows, list):
+        return None
+    for it in rows:
+        if str(it.get("id") or "") == str(rid):
+            it["status"] = status
+            _write(path, rows)
+            return it
+    return None
 
 
 def clear_llm_usage() -> int:

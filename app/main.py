@@ -39,6 +39,7 @@ from app.store import (
     add_message, list_messages, add_notice, list_notices,
     list_services, get_service, validate_service_def, add_service,
     list_custom_records, add_custom_record, service_of_module,
+    update_custom_record_status,
     is_custom_module, match_service_by_trigger, custom_module,
     list_kb, add_kb_entry, update_kb_entry, delete_kb_entry,
     get_persona, set_persona,
@@ -4143,6 +4144,29 @@ async def station_service_record(sid: str, req: Request):
     item = add_custom_record(sid, body["fields"], svc=svc)
     return {"ok": True, "record": item,
             "reply": str(svc.get("reply_template") or "已登记。")}
+
+
+@app.post("/api/station/services/{sid}/records/{rid}/status")
+async def station_service_record_status(sid: str, rid: str, req: Request):
+    """驿站把一条登记记录标成"处理中/已解决"。
+
+    三态与工单**共用同一份词表** `_WO_STATUSES`（不新开第二张状态表）——
+    加一档"已关闭"只需要改那一处，驿站端两块表跟着一起变。
+    ⚠️ 校验顺序是**先 400（状态非法）后 404（服务/记录不存在）**，照 `_workorder_status_response` 来的：
+    同族两个口顺序不一致，将来只改一处就会出现"同一个坏请求一个回 400、一个回 404"。
+    免鉴权与既有的 `/api/station/*` 同一档（演示级，理由与限制写在那段注释里）。
+    """
+    body = await req.json()
+    status = (body.get("status") or "").strip()
+    if status not in _WO_STATUSES:
+        return JSONResponse({"error": "status 只能是 " + "/".join(_WO_STATUSES)},
+                            status_code=400)
+    if not get_service(sid):
+        return JSONResponse({"error": "没有这项服务"}, status_code=404)
+    item = update_custom_record_status(sid, rid, status)
+    if not item:
+        return JSONResponse({"error": "这条登记记录不存在"}, status_code=404)
+    return {"ok": True, "record": item}
 
 
 @app.post("/api/custom/records")
