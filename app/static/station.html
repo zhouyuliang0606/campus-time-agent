@@ -106,6 +106,14 @@
     .svc .nm { font-weight: 600; }
     .svc .pill { display: inline-block; font-size: 11px; background: #e8f8f6; color: #17b8a6; border-radius: 6px; padding: 1px 6px; margin: 0 4px 3px 0; }
     .svc .tb { font-size: 11px; color: #8a93a5; }
+    /* 学生登记条目（只读台账）：字号比表单小一档，颜色压一档，别跟表单抢注意力 */
+    .svc .recs { margin-top: 8px; font-size: 12px; color: #55606d; }
+    .svc .recHead { color: #8a93a5; margin-bottom: 2px; }
+    .svc .recRow {
+      background: #fafbff; border: 1px dashed #e6ebf5; border-radius: 7px;
+      padding: 4px 8px; margin-bottom: 3px; line-height: 1.5;
+      white-space: pre-wrap; word-break: break-all;
+    }
     .svc form { margin-top: 6px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
     .svc form input { padding: 6px 8px; border: 1px solid #d8def0; border-radius: 7px; font-size: 12px; width: 150px; }
     .svc form button { padding: 6px 12px; border: none; border-radius: 7px; background: #17b8a6; color: #fff; font-size: 12px; cursor: pointer; }
@@ -365,6 +373,17 @@
           });
           el.appendChild(form);
           el.appendChild(last);
+          // 「📋 登记条目」（#24 决策①）：驿站是运营台，学生递进来的东西看不见就没法处理。
+          // 先占个位，内容由 loadRecords() 单独填（台账会变，服务定义却不一定变）。
+          // ⚠️ 内置那项（table=workorders）**不摆这个块**：它的台账就是上面那块「🛠️ 待处理问题」，
+          // 在这儿显示一句"还没有一条"会让人以为 `custom/pkgloss.json` 才是它的账（其实空是必然）。
+          if (String(s.table || "") !== "workorders") {
+            const recs = document.createElement("div");
+            recs.className = "recs";
+            recs.dataset.sid = String(s.id || "");
+            recs.textContent = "📋 登记条目：读取中…";
+            el.appendChild(recs);
+          }
           box.appendChild(el);
         });
       } catch (e) {
@@ -374,7 +393,50 @@
       }
     }
 
-    document.getElementById("refreshSvc").addEventListener("click", loadServices);
+    // 登记条目（#24 决策①）：读接口早就有（GET /api/station/services/<id>/records），
+    // 之前页面只摆了登记表单，没摆台账 —— 驿站就成了"往里扔但看不见"的黑洞。
+    // 标签写中性话：这张表**两个写入方**（学生点确认、驿站管理员现场登记）都落在这里，
+    // 叫"学生登记"会把管理员自己登记的那几条说成不是他们登的。
+    // 只读展示：服务定义里**没有**状态字段（`collect_fields` 收的是内容，不是流程状态），
+    // 所以这里不做"顺手改状态"——要给登记条目加状态，得先给服务定义加状态，那是另一单。
+    // ⚠️ 渲染一律用 textContent / createElement，学生填的内容一个字都不进 innerHTML。
+    async function loadRecords() {
+      for (const rec of document.querySelectorAll("#svcList .recs")) {
+        const sid = rec.dataset.sid || "";
+        let rows = null;
+        try {
+          const r = await (await fetch("/api/station/services/"
+            + encodeURIComponent(sid) + "/records")).json();
+          rows = r.records || [];
+        } catch (e) {
+          rows = null;
+        }
+        if (rows === null) {
+          rec.textContent = "📋 登记条目：读不到（服务没起来？）";
+          continue;
+        }
+        rec.innerHTML = "";     // 只装下面我们自己建的节点
+        const head = document.createElement("div");
+        head.className = "recHead";
+        head.textContent = rows.length
+          ? `📋 已登记 ${rows.length} 条（列最新 ${Math.min(5, rows.length)} 条）`
+          : "📋 已登记：还没有一条";
+        rec.appendChild(head);
+        rows.slice(0, 5).forEach(item => {
+          const f = item.fields || {};
+          const bits = Object.keys(f).filter(k => String(f[k] || "").trim())
+            .map(k => k + "：" + f[k]);
+          const line = document.createElement("div");
+          line.className = "recRow";
+          line.textContent = (item.ts || "") + "｜" + (bits.join("；") || "（没填内容）");
+          rec.appendChild(line);
+        });
+      }
+    }
+
+    document.getElementById("refreshSvc").addEventListener("click", () => {
+      loadServices().then(loadRecords);
+    });
     document.getElementById("svcGo").addEventListener("click", async () => {
       const idea = document.getElementById("svcIdea");
       const btn = document.getElementById("svcGo");
@@ -393,7 +455,7 @@
             + `要收的字段：${(r.service.collect_fields || []).join("、")}。在上方那张表里就能直接登记。`,
             "sys");
           idea.value = "";
-          loadServices();
+          svcTick();   // 建完立刻重画清单，并给新服务把"学生登记条目"那块填上
         }
       } catch (e) {
         addMsg("系统", "生成服务时网络出问题了", "sys");
@@ -401,8 +463,13 @@
       btn.disabled = false;
       btn.textContent = "生成服务";
     });
-    setInterval(loadServices, 5000);
-    loadServices();
+    // 一轮 tick：先看服务定义有没有变（变了才重建 DOM），再把每项服务的登记台账刷一遍
+    async function svcTick() {
+      await loadServices();
+      await loadRecords();
+    }
+    setInterval(svcTick, 5000);
+    svcTick();
 
     // ---------- 对话 ----------
     function addMsg(who, content, kind, trace, module) {
