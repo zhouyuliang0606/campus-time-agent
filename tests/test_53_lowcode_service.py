@@ -244,16 +244,28 @@ def batch_c_redlines():
     # 内置那项的台账是「待处理问题」那块，不该再摆一个必然为空的 custom 清单误导人
     c.check("内置那项（table=workorders）不摆「学生登记条目」块（它的账在工单那块）",
             'if (String(s.table || "") !== "workorders")' in st, "")
-    lr = st[st.index("async function loadRecords()"):st.index('document.getElementById("refreshSvc")')]
+    lr = st[st.index("// 登记条目（#24 决策①）"):st.index('document.getElementById("refreshSvc")')]
+    # ⚠️ 剔注释再数 innerHTML —— 我自己刚在那段头上写的注释里就有"一个字都不进 innerHTML"这句，
+    #    不剔就是拿注释当代码判红（本仓第六次栽在同一条上，规矩是死的）。
+    lr_code = "\n".join(ln.split("//")[0] for ln in lr.splitlines())
     c.check("登记条目的渲染只用 textContent/createElement（innerHTML 那一次是清空）；"
             "模板字符串拼给 textContent 是安全的，禁的是别的注入口子",
-            lr.count("innerHTML") == 1 and 'rec.innerHTML = "";' in lr
-            and "line.textContent" in lr
-            and not any(w in lr for w in ("insertAdjacentHTML", "outerHTML", "document.write",
-                                          "eval(", "new Function")),
-            f"innerHTML {lr.count('innerHTML')} 次")
-    c.check("只读不做状态修改：服务定义里没有状态字段，页面就不许假装能改（要做得先给定义加状态）",
-            "status" not in lr, "")
+            lr_code.count("innerHTML") == 1 and 'rec.innerHTML = "";' in lr_code
+            and "line.textContent" in lr_code
+            and not any(w in lr_code for w in ("insertAdjacentHTML", "outerHTML", "document.write",
+                                               "eval(", "new Function")),
+            f"innerHTML {lr_code.count('innerHTML')} 次")
+    # 契约翻转（#27，用户 2026-10-16 拍板 A）：原来这条钉的是"那块只读、不许假装能改状态"，
+    # 现在登记条目**带处理状态**了，钉的改成"状态是流程不是内容"这一侧：
+    # 词表复用工单那一份、渲染仍然是 textContent、状态不进 fields（内容/流程分家）。
+    c.check("登记条目改成「带状态」而不是「能编内容」：状态芯片 + 改状态按钮走工单同一套 WO_NEXT/woCls，"
+            "正文仍先 textContent 再 append 子节点",
+            "chip.className = woCls(st)" in lr and "WO_NEXT[st]" in lr
+            and 'line.textContent = (item.ts || "")' in lr
+            and lr.index("line.textContent = (item.ts || \"\")") < lr.index("line.appendChild(tail)"),
+            "")
+    c.check("只列最新 5 条这个上限**连同它的后果**写在注释里（第 6 条往外点不到按钮）",
+            "rows.slice(0, 5)" in lr and "点不到" in lr, "")
     # ⚠️ 别写 `"svcSig = null" in st` 就完事 —— 那句在 `let svcSig = null` 的声明里也有，
     # 拆掉 catch 里的复位照样绿（变异 V2 第一次就是这么蒙过去的）。要钉就钉"它在哪一段"。
     stn = st.replace("\r\n", "\n")
@@ -276,6 +288,131 @@ def batch_c_redlines():
     return c
 
 
+def batch_d_record_status():
+    """#27：登记条目的**处理状态**（用户拍板 A —— 加，且与工单共用三态）。
+
+    这块最容易烂的三处，逐处钉：
+      ① 状态是**流程**不是内容 —— 它不许出现在 `collect_fields`/`fields` 里（否则学生能自己写"已解决"），
+         也不许有第二份词表（两份状态表 = 将来只改一处）；
+      ② 真实台账里现在**全是**没有 `status` 键的老记录 —— 不做批量迁移，所以"老记录也能改"必须是真路径；
+      ③ 前端那行 URL 与后端那条路由是两处各说各话的高发地（25 号还要搬一次容器）。
+    """
+    c = Checker()
+    title("D. 登记条目的处理状态：系统给初始态、与工单共用一份词表、老记录不迁移也照改")
+    import app.main as M
+    import app.store as S
+
+    with sandbox():
+        client = make_client()
+        anon = make_client(admin_token=None)      # 不是笔误：默认值自带口令
+        S.add_service({"name": "宿舍报修", "triggers": ["电梯坏了"],
+                       "collect_fields": ["楼栋", "问题"],
+                       "reply_template": "已登记，师傅会来看。", "id": "rep1"})
+
+        def recs():
+            p = data_path("custom", "rep1.json")
+            return json.load(open(p, encoding="utf-8")) if os.path.exists(p) else []
+
+        r = client.post("/api/station/services/rep1/records",
+                        json={"fields": {"楼栋": "3 号楼", "问题": "电梯停了"}})
+        rec = r.json().get("record") or {}
+        rid = str(rec.get("id") or "")
+        URL = f"/api/station/services/rep1/records/{rid}/status"
+
+        c.check("① 新登记那条的初始态由**系统**给（落库那条也是），不靠任何人填",
+                rec.get("status") == "待处理" and recs()[-1].get("status") == "待处理",
+                json.dumps(rec, ensure_ascii=False)[:120])
+        c.check("状态在记录顶层、不在 fields 里（内容是内容、流程是流程）",
+                "status" not in (rec.get("fields") or {}) and "status" in rec, "")
+
+        # 三态走通：每次改完**读盘**，不是只看接口回 200
+        ok_seq, seen = True, []
+        for st in ("处理中", "已解决", "待处理"):
+            rr = client.post(URL, json={"status": st})
+            got = recs()[-1].get("status") if rr.status_code == 200 else None
+            seen.append(f"{st}->{rr.status_code}/{got}")
+            ok_seq = ok_seq and rr.status_code == 200 and got == st
+        c.check("② 三态全走通，且每次都真的落盘（接口 200 不等于写进去了）", ok_seq,
+                "、".join(seen))
+
+        c.check("③ 负路径：服务不存在 → 404",
+                client.post("/api/station/services/nosuch/records/x/status",
+                            json={"status": "处理中"}).status_code == 404, "")
+        bad = [(client.post(URL, json={"status": "已关闭"}).status_code, "已关闭"),
+               (client.post(URL, json={"status": ""}).status_code, "空串"),
+               (client.post(URL, json={}).status_code, "缺键")]
+        c.check("负路径：非法状态一律 400（含第四档「已关闭」，它不在词表里）",
+                all(code == 400 for code, _ in bad), str(bad))
+        c.check("负路径：服务**存在**但 rid 不存在 → 404（别拿 404 蒙住上一支）",
+                client.post("/api/station/services/rep1/records/norid/status",
+                            json={"status": "处理中"}).status_code == 404, "")
+        c.check("校验顺序钉死：服务不存在 + 状态也非法 → 必须还是 400（顺序倒了这条红）",
+                client.post("/api/station/services/nosuch/records/x/status",
+                            json={"status": "已关闭"}).status_code == 400, "")
+
+        # 老记录那一支：真实台账里现在就没有 status 键
+        rows = recs()
+        for it in rows:
+            it.pop("status", None)
+        with open(data_path("custom", "rep1.json"), "w", encoding="utf-8") as f:
+            json.dump(rows, f, ensure_ascii=False)
+        g = client.get("/api/station/services/rep1/records")
+        c.check("④ 老记录（没有 status 键）：读接口不报错，也不给它编一个假状态",
+                g.status_code == 200 and "status" not in (g.json()["records"][0]),
+                str(g.json())[:100])
+        rr = client.post(URL, json={"status": "已解决"})
+        c.check("老记录直接改状态能成功并**就地补上**这个键（不做批量迁移，靠这条真路径兜）",
+                rr.status_code == 200 and recs()[-1].get("status") == "已解决", "")
+
+        c.check("带 status 去登记 → 400（学生/管理员都不能把流程状态当内容塞进来）",
+                client.post("/api/station/services/rep1/records",
+                            json={"fields": {"楼栋": "1 号楼", "问题": "漏水",
+                                             "status": "已解决"}}).status_code == 400, "")
+
+        # 词表只有一份，跨层还得对得上
+        src = open("app/main.py", encoding="utf-8").read()
+        c.check("⑤ 跨层词表一致：store 那个初始态字面量就是 _WO_STATUSES 的第一个",
+                S.CUSTOM_STATUS_NEW == M._WO_STATUSES[0], f"{S.CUSTOM_STATUS_NEW} / {M._WO_STATUSES}")
+        # ⚠️ 别只数 `_WO_STATUSES = ` 这个**名字**（test_52 那条钉的是名字）：
+        #    换个别名再抄一份三态（`_REC_STATUSES = (...)`）它就照样绿 —— 变异 M3 第一次就是这么蒙过去的。
+        #    要钉的是"三态这组词在整份文件里只被定义成一张表"。
+        tables = [ln.strip()[:60] for ln in src.splitlines()
+                  if '"待处理"' in ln and '"处理中"' in ln and '"已解决"' in ln]
+        c.check("三态这张表在 main.py 里只许存在一份（**按内容数，不按变量名数**）",
+                len(tables) == 1, f"{len(tables)} 份：{tables}")
+        seg = src[src.index('@app.post("/api/station/services/{sid}/records/{rid}/status")'):]
+        seg = seg[:seg.index('@app.post("/api/custom/records"')]
+        c.check("登记状态口引用的是那一份 _WO_STATUSES（自带字面量就是第二张表的开始）",
+                "not in _WO_STATUSES" in seg and '"已解决"' not in seg and '"处理中"' not in seg, "")
+
+        # 免鉴权面：这条新口与 /api/station/* 同档（演示级），但**管理端那道口令不许因此松动**。
+        # ⚠️ 这里必须 `admin_token=None`（不是笔误）：`make_client()` 的默认值自带口令，
+        #    拿它打"无口令"会两条都 200 红给自己看（与 test_52 同一条坑）；
+        #    而这道闸在"服务器压根没配口令"时回的是 **403**（配了口令而来人没带才 401），所以判据收两档。
+        st_anon = anon.post(URL, json={"status": "处理中"})
+        ad_anon = anon.post("/api/workorders/nope/status", json={"status": "处理中"})
+        c.check("⑥ 新口免口令（与既有 /api/station/* 同档，驿站就是没有管理口令）"
+                " —— 但管理端改工单状态仍然被拒（新增免鉴权面不许顺手带开旧端口）",
+                st_anon.status_code == 200 and ad_anon.status_code in (401, 403),
+                f"station={st_anon.status_code} admin={ad_anon.status_code}")
+
+    # 形状：两处各说各话的高发地（前端拼的 URL vs 后端声明的路由；选择器 vs 容器 id）
+    st = open("app/static/station.html", encoding="utf-8").read()
+    lr = st[st.index("// 登记条目（#24 决策①）"):]
+    lr = lr[:lr.index('document.getElementById("refreshSvc")')]
+    c.check("⑦ 前端打的那条 URL 与后端声明的路由**同一个形状**（sid/rid/status 三段都在）",
+            '"/records/" + encodeURIComponent(String(item.id' in lr and '"/status"' in lr
+            and '@app.post("/api/station/services/{sid}/records/{rid}/status")' in src, "")
+    c.check("⑧ 25 号搬容器时不许把两边拆开：选择器 `#svcList .recs`、容器 id、建块那句互相找得到",
+            'querySelectorAll("#svcList .recs")' in st and 'id="svcList"' in st
+            and 'recs.className = "recs"' in st, "")
+    c.check("⑨ 改完状态立刻重读（svcTick），节奏与工单那块一致；失败也只回一句人话，不静默",
+            "svcTick();    // 改完立刻重读" in lr and 'addMsg("系统", "改状态没成功：' in lr, "")
+    c.check("⑩ 已知边界写在注释里：只列最新 5 条，第 6 条往外点不到按钮（本单不翻页）",
+            "rows.slice(0, 5)" in lr and "点不到" in lr, "")
+    return c
+
+
 def main():
     global code
     print("\n" + "=" * 60)
@@ -284,6 +421,7 @@ def main():
     code |= batch_a_define_only_data().summary("A 批（只产数据）")
     code |= batch_b_register_path().summary("B 批（登记写库）")
     code |= batch_c_redlines().summary("C 批（红线形状）")
+    code |= batch_d_record_status().summary("D 批（登记条目状态）")
     return code
 
 
