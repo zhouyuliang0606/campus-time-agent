@@ -230,6 +230,8 @@
       return s === "已解决" ? "st done" : (s === "处理中" ? "st doing" : "st");
     }
 
+    let woSig = null;    // 上一次真正渲染进 DOM 的清单（同 svcSig，见 #18 单子 3 那条坑）
+    let woBusy = false;  // 有一条改状态的请求在飞
     async function loadWorkorders() {
       const box = document.getElementById("woList");
       const cnt = document.getElementById("woCount");
@@ -237,6 +239,15 @@
         const d = await (await fetch("/api/station/workorders")).json();
         const list = d.workorders || [];
         const open = list.filter(w => w.status !== "已解决").length;
+        const sig = JSON.stringify(list);
+        // 这块同样 5 秒重建一次。这里没有输入框，但按钮有：清单一变就把光标下那个节点 detach 掉，
+        // 点下去就是"没反应"（真机复现过：报 Node is detached from document）。
+        // 请求在飞的时候也不重建 —— 否则那张禁用中的按钮会凭空换一张，看着像没点上。
+        if (sig === woSig || woBusy) {
+          cnt.textContent = list.length ? `共 ${list.length} 条，未结 ${open} 条` : "暂无";
+          return;
+        }
+        woSig = sig;
         cnt.textContent = list.length ? `共 ${list.length} 条，未结 ${open} 条` : "暂无";
         if (!list.length) {
           box.innerHTML = '<div class="woEmpty">还没有学生报障。学生确认上报后会落到这里。</div>';
@@ -258,6 +269,7 @@
           b.textContent = "改成「" + (WO_NEXT[st] || "待处理") + "」";
           b.addEventListener("click", async () => {
             b.disabled = true;
+            woBusy = true;
             try {
               const r = await (await fetch("/api/station/workorders/"
                 + encodeURIComponent(w.id || "") + "/status", {
@@ -268,6 +280,7 @@
             } catch (e) {
               addMsg("系统", "改状态时网络出问题了", "sys");
             }
+            woBusy = false;
             loadWorkorders();
           });
           el.appendChild(b);
@@ -275,6 +288,7 @@
         });
       } catch (e) {
         cnt.textContent = "读取失败";
+        woSig = null;   // 读失败后允许下次重建（同 svcSig 那条：不然这句报错会挂死）
         box.innerHTML = '<div class="woEmpty">读不到待处理问题（服务没起来？）</div>';
       }
     }
