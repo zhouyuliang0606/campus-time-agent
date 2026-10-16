@@ -401,6 +401,15 @@
       return s === "已解决" ? "st done" : (s === "处理中" ? "st doing" : "st");
     }
 
+    // 一次 HTTP 调用没成，把原因拼成人话（#28：非 2xx 时服务端回的是 detail，或者干脆是网关的 HTML 错误页，
+    // 里面**没有 error 字段**，只看 r.error 就会把失败当成功 —— 管理端【归档】"点了没反应还写着已归档 1 条"就是这么来的）。
+    // 这里只算"原因"这一句，摆到哪儿仍由各自的动作点决定：这一页没有统一的 fetch 包装，本单也不抽。
+    function httpFailReason(resp, body) {
+      const d = (body && (body.detail || body.error)) || "";
+      return "HTTP " + resp.status + (d ? "：" + d : "") + (resp.status === 404
+        ? "（接口不存在 —— 多半是服务还在跑旧代码，重启一次再试）" : "");
+    }
+
     let woSig = null;    // 上一次真正渲染进 DOM 的清单（同 svcSig，见 #18 单子 3 那条坑）
     let woBusy = false;  // 有一条改状态的请求在飞
 
@@ -453,14 +462,18 @@
             b.disabled = true;
             woBusy = true;
             try {
-              const r = await (await fetch("/api/station/workorders/"
+              const resp = await fetch("/api/station/workorders/"
                 + encodeURIComponent(w.id || "") + "/status", {
                 method: "POST", headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ status: WO_NEXT[st] || "待处理" }),
-              })).json();
-              if (r.error) addMsg("系统", "改状态没成功：" + r.error, "sys");
+              });
+              // 非 2xx 一律按失败办。守门看 HTTP 层而不是 body 的 r.ok：网关错误页不是 JSON，
+              // 那种情况会先在 .json() 里抛，等不到读 body。
+              const r = await resp.json().catch(() => ({}));
+              if (!resp.ok) addMsg("系统", "改状态没成功：" + httpFailReason(resp, r), "sys");
+              else if (r.error) addMsg("系统", "改状态没成功：" + r.error, "sys");
             } catch (e) {
-              addMsg("系统", "改状态时网络出问题了", "sys");
+              addMsg("系统", "改状态没成功：" + e.message, "sys");
             }
             woBusy = false;
             loadWorkorders();
@@ -531,12 +544,14 @@
             const payload = {};
             inputs.forEach(x => { payload[x.f] = x.el.value.trim(); });
             try {
-              const r = await (await fetch("/api/station/services/"
+              const resp = await fetch("/api/station/services/"
                 + encodeURIComponent(String(s.id || "")) + "/records", {
                 method: "POST", headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ fields: payload }),
-              })).json();
-              if (r.error) { last.style.color = "#cf1322"; last.textContent = "没登记成：" + r.error; }
+              });
+              const r = await resp.json().catch(() => ({}));
+              if (!resp.ok) { last.style.color = "#cf1322"; last.textContent = "没登记成：" + httpFailReason(resp, r); }
+              else if (r.error) { last.style.color = "#cf1322"; last.textContent = "没登记成：" + r.error; }
               else {
                 last.style.color = "#389e0d";
                 last.textContent = (r.reply || "已登记。") + "（记录号 " + (r.record && r.record.id) + "）";
@@ -544,7 +559,7 @@
               }
             } catch (e) {
               last.style.color = "#cf1322";
-              last.textContent = "登记时网络出问题了";
+              last.textContent = "没登记成：" + e.message;
             }
             b.disabled = false;
           });
@@ -623,14 +638,16 @@
           sbtn.addEventListener("click", async () => {
             sbtn.disabled = true;
             try {
-              const r = await (await fetch("/api/station/services/" + encodeURIComponent(sid)
+              const resp = await fetch("/api/station/services/" + encodeURIComponent(sid)
                 + "/records/" + encodeURIComponent(String(item.id || "")) + "/status", {
                 method: "POST", headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ status: WO_NEXT[st] || "待处理" }),
-              })).json();
-              if (r.error) addMsg("系统", "改状态没成功：" + r.error, "sys");
+              });
+              const r = await resp.json().catch(() => ({}));
+              if (!resp.ok) addMsg("系统", "改状态没成功：" + httpFailReason(resp, r), "sys");
+              else if (r.error) addMsg("系统", "改状态没成功：" + r.error, "sys");
             } catch (e) {
-              addMsg("系统", "改状态时网络出问题了", "sys");
+              addMsg("系统", "改状态没成功：" + e.message, "sys");
             }
             svcTick();    // 改完立刻重读，节奏与工单那块（loadWorkorders）一致
           });
@@ -653,11 +670,13 @@
       btn.disabled = true;
       btn.textContent = "生成中…";
       try {
-        const r = await (await fetch("/api/station/services", {
+        const resp = await fetch("/api/station/services", {
           method: "POST", headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ description: txt }),
-        })).json();
-        if (r.error) { addMsg("系统", "没能生成服务：" + r.error, "sys"); }
+        });
+        const r = await resp.json().catch(() => ({}));
+        if (!resp.ok) { addMsg("系统", "没能生成服务：" + httpFailReason(resp, r), "sys"); }
+        else if (r.error) { addMsg("系统", "没能生成服务：" + r.error, "sys"); }
         else {
           addMsg("系统", `已新增服务「${r.service.name}」（id ${r.service.id}），`
             + `要收的字段：${(r.service.collect_fields || []).join("、")}。在上方那张表里就能直接登记。`,
@@ -666,7 +685,7 @@
           svcTick();   // 建完立刻重画清单，并给新服务把"学生登记条目"那块填上
         }
       } catch (e) {
-        addMsg("系统", "生成服务时网络出问题了", "sys");
+        addMsg("系统", "没能生成服务：" + e.message, "sys");
       }
       btn.disabled = false;
       btn.textContent = "生成服务";
@@ -711,8 +730,12 @@
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ message: msg, module: "station" }),
         });
-        const data = await resp.json();
-        if (data.error) addMsg("客服", "出错了：" + data.error);
+        const data = await resp.json().catch(() => ({}));
+        // 第 5 处同形状（#28 施工单只点了 4 处，整族扫在这儿多找到一处）：
+        // /api/chat 回 500/429 时正文里只有 detail，`if (data.error)` 判不到，
+        // 就会走下面那句 addMsg(data.answer=undefined) —— 客服"回"了一句空话，跟谎报成功一个形状。
+        if (!resp.ok) addMsg("客服", "没能问到话：" + httpFailReason(resp, data), "sys");
+        else if (data.error) addMsg("客服", "出错了：" + data.error);
         else addMsg("客服", data.answer, "bot", data.trace, data.module);
       } catch (e) {
         addMsg("客服", "网络或接口异常：" + e.message);
