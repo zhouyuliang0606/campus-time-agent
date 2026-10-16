@@ -3986,14 +3986,45 @@ def _workorder_status_response(wo_id: str, body: dict):
 
     两处各写一遍校验就是两本账：将来加一档"已关闭"只会改到一个地方，另一个入口
     就悄悄把合法值判成 400（这类"两份状态表"的账本项目已经吃过几次）。
+
+    ⚠️ 「已解决」现在还驱动归档（#29 用户拍板：办完就收起来，不许在表里越堆越多）。
+    联动只许写在这**一处**：store 那边只改状态，编排不许散到两个路由里、更不许搬进 store。
+    反向也必须管：从「已解决」改回未结时自动放回 —— 只做正向，误标一次就得去归档区捞人。
     """
     status = (body.get("status") or "").strip()
     if status not in _WO_STATUSES:
         return JSONResponse({"error": "status 只能是 待处理/处理中/已解决"}, status_code=400)
+
+    # 先取"从哪来、到哪去"：联动要看旧状态**和旧归档态**，只看新值就会谎报动作
+    # （本来就已收起的，再调一次归档并不能让它"更收起"，回执却写着"已收起"= 又一次谎报）。
+    before_status, before_archived = "", False
+    for w in list_workorders(include_archived=True):
+        if str(w.get("id") or "") == str(wo_id):
+            before_status = w.get("status") or ""
+            before_archived = bool(w.get("archived"))
+            break
+
     item = update_workorder_status(wo_id, status)
     if not item:
         return JSONResponse({"error": "工单不存在"}, status_code=404)
-    return {"ok": True, "workorder": item}
+
+    auto_archived = auto_unarchived = False
+    mirrored = 0
+    if status == "已解决" and not before_archived:
+        got = set_workorder_archived(wo_id, True)     # 级联镜像就在这一个函数里，别在这儿再调消息口
+        if got:
+            auto_archived, item, mirrored = True, got[0], got[1]
+    elif status != "已解决" and before_status == "已解决" and before_archived:
+        got = set_workorder_archived(wo_id, False)
+        if got:
+            auto_unarchived, item = True, got[0]
+
+    # 三个字段是给前端**说人话**用的：这一行会凭空消失（或凭空回来），
+    # 不写清楚就是"点了没反应"那一族的第二种形态。
+    return {"ok": True, "workorder": item,
+            "auto_archived": auto_archived,
+            "auto_unarchived": auto_unarchived,
+            "mirrored_messages": mirrored}
 
 
 @app.get("/api/workorders", dependencies=[Depends(verify_admin)])
