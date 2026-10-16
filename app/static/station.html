@@ -10,13 +10,7 @@
       margin: 0; font-family: "PingFang SC", "Microsoft YaHei", sans-serif;
       background: #f4f6fb; color: #1f2733;
     }
-    header {
-      background: linear-gradient(135deg, #17b8a6, #2f9e6f);
-      color: #fff; padding: 18px 24px;
-    }
-    header h1 { margin: 0; font-size: 20px; }
-    header p { margin: 4px 0 0; opacity: .9; font-size: 13px; }
-    .wrap { max-width: 900px; margin: 18px auto; padding: 0 16px; }
+    /* 三栏外壳之后 header 与 .wrap 都不存在了，它们那三条 CSS 一并删（留孤儿就是"改一半"的现场） */
 
     /* 客服人格卡片：显示管理后台配的人设，让人一眼看到"人格是活的" */
     .persona {
@@ -49,7 +43,9 @@
 
     #log {
       background: #fff; border-radius: 12px; padding: 16px;
-      min-height: 300px; max-height: 440px; overflow-y: auto;
+      /* 三栏外壳里它自己滚：flex 撑满「对话」这块剩下的宽度，
+         原来那句 max-height:440px 撤掉（外壳已经自带滚动，两处都限高就变成套两层滚动条） */
+      flex: 1; min-height: 0; overflow-y: auto;
       box-shadow: 0 4px 16px rgba(40,60,120,.08);
     }
     .msg { margin: 10px 0; }
@@ -118,62 +114,199 @@
     .svc form input { padding: 6px 8px; border: 1px solid #d8def0; border-radius: 7px; font-size: 12px; width: 150px; }
     .svc form button { padding: 6px 12px; border: none; border-radius: 7px; background: #17b8a6; color: #fff; font-size: 12px; cursor: pointer; }
     .svc .last { font-size: 12px; color: #389e0d; margin-top: 5px; }
+
+    /* ============ 三栏外壳（抄 student.html 的结构与命名，配色走驿站青绿，不抄它那套蓝） ============ */
+    .shell { display: flex; height: 100vh; overflow: hidden; }
+    .sidebar {
+      width: 224px; flex: none; background: #fff; border-right: 1px solid #eef0f6;
+      display: flex; flex-direction: column; padding: 12px; gap: 4px;
+      height: 100vh; overflow-y: auto;
+    }
+    .sb-brand {
+      display: flex; align-items: center; gap: 10px; padding: 10px;
+      border-radius: 12px; background: linear-gradient(135deg, #17b8a6, #2f9e6f);
+      color: #fff; margin-bottom: 10px;
+    }
+    .sb-brand .t { font-size: 14px; font-weight: 600; }
+    .sb-brand .s { font-size: 11px; opacity: .9; }
+    .sb-nav { display: flex; flex-direction: column; gap: 2px; }
+    .sb-item {
+      display: flex; align-items: center; gap: 10px; padding: 11px 12px;
+      border-radius: 10px; cursor: pointer; font-size: 14px; color: #4a5366;
+      user-select: none; border: 1px solid transparent;
+    }
+    .sb-item:hover { background: #f4f6fb; }
+    .sb-item.active { background: #e8f8f6; color: #0e8f80; font-weight: 600; border-color: #bfe9e3; }
+    .sb-item .ico { width: 18px; text-align: center; font-size: 16px; }
+    /* 未结角标：用站内「待处理」同一个红（#fff1f0/#cf1322），不新造一套颜色 */
+    .sb-num {
+      display: none; margin-left: auto; font-size: 11px; line-height: 16px;
+      background: #fff1f0; color: #cf1322; border-radius: 9px; padding: 0 7px;
+    }
+    .sb-num.show { display: inline-block; }
+    .sb-foot { margin-top: auto; font-size: 11px; color: #aab1c2; padding-left: 6px; }
+
+    .main { flex: 1; display: flex; flex-direction: column; min-width: 0; height: 100vh; }
+    .topbar {
+      display: flex; align-items: center; gap: 10px; padding: 10px 16px;
+      border-bottom: 1px solid #eef0f6; background: #fff;
+    }
+    .topbar .t { font-size: 15px; font-weight: 600; color: #1f2733; }
+    .topbar .grow { flex: 1; }
+    .tb-link { font-size: 13px; color: #0e8f80; text-decoration: none; background: #e8f8f6; padding: 5px 12px; border-radius: 8px; }
+    .tb-link:hover { background: #d9f3ef; }
+    .stage { flex: 1; overflow-y: auto; padding: 16px; min-height: 0; }
+
+    /* 视图切换：只靠 display 切，DOM 全程不重建（切走再切回，正在填的表单与临时建议都还在） */
+    .nav-view { display: none; }
+    .nav-view.active { display: block; }
+    /* 「对话」这块自己占满高度并**在 #log 内部滚**：
+       施工单给的 `#log { max-height:none }` 让整块内容往外撑，那样页面就又要滚了 ——
+       它自己的验收第 3 条（#log.scrollHeight > clientHeight 且页面不滚）在改法下不成立，
+       所以这里改成 flex 撑满 + #log 自己滚（实测值见本轮快照）。 */
+    #view-chat.active { display: flex; flex-direction: column; height: 100%; }
+    .composer { border-top: 1px solid #eef0f6; background: #fff; padding: 10px 16px 14px; }
+    .inputbar { margin-top: 0; }
+    /* 输入区只在「对话」视图出现：其余三块纯查看，摆个输入框只会让人以为那块也能聊天 */
+    body.no-chatbox .composer { display: none !important; }
+
+    /* 清空按钮：跟 📎 同尺寸同气质，不抢【发送】的注意力 */
+    .clear {
+      padding: 0 12px; border: 1px solid #d8def0; background: #fff; color: #8a6d3b;
+      border-radius: 10px; cursor: pointer; font-size: 12.5px; white-space: nowrap;
+    }
+    .clear:hover { background: #fff7ec; border-color: #f3d9b0; }
+
+    /* 确认框（自绘）：不用原生 confirm() —— 演示时连点几次会被浏览器拦「阻止此页面创建更多对话框」 */
+    .mask { display: none; position: fixed; inset: 0; background: rgba(20,26,45,.45); z-index: 200; align-items: center; justify-content: center; }
+    .mask.show { display: flex; }
+    .dlg { background: #fff; border-radius: 14px; width: min(420px, 92vw); padding: 18px; box-shadow: 0 20px 60px rgba(20,26,45,.28); }
+    .dlg-head { font-size: 15px; font-weight: 600; color: #1f2733; margin-bottom: 8px; }
+    .dlg-body { font-size: 13.5px; color: #4a5366; line-height: 1.7; }
+    .dlg-warn { background: #fff7e6; border: 1px dashed #ffd591; border-radius: 9px; padding: 9px 11px; font-size: 12.5px; color: #8a6d3b; margin-top: 8px; }
+    .dlg-foot { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
+    .dlg-btn { border: none; border-radius: 9px; padding: 9px 16px; font-size: 13px; cursor: pointer; }
+    .dlg-btn.ghost { background: #f0f3fa; color: #4a5366; }
+    .dlg-btn.danger { background: #e24b4a; color: #fff; }
+
+    /* 窄屏（笔记本演示也可能被窗口挤）：侧栏收成 64px 只留图标，抄 student.html 的做法。
+       ⚠️ 收文字那一句必须**放过角标**：`.sb-item span:not(.ico)` 的特异度(0,2,1)比 `.sb-num.show`(0,2,0)高，
+          照施工单原样写，窄屏下那颗未结红点会被一起 display:none 掉 ——
+          而"切到别的视图也看得见有几条没处理"正是这次挪进左栏后要补的账（真机 529px 实测抓到）。 */
+    @media (max-width: 720px) {
+      .sidebar { width: 64px; padding: 10px 8px; }
+      .sb-brand .txt, .sb-item span:not(.ico):not(.sb-num), .sb-foot { display: none; }
+      .sb-item { justify-content: center; position: relative; }
+      .sb-num.show { display: inline-block; position: absolute; top: 3px; right: 2px; margin-left: 0; }
+    }
   </style>
 </head>
 <body>
-  <header>
-    <h1>校园时间管家 · 驿站/商户端 <a href="/" style="font-size:13px;color:#fff;float:right;opacity:.9;text-decoration:none;">← 返回登录</a></h1>
-    <p>用自定义人格回复咨询 · 主动推送取件提醒与滞留预警</p>
-  </header>
-
-  <div class="wrap">
-    <!-- 人格展示区：数据来自管理后台的客服人格配置，改完点刷新立即生效 -->
-    <div class="persona">
-      <div class="left" id="personaBox">
-        <div class="nm">加载中…</div>
+  <!-- 三栏外壳（#25）：左栏点开哪块、中间只显示哪块；正文只在中间滚，输入框钉在底下。
+       ⚠️ 里面这些 id 一个都不许改 —— 后端逻辑是 getElementById 硬绑的，改 id 等于把功能删了：
+       #personaBox #refreshPersona #woList #woCount #refreshWo #svcList #svcCount #refreshSvc
+       #svcIdea #svcGo #chips #log #file #attach #text #send -->
+  <div class="shell">
+    <aside class="sidebar" id="sidebar">
+      <div class="sb-brand">
+        <span style="font-size:18px;">🏪</span>
+        <div class="txt">
+          <div class="t">驿站/商户端</div>
+          <div class="s">校园时间管家</div>
+        </div>
       </div>
-      <div>
-        <button class="refresh" id="refreshPersona">刷新人格</button>
-      </div>
-    </div>
+      <nav class="sb-nav" id="sbNav">
+        <div class="sb-item active" data-nav="chat"><span class="ico">💬</span>对话</div>
+        <div class="sb-item" data-nav="wo"><span class="ico">🛠️</span><span class="lbl">待处理问题</span><span class="sb-num" id="woNum"></span></div>
+        <div class="sb-item" data-nav="svc"><span class="ico">🧩</span><span class="lbl">服务与登记</span></div>
+        <div class="sb-item" data-nav="persona"><span class="ico">🎭</span><span class="lbl">客服人格</span></div>
+      </nav>
+      <div class="sb-foot">校园时间管家 · 驿站端</div>
+    </aside>
 
-    <!-- 学生报的快递/外卖问题流到驿站（#18 单子 2）：能看、能改处理状态 -->
-    <div class="wo">
-      <div class="woHead">🛠️ 待处理问题
-        <span class="cnt" id="woCount">加载中…</span>
-        <button class="refresh" id="refreshWo" style="float:right;font-size:12px;">刷新</button>
+    <main class="main">
+      <div class="topbar">
+        <div class="t" id="navTitle">对话</div>
+        <span class="grow"></span>
+        <a class="tb-link" href="/">← 返回登录</a>
       </div>
-      <div id="woList"><div class="woEmpty">正在读台账…</div></div>
-    </div>
 
-    <!-- 低代码新增服务：管理员一句话 → 模型只产"服务定义"这份数据 → 过白名单才落库（#18 单子 3） -->
-    <div class="wo">
-      <div class="woHead">🧩 服务（可低代码新增）
-        <span class="cnt" id="svcCount">加载中…</span>
-        <button class="refresh" id="refreshSvc" style="float:right;font-size:12px;">刷新</button>
+      <div class="stage">
+        <!-- ① 对话：快捷操作 + 对话流 -->
+        <div id="view-chat" class="nav-view active">
+          <div class="hint">用自定义人格回复咨询 · 主动推送取件提醒与滞留预警。点下面的快捷操作让客服干活，或直接提问。</div>
+          <div class="chips" id="chips"></div>
+          <div id="log">
+            <div class="msg bot">
+              <div class="who">客服</div>
+              <div class="bubble">你好，我是这里的 AI 客服 👋 我可以查台账帮你答复同学，也能主动给还没取件的同学发提醒。</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ② 待处理问题（#18 单子 2）：原样搬进来，只换容器 -->
+        <div id="view-wo" class="nav-view">
+          <div class="wo">
+            <div class="woHead">🛠️ 待处理问题
+              <span class="cnt" id="woCount">加载中…</span>
+              <button class="refresh" id="refreshWo" style="float:right;font-size:12px;">刷新</button>
+            </div>
+            <div id="woList"><div class="woEmpty">正在读台账…</div></div>
+          </div>
+        </div>
+
+        <!-- ③ 服务与登记（低代码 #18 单子 3 + 登记条目 #24 决策① + 状态 #27）：原样搬进来 -->
+        <div id="view-svc" class="nav-view">
+          <div class="wo">
+            <div class="woHead">🧩 服务（可低代码新增）
+              <span class="cnt" id="svcCount">加载中…</span>
+              <button class="refresh" id="refreshSvc" style="float:right;font-size:12px;">刷新</button>
+            </div>
+            <div class="svcAdd">
+              <input id="svcIdea" placeholder="说一句话就行，例如：加一个失物招领，学生丢了饭卡可以登记" />
+              <button id="svcGo">生成服务</button>
+            </div>
+            <div id="svcList"><div class="woEmpty">正在读服务清单…</div></div>
+          </div>
+        </div>
+
+        <!-- ④ 客服人格：从首屏那张大卡降成一颗按钮的内容，块本身一个字没改 -->
+        <div id="view-persona" class="nav-view">
+          <div class="persona">
+            <div class="left" id="personaBox"><div class="nm">加载中…</div></div>
+            <div><button class="refresh" id="refreshPersona">刷新人格</button></div>
+          </div>
+        </div>
+      </div><!-- /stage -->
+
+      <!-- 输入区钉在底部：只有「对话」视图用它（其余视图 body 带 no-chatbox，整块隐藏） -->
+      <div class="composer">
+        <div class="inputbar">
+          <input type="file" id="file" style="display:none;" />
+          <button class="attach" id="attach" title="上传资料给客服读">📎</button>
+          <button class="clear" id="clearChat" title="清空对话记录（左栏台账一条不动）">🗑 清空</button>
+          <input id="text" placeholder="问点什么，或让我写提醒文案…" />
+          <button id="send">发送</button>
+        </div>
       </div>
-      <div class="svcAdd">
-        <input id="svcIdea" placeholder="说一句话就行，例如：加一个失物招领，学生丢了饭卡可以登记" />
-        <button id="svcGo">生成服务</button>
+    </main>
+  </div><!-- /shell -->
+
+  <!-- 清空前问一句（自绘，不用原生 confirm：演示时连点几次会被浏览器拦"阻止此页面创建更多对话框"） -->
+  <div id="clearMask" class="mask">
+    <div class="dlg" role="dialog" aria-modal="true">
+      <div class="dlg-head">🗑 清空对话记录</div>
+      <div class="dlg-body">
+        <p id="clearSummary" style="margin:0 0 8px;line-height:1.6;"></p>
+        <div class="dlg-warn">
+          删掉的只是<b>屏幕上这段聊天记录</b>，清完从新的一段开始。<br />
+          <b>台账不受影响</b>：待处理问题、服务登记条目、快递数据一条都不会变。
+        </div>
       </div>
-      <div id="svcList"><div class="woEmpty">正在读服务清单…</div></div>
-    </div>
-
-    <div class="hint">点下面的快捷操作让客服干活，或直接提问（回复都用上面这个人格的语气）。</div>
-    <div class="chips" id="chips"></div>
-
-    <div id="log">
-      <div class="msg bot">
-        <div class="who">客服</div>
-        <div class="bubble">你好，我是这里的 AI 客服 👋 我可以查台账帮你答复同学，也能主动给还没取件的同学发提醒。</div>
+      <div class="dlg-foot">
+        <button class="dlg-btn ghost" id="clearCancel">取消</button>
+        <button class="dlg-btn danger" id="clearOk">清空记录</button>
       </div>
-    </div>
-
-    <div class="inputbar">
-      <input type="file" id="file" style="display:none;" />
-      <button class="attach" id="attach" title="上传资料给客服读">📎</button>
-      <input id="text" placeholder="问点什么，或让我写提醒文案…" />
-      <button id="send">发送</button>
     </div>
   </div>
 
@@ -193,15 +326,45 @@
     const text = document.getElementById("text");
     const send = document.getElementById("send");
 
-    // ---------- 渲染快捷操作按钮 ----------
-    const chipsBox = document.getElementById("chips");
-    CHIPS.forEach(c => {
-      const el = document.createElement("div");
-      el.className = "chip " + c.cls;
-      el.textContent = c.t;
-      el.addEventListener("click", () => sendMsg(c.q));
-      chipsBox.appendChild(el);
+    // ---------- 渲染快捷操作按钮（一份实现，清空后要复原、上传后要换掉，都走这里） ----------
+    function renderChips(list) {
+      const box = document.getElementById("chips");
+      box.innerHTML = "";
+      list.forEach(c => {
+        const el = document.createElement("div");
+        el.className = "chip " + (c.cls || "");
+        el.textContent = c.t;
+        el.addEventListener("click", () => sendMsg(c.q));
+        box.appendChild(el);
+      });
+    }
+    renderChips(CHIPS);
+
+    // ---------- 三栏外壳：左栏点开哪块，中间就只显示哪块（只用 display 切，DOM 不重建） ----------
+    // 因为不重建，所以：① 上传后临时换成的那 3 条建议问题切走再切回**还在**；
+    // ② 「服务与登记」里正在填的表单不会被切视图抹掉（那两条轮询防抖逻辑照旧生效）。
+    const NAV_TITLE = { chat: "对话", wo: "待处理问题", svc: "服务与登记", persona: "客服人格" };
+
+    function switchNav(view) {
+      document.body.classList.toggle("no-chatbox", view !== "chat");
+      document.querySelectorAll(".nav-view").forEach(v => v.classList.remove("active"));
+      const nv = document.getElementById("view-" + view);
+      if (nv) nv.classList.add("active");
+      document.querySelectorAll(".sb-item").forEach(b => b.classList.toggle("active", b.dataset.nav === view));
+      const t = document.getElementById("navTitle");
+      if (t) t.textContent = NAV_TITLE[view] || "对话";
+      // 进哪块就现拉一次，别让人对着上一分钟的数据看（5 秒轮询照旧在跑，这里只是"立刻刷一下"）
+      if (view === "wo") loadWorkorders();
+      else if (view === "svc") svcTick();
+      else if (view === "persona") loadPersona();
+    }
+
+    document.getElementById("sbNav").addEventListener("click", e => {
+      const item = e.target.closest(".sb-item");
+      if (item) switchNav(item.dataset.nav);
     });
+
+    switchNav("chat");   // 开场停在对话（上报靠左栏那颗角标兜底）
 
     // ---------- 加载并展示当前客服人格 ----------
     // 数据来源：管理后台「客服人格配置」，存 persona.json
@@ -240,23 +403,34 @@
 
     let woSig = null;    // 上一次真正渲染进 DOM 的清单（同 svcSig，见 #18 单子 3 那条坑）
     let woBusy = false;  // 有一条改状态的请求在飞
+
+    // 「共 N 条，未结 M 条」+ 左栏角标：一个判断只写一处。
+    // （原来这句在早退分支和正常分支各抄了一份，加角标就会变成三份 —— 指南里"同一件事两份实现"那个老形状。）
+    function paintWoCount(total, open) {
+      document.getElementById("woCount").textContent =
+        total ? `共 ${total} 条，未结 ${open} 条` : "暂无";
+      const num = document.getElementById("woNum");
+      if (num) {
+        num.textContent = open;                    // 只放数字，窄屏绝对定位在图标右上角
+        num.classList.toggle("show", open > 0);    // 0 条时不挂红点，别天天报警
+      }
+    }
+
     async function loadWorkorders() {
       const box = document.getElementById("woList");
-      const cnt = document.getElementById("woCount");
       try {
         const d = await (await fetch("/api/station/workorders")).json();
         const list = d.workorders || [];
         const open = list.filter(w => w.status !== "已解决").length;
+        // ⚠️ 画状态必须在下面那道"签名没变就返回"的闸**之前**：
+        //    放到后面，清单不变时角标就永远不更新 —— 而"在别的视图也能看见未结几条"正是把这块挪进左栏后要补的账。
+        paintWoCount(list.length, open);
         const sig = JSON.stringify(list);
         // 这块同样 5 秒重建一次。这里没有输入框，但按钮有：清单一变就把光标下那个节点 detach 掉，
         // 点下去就是"没反应"（真机复现过：报 Node is detached from document）。
         // 请求在飞的时候也不重建 —— 否则那张禁用中的按钮会凭空换一张，看着像没点上。
-        if (sig === woSig || woBusy) {
-          cnt.textContent = list.length ? `共 ${list.length} 条，未结 ${open} 条` : "暂无";
-          return;
-        }
+        if (sig === woSig || woBusy) return;
         woSig = sig;
-        cnt.textContent = list.length ? `共 ${list.length} 条，未结 ${open} 条` : "暂无";
         if (!list.length) {
           box.innerHTML = '<div class="woEmpty">还没有学生报障。学生确认上报后会落到这里。</div>';
           return;
@@ -295,7 +469,10 @@
           box.appendChild(el);
         });
       } catch (e) {
-        cnt.textContent = "读取失败";
+        document.getElementById("woCount").textContent = "读取失败";
+        // 读不到的时候把角标也收掉：挂着一个上一分钟的红点，比没红点更容易让人以为"还有几条等着"
+        const num = document.getElementById("woNum");
+        if (num) num.classList.remove("show");
         woSig = null;   // 读失败后允许下次重建（同 svcSig 那条：不然这句报错会挂死）
         box.innerHTML = '<div class="woEmpty">读不到待处理问题（服务没起来？）</div>';
       }
@@ -560,14 +737,9 @@
         const d = await r.json();
         if (d.ok) {
           addMsg("系统", `《${f.name}》已就位（${d.file.chars} 字）。可以让客服照着它干活了 —— 会以当前人格语气作答。`, "sys");
-          chipsBox.innerHTML = "";
-          ["照这份清单写一版取件提醒", "这里面有几件已经滞留了？", "帮我总结这份资料"].forEach(q => {
-            const c = document.createElement("div");
-            c.className = "chip";
-            c.textContent = q;
-            c.addEventListener("click", () => sendMsg(q));
-            chipsBox.appendChild(c);
-          });
+          // 换成"照着这份资料干活"的三条建议（同一份 renderChips，不再手写第二遍）
+          renderChips(["照这份清单写一版取件提醒", "这里面有几件已经滞留了？", "帮我总结这份资料"]
+            .map(q => ({ t: q, q: q, cls: "" })));
         } else {
           addMsg("系统", "上传失败：" + (d.error || "未知原因"), "sys");
         }
@@ -576,6 +748,51 @@
       }
       fileInput.value = "";
     }
+
+    // ---------- 清空对话记录 ----------
+    // ⚠️ 这里清的是**聊天流**，不是台账，而且它是**纯前端动作**：
+    //    · station 这条路每轮都是一个新的随机会话（前端从不传 session_id，后端拿不到就现生成），
+    //      所以这段对话历史**只活在 #log 这个 DOM 里** —— 清空 = 把 #log 清回刚打开页面的样子。
+    //    · **不调 /api/chat/reset**：拿一个空/新 session 去清什么也清不掉，只会让下一位以为"服务端也清了"。
+    //      （真要让驿站有跨轮记忆，那是 #25 单子 S2「固定 session」，届时要连带把这道清空升级成先清服务端 —— 两件事同生共死。）
+    //    · 待处理问题、服务与登记、学生登记条目**一条都不动**，界面上必须把这句说出来，
+    //      否则管理员会以为【清空】把学生上报的问题也删了，那就没人敢点。
+    const greetEl = log.querySelector(".msg.bot");
+    const clearMask = document.getElementById("clearMask");
+
+    function clearMsgCount() {
+      const n = log.querySelectorAll(".msg").length;
+      return greetEl ? Math.max(0, n - 1) : n;   // 开场白不算"聊出来的内容"
+    }
+
+    function openClearDialog() {
+      const n = clearMsgCount();
+      // 计数用 textContent，不为了一个加粗去走 innerHTML（全站转义只有一份来源，能少一个入口就少一个）
+      document.getElementById("clearSummary").textContent =
+        `当前这段对话里有 ${n} 条消息。`
+        + (n <= 0 ? "现在还只有开场白，暂时没什么可清的。" : "清空之后它们就都消失了，找不回来。");
+      clearMask.classList.add("show");
+      document.getElementById("clearCancel").focus();
+    }
+    function closeClearDialog() { clearMask.classList.remove("show"); }
+
+    function doClearChat() {
+      // 整块清干净再把开场白放回去：原来那种"留着第一条、删掉其余"会越清越攒 ——
+      // 每次清空都留下一条系统回执，第二次点【清空】时计数就把这些回执也算成"对话内容"。
+      while (log.firstChild) log.removeChild(log.firstChild);
+      if (greetEl) log.appendChild(greetEl);
+      renderChips(CHIPS);      // 快捷操作恢复成默认 5 条（上传资料后会被换成 3 条建议问题）
+      addMsg("系统", "对话已清空。左边「待处理问题」「服务与登记」里的台账一条没动。", "sys");
+      closeClearDialog();
+    }
+
+    document.getElementById("clearChat").addEventListener("click", openClearDialog);
+    document.getElementById("clearCancel").addEventListener("click", closeClearDialog);
+    document.getElementById("clearOk").addEventListener("click", doClearChat);
+    clearMask.addEventListener("click", e => { if (e.target === clearMask) closeClearDialog(); });
+    document.addEventListener("keydown", e => {
+      if (e.key === "Escape" && clearMask.classList.contains("show")) closeClearDialog();
+    });
 
     send.addEventListener("click", () => sendMsg(text.value));
     text.addEventListener("keydown", e => { if (e.key === "Enter") sendMsg(text.value); });
