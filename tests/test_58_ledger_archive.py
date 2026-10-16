@@ -162,15 +162,25 @@ def batch_d_shape():
     seg = mn[mn.index("# ============ 驿站侧接口"):mn.index('@app.post("/api/admin/notify"')]
     c.check("驿站端那一段里不许出现归档口（免鉴权面不扩大，与 test_32 E2b 同形各钉一遍）",
             "archive" not in seg, "")
-    # 判据是"谁在挑东西"：main 里 `"archived"` 这个键**只许**出现在"从请求体读开关"那一处写法里，
-    # 出现别的用法（在 main 里按它过滤/拼装）就说明收起的逻辑漂到了第二处。
+    # 判据是"谁在挑东西"：main 里 `"archived"` 这个键**只许**两处用法 ——
+    #   ① 从请求体读那个开关（`body.get(`）；
+    #   ② #29 那一处"读旧归档态"（`before_archived = bool(...)`），它只用来**决定要不要宣布这次动作**，
+    #      不挑列表、不改字段 —— 没有它，"放回一条本来就没收起的已解决工单"会被回执说成"已从归档放回"，
+    #      那正是 #28 刚关掉的那族谎报。所以这一处是**内容点名**放行的，不是把整条判据放松。
     # （不能简单禁 "archived" 这个词 —— 参数名本身就叫 include_archived，那样是恒红。）
     occ = re.findall(r'^.*"archived".*$', mn, flags=re.M)
-    stray = [ln.strip()[:70] for ln in occ if "body.get(" not in ln]
-    c.check("过滤只写在 store 一处：main 里对 archived 的引用只许是读请求体那个开关",
-            not stray and st.count("if not include_archived:") == 2
+    allow = ("body.get(", "before_archived = bool(w.get(")
+    stray = [ln.strip()[:70] for ln in occ if not any(a in ln for a in allow)]
+    c.check("过滤只写在 store 一处：main 里对 archived 的引用只许是「读请求体那个开关」+「读旧归档态」那一处",
+            not stray and mn.count("before_archived = bool(") == 1
+            and st.count("if not include_archived:") == 2
             and 'w.get("archived")' in st and 'm.get("archived")' in st,
             f"越界 {len(stray)} 处：{stray[:2]}")
+    # 反向钉住放行的边界：那一处只许**读**，不许在 main 里按它筛列表（筛列表的入口只有 store）。
+    c.check("放行不算放松：main 里不许出现「按 archived 过滤工单/消息列表」的写法",
+            "if w.get(\"archived\")" not in mn and "if not w.get(\"archived\")" not in mn
+            and "filter(lambda" not in mn.split("def _workorder_status_response")[1][:1200],
+            "")
 
     c.check("级联在 store 一个函数里做完（main 里不许出现「归档接口再调一次消息接口」那种两段式）",
             "set_message_archived" not in mn[mn.index("async def workorder_archive"):
@@ -345,6 +355,116 @@ def batch_e_honest_failure():
     return c
 
 
+def batch_f_auto_archive_on_solved():
+    """#29（用户原话「已解决就自动归档」）：状态与归档联动只许一处编排，正反两个方向都要。
+
+    这一批最容易写的版本是"正向一条断言完事"，那样**反向**整个没人管 ——
+    而反向才是这功能的命门：只做正向，误标一次「已解决」，那条就藏进归档区，
+    用户把它改回「处理中」之后仍然看不见它（他会以为东西丢了）。变异 M2 专治这一条。
+    """
+    c = Checker()
+    title("F. 「已解决」⇔ 归档：一处编排、正反两方向、两个入口都生效")
+    with sandbox():
+        cli = make_client()
+        wid = cli.post("/api/workorders", json={"kind": "疑似丢件", "desc": "自动归档样本",
+                                                "source": "panel"}).json()["workorder"]["id"]
+        mirror = [m for m in _rows("student_messages.json") if m.get("ref") == wid]
+        wo_count = len(_rows("workorders.json"))
+        msg_count = len(_rows("student_messages.json"))
+
+        r = cli.post(f"/api/workorders/{wid}/status", json={"status": "已解决"})
+        d = r.json() or {}
+        disk = [w for w in _rows("workorders.json") if w.get("id") == wid][0]
+        c.check("正向：标为已解决 → 盘上那条 archived=True 且有时刻，回执 auto_archived=True",
+                d.get("ok") is True and d.get("auto_archived") is True
+                and disk.get("archived") is True and bool(disk.get("archived_at")), str(d)[:110])
+        c.check("正向也要级联镜像（只收工单 = 收件箱还挂着那条学生消息）",
+                len(mirror) == 1 and d.get("mirrored_messages") == 1
+                and [m for m in _rows("student_messages.json") if m.get("id") == mirror[0]["id"]][0].get("archived") is True,
+                f"mirrored={d.get('mirrored_messages')}")
+        c.check("收起≠没了：条数一条不动（正向也一样是软删）",
+                len(_rows("workorders.json")) == wo_count and len(_rows("student_messages.json")) == msg_count,
+                f"{wo_count}->{len(_rows('workorders.json'))}")
+        c.check("默认列表看不见它，归档区（include_archived=1）又看得见；驿站读口也不出现",
+                wid not in _ids(cli.get("/api/workorders").json()["workorders"])
+                and wid in _ids(cli.get("/api/workorders?include_archived=1").json()["workorders"])
+                and wid not in _ids(cli.get("/api/station/workorders").json()["workorders"]), "")
+
+        # ---- 反向正身：从已解决改回未结，必须自动放回 ----
+        r2 = cli.post(f"/api/workorders/{wid}/status", json={"status": "处理中"})
+        d2 = r2.json() or {}
+        disk2 = [w for w in _rows("workorders.json") if w.get("id") == wid][0]
+        c.check("反向：已解决→处理中 → 两个归档键**都被摘掉**（不是留个 false），回执 auto_unarchived=True",
+                d2.get("auto_unarchived") is True and "archived" not in disk2
+                and "archived_at" not in disk2, str(disk2)[:110])
+        c.check("反向也要把镜像一起放回来，且列表又看得见它",
+                [m for m in _rows("student_messages.json") if m.get("id") == mirror[0]["id"]][0].get("archived") is not True
+                and wid in _ids(cli.get("/api/workorders").json()["workorders"]), "")
+        c.check("放回之后它仍是「已解决」以外的状态时，改回已解决会再收一次（联动不是只做一遍的）",
+                cli.post(f"/api/workorders/{wid}/status", json={"status": "已解决"}).json().get("auto_archived") is True, "")
+
+        # ---- §5.3/§5.4 那一步：放回后停在"已解决但没归档"，再改状态不许谎报 ----
+        cli.post(f"/api/workorders/{wid}/archive", json={"archived": False})
+        r3 = cli.post(f"/api/workorders/{wid}/status", json={"status": "处理中"}).json() or {}
+        c.check("死角照实处理：本来就没收起的，改回未结**不许**宣布「从归档里放回」（那是谎报）",
+                r3.get("auto_unarchived") is False and r3.get("auto_archived") is False, str(r3)[:110])
+        d3 = [w for w in _rows("workorders.json") if w.get("id") == wid][0]
+        cli.post(f"/api/workorders/{wid}/archive", json={})     # 手动收起
+        d3b = [w for w in _rows("workorders.json") if w.get("id") == wid][0]
+        r4 = cli.post(f"/api/workorders/{wid}/status", json={"status": "已解决"}).json() or {}
+        c.check("已经收起的再标已解决：不许重复归档（archived_at 不变），回执也不许谎报 auto_archived",
+                r4.get("auto_archived") is False
+                and [w for w in _rows("workorders.json") if w.get("id") == wid][0].get("archived_at") == d3b.get("archived_at")
+                and d3b.get("archived") is True, str(r4)[:100])
+
+        # ---- 两个入口都要生效（这条专治"只改了一个路由"） ----
+        wid2 = cli.post("/api/workorders", json={"kind": "外卖丢失", "desc": "驿站入口联动",
+                                                 "source": "chat"}).json()["workorder"]["id"]
+        rs = cli.post(f"/api/station/workorders/{wid2}/status", json={"status": "已解决"})
+        c.check("驿站端那个口改成已解决，**同样**自动收起（联动写在共用实现里，两个入口一起生效）",
+                (rs.json() or {}).get("auto_archived") is True
+                and wid2 not in _ids(cli.get("/api/workorders").json()["workorders"]), str(rs.json())[:90])
+        c.check("驿站端改回未结同样自动放回（反向不许只给管理端做）",
+                cli.post(f"/api/station/workorders/{wid2}/status",
+                         json={"status": "待处理"}).json().get("auto_unarchived") is True, "")
+
+        # ---- 状态非法 / 不存在的工单：先 400 后 404 的老顺序不许被联动打乱 ----
+        c.check("非法状态仍然 400 且**不写盘**（联动不能把校验顺序或「改坏了也归档」带进来）",
+                cli.post(f"/api/workorders/{wid}/status", json={"status": "已关闭"}).status_code == 400, "")
+        c.check("不存在的工单仍然 404（联动那段找不到条目时不许崩，也不许假装成功）",
+                cli.post("/api/workorders/nosuch99/status", json={"status": "已解决"}).status_code == 404, "")
+
+    # ---- 形状：一处编排、文案说话、分层不串 ----
+    mn = open("app/main.py", encoding="utf-8").read()
+    st = open("app/store.py", encoding="utf-8").read()
+    seg = mn[mn.index("def _workorder_status_response"):mn.index('@app.get("/api/workorders"')]
+    c.check("联动只写在 `_workorder_status_response` 这一处：这一小段里 set_workorder_archived 恰好两次（收/放）",
+            seg.count("set_workorder_archived(") == 2, f"实际 {seg.count('set_workorder_archived(')} 次")
+    # 分层：store 那边只改状态。⚠️ 别拿"函数体里不许出现 archiv 这个词"当判据 ——
+    # 注释/文档字符串一句"这里不驱动归档"就会把它绊红（本仓的老坑）；钉**调用**和**键字面量**两样就够。
+    u0 = st.index("def update_workorder_status")
+    up = st[u0:st.index("\ndef ", u0 + 1)]
+    c.check("分层不许串：store 的 update_workorder_status 里不许调用归档，也不许写 archived 键"
+            "（M3「把联动搬进 store」就靠这条咬红）",
+            "set_workorder_archived(" not in up and '"archived"' not in up, f"体长 {len(up)}")
+    adm = _strip(open("app/static/admin.html", encoding="utf-8").read())
+    stn = _strip(open("app/static/station.html", encoding="utf-8").read())
+    c.check("管理端把「去哪了、怎么回来」写在回执上（不写就是「点了没反应」的第二个形状）",
+            "并从列表收起" in adm and "并从归档里放回" in adm and "auto_archived" in adm
+            and "auto_unarchived" in adm, "")
+    c.check("驿站端也要说一句（驿站那块读的是不含已归档的列表，那条会凭空不见）",
+            "已从驿站列表收起" in stn and "auto_archived" in stn, "")
+    c.check("状态驱动的归档**同样要重画对面那张表**（走的是同一个级联，等 5 秒轮询就是上一轮露过的馅）",
+            "if (d.auto_archived || d.auto_unarchived) loadMessages();" in adm, "")
+    wo_cb = _action_span(adm, '.mini[data-wo]', "F 批")
+    c.check("状态驱动的归档那一支只说「收起 / 放回」，一个「删」字都不许有"
+            "（这条规则改的是**触发方式**，没改「归档是软删」这件事 —— 措辞不许把它说成删掉了）",
+            "并从列表收起" in wo_cb and "删" not in wo_cb, f"窗口 {len(wo_cb)} 字")
+    c.check("§6 死角要在放回的回执里说破（不偷偷改用户的数据，也不让人下次找不到北）",
+            "下次改它的状态时，它会被自动收起" in adm, "")
+    return c
+
+
 def main():
     global code
     print("\n" + "=" * 60)
@@ -355,6 +475,7 @@ def main():
     code |= batch_c_gates().summary("C 批（闸门与边界）")
     code |= batch_d_shape().summary("D 批（形状与前端）")
     code |= batch_e_honest_failure().summary("E 批（非 2xx 不许当成功）")
+    code |= batch_f_auto_archive_on_solved().summary("F 批（已解决 ⇔ 归档，一处编排两方向）")
     return code
 
 
