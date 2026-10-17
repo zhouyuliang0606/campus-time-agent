@@ -175,9 +175,13 @@ def batch_c_shape_pinned():
     # 否决的驱动条件也要钉：必须同时看规则层和语义层，只看一层就是"各读各的"
     assign = [n for n in body if isinstance(n, ast.Assign)
               and any(getattr(t, "id", "") == "_period_block" for t in n.targets)]
-    c.check("`_period_block` 在函数开头就算好（判定层收口，不在各分支里重复判）",
-            bool(assign) and body.index(assign[0]) < len(body) // 3,
-            body.index(assign[0]) if assign else "没找到")
+    # ⚠️ 判据从"排在函数体前 1/3"换成"**排在所有按它分叉的分支之前**"（2026-10-17 #34）：
+    #    前者是拿语句条数当比例，分支区整段被端级闸门圈走一层后分母就变了，位置一个字没动也会红。
+    #    这条真正要钉的是"先算好再用"，跟函数体多长无关。
+    first_use = min((n.lineno for n in period_ifs), default=None)
+    c.check("`_period_block` 排在所有按它分叉的分支之前（判定层收口，不在各分支里现算）",
+            bool(assign) and (first_use is None or assign[0].lineno < first_use),
+            f"赋值 L{assign[0].lineno if assign else '无'} / 最早分叉 L{first_use if first_use else '无'}")
     if assign:
         cond = _src(assign[0].value)
         c.check("条件同时钉住 `_rule_hit` 和 `_sem_intent` 两档（不分层才叫收口）",
