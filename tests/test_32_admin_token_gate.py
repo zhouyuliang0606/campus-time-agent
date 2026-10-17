@@ -202,17 +202,30 @@ def batch_wiring(c):
         # #29 归档：两张台账的"收起来"都只挂管理端。这条清单是**逐条承认**用的，
         # 新增一个挂门口必须在这儿留名（E2 就是为了让"顺手加个口忘了挂门/挂错面"当场红）。
         "POST /api/workorders/{wo_id}/archive", "POST /api/admin/messages/{mid}/archive",
+        # 2026-10-18 #39-D：撤回通知是管理动作 ⇒ 也挂门（清单从 16 涨到 17 是**承认过的**，
+        # 这条清单存在的理由就是"新增一个挂门口必须在这儿留名"，所以涨不是坏消息，悄悄涨才是）。
+        "DELETE /api/admin/notices/{nid}",
     }
     got = _guarded_routes()
-    c.check("E2 挂门的接口正好是这 16 个（多一个少一个都算错）", got == expect,
+    c.check("E2 挂门的接口正好是这 17 个（多一个少一个都算错）", got == expect,
             f"多挂：{sorted(got - expect)}｜漏挂：{sorted(expect - got)}")
-    # #29 的另一半：归档**只许**在管理端。驿站端 `/api/station/*` 是免口令的（演示级），
+    # #29 的另一半：归档**写口**只许在管理端。驿站端 `/api/station/*` 是免口令的（演示级），
     # 免口令还能收台账 = 任何人不用口令就能清工单，所以这条反向钉死。
+    # 2026-10-18 #39-C 把判据从"段里不许出现 archive 这个词"换成"不许出现**写**口"：
+    # 驿站多了一条**只读**的已处理历史（GET），词一样、性质不同 —— 数据没跨过端，
+    # 只是标成已解决被收起之后，处理它的人不再看不见"那条去哪了"。
+    # 收窄的同时补了变异 M10（把那条 GET 改成 POST 必须红），见 test_65 与指南红线 30。
     station_seg = mn[mn.index("# ============ 驿站侧接口"):mn.index('@app.post("/api/admin/notify"')] \
         if "# ============ 驿站侧接口" in mn else ""
-    c.check("E2b 驿站端那一段里**没有**归档口（免口令的面不许扩大到改台账）",
-            station_seg and "archive" not in station_seg,
-            "station 段里出现了 archive")
+    _station_deco = [ln.strip()[:60] for ln in station_seg.splitlines() if ln.startswith("@app.")]
+    _station_writes = [ln for ln in _station_deco if "archive" in ln
+                       and not ln.startswith('@app.get(')]
+    c.check("E2b 驿站端那一段里**没有归档的写口**（免口令的面不许扩大到改台账；只读历史允许且只许 GET）",
+            station_seg and not _station_writes
+            and "set_workorder_archived" not in station_seg
+            and 'dependencies=[Depends(verify_admin)]' not in station_seg
+            and '@app.get("/api/station/workorders/archived")' in station_seg,
+            f"station 段 {len(_station_deco)} 条路由，其中归档写口 {len(_station_writes)} 条：{_station_writes[:2]}")
     c.check("E3 学生上报工单那条没挂门（用户点名要保留开放）",
             "POST /api/workorders" not in got)
     c.check("E4 处理工单那条挂了（同一段里这两行最容易看走眼）",
