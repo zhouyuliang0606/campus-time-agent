@@ -514,13 +514,49 @@
       const data = await (await fetch("/api/notices")).json();
       const box = document.getElementById("noticeList");
       if (!data.notices.length) { box.innerHTML = '<div class="empty">还没有发布过通知</div>'; return; }
+      // #39-D：每条给一颗【撤回】。以前通知只能发不能撤，写错别字、发错人群就挂着下不来。
+      // ⚠️ id 走 `data-notice` + addEventListener，**不写内联 onclick**：
+      //    `esc.js` 顶上就写着那是禁区 —— 内联 JS 的字符串字面量里 `&#39;` 会被 HTML 先解码回 `'`
+      //    再交给 JS 解析，转义挡不住语法破坏。这里 id 虽然是系统生成的 hex，也不靠"它看起来安全"。
       box.innerHTML = data.notices.map(n => {
         let att = "";
         if (n.attachment) {
           att = `<div style="margin-top:6px;"><a class="mini" href="/api/uploads/${encodeURIComponent(n.attachment.id)}/download" target="_blank" style="text-decoration:none;">📎 ${esc(n.attachment.name)}（下载）</a></div>`;
         }
-        return `<div class="notice"><b>${esc(n.title || "(无标题)")}</b> <span class="small">${esc(n.ts)}</span><div>${esc(n.content)}</div>${att}</div>`;
+        return `<div class="notice"><b>${esc(n.title || "(无标题)")}</b> <span class="small">${esc(n.ts)}</span><div>${esc(n.content)}</div>${att}
+          <div style="margin-top:6px;"><button class="mini danger" data-notice="${esc(n.id)}">撤回</button></div></div>`;
       }).join("");
+      // 选择器带 `[data-notice]`：这一片里还有 📎 那颗 `.mini`（它是个 <a>），
+      // 笼统 querySelectorAll(".mini") 会给下载链接绑上一个它不该有的动作。
+      box.querySelectorAll("button.mini[data-notice]").forEach(b => b.addEventListener("click", async () => {
+        const st = document.getElementById("nstatus");
+        // 确认走本页那一份 askConfirm（自绘框）—— 不用原生 confirm：
+        // 「删除/撤回」这类动作会被连着点几次，原生框会被浏览器拦下来，
+        // 那时点撤回"没反应"，而这一页 5 秒轮询还在跑，最难查的就是这种。
+        // 措辞用"撤回"不用"删除"：撤的是这条通知，学生若已读那一面收不回来 —— 这句不是免责，是边界。
+        if (!await askConfirm({
+          title: "撤回这条通知？",
+          body: "notices.json 里这一条会没掉，这里与学生端的列表都不再显示它。",
+          warn: "学生若已经读过，那一面收不回来（通知没有已读回执）；要再说明一次就重新发一条。"
+              + "它挂的附件原件不动 —— 本单只删这一条通知，不替管理员做删文件的决定。",
+          okText: "撤回通知",
+        })) return;
+        b.disabled = true;
+        let d = {};
+        try {
+          // adminFetch 非 2xx 一律抛（#28 那一族收口在那一处），所以这里必须就地接住：
+          // 不接就是"点了没反应 + 控制台一条未处理拒绝"，而屏幕上还挂着那条通知。
+          d = await (await adminFetch("/api/admin/notices/" + encodeURIComponent(b.dataset.notice),
+            { method: "DELETE" })).json();
+        } catch (e) { st.textContent = "❌ 撤回没成功：" + e.message; b.disabled = false; return; }
+        if (d.ok) {
+          st.textContent = "✅ 已撤回一条通知（notices.json 里那条没了；它挂的附件原件还留着）";
+          loadNotices();
+        } else {
+          st.textContent = "❌ 撤回没成功：" + (d.error || "服务端没给出原因");
+          b.disabled = false;
+        }
+      }));
     }
 
     // ---------- API 配置 ----------

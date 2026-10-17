@@ -369,6 +369,26 @@ def list_notices() -> list:
     return list(reversed(_read("notices.json", [])))
 
 
+def delete_notice(nid: str) -> bool:
+    """撤回一条已发布的通知（#39-D：发错别字、发错人群，以前只能眼看着它挂着）。
+
+    两处刻意不做：
+      ① **不动它挂的附件**：`uploads/<id>` 那份原件还留着。通知是"这句话不该说"，
+         文件本身是另一份资产，跟着一起删等于替管理员做了删除文件的决定（真删文件要找回来，
+         而撤回这条动作的可逆性预期是"再发一遍就行"）。
+      ② 不做软删/隐藏标记：通知表里没有 status/archived 那一套，加一档就是给这张表
+         新开第二份状态词表（本项目为"两份状态表"付过几次钱）。要"撤回后又出现"就再发一条。
+    """
+    rows = _read("notices.json", [])
+    if not isinstance(rows, list):
+        return False
+    kept = [n for n in rows if str(n.get("id")) != str(nid)]
+    if len(kept) == len(rows):
+        return False
+    _write("notices.json", kept)
+    return True
+
+
 # ============ 知识库管理（管理员零代码维护，faq 模块直接吃这份数据） ============
 
 def list_kb() -> list:

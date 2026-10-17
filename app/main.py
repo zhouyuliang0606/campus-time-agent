@@ -4553,6 +4553,20 @@ async def notices():
     return {"notices": list_notices()}
 
 
+@app.delete("/api/admin/notices/{nid}", dependencies=[Depends(verify_admin)])
+async def admin_notice_delete(nid: str):
+    """撤回一条通知（#39-D）。发错别字、发错人群，以前只能眼看着它挂着。
+
+    路径挂在 `/api/admin/*` 且**必须带 `verify_admin`**：撤回是管理动作，
+    漏挂就等于把"任何人可改管理端数据"敞开（护栏 `test_65` D2 钉着这条，
+    反向那一条——不带令牌必须被拦——才是它真正防的东西）。
+    只删 `notices.json` 里这一条，**不动它挂的附件原件**（理由见 `store.delete_notice`）。
+    """
+    if not delete_notice(nid):
+        return JSONResponse({"error": "通知不存在（也可能已经撤回过）"}, status_code=400)
+    return {"ok": True}
+
+
 # ============ 管理控制台：知识库零代码维护 ============
 
 @app.get("/api/admin/kb", dependencies=[Depends(verify_admin)])
