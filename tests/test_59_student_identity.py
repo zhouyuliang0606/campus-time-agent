@@ -3,18 +3,26 @@
 用户 2026-10-17 原话：「学生账号不要两个机器，同一个机器退出登录后，切另一个账号，
 课表代办属于个人数据库不能共用」。
 
-四条规格，每条都有对应的批：
+五条规格，每条都有对应的批：
   A 批 —— 三个面（课表 / 待办 / 对话记忆）**真的**分开了（不是"看起来分开"）；
   B 批 —— 兜底（没学号走老位置）不许被删，白名单不许漏（学号会被拼进文件路径！）；
-  C 批 —— 形状：set 身份只许一处、拼路径只许一处、cookie 的契约、文档不许隐瞒。
+  C 批 —— 形状：set 身份只许一处、拼路径只许一处、cookie 的契约、文档不许隐瞒；
+  D 批 —— 空课表要说清「哪种空」（#35 撤掉登录播种之后，新账号是**空库**，引导必须跟上）。
 
 ⚠️ 一句话性质：**这不是鉴权**。学号谁都能填，它只解决数据分区；
    真鉴权只有管理端口令那一条链（test_32 钉着，本文件不碰它）。
+⚠️ 两处**按 #35 / #38 改过口径**（不是放松，是"前提变了"）：
+   · 登录现在要过名录（`app/data/accounts.json`）⇒ 测试用 `write_accounts(...)` 自种名录，
+     不种就是 403 —— 那时红的是"赛前状态没摆好"，不是隔离坏了；
+   · 首次登录**不再拷一份底稿给他** ⇒ 原来那条"登录之后就有一份自己的 todos.json"换成
+     "新学号登录后他的库里就该是空的"（那正是当年播种的副作用，用户原话
+     「所有账号进去都自带这个代办，应该是库的问题」）。
 """
 import json
 import os
 
-from _harness import Checker, data_path, make_client, sandbox, title
+from _harness import (Checker, data_path, make_client, sandbox, title,
+                      write_accounts)
 
 code = 0
 
@@ -49,29 +57,24 @@ def batch_a_separated():
     c = Checker()
     title("A. 三个面都按人分：待办 / 周表 / 对话记忆")
     with sandbox():
-        # ⚠️ 起点自己种老位置那份"底稿"：干净克隆里 `student/` 是**空的**（演示数据不入库），
-        #    而首次登录播种拷的正是它 —— 不种就会出现"本机全绿、评委那台红"的那种假绿
-        #    （A0/A2-bis 第一版在严格克隆里就是这么红的：登录 200，但什么都没拷出来）。
-        base_todo = len(_todos_of(""))
-        seed = make_client()
-        seed.post("/api/todos", json={"title": "底稿待办（播种源）", "date": "2026-12-31",
-                                       "start": "09:00", "end": "10:00"})
-        seed.post("/api/timetable/apply", json={"courses": [
-            {"day": 3, "start": "10:00", "end": "11:40", "course": "线性代数", "location": "教一"}]})
-        # ⚠️ 比的是 **delta**，不是绝对条数：老位置在开发机上可能带着用户的演示待办、在干净克隆里是空的，
-        #    写死 `== 1` 就是"本机绿、评委红"（4o3 那条同一个病）。周表可以写死 1 门 —— apply 是整份覆盖。
-        c.check("A0-pre 播种源（老位置）拿到了内容：待办比基线多 1 条、周表整份是我种的这一门",
-                len(_todos_of("")) == base_todo + 1 and len(_tt_of("")) == 1,
-                f"待办 {base_todo}->{len(_todos_of(''))} 周表 {len(_tt_of(''))} 门")
+        # 名录自种（#38）：登录只认名录里的学号，不种就是 403。
+        write_accounts(["S001", "S002", "S-001_x"])
+        base_todo = len(_todos_of(""))    # 老位置可能带着用户手测的东西 ⇒ 一律比 delta，不比绝对条数
         a = _cli_as("S001")
         b = _cli_as("S002")
         la = a.post("/api/login", json={"student": "S001"})
         lb = b.post("/api/login", json={"student": "S002"})
-        c.check("A0 两个学号各自登录成功，并各有一份**自己目录里的**待办文件",
-                la.status_code == 200 and lb.status_code == 200
-                and os.path.exists(data_path("student", "S001", "todos.json"))
-                and os.path.exists(data_path("student", "S002", "todos.json")),
-                f"{la.status_code}/{lb.status_code}")
+        c.check("A0 名录里的两个学号各自登录成功（名单外那一档由 test_64 钉）",
+                la.status_code == 200 and lb.status_code == 200, f"{la.status_code}/{lb.status_code}")
+        # #35 撤掉了"首次登录拷一份底稿给他"。当年那个副作用是**所有账号一进去都自带同一条待办**，
+        # 用户原话「应该是库的问题」—— 其实它在按设计工作，而那个设计是错的。新账号就该是空库。
+        c.check("A0-bis 新学号登录之后**他的库里就该是空的**（播种已撤：不许凭空建目录、拷文件）",
+                not os.path.exists(data_path("student", "S001", "todos.json"))
+                and not os.path.exists(data_path("student", "S001", "timetable.json"))
+                and not os.path.exists(data_path("student", "S002", "timetable.json")),
+                "登录之后凭空多出了文件")
+        c.check("A0-ter 老位置那份**底稿没被本文件偷偷建回来**（#35 §五：删它不是手滑）",
+                len(_todos_of("")) == base_todo, f"老位置 {base_todo} 条")
 
         # —— ① 待办：各写各的，互相看不见 ——
         n_a0, n_b0 = len(_todos_of("S001")), len(_todos_of("S002"))
@@ -92,8 +95,8 @@ def batch_a_separated():
                 "只有 S001 的事" in listed and "只有 S002 的事" not in listed, str(listed)[:90])
 
         # —— ② 周表 ——
-        # ⚠️ 不能拿"里面有没有某一门课"当判据：S002 的库是登录时从演示底稿**种**出来的，
-        #    那 18 门课本就包含《高等数学》。要钉的是"S001 存课之后，S002 那份**一个字节没变**"。
+        # 判据仍然是"字节不变"，但含义变了（#35）：S002 现在**根本没有这份文件**，
+        # S001 存课之后它照样不该出现 —— 这比"内容没变"更强：连文件都不共享、也不会被谁的上传带出来。
         tt_b_before = open(data_path("student", "S002", "timetable.json"), encoding="utf-8").read() \
             if os.path.exists(data_path("student", "S002", "timetable.json")) else ""
         rtt = a.post("/api/timetable/apply", json={"courses": [
@@ -103,8 +106,8 @@ def batch_a_separated():
                 f"{rtt.status_code} {rtt.text[:70]}")
         tt_b_after = open(data_path("student", "S002", "timetable.json"), encoding="utf-8").read() \
             if os.path.exists(data_path("student", "S002", "timetable.json")) else ""
-        c.check("A2-bis S001 存课之后，S002 那份周表**一个字节没变**（分的是文件，不是同一份里的两个 key）",
-                tt_b_after == tt_b_before and bool(tt_b_before),
+        c.check("A2-bis S001 存课之后，S002 那份周表**还是不存在**（分的是文件，不是同一份里的两个 key）",
+                tt_b_after == tt_b_before and tt_b_before == "" and len(_tt_of("S002")) == 0,
                 f"S002 前后 {len(tt_b_before)}→{len(tt_b_after)} 字节")
 
         # —— ③ 对话记忆：两边用**同名** session id，也各落各的文件 ——
@@ -146,6 +149,9 @@ def batch_b_fallback_and_whitelist():
     c = Checker()
     title("B. 兜底不破 + 学号白名单（它会被拼进文件路径）")
     with sandbox():
+        # B4 那一条要登录一个"格式合法"的学号（含下划线/短横线），所以把它写进名录；
+        # 名录本身对不对由 `test_64_accounts.py` 钉，这里只管"门后头那条路还通"。
+        write_accounts(["S-001_x"])
         anon = make_client()
         n0 = len(_todos_of(""))
         r = anon.post("/api/todos", json={"title": "没身份的一条", "date": "2026-12-31",
@@ -248,23 +254,94 @@ def batch_c_shape():
     c.check("C6-ter 未登录**不硬跳转**，只把那一格标灰并给一个去登录的入口"
             "（直接打开 /student 这条老路还得能用：README 复现、录屏、评委随手一敲）",
             "演示公共库" in stu and "chip.onclick" in stu, "")
-    c.check("C7 播种只拷课表与待办，**不拷 sessions.json**（对话记忆是这个人说过什么）",
-            'for name in ("todos.json", "timetable.json")' in mn and "sessions.json" not in
-            mn[mn.index("def _seed_first_login"):mn.index("@app.post(\"/api/login\"")], "")
+    # C7 是**改口**而不是删条：#35 把"首次登录拷一份演示底稿"整个撤了（用户真机：
+    # 「所有账号进去都自带这个代办，应该是库的问题」）。当年这条钉的是"拷得对不对"，
+    # 现在要钉的是"**别再这么拷**"——留一份死代码或"顺手加回来"，那个观感就复活了。
+    login_seg = mn[mn.index('@app.post("/api/login"'):mn.index('@app.post("/api/logout"')]
+    c.check("C7 登录播种已撤：`_seed_first_login` 不许存在、`/api/login` 里不许有任何拷贝、shutil 不许留着",
+            "_seed_first_login" not in mn and "shutil" not in mn and "copy" not in login_seg,
+            f"login 段里出现 copy：{'copy' in login_seg}")
+    c.check("C7-bis 播种撤了但**接缝留着**：`student_root` / `student_dir` 仍在 store（兜底路径依赖它们）",
+            "def student_root(" in st and "def student_dir(" in st, "")
+    c.check("C7-ter 名录这道门在格式**之后**（顺序错了就把「没开通」和「格式不对」混成一句），"
+            "而名录判据**定义只有一处**、登录与中间件两处都用它（#38 §2.1.2）",
+            login_seg.index("_STUDENT_ID_RE.fullmatch") < login_seg.index("is_registered")
+            and mn.count("def is_registered(") == 0        # 定义在 store，不在 main
+            and st.count("def is_registered(") == 1
+            and mn.count("is_registered(") == 2 and mn.count("_STUDENT_ID_RE.fullmatch(") == 2,
+            f"main 里 is_registered 用了 {mn.count('is_registered(')} 处（登录 + 中间件）")
     ex = open("EXPLAIN.md", encoding="utf-8").read()
     c.check("C8 EXPLAIN 六那条「没有账号隔离」必须已回写成\"已做最小版\"，并照实写明不是鉴权 + 兜底保留",
             "已做最小版" in ex and "不是鉴权" in ex and "并发写盘" in ex, "")
     return c
 
 
+def batch_d_empty_state():
+    """D 批 · 空课表的三态与引导（#35：撤了播种，界面必须接住"新学生从上传课表开始"）。
+
+    三态的判据只用数据本身：`timetable.json` 在不在（= 传过没有）+ `courses` 空不空。
+    这个信息只有服务端知道，所以由 `GET /api/timetable` 带一个 `uploaded` 出来，
+    **前端不许猜**（猜就会把"刚清空课表"的人说成"你还没上传"，他就以为系统把上传弄丢了）。
+    """
+    c = Checker()
+    title("D. 空课表三态：没传过 / 传过又清空了 —— 两句话不许混")
+    with sandbox():
+        write_accounts(["S001"])
+        a = _cli_as("S001")
+        a.post("/api/login", json={"student": "S001"})
+
+        d0 = a.get("/api/timetable").json()
+        c.check("D1 全新账号：`/api/timetable` 回 uploaded=false 且 courses 为空（**200，不是 500**）",
+                d0.get("uploaded") is False and d0.get("courses") == [], str(d0)[:70])
+        c.check("D1-bis 原有字段一个不少（只加字段、不改形状，前端卡片不用跟着改）",
+                all(k in d0 for k in ("courses", "updated_at", "uploaded")), str(sorted(d0)))
+
+        a.post("/api/timetable/apply", json={"courses": [
+            {"day": 1, "start": "08:00", "end": "09:40", "course": "高数", "location": "教一"}]})
+        d1 = a.get("/api/timetable").json()
+        c.check("D2 存过课之后 uploaded=true（判据是**文件在不在**，不是课程数）",
+                d1.get("uploaded") is True and len(d1.get("courses") or []) == 1, str(d1)[:70])
+
+        # 「传过、但课是空的」这一档直接改那份文件：走真接口清空得先有一张待确认的清空提案
+        #（那是另一条链，AI 不许自己删库，test_10/25 那批钉着），这里要验的是**空状态怎么说话**。
+        with open(data_path("student", "S001", "timetable.json"), "w", encoding="utf-8") as f:
+            json.dump({"updated_at": "2026-12-01 00:00:00", "courses": []}, f, ensure_ascii=False)
+        d2 = a.get("/api/timetable").json()
+        c.check("D3 清空之后：courses 空了但 uploaded 仍为真 —— 「他传过」这件事本身不许被抹掉",
+                d2.get("courses") == [] and d2.get("uploaded") is True, str(d2)[:70])
+
+    stu = open("app/static/student.html", encoding="utf-8").read()
+    c.check("D4 空状态函数只有一份，周视图与月视图都走它（各写一份就会说法不一致）",
+            stu.count("function schEmptyHtml") == 1 and stu.count("schEmptyHtml()") >= 3,
+            f"定义 {stu.count('function schEmptyHtml')} 处 / 调用 {stu.count('schEmptyHtml()')} 处")
+    # D5 以前只查"这两句话都在文件里"，于是**两句接反**照样绿 —— 真机第一版就是这么红的：
+    # 新号 s1000 从没传过课表，进去却被告知「课表已清空」（等于说他把自己的上传弄丢了）。
+    # 所以这里钉的是**哪一句落在哪一个分支里**，不是字符串存在性。
+    _key = "if (schUploaded === false) {"
+    _i = stu.index(_key)
+    _close = stu.index("\n      }\n", _i)
+    _never = stu[_i:_close]                       # uploaded=false 那一支：从没传过
+    _cleared = stu[_close:stu.index("\n    }\n", _close)]   # 另一支：传过又清空了
+    c.check("D5 两套话按 uploaded **接对**：false 那一支说「还没有课表」，"
+            "另一支才说「课表已清空」（接反了就是当着新人的面说他上传丢了）",
+            "还没有课表" in _never and "课表已清空" not in _never
+            and "课表已清空" in _cleared and "还没有课表" not in _cleared
+            and "t.uploaded === true" in stu,
+            f"false 支={_never[:34].strip()!r}")
+    c.check("D6 待办栏空态那一句是**有条件**补的（有课表的人不该被推去重传）",
+            "schCourses.length ? ''" in stu.replace("\n", " "), "")
+    return c
+
+
 def main():
     global code
     print("\n" + "=" * 60)
-    print("test_59_student_identity：学生身份=学号，个人库按学号分开（#32）")
+    print("test_59_student_identity：学生身份=学号，个人库按学号分开（#32 + #35 + #38）")
     print("=" * 60)
     code |= batch_a_separated().summary("A 批（三个面都按人分）")
     code |= batch_b_fallback_and_whitelist().summary("B 批（兜底 + 白名单 + 穿越）")
     code |= batch_c_shape().summary("C 批（形状与文档不隐瞒）")
+    code |= batch_d_empty_state().summary("D 批（空课表三态与引导）")
     return code
 
 
