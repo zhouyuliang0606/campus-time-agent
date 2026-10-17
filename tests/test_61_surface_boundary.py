@@ -96,6 +96,16 @@ def batch_a_station_cannot_touch():
             sc3, d3 = _chat(cli, "现在有哪些快递还没取走", "station", "t61-express")
             c.check("A7 驿站端问快递（本职）照旧走通：HTTP 200 + module=station（闸门不是一刀切）",
                     sc3 == 200 and d3.get("module") == "station", f"HTTP {sc3}")
+
+            # ★ 第二条出口不许绕过闸门：`/api/chat` 按 Accept 协商出 SSE（#07 流式那一刀），
+            #   两条出口都走 `_chat_impl`，但"走得到/走不到"这件事必须**各出口各验一遍** ——
+            #   只测 JSON 那条等于给"换个请求头就能读学生数据"留了门。
+            r_sse = cli.post("/api/chat", headers={"Accept": "text/event-stream"},
+                             json={"message": "我的代办", "module": "station", "session_id": "t61-sse"})
+            body = r_sse.text or ""
+            c.check("A8 SSE 那条出口同样读不到（换 Accept 头绕不过闸门）",
+                    r_sse.status_code == 200 and PROBE not in body,
+                    f"HTTP {r_sse.status_code} 流里长度 {len(body)}")
         finally:
             restore()
     return c
@@ -142,6 +152,14 @@ def batch_b_student_still_works():
             c.check("B4 闸门只认 station：低代码栏（custom:lost1）说「我的代办」**照旧列得出来**",
                     sc4 == 200 and PROBE in (d4.get("answer") or ""),
                     f"HTTP {sc4} answer={(d4.get('answer') or '')[:70]}")
+
+            # B5 是 A8 的**对照**，少了它 A8 就是假绿：SSE 那条出口在学生这边确实把待办发出来了，
+            #   才说明"驿站端流里没有"是因为闸门拦住了，而不是因为那条流本来就什么都不回。
+            r_stu_sse = cli.post("/api/chat", headers={"Accept": "text/event-stream"},
+                                 json={"message": "我的代办", "session_id": "t61-sse-stu"})
+            c.check("B5 对照：SSE 那条出口**学生说同一句照旧发得出待办**（证明 A8 的红是闸门拦的，不是那条流是空的）",
+                    r_stu_sse.status_code == 200 and PROBE in (r_stu_sse.text or ""),
+                    f"HTTP {r_stu_sse.status_code} 流里长度 {len(r_stu_sse.text or '')}")
         finally:
             restore()
     return c
