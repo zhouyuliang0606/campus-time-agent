@@ -248,9 +248,13 @@ def batch_c_redlines():
     # ⚠️ 剔注释再数 innerHTML —— 我自己刚在那段头上写的注释里就有"一个字都不进 innerHTML"这句，
     #    不剔就是拿注释当代码判红（本仓第六次栽在同一条上，规矩是死的）。
     lr_code = "\n".join(ln.split("//")[0] for ln in lr.splitlines())
-    c.check("登记条目的渲染只用 textContent/createElement（innerHTML 那一次是清空）；"
+    # 2026-10-18 #39 改口：这一窗里现在**有两处** `innerHTML`（原来一处清空，#39-C 的「已处理」面板又加一处清空）。
+    # 原来那条钉的是"== 1 次"，加一处合规的清空就会红 —— 那是**计数当判据**的老毛病：
+    # 真正要钉的是「每一次 innerHTML 都是清空赋值」，不是"出现了几次"。
+    c.check("登记条目这一窗里的 innerHTML **每一次都是清空**（`= \"\"`），别的全走 textContent/createElement；"
             "模板字符串拼给 textContent 是安全的，禁的是别的注入口子",
-            lr_code.count("innerHTML") == 1 and 'rec.innerHTML = "";' in lr_code
+            lr_code.count("innerHTML") >= 1
+            and lr_code.count("innerHTML") == lr_code.count('innerHTML = ""')
             and "line.textContent" in lr_code
             and not any(w in lr_code for w in ("insertAdjacentHTML", "outerHTML", "document.write",
                                                "eval(", "new Function")),

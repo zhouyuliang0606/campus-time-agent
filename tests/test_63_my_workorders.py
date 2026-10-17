@@ -200,8 +200,11 @@ def batch_d_shape():
     c.check("D3 过滤判据只写一处（list_workorders 里那一句），路由里不许再筛一遍",
             st.count("if owner is not None:") == 1 and "owner=who" in mn
             and 'w.get("owner")' not in mn, "")
-    c.check("D4 管理端与驿站端都显示归属，缺失时写「未登记」（不是空白、也不是编一个学号）",
-            adm.count('w.owner || "未登记"') == 1 and sta.count('w.owner || "未登记"') == 1, "")
+    _own = 'w.owner || "未登记"'
+    c.check("D4 管理端与驿站端都显示归属，缺失时写「未登记」（不是空白、也不是编一个学号）；"
+            "#39-C 之后驿站那块是两处（未结表 + 已处理历史），历史里更得认得出是谁的案子",
+            adm.count(_own) == 1 and sta.count(_own) == 2,
+            "admin {} / station {}".format(adm.count(_own), sta.count(_own)))
     c.check("D5 那句「进度可在『我提交过的工单』里看到」还在（兑现由 C 批钉，措辞不许悄悄改成别的话）",
             "我提交过的工单" in ex and "我提交过的工单" in cfm, "")
     c.check("D6 那句过期注释不许还当成现状写着（「已知缺口、本单不解决」必须消失，"

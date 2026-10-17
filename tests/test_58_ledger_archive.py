@@ -160,8 +160,21 @@ def batch_d_shape():
     stc = _strip(page)
 
     seg = mn[mn.index("# ============ 驿站侧接口"):mn.index('@app.post("/api/admin/notify"')]
-    c.check("驿站端那一段里不许出现归档口（免鉴权面不扩大，与 test_32 E2b 同形各钉一遍）",
-            "archive" not in seg, "")
+    # 2026-10-18 #39-C 改口（这条是本单唯一一处**主动收窄旧钉子**的地方，理由写在这儿）：
+    # 旧钉子是「驿站那一段里不许出现 archive 这个词」，它守的是**免口令面不能收台账**。
+    # #39-C 加的是一条**只读**的已处理历史（GET），词一样、性质完全不同：
+    # 数据没跨过端（那些案子本来就是驿站处理的），只是办完不再"看不见去哪了"。
+    # 所以判据从"有没有这个词"换成"**有没有写的口子**"——这才是这条红线真正防的东西。
+    _deco = [ln for ln in seg.splitlines() if ln.startswith("@app.")]
+    _写口 = [ln.strip()[:60] for ln in _deco if "/archive" in ln and "/archived" not in ln]
+    c.check("驿站端那一段里不许出现**归档的写口**（免鉴权面不扩大：谁不用口令就能收台账 = 事故）；"
+            "只读的历史视图允许，且只许 GET",
+            "set_workorder_archived" not in seg and "set_message_archived" not in seg
+            and not _写口
+            and 'dependencies=[Depends(verify_admin)]' not in seg
+            and '@app.get("/api/station/workorders/archived")' in seg
+            and "list_archived_workorders()" in seg,
+            f"驿站段里的路由 {len(_deco)} 条，写口 {len(_写口)} 条：{_写口[:2]}")
     # 判据是"谁在挑东西"：main 里 `"archived"` 这个键**只许**两处用法 ——
     #   ① 从请求体读那个开关（`body.get(`）；
     #   ② #29 那一处"读旧归档态"（`before_archived = bool(...)`），它只用来**决定要不要宣布这次动作**，
@@ -340,9 +353,13 @@ def batch_e_honest_failure():
             and "msgArchStatus" not in lmsg, "")
 
     # ---- 单子 3：驿站端那四处同形守门（就地补，没抽公共 fetch 层） ----
-    for tag, anchor in (("改工单状态", 'encodeURIComponent(w.id || "") + "/status"'),
+    # 2026-10-18 #39：锚点换成**更长**的那一句。理由不是"顺手改着玩"——
+    # #39-C 的「已处理」面板里放回那颗按钮**照抄了同一个请求形状**（这是设计：放回不许另开一份逻辑），
+    # 于是旧锚点 `... + "/status"` 变成两处命中，`_action_span` 按"命中必须唯一"返回空串 → 假红。
+    # 锚点唯一性这种约束，宁可写长一句，也不要改成"取第一处"（那会悄悄飘到别的动作上）。
+    for tag, anchor in (("改工单状态", 'body: JSON.stringify({ status: to }),'),
                         ("登记一条", 'encodeURIComponent(String(s.id || "")) + "/records"'),
-                        ("改登记状态", 'encodeURIComponent(String(item.id || "")) + "/status"'),
+                        ("改登记状态", 'body: JSON.stringify({ status: WO_NEXT[st] || "待处理" }),'),
                         ("生成服务", 'fetch("/api/station/services", {'),
                         # 施工单 §3 只点了 4 处，整族扫又找到一处同形状的：/api/chat 回 500 时
                         # 正文里只有 detail，`if (data.error)` 判不到 → 客服"回"了一句空话。
@@ -357,9 +374,13 @@ def batch_e_honest_failure():
             ok, extra = False, f"锚点/窗口取不到：{e}"
         c.check(f"驿站端「{tag}」这一处补了 HTTP 级守门，且 if (r.error) 退成了 else if（不再当兜底）",
                 ok, extra)
-    c.check("这一处守门只算原因、不改请求怎么发：全页只有 5 处 !resp.ok，且没有新增 fetch 包装函数"
-            "（施工单 §3 明确不许顺手抽公共层）",
-            stn.count("!resp.ok") == 5 and "function httpFailReason(" in stn
+    # 5 → 9（#39 实测数出来的）：新增的四处都是**同一形状**的守门（删除服务 / 删除登记 /
+    # 已处理历史 fetch / 放回那次状态口），一处一个 `!resp.ok`，仍然没有抽 stationFetch。
+    # 这条钉子真正防的是"顺手抽一层公共 fetch 封装"（施工单 §3 明确不许），不是数数不许涨；
+    # 所以数字跟着涨、"没有包装函数"那半句一个字没放松。
+    c.check("这一处守门只算原因、不改请求怎么发：全页 9 处 !resp.ok（#39 加了四处同形的），"
+            "且没有新增 fetch 包装函数（施工单 §3 明确不许顺手抽公共层）",
+            stn.count("!resp.ok") == 9 and "function httpFailReason(" in stn
             and "async function stationFetch" not in stn, f"!resp.ok={stn.count('!resp.ok')}")
 
     # ---- 单子 2：措辞不许把服务端的事推给网线 ----
@@ -469,8 +490,12 @@ def batch_f_auto_archive_on_solved():
     c.check("管理端把「去哪了、怎么回来」写在回执上（不写就是「点了没反应」的第二个形状）",
             "并从列表收起" in adm and "并从归档里放回" in adm and "auto_archived" in adm
             and "auto_unarchived" in adm, "")
-    c.check("驿站端也要说一句（驿站那块读的是不含已归档的列表，那条会凭空不见）",
-            "已从驿站列表收起" in stn and "auto_archived" in stn, "")
+    # 措辞改了（#39-C）：旧那句把管理员指向**管理端**「已归档」那一行；现在驿站本页就有
+    # 「🗄 已处理 N 条」，再指着远处等于让人绕路。钉的还是同一件事：**必须说一句"去哪了、怎么回来"**，
+    # 以及一个「删」字都不许出现（那是软删）。
+    c.check("驿站端也要说一句（那条会凭空不见 ⇒ 必须当场讲清去哪了、怎么回来），且指回本页那行",
+            "已从上面那张表收起" in stn and "已处理" in stn and "auto_archived" in stn
+            and "已从驿站列表收起" not in stn, "")
     c.check("状态驱动的归档**同样要重画对面那张表**（走的是同一个级联，等 5 秒轮询就是上一轮露过的馅）",
             "if (d.auto_archived || d.auto_unarchived) loadMessages();" in adm, "")
     wo_cb = _action_span(adm, '.mini[data-wo]', "F 批")
