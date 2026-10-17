@@ -5,14 +5,14 @@
   2) list_active_orders—— 只看还没拿到手的（制作中/配送中/待取）
   3) get_order         —— 凭订单号查某一单
 
-和"快递"一样，这是"点餐同学"视角。后面"驿站/商户侧"会做商家监听台账、主动推送那种。
+和"快递"一样，这是"点餐同学"视角：**三个读入口都按当前学号过滤**（#36，判据在 `store.visible_rows`）。
+驿站/商户侧那一档目前只读快递台账，不读外卖台账。
 """
 import json
 import os
 
+from app import store
 from app.agent.tools import Tool
-
-_DATA_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "takeout.json")
 
 MODULE_KEY = "takeout"
 
@@ -34,8 +34,8 @@ SYSTEM_PROMPT = """你是校园时间管家学生端的「外卖助手」。
 
 
 def _load() -> dict:
-    with open(_DATA_PATH, encoding="utf-8") as f:
-        return json.load(f)
+    """读外卖台账。路径**每次现算**（同 `express.py`，#36）。"""
+    return store.read_data_file("takeout.json", {"orders": []})
 
 
 def _fmt(p: dict) -> str:
@@ -49,8 +49,7 @@ def _fmt(p: dict) -> str:
 
 def list_my_orders() -> str:
     """工具①：列出我所有的外卖订单。"""
-    data = _load()
-    orders = data.get("orders", [])
+    orders = store.visible_rows(_load().get("orders", []))
     if not orders:
         return "你目前没有外卖订单。"
     lines = [f"你共有 {len(orders)} 单外卖："]
@@ -61,8 +60,7 @@ def list_my_orders() -> str:
 
 def list_active_orders() -> str:
     """工具②：只看还没拿到手的（制作中/配送中/待取）。"""
-    data = _load()
-    active = [p for p in data.get("orders", []) if p.get("status") in ACTIVE]
+    active = [p for p in store.visible_rows(_load().get("orders", [])) if p.get("status") in ACTIVE]
     if not active:
         return "你目前没有待取的外卖，都吃完啦 🍜"
     lines = [f"你有 {len(active)} 单还没到手："]
@@ -72,9 +70,8 @@ def list_active_orders() -> str:
 
 
 def get_order(order_id: str) -> str:
-    """工具③：凭订单号查某一单。"""
-    data = _load()
-    for p in data.get("orders", []):
+    """工具③：凭订单号查某一单（只在当前这个人的单里查，#36 同 `get_by_code` 的理由）。"""
+    for p in store.visible_rows(_load().get("orders", [])):
         if p.get("id", "").upper() == order_id.upper():
             return "查到了：\n" + _fmt(p)
     return f"没找到订单号 {order_id} 的外卖，请核对一下。"
@@ -82,7 +79,7 @@ def get_order(order_id: str) -> str:
 
 def orders_view() -> list[dict]:
     """学生端卡片视图用的结构化外卖列表（只读，数据与 AI 工具同一份）。"""
-    return [dict(o) for o in _load().get("orders", [])]
+    return [dict(o) for o in store.visible_rows(_load().get("orders", []))]
 
 
 def build_tools() -> dict[str, Tool]:

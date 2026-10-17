@@ -5,15 +5,16 @@
   2) list_pending_pickup—— 只看还没取的（待取 + 滞留），主动提醒滞留件
   3) get_by_code        —— 凭取件码查某一件
 
-注意：这里是从"收件同学"视角查。后面还会做"驿站/商户侧"（监听台账、主动推送、人格回复），那是另一视角。
+注意：这里是从"收件同学"视角查，**三个读入口都按当前学号过滤**（#36）。
+驿站/商户侧是另一个视角：它看的是**全店**的件，函数在 `list_pending_by_student()`（只挂 `station.py` 的工具箱），
+两份共用 `store.visible_rows` 那一条判据，不各写各的。
 """
 import datetime
 import json
 import os
 
+from app import store
 from app.agent.tools import Tool
-
-_DATA_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "express.json")
 
 MODULE_KEY = "express"
 
@@ -50,8 +51,8 @@ def submit_work_order(kind: str, desc: str = "") -> str:
 
 
 def _load() -> dict:
-    with open(_DATA_PATH, encoding="utf-8") as f:
-        return json.load(f)
+    """读快递台账。路径**每次现算**（`store.read_data_file`），不在模块顶层拼死 —— 理由见那里。"""
+    return store.read_data_file("express.json", {"packages": []})
 
 
 def _days_since(date_str: str) -> int:
@@ -73,8 +74,7 @@ def _status_label(pkg: dict) -> str:
 
 def list_my_packages() -> str:
     """工具①：列出我所有的快递。"""
-    data = _load()
-    pkgs = data.get("packages", [])
+    pkgs = store.visible_rows(_load().get("packages", []))
     if not pkgs:
         return "你目前没有快递记录。"
     lines = [f"你共有 {len(pkgs)} 条快递记录："]
@@ -89,8 +89,8 @@ def list_my_packages() -> str:
 
 def list_pending_pickup() -> str:
     """工具②：只看还没取的（待取 + 滞留），并重点标出滞留件。"""
-    data = _load()
-    pending = [p for p in data.get("packages", []) if _status_label(p) in ("待取", "滞留")]
+    pending = [p for p in store.visible_rows(_load().get("packages", []))
+               if _status_label(p) in ("待取", "滞留")]
     if not pending:
         return "你目前没有待取的快递，都取完啦 🎉"
     lines = [f"你有 {len(pending)} 件待取："]
@@ -108,17 +108,58 @@ def list_pending_pickup() -> str:
     return "\n".join(lines)
 
 
-def get_by_code(pickup_code: str) -> str:
-    """工具③：凭取件码查某一件快递。"""
-    data = _load()
-    for p in data.get("packages", []):
-        if p.get("pickup_code", "").upper() == pickup_code.upper():
+def get_by_code(pickup_code: str, *, staff: bool = False) -> str:
+    """工具③：凭取件码查某一件快递。
+
+    ⚠️ 默认**只在当前这个人的件里查**（#36）：取件码不是身份凭证，谁念一句都能查的话，
+       它就变成了"任意查别人包裹"的口令 —— 输别人的码要说"没找到"，不许把物品名念出来。
+    · `staff=True` 是店员口径（驿站要照着码核对是哪件，看的是全店），并且会多念一行归属。
+    """
+    for p in store.visible_rows(_load().get("packages", []), staff=staff):
+        if p.get("pickup_code", "").upper() == str(pickup_code).upper():
             label = _status_label(p)
+            who = f"\n归属：{store.owner_of_row(p)}\n" if staff else "\n"
             return (
-                f"找到啦：{p['item']}\n状态：{label}\n取件码：{p['pickup_code']}\n"
+                f"找到啦：{p['item']}{who}状态：{label}\n取件码：{p['pickup_code']}\n"
                 f"驿站：{p['station']}\n到件：{p['arrived_at']}"
             )
     return f"没找到取件码为 {pickup_code} 的快递，请核对一下。"
+
+
+def list_pending_by_student() -> str:
+    """店员口径：全店还没取的件，**按同学分组**（人话：驿站要看的是"该催谁"，不是"你有几件"）。
+
+    与 `list_pending_pickup()` 的分工是刻意的（#36）：那一份挂在学生工具箱里，说的是
+    "你有 N 件、请尽快取"；这一份**只给驿站**（`station.py:build_tools`），读者是店员 ——
+    同一个台账、两种口径，而过滤判据仍然只有 `store.visible_rows` 那一条（这里传 staff=True）。
+    ⚠️ 它放行的是**包裹**，不是学生个人数据：日程 / 课表 / 待办照旧由 #34 那道端级闸门外挂着。
+    """
+    labelled = [(p, _status_label(p)) for p in store.visible_rows(_load().get("packages", []), staff=True)]
+    pending = [(p, lab) for p, lab in labelled if lab in ("待取", "滞留")]
+    if not pending:
+        return "台账里目前没有待取件（0 件未取）。"
+
+    groups: dict[str, list] = {}
+    for p, lab in pending:
+        groups.setdefault(store.owner_of_row(p), []).append((p, lab))
+    n_stay = sum(1 for _p, lab in pending if lab == "滞留")
+    lines = [f"未取 {len(pending)} 件，涉及 {len(groups)} 位同学（按学号分组；其中滞留 {n_stay} 件）："]
+    for owner in sorted(groups):
+        rows_g = sorted(groups[owner], key=lambda x: str(x[0].get("pickup_code") or ""))
+        stay_g = sum(1 for _p, lab in rows_g if lab == "滞留")
+        title = f"{owner}（无身份演示件）" if owner == store.DEMO_OWNER else f"{owner} 同学"
+        lines.append(f"· {title}｜{len(rows_g)} 件" + (f"，其中 {stay_g} 件滞留" if stay_g else ""))
+        for p, lab in rows_g:
+            if lab == "滞留":
+                lines.append(f"  - ⚠️ 滞留 {_days_since(p.get('arrived_at', ''))} 天｜{p['item']}"
+                             f"｜取件码 {p['pickup_code']}｜{p['station']}")
+            else:
+                lines.append(f"  - 待取｜{p['item']}｜取件码 {p['pickup_code']}｜{p['station']}")
+    worst_p, _lab = max(pending, key=lambda x: _days_since(x[0].get("arrived_at", "")))
+    if n_stay:
+        lines.append(f"滞留最久：{store.owner_of_row(worst_p)} 的「{worst_p['item']}」"
+                     f"已经 {_days_since(worst_p.get('arrived_at', ''))} 天，这单值得先催。")
+    return "\n".join(lines)
 
 
 def packages_view() -> list[dict]:
@@ -128,7 +169,7 @@ def packages_view() -> list[dict]:
     状态标签复用 _status_label——滞留判断逻辑只有这一份，不会两处打架。
     """
     out = []
-    for p in _load().get("packages", []):
+    for p in store.visible_rows(_load().get("packages", [])):
         q = dict(p)
         q["label"] = _status_label(p)
         q["stay_days"] = _days_since(p.get("arrived_at", ""))
@@ -152,7 +193,7 @@ def build_tools() -> dict[str, Tool]:
         ),
         "get_by_code": Tool(
             name="get_by_code",
-            description="凭取件码查询某一件快递。入参 pickup_code 如 'B-5678'。",
+            description="凭取件码查询某一件快递（只在该同学自己的件里查）。入参 pickup_code 如 'B-5678'。",
             parameters={
                 "type": "object",
                 "properties": {
