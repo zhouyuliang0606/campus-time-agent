@@ -9,6 +9,7 @@ import asyncio
 import json
 import os
 import re
+import shutil
 import uuid
 from typing import Any
 
@@ -54,6 +55,7 @@ from app.store import (
     REPEAT_NONE, REPEAT_WEEKLY, REPEAT_DAILY, is_past_date,
     add_workorder, list_workorders, update_workorder_status,
     set_workorder_archived, set_message_archived,
+    set_current_student, current_student, student_root, student_dir,
 )
 from app.modules.faq import SYSTEM_PROMPT as FAQ_PROMPT, build_tools as faq_tools
 from app.modules.express import SYSTEM_PROMPT as EXPRESS_PROMPT, build_tools as express_tools
@@ -166,6 +168,94 @@ check_config()
 @app.exception_handler(UnicodeDecodeError)
 async def _bad_request_body(request: Request, exc: Exception):
     return JSONResponse({"error": "请求体没能解开：要的是 UTF-8 编码的 JSON。"}, status_code=400)
+
+
+# ============ 学生身份（#32：同一台机器退出登录换账号，个人库不共用） ============
+# 一句话定性：**这不是鉴权**。学号谁都能填，它只是"我是谁"的一个标签，
+# 解决的是**数据分区**：课表 / 待办 / 对话记忆按学号分开。真正的鉴权只有管理端口令那一条链。
+_STUDENT_COOKIE = "ct_student"
+# 学号会被**拼进文件路径** ⇒ 必须白名单，且只许白名单：
+# `../../app/main.py`、`a\b`、带 `/` 的串全都能穿出个人库 = 任意文件读写。
+_STUDENT_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,20}$")
+
+
+def _clean_student(raw: str | None) -> str:
+    """把外面来的学号收进白名单；不合规则的**一律当没身份**（空串），不猜、不回退到别人。"""
+    sid = (raw or "").strip()
+    return sid if _STUDENT_ID_RE.fullmatch(sid) else ""
+
+
+@app.middleware("http")
+async def bind_student(request: Request, call_next):
+    """每个请求进来设一次"当前这个请求是哪个学生"—— 全项目**唯一**一处 set。
+
+    ⚠️ 三条要紧的：
+      ① 必须在业务处理**之前**设好（`_spath` 在读写那一刻就要用到它）；
+      ② 这里再过一遍白名单：cookie 是浏览器里可以被手改的东西，
+         只在 `/api/login` 校验等于"门锁只装了一半"（非法值 ⇒ 当没登录，走老位置）；
+      ③ 不许在业务函数里再 set 一次 —— 那是"半路换人"，比没分人更糟。
+      值存在 ContextVar 里，所以并发请求各拿自己那份，不会互相盖。
+    """
+    set_current_student(_clean_student(request.cookies.get(_STUDENT_COOKIE)))
+    return await call_next(request)
+
+
+def _seed_first_login(sid: str) -> None:
+    """某个学号**第一次**登录时，把老位置那份演示底稿拷一份给他（可关：拷过就不再动）。
+
+    为什么要拷：不拷的话新学生进去课表是空的、待办是空的 ——
+    演示时"两个人的课表不一样"这件事根本看不出来。
+    ⚠️ 两条红线：① **已存在的个人库绝不覆盖**（重登一次把人家数据盖掉 = 事故）；
+       ② 只拷课表与待办，**不拷对话历史** —— 那段"这个人说过什么"是本人隐私的一部分，
+          拷过去等于把上一位的话递给下一位，正是本单要消灭的那种共用。
+    """
+    src_dir = student_root()
+    dst_dir = student_dir(sid)
+    if os.path.exists(os.path.join(dst_dir, "todos.json")):
+        return
+    os.makedirs(dst_dir, exist_ok=True)
+    for name in ("todos.json", "timetable.json"):
+        src = os.path.join(src_dir, name)
+        dst = os.path.join(dst_dir, name)
+        if os.path.exists(src) and not os.path.exists(dst):
+            shutil.copy2(src, dst)
+
+
+@app.post("/api/login")
+async def student_login(req: Request):
+    """学生登录（演示级）：**只认学号，没有密码**。
+
+    返回里带上规范化的学号，前端存 localStorage 只为显示；**后端认的是 cookie**。
+    `path="/"` 是必须的：不写就只在当前路径下带得上，学生端那些 `/api/...` 请求会裸奔。
+    """
+    try:
+        body = await req.json()
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return JSONResponse({"error": "要的是 JSON：{\"student\": \"学号\"}"}, status_code=400)
+    raw = str((body or {}).get("student") or "").strip()
+    if not raw:
+        return JSONResponse({"error": "请填写学号"}, status_code=400)
+    if not _STUDENT_ID_RE.fullmatch(raw):
+        # 不许"默默回退到默认学生"：那会让人以为登录成功了，其实写进了别人的库
+        return JSONResponse({"error": "学号只能是 1~20 位字母、数字、下划线或短横线"}, status_code=400)
+    _seed_first_login(raw)
+    resp = JSONResponse({"ok": True, "student": raw})
+    resp.set_cookie(_STUDENT_COOKIE, raw, path="/", samesite="lax")
+    return resp
+
+
+@app.post("/api/logout")
+async def student_logout():
+    """退出登录：只把标签摘掉，**不清任何数据**（下次登进来课表待办都还在）。"""
+    resp = JSONResponse({"ok": True})
+    resp.delete_cookie(_STUDENT_COOKIE, path="/")
+    return resp
+
+
+@app.get("/api/whoami")
+async def whoami():
+    """当前身份（人话：学生端刷新后得知道"这是谁的库"，而不是靠 localStorage 里那份显示用副本）。"""
+    return {"student": current_student()}
 
 # —— 模块注册表（人话：每个模块在这里登记一下，路由命中后就能取用）——
 # 学生端四个模块：我的日程 / 校园问答 / 快递 / 外卖。以后加驿站侧、管理台照此加一行。
