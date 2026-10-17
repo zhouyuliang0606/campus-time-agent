@@ -29,6 +29,24 @@
     /* 驿站在三个身份里用青绿色区分，和驿站端页面主题色保持一致 */
     .role.station { color: #17b8a6; }
     .foot { margin-top: 22px; font-size: 12px; opacity: .8; }
+    /* 学号那一格（#32）：就地展开，不用 prompt() 也不用弹层 ——
+       原生 prompt 连点几次会被浏览器拦（「阻止此页面创建更多对话框」，演示时最难看的一种），
+       而多一套遮罩就多一处要管的状态。一个输入框 + 两颗按钮，够了。 */
+    .sid-box { display: none; margin: 4px 0 2px; text-align: left; }
+    .sid-box.show { display: block; }
+    .sid-box label { display: block; font-size: 12px; opacity: .9; margin-bottom: 6px; }
+    .sid-box input {
+      width: 100%; padding: 11px 12px; border: none; border-radius: 10px;
+      font-size: 15px; background: rgba(255,255,255,.94); color: #1f2733;
+    }
+    .sid-actions { display: flex; gap: 8px; margin-top: 10px; }
+    .sid-actions button {
+      flex: 1; padding: 11px; border: none; border-radius: 10px; cursor: pointer;
+      font-size: 14px; font-weight: 600;
+    }
+    .sid-go { background: #fff; color: #4f7cff; }
+    .sid-back { background: rgba(255,255,255,.2); color: #fff; }
+    .sid-err { min-height: 16px; margin-top: 8px; font-size: 12px; color: #ffd9d9; }
   </style>
 </head>
 <body>
@@ -36,10 +54,19 @@
     <h1>校园时间管家</h1>
     <p>请选择你的身份进入</p>
 
-    <button class="role" onclick="location.href='/student'">
+    <button class="role" id="asStudent">
       🎓 我是学生
-      <span class="sub">我的日程 · 校园问答 · 快递 · 外卖</span>
+      <span class="sub">输入学号进入 · 课表与待办跟着学号走</span>
     </button>
+    <div class="sid-box" id="sidBox">
+      <label for="sidInput">学号（1~20 位字母、数字、下划线或短横线）</label>
+      <input id="sidInput" placeholder="如 S001" maxlength="20" autocomplete="off" />
+      <div class="sid-actions">
+        <button class="sid-back" id="sidBack">返回</button>
+        <button class="sid-go" id="sidGo">进入</button>
+      </div>
+      <div class="sid-err" id="sidErr"></div>
+    </div>
 
     <button class="role" onclick="location.href='/admin'">
       🛠️ 我是管理员
@@ -51,7 +78,54 @@
       <span class="sub">AI 客服答咨询 · 主动推送取件提醒与滞留预警</span>
     </button>
 
-    <div class="foot">演示用：选择身份即可进入，无需密码</div>
+    <div class="foot">演示用：学生只填学号、不设密码（这不是鉴权，只是把每个人的课表待办分开）</div>
   </div>
+<script>
+  // 学号 = 这台机器上"我是谁"的标签。后端把它写进 cookie（ct_student），
+  // 于是几十个接口一个都不用改就能按人分库；这里只负责收一个值、POST 上去、再整页跳进 /student。
+  const box = document.getElementById("sidBox");
+  const input = document.getElementById("sidInput");
+  const err = document.getElementById("sidErr");
+
+  document.getElementById("asStudent").addEventListener("click", () => {
+    box.classList.add("show");
+    input.focus();
+  });
+  document.getElementById("sidBack").addEventListener("click", () => {
+    box.classList.remove("show");
+    err.textContent = "";
+  });
+  input.addEventListener("keydown", e => { if (e.key === "Enter") go(); });
+  // ⚠️ 上面那颗【进入】必须真的接线。真机第一版就漏了这一行：go() 定义得好好的，
+  //    点【进入】却**什么请求都不发**（没报错、没提示、按钮文案都回不去），
+  //    而单看代码、看语法检查、看接口测试全都发现不了 —— 只有按一遍才知道。
+  document.getElementById("sidGo").addEventListener("click", go);
+
+  async function go() {
+    const sid = input.value.trim();
+    if (!sid) { err.textContent = "先填学号；不想分人就用浏览器返回，走演示公共库。"; return; }
+    const btn = document.getElementById("sidGo");
+    btn.disabled = true;
+    btn.textContent = "登录中…";
+    err.textContent = "";
+    let d = {};
+    try {
+      const r = await fetch("/api/login", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ student: sid }),
+      });
+      d = await r.json().catch(() => ({}));
+      if (!r.ok || d.error) { throw new Error(d.error || ("登录没成功（HTTP " + r.status + "）")); }
+    } catch (e) {
+      // 登录没成不许偷偷放进去：那会写进别人的库（红线：不合法一律回一句人话，不回退默认学生）
+      err.textContent = "进不去：" + e.message;
+      btn.disabled = false;
+      btn.textContent = "进入";
+      return;
+    }
+    localStorage.setItem("campustime_student", d.student);   // 只是显示用；后端认 cookie
+    location.href = "/student";                              // 整页跳转：下一位不该看见上一位的 DOM
+  }
+</script>
 </body>
 </html>
