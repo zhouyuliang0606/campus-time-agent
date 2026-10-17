@@ -4442,6 +4442,22 @@ async def station_service_record_status(sid: str, rid: str, req: Request):
     return {"ok": True, "record": item}
 
 
+@app.delete("/api/station/services/{sid}/records/{rid}")
+async def station_record_delete(sid: str, rid: str):
+    """删一条登记记录（#39-B）。**真删** —— 台账里那条就没了，找不回来。
+
+    ⚠️ 顺序照同族那几个口来，但这里有个必须守住的理由：**先 `get_service` 认服务，再碰文件**。
+       `sid` 会被拼进 `custom/<sid>.json` 这个路径，服务表里没有这个 id 就根本不该去动文件系统
+       （`list_custom_records` / `add_custom_record` 也是同一分工：路由认服务，store 只管那份文件）。
+       少这一道，`sid=../../x` 这类值就成了"往数据目录外面找文件"的入口。
+    """
+    if not get_service(sid):
+        return JSONResponse({"error": "没有这项服务"}, status_code=404)
+    if not delete_custom_record(sid, rid):
+        return JSONResponse({"error": "这条登记记录不存在（也可能已经被删了）"}, status_code=400)
+    return {"ok": True}
+
+
 @app.post("/api/custom/records")
 async def custom_record_confirm(req: Request):
     """学生点了确认卡 → **系统**把这条登记写进 `custom/<服务id>.json`（#22 单子 4 的执行端）。

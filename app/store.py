@@ -1330,6 +1330,28 @@ def add_custom_record(sid: str, fields: dict, svc: dict | None = None,
     return item
 
 
+def delete_custom_record(sid: str, rid: str) -> bool:
+    """删一条登记记录（#39-B）。**真删**，不是软删。
+
+    为什么这里不像工单那样做归档：登记记录没有"归档"那一档（`status` 只有
+    待处理/处理中/已解决，与工单共用 `_WO_STATUSES`），台账里留一条没处理的旧登记
+    只是让下一班同学再点一次。所以前端必须二次确认、措辞直接说"删了台账里就没了"。
+
+    ⚠️ `sid` 会被拼进文件路径 —— **调用方必须先确认这项服务存在**（`get_service`）。
+       这一层不做那个校验（与 `list_custom_records` / `add_custom_record` 同一分工：
+       路由认服务，store 只管那份文件），别在两个地方各校验一遍，但要有一处真的拦住。
+    """
+    path = os.path.join(CUSTOM_DIR, f"{sid}.json")
+    rows = _read(path, [])
+    if not isinstance(rows, list):
+        return False
+    kept = [x for x in rows if str(x.get("id")) != str(rid)]
+    if len(kept) == len(rows):
+        return False
+    _write(path, kept)
+    return True
+
+
 def update_custom_record_status(sid: str, rid: str, status: str) -> dict | None:
     """改一条登记记录的处理状态；找不到那条记录返回 None。
 
