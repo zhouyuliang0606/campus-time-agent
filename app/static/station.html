@@ -87,6 +87,8 @@
     .woItem .body { flex: 1; }
     .woItem .kind { font-weight: 600; }
     .woItem .meta { color: #8a93a5; font-size: 11px; margin-top: 2px; }
+    /* 归属（#37）：驿站看的就是"该找谁"，这一枚标记比编号有用；老单显示「未登记」 */
+    .woItem .who { margin-right: 6px; color: #17b8a6; }
     .woItem .st { font-size: 11px; border-radius: 6px; padding: 1px 6px; background: #fff1f0; color: #cf1322; }
     .woItem .st.doing { background: #fff7e6; color: #d46b08; }
     .woItem .st.done { background: #f6ffed; color: #389e0d; }
@@ -469,7 +471,7 @@
             <div><span class="kind">${esc(w.kind || "其他问题")}</span>
               <span class="${woCls(st)}">${esc(st)}</span></div>
             <div>${esc(w.desc || "（学生没补充描述）")}</div>
-            <div class="meta">${esc(w.ts || "")} · 来源 ${esc(w.source || "")} · 编号 ${esc(w.id || "")}</div>
+            <div class="meta"><span class="who">👤 ${esc(w.owner || "未登记")}</span>${esc(w.ts || "")} · 来源 ${esc(w.source || "")} · 编号 ${esc(w.id || "")}</div>
           </div>`;
           const b = document.createElement("button");
           b.textContent = "改成「" + (WO_NEXT[st] || "待处理") + "」";
