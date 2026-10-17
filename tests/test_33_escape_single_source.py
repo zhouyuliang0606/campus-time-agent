@@ -166,7 +166,10 @@ REQUIRED = [
     ("student.html", "${esc(p.label)}", "快递状态标签（接口数据，旧版裸进 innerHTML）"),
     ("student.html", "${esc(p.arrived_at)}", "快递到件时间（接口数据）"),
     ("student.html", "${esc(o.eta)}", "外卖预计时间（接口数据）"),
-    ("student.html", "${esc(w.ts)}", "工单时间戳（接口数据）"),
+    # 2026-10-17 #37C：那一行整块重写过（改成读 `/api/my/workorders`，不再读 localStorage 那本假账），
+    # 时间戳从 `${esc(w.ts)}` 变成 `${esc(w.ts || "")}` —— 老单确实可能没 ts，直接印会写出 undefined。
+    # **转义这一层没少**，只是多了一层空值兜底（同上面 `moduleTag` 那一条的改法）。
+    ("student.html", "${esc(w.ts || \"\")}", "工单时间戳（接口数据）"),
     ("student.html", "${esc(n.ts)}", "通知时间戳（接口数据）"),
     ("student.html", "${esc(x.tm)}", "周表里的时间段（由课程起止时间拼出来）"),
     ("student.html", "${esc(t.start)}-${esc(t.end)}", "某天待办的起止时间（接口数据）"),
