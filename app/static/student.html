@@ -1095,7 +1095,12 @@ html.gx-glass[data-gx-refine="on"] .composer, html.gx-glass[data-gx-refine="on"]
         // "✅ 已经按你的确认改好了，日程已刷新。" —— 真机上点【确认登记】（失物招领）
         // 和点【确认上报】（工单）都收到这句，而学生的日程一个字都没动。
         // 报好消息跟报坏消息一样不许说假话（红线 8/16 同族）。
-        if (d.kind === "custom_record") {
+        if (d.already) {
+          // #33：这张卡其实已经办过了（写库当年没销卡 → 刷新后复活 → 又被点了一次）。
+          // 这一支必须排在**所有类型分支之前**：否则它会照着 kind 再报一次"已加入日程"，
+          // 把"其实没新写入"这件事盖掉。
+          addMsg(botName(), "✅ " + (d.reply || "这条刚刚已经办过了，不用再点一次。"), "bot", "planner");
+        } else if (d.kind === "custom_record") {
           // 用的是**这项服务自己写的那句话**（管理员在驿站端定的回执），不是通用一句"已提交"
           addMsg(botName(), "✅ " + (d.reply || "已登记。")
             + (d.record_id ? "（记录号 " + d.record_id + "）" : ""), "bot", "custom");
@@ -1383,9 +1388,17 @@ html.gx-glass[data-gx-refine="on"] .composer, html.gx-glass[data-gx-refine="on"]
                   start: card.start, end: card.end, note: card.note || "",
                   old_todo_id: card.old_todo_id || "",
                   session_id: sessionId(),   // 好让"已加入日程"这句话进历史，刷新后还在
+                  // from_card = 「这是点卡片上的【确认加入】走到这里的」，后端据此在写成功后**销卡**（#33）。
+                  // 不带这个字段的写法一律不销卡，免得把学生手里另一张没点头的卡一起作废。
+                  from_card: true,
                 }),
               });
               const d = await r.json();
+              if (d.already) {   // 刷新后卡复活那一幕：撤掉这张卡，实话告诉他刚办过了
+                wrap.remove();
+                addMsg(botName(), "✅ " + (d.message || "这条刚刚已经办过了，不用再点一次。"), "bot", "planner");
+                return;
+              }
               if (d.ok) {
                 wrap.remove();
                 addMsg(botName(),
@@ -1480,9 +1493,16 @@ html.gx-glass[data-gx-refine="on"] .composer, html.gx-glass[data-gx-refine="on"]
                 method: "DELETE",
                 headers: { "Content-Type": "application/json" },
                 // 带上 session_id：好让"已删除待办"这句回执进聊天记录，刷新后还在
-                body: JSON.stringify({ session_id: sessionId() }),
+                // from_card：只有点卡片上的【确认删除】才带（#33 写库后销卡）；
+                //   代办栏里那个删除按钮不带 —— 它不是卡，不能顺手把挂着的提案一起作废。
+                body: JSON.stringify({ session_id: sessionId(), from_card: true }),
               });
               const d = await r.json().catch(() => ({}));
+              if (d.already) {   // 这张卡其实已经办过：撤卡 + 说实话，不让他再删一遍（删到同名另一条更糟）
+                wrap.remove();
+                addMsg(botName(), "✅ " + (d.message || "这条刚刚已经办过了，不用再点一次。"), "bot", "planner");
+                return;
+              }
               if (r.ok && d.ok !== false) {
                 wrap.remove();
                 addMsg(botName(),
@@ -1558,9 +1578,14 @@ html.gx-glass[data-gx-refine="on"] .composer, html.gx-glass[data-gx-refine="on"]
               const r = await fetch("/api/todos/" + encodeURIComponent(card.todo_id), {
                 method: "PUT",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ session_id: sessionId(), status: "done" }),
+                body: JSON.stringify({ session_id: sessionId(), status: "done", from_card: true }),
               });
               const d = await r.json().catch(() => ({}));
+              if (d.already) {   // 完成卡刷新后复活那一幕：撤卡 + 说实话（#33）
+                wrap.remove();
+                addMsg(botName(), "✅ " + (d.message || "这条刚刚已经办过了，不用再点一次。"), "bot", "planner");
+                return;
+              }
               if (r.ok && d.ok !== false) {
                 wrap.remove();
                 addMsg(botName(),
@@ -2551,8 +2576,12 @@ html.gx-glass[data-gx-refine="on"] .composer, html.gx-glass[data-gx-refine="on"]
     // 之前只有聊天回复那一刻画过卡（sendMsg 里 renderOptions），页面一刷新卡就没了，
     // 可卡所对应的那件事**还挂在 pending 里没处理**：学生只能重新说一遍，
     // 或者莫名其妙地"刚才那个确认条去哪儿了"。
-    // 读接口 `/api/pending/{sid}` 本来就只回**最后一张未 applied** 的卡（没有就回 null），
-    // 所以这里不需要任何判重逻辑：点过的不会再回来，写库路径一行都没碰。
+    // 读接口 `/api/pending/{sid}` 只回**最后一张未 applied** 的卡（没有就回 null），所以这里不需要判重逻辑
+    // —— 但它的前提是「**写库那条路必须销卡**」：/api/todos、PUT/DELETE /api/todos/{tid} 三处
+    // 都要在写成功之后 mark_applied（课表 /api/timetable/apply 与 /api/todos/batch 早就是这么做的）。
+    // ⚠️ 这句因果以前写反了：把"写库那条路根本不用动"当成判重成立的理由 —— 而它恰恰是不成立的原因。
+    //    2026-10-17 真机就栽在这儿：加待办那条没销卡 ⇒ 刷新后卡复活 ⇒ 再点一次**加了第二条相同的**。
+    //    谁把某个写库入口的销卡摘掉，这里就会重现那一幕（护栏 tests/test_60_card_close.py 钉着）。
     // 一轮出了好几张时只接回最后一张——处理完这张，下一张自己会出来，不会丢。
     let restoreSeq = 0;                // 连点两个模块时，只让最后那次画卡
     async function restorePendingCard() {

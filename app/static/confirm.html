@@ -309,6 +309,9 @@ const KIND = {
       return api("POST", "/api/todos", {
         session_id: sid(), title: p.title, date: p.date,
         start: p.start, end: p.end, old_todo_id: p.old_todo_id || "",
+        // from_card：确认页这一路就是"点卡片上的【确认加入】"，后端据此在写成功后**销卡**（#33）。
+        // 少了它，学生点完确认、F5 一下那张卡又回来，再点就多加一条一模一样的（真机那一幕）。
+        from_card: true,
         // repeat 必须一起递过去：这张卡是"删旧 + 加新"实现的改期，
         // 少带这一格，「每天背单词」改个钟头就只剩这一天（2026-10-13 实测）。
         // 后端白名单认不得的值一律退回一次性，所以带空串是安全的。
@@ -330,6 +333,9 @@ const KIND = {
       return api("POST", "/api/todos", {
         session_id: sid(), title: p.title, date: p.date,
         start: p.start, end: p.end, old_todo_id: p.old_todo_id || "",
+        // from_card：确认页这一路就是"点卡片上的【确认加入】"，后端据此在写成功后**销卡**（#33）。
+        // 少了它，学生点完确认、F5 一下那张卡又回来，再点就多加一条一模一样的（真机那一幕）。
+        from_card: true,
         // repeat 必须一起递过去：这张卡是"删旧 + 加新"实现的改期，
         // 少带这一格，「每天背单词」改个钟头就只剩这一天（2026-10-13 实测）。
         // 后端白名单认不得的值一律退回一次性，所以带空串是安全的。
@@ -359,7 +365,7 @@ const KIND = {
     },
     async apply(p) {
       return api("DELETE", "/api/todos/" + encodeURIComponent(p.todo_id),
-        { session_id: sid() });
+        { session_id: sid(), from_card: true });
     },
     doneText(p) {
       return `已删除：<b>${esc(p.title)}</b>（${esc(p.date)} ${esc(p.start)}-${esc(p.end)}），日程里已经没有它了。`;
@@ -379,7 +385,7 @@ const KIND = {
     },
     async apply(p) {
       return api("PUT", "/api/todos/" + encodeURIComponent(p.todo_id),
-        { session_id: sid(), status: "done" });
+        { session_id: sid(), status: "done", from_card: true });
     },
     doneText(p) {
       return `已标记为完成：<b>${esc(p.title)}</b>（${esc(p.date)} ${esc(p.start)}-${esc(p.end)}）。`;
@@ -406,10 +412,14 @@ const KIND = {
       const items = Array.isArray(p.items) ? p.items : [];
       let ok = 0, fail = 0;
       // 逐条删：一条失败不影响其它条（部分成功也要如实告诉学生）
-      for (const it of items) {
+      for (let i = 0; i < items.length; i++) {
+        const it = items[i];
         try {
+          // ⚠️ 只有**最后一条**带 from_card：销卡代表"这张整卡办完了"那一下。
+          //   每条都带的话，第二条起会被幂等判据当成"这张卡已经办过"而**不再执行** ——
+          //   那是把"批量删"修成"只删一条"，比原来的卡复活更糟。
           const r = await api("DELETE", "/api/todos/" + encodeURIComponent(it.todo_id),
-            { session_id: sid() });
+            { session_id: sid(), from_card: i === items.length - 1 });
           if (r && r.ok === false) fail++; else ok++;
         } catch (e) { fail++; }
       }
@@ -440,10 +450,12 @@ const KIND = {
     async apply(p) {
       const items = Array.isArray(p.items) ? p.items : [];
       let ok = 0, fail = 0;
-      for (const it of items) {
+      for (let i = 0; i < items.length; i++) {
+        const it = items[i];
         try {
+          // 同批量删除：只有最后一条带 from_card（销那"一整张卡"），中间带会被幂等判据拦掉。
           const r = await api("PUT", "/api/todos/" + encodeURIComponent(it.todo_id),
-            { session_id: sid(), status: "done" });
+            { session_id: sid(), status: "done", from_card: i === items.length - 1 });
           if (r && r.ok === false) fail++; else ok++;
         } catch (e) { fail++; }
       }
@@ -727,6 +739,15 @@ okBtn.addEventListener("click", async () => {
   const k = KIND[current.kind];
   try {
     const r = await k.apply(current);
+    if (r && r.already) {
+      // 这张卡其实**已经办过了**（#33：写库不销卡 → 刷新后卡复活 → 又点一次）。
+      // 当成功处理、把后端那句实话递上去，但**不许**再走 doneText ——
+      // 那会把"刚刚重复点的那一下"说成又加了一次，等于替这个 bug 作伪证。
+      showDone("✅ " + (r.message || "这条刚刚已经办过了，不用再点一次。"));
+      tellParent("applied", { kind: current.kind, already: true,
+                              reply: r.message || "这条刚刚已经办过了，不用再点一次。" });
+      return;
+    }
     showDone(k.doneText(current, r));
     // 通知父页面：写入成功。顺手把**回执要说什么**一起带过去 ——
     // 父页面原先不分类型一律回"日程已刷新"，登记和工单都被它说成了假话。
