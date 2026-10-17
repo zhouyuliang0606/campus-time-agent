@@ -209,10 +209,13 @@ def test_student_page_markup():
         lhtml = login.text or ""
         # 三颗入口是 `<button onclick="location.href='/admin'">` 这种写法，不是 <a href>
         # ——所以这里钉的判据必须按真实形状来（第一版我按 href= 断言，红了才发现）。
-        c.check("登录页还在，三端入口都在它上面",
+        # ⚠️ 2026-10-17 #32 之后**学生那一颗不再直跳 /student**（要先填学号、POST /api/login 拿 cookie 再跳），
+        #     所以这条从"三颗都是 location.href"改成"两颗直跳 + 学生那颗走登录接口"。
+        #     旧写法在这里红过一次，记下来免得下一轮又当成回归去查。
+        c.check("登录页还在，三端入口都在它上面（学生那颗是「输学号 → /api/login」，不是直跳）",
                 login.status_code == 200
-                and all(f"location.href='{p}'" in lhtml
-                        for p in ("/student", "/admin", "/station")),
+                and all(f"location.href='{p}'" in lhtml for p in ("/admin", "/station"))
+                and 'id="asStudent"' in lhtml and 'fetch("/api/login"' in lhtml,
                 f"HTTP {login.status_code}")
         # 落地页是「日程」，静态标题不能还写着"校园问答"——那会先闪一下错的标题
         c.check("静态标题与落地模块一致（不再闪一下「校园问答」）",
