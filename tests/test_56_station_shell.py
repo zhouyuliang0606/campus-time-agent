@@ -6,8 +6,11 @@
   ③ 角标那笔补偿账：待处理从首屏挪进左栏后，"别的视图也看得见有几条没结"必须成立
      —— 它挂在两个细节上：paintWoCount 要在"签名没变就 return"那道闸**之前**，
      以及窄屏收文字那条 CSS 的特异度不许把红点一起抹掉（真机 529px 实测抓到的）；
-  ④ 【清空】的边界：清的是屏幕上的对话，**不是台账**，也不许去调 /api/chat/reset
-     （station 这条路每轮都是新 session，清服务端是个谎）。
+  ④ 【清空】的边界：清的是屏幕上的对话，**不是台账**。
+     S1 那一版「不许调 /api/chat/reset」的前提是"station 每轮都是新 session、清服务端是个谎"；
+     #30（2026-10-17）把会话固定成一段之后，这个前提**反了** —— 服务端真的存着这段对话，
+     于是清空必须两边一起清（见 F 批），只擦屏幕就成了"演一遍清干净"。
+  ⑤ 会话载体（F 批）：**sessionStorage**，不是学生端那个 localStorage。
 """
 import pathlib
 import re
@@ -132,9 +135,13 @@ def batch_d_clear():
             'id="clearChat"' in st and 'id="clearMask"' in st
             and "confirm(" not in stc and "window.alert" not in stc, "")
     c.check("界面上必须把「台账不受影响」说出口（不然管理员不敢点）",
-            "台账不受影响" in st and "对话已清空。左边「待处理问题」「服务与登记」里的台账一条没动。" in st, "")
-    c.check("不去调 /api/chat/reset：station 这条路每轮都是新 session，调它是假装清过了",
-            "/api/chat/reset" not in stc, "")
+            "台账不受影响" in st and "台账一条没动。" in st, "")
+    # ⚠️ 这条在 #30 **改了口**（旧版钉的是"不许调 /api/chat/reset"，理由是"每轮都是新 session，
+    #     清服务端是个谎"）。会话固定之后那个前提反了：服务端真的存着这段对话，
+    #     只擦屏幕反而是另一种谎。新判据在 F 批（顺序、失败不擦、换新 id 三条）。
+    #     改口记在这儿，是为了下次它红的时候不必从头查一遍是不是回归。
+    c.check("旧版那条「不去调 /api/chat/reset」已按 #30 改口：会话固定后**必须**调它（F 批钉顺序与失败分支）",
+            "/api/chat/reset" in stc, "")
     cl = st[st.index("function doClearChat()"):st.index('document.getElementById("clearChat")')]
     c.check("清空只动 #log 那一块，不动任何台账节点",
             "while (log.firstChild)" in cl and "log.appendChild(greetEl)" in cl
@@ -173,6 +180,53 @@ def batch_e_live_evidence():
     return c
 
 
+def batch_f_fixed_session():
+    """#30：驿站端固定一段会话（用户 2026-10-17 澄清「驿站是店员，学生不碰这台机器」⇒ 串味顾虑解除）。
+
+    这一批最容易被写成"钉一句 session_id 完事"，那正好放过两种半吊子：
+    ①会话固定了但【清空】还只擦屏幕（F5 全捞回来 = 清了跟没清一样）；
+    ②用了 localStorage（两个标签串成一段对话，正是柜台最常见的用法）。
+    所以顺序、载体、换新 id 三样分别钉，并配一条"旧写法不许留"。
+    """
+    c = Checker()
+    title("F. 固定会话：sessionStorage 载体 + 清空两边一起清（#30）")
+    st = ST.read_text(encoding="utf-8")
+    stc = code_of(st)
+
+    c.check("stationSid() 定义一处，且 /api/chat 的请求体真的带上它（不带 = 白固定）",
+            stc.count("function stationSid()") == 1
+            and "module: \"station\", session_id: stationSid()" in stc, "")
+    c.check("载体必须是 **sessionStorage**（不是学生端那个 localStorage）："
+            "这台机器是店员的，关窗即「这次值班结束」；而 localStorage 同源共享会把两三个标签串成一段对话",
+            "sessionStorage.getItem(STATION_SID_KEY)" in stc and "localStorage" not in stc,
+            f"localStorage 出现 {stc.count('localStorage')} 次")
+    c.check("选 sessionStorage 的理由写在注释里（不写，下一个人会「顺手统一成 localStorage」）",
+            "localStorage 同源共享" in st and "值班结束" in st, "")
+    c.check("新 id 的生成只有一份（前缀 st 便于在 sessions.json 里一眼分清）",
+            stc.count("function newStationSid()") == 1
+            and stc.count('"st" + Math.random()') == 1, "")
+
+    # 下面这几条一律用 find() + 位置比较：锚点找不到时要写成 ❌，不许抛 ValueError 把整批打断
+    ic = stc.find("async function doClearChat()")
+    cl = stc[ic:] if ic >= 0 else ""
+    cut = cl.find("\n    }")
+    if cut > 0:
+        cl = cl[:cut]
+    i_reset, i_wipe, i_fail = cl.find("/api/chat/reset"), cl.find("while (log.firstChild)"), cl.find("if (!ok) {")
+    c.check("清空是**先清服务端**：/api/chat/reset 的位置在擦屏幕之前"
+            "（反了就是「清失败但屏幕已经擦了」，学生以为清干净了）",
+            ic >= 0 and 0 <= i_reset < i_wipe, f"reset@{i_reset} 擦屏@{i_wipe}")
+    c.check("清失败那条分支**直接 return**，屏幕一个字都不动，并且话说清「原样保留」",
+            0 <= i_fail < i_wipe and "return;" in cl[i_fail:] and "原样保留" in cl, "")
+    c.check("清成功必须**换一个新的 session id**（不换 = F5 把历史整个捞回来，学生端那轮的原病）",
+            "sessionStorage.setItem(STATION_SID_KEY, newStationSid())" in cl, "")
+    c.check("旧那份『只擦屏幕、不调 reset』的 doClearChat 不许留着（必须是 async 版本，两份并存早晚有人改错那份）",
+            "async function doClearChat()" in stc and "\n    function doClearChat()" not in stc, "")
+    c.check("清空回执要说清两件事：开了一段新的 + 台账一条没动（前者不提，店员会以为还是同一段）",
+            "并已开一段新的" in cl and "台账一条没动" in cl, "")
+    return c
+
+
 def main():
     global code
     print("\n" + "=" * 60)
@@ -183,6 +237,7 @@ def main():
     code |= batch_c_badge().summary("C 批（角标补偿账）")
     code |= batch_d_clear().summary("D 批（清空边界）")
     code |= batch_e_live_evidence().summary("E 批（真机基线）")
+    code |= batch_f_fixed_session().summary("F 批（固定会话 + 清空两边一起清）")
     return code
 
 

@@ -212,12 +212,18 @@ def batch_d_shape():
 
 
 def _fn_body(text, name, tag):
-    """按花括号配对截出一个函数体；截不出来直接抛，不返回空串装绿。"""
-    key = "function " + name + "("
-    if text.count(key) != 1:
-        raise AssertionError(f"{tag}：函数锚点不唯一（{text.count(key)} 处）——{key}")
-    i = text.index(key)
-    j = text.index("{", i)
+    """按花括号配对截出一个函数体。
+
+    ⚠️ 截不出来时返回**空串**、不抛：抛出去会把整批打断成"崩溃"，
+    而崩溃不产生 ❌ —— 只看退出码的人会把它读成绿（本仓教训 4f）。
+    返回空串则所有正向断言自然变红，`extra` 里的"体长 0"就是线索。
+    """
+    if text.count("function " + name + "(") != 1:
+        return ""
+    i = text.index("function " + name + "(")
+    j = text.find("{", i)
+    if j < 0:
+        return ""
     depth = 0
     for k in range(j, len(text)):
         if text[k] == "{":
@@ -226,24 +232,26 @@ def _fn_body(text, name, tag):
             depth -= 1
             if depth == 0:
                 return text[i:k + 1]
-    raise AssertionError(f"{tag}：函数 {name} 的花括号没闭合，截不出函数体")
+    return ""
 
 
 def _action_span(text, anchor, tag):
     """从某个动作的 fetch 那句起，**连着它自己的 catch 块**一起截出来。
 
-    ⚠️ 必须把 catch 块包进窗口：这一族要看的就是"失败的那一支写了什么"。
-    截到 `catch (` 就停（第一版就是这么写的），措辞断言永远看不到 catch 体，
-    红的是断言自己，不是代码 —— 真机跑出来才发现这条假红。
+    ⚠️ 两个教训都在这几行里：
+      ① 必须把 catch 块包进窗口 —— 截到 `catch (` 就停（第一版就这么写的），
+         措辞断言永远看不到 catch 体，红的是断言自己，不是代码；
+      ② 锚点/括号出问题时**返回空串**（让它红），不许抛 ValueError 把整批打断成崩溃。
     """
-    n = text.count(anchor)
-    if n != 1:
-        raise AssertionError(f"{tag}：锚点不唯一（{n} 处）——{anchor[:48]}")
+    if text.count(anchor) != 1:
+        return ""
     i = text.index(anchor)
     j = text.find("catch (", i)
     if j < 0:
-        raise AssertionError(f"{tag}：这一段没有 try/catch，锚点后头找不到 catch——{anchor[:48]}")
-    k = text.index("{", j)
+        return ""
+    k = text.find("{", j)
+    if k < 0:
+        return ""
     depth = 0
     for p in range(k, len(text)):
         if text[p] == "{":
@@ -252,7 +260,7 @@ def _action_span(text, anchor, tag):
             depth -= 1
             if depth == 0:
                 return text[i:p + 1]
-    raise AssertionError(f"{tag}：catch 块的花括号没闭合——{anchor[:48]}")
+    return ""
 
 
 def batch_e_honest_failure():
@@ -313,10 +321,13 @@ def batch_e_honest_failure():
     for fn, word in (("publish", "发布没成功"), ("saveApi", "保存没成功"), ("testApi", "测试没成功"),
                      ("savePersona", "保存人设没成功"), ("saveKB", "存知识库没成功"),
                      ("deleteKB", "删除没成功"), ("clearUsage", "清空没成功")):
-        body = _fn_body(adm, fn, "E 批")
+        try:
+            body = _fn_body(adm, fn, "E 批")
+            ok, extra = ("catch (" in body and word + "：" in body), f"体长 {len(body)}"
+        except (AssertionError, ValueError) as e:
+            ok, extra = False, f"函数体截不出来：{e}"
         c.check(f"动作函数 {fn}() 就地接住异常并写明「{word}」"
-                f"（收口后它抛的是异常不是 error 字段，不接就等于没回执）",
-                "catch (" in body and word + "：" in body, f"体长 {len(body)}")
+                f"（收口后它抛的是异常不是 error 字段，不接就等于没回执）", ok, extra)
     wo_cb = _action_span(adm, '.mini[data-wo]', "E 批")
     c.check("工单【标为处理中/已解决】那个回调也接住了：它虽然写在 loadWorkOrders 的 try 里，"
             "但注册在 try 内、**执行在 try 外**（异步回调早跑出那个动态范围），不就地接就是没反应",
@@ -335,11 +346,17 @@ def batch_e_honest_failure():
                         ("生成服务", 'fetch("/api/station/services", {'),
                         # 施工单 §3 只点了 4 处，整族扫又找到一处同形状的：/api/chat 回 500 时
                         # 正文里只有 detail，`if (data.error)` 判不到 → 客服"回"了一句空话。
-                        ("问客服一句话", 'body: JSON.stringify({ message: msg, module: "station" })')):
-        span = _action_span(stn, anchor, "E 批·驿站端" + tag)
+                        ("问客服一句话", 'module: "station", session_id: stationSid()')):
+        # 锚点取不到 = 有人改了写法。这**必须**是一条 ❌，不许抛出去把整批打断
+        # （本仓教训 4f：崩溃不产生 ❌，只看退出码的人会把它读成"绿"）。
+        try:
+            span = _action_span(stn, anchor, "E 批·驿站端" + tag)
+            ok, extra = ("!resp.ok" in span and "else if" in span and "httpFailReason(" in span), \
+                        f"片段 {len(span)} 字"
+        except (AssertionError, ValueError) as e:
+            ok, extra = False, f"锚点/窗口取不到：{e}"
         c.check(f"驿站端「{tag}」这一处补了 HTTP 级守门，且 if (r.error) 退成了 else if（不再当兜底）",
-                "!resp.ok" in span and "else if" in span and "httpFailReason(" in span,
-                f"片段 {len(span)} 字")
+                ok, extra)
     c.check("这一处守门只算原因、不改请求怎么发：全页只有 5 处 !resp.ok，且没有新增 fetch 包装函数"
             "（施工单 §3 明确不许顺手抽公共层）",
             stn.count("!resp.ok") == 5 and "function httpFailReason(" in stn
