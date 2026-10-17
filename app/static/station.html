@@ -312,6 +312,23 @@
     </div>
   </div>
 
+  <!-- #39：通用确认框（自绘）。删除服务 / 删除登记记录都走它，不用原生 confirm：
+       这一页 182 行那条注释就是理由 —— 连点几次会被浏览器拦「阻止此页面创建更多对话框」，
+       那时"点删除没反应"会被当成前端坏了去查。 -->
+  <div id="confirmMask" class="mask">
+    <div class="dlg" role="dialog" aria-modal="true">
+      <div class="dlg-head" id="cfHead"></div>
+      <div class="dlg-body">
+        <p id="cfBody" style="margin:0;line-height:1.6;"></p>
+        <div class="dlg-warn" id="cfWarn" style="display:none;"></div>
+      </div>
+      <div class="dlg-foot">
+        <button class="dlg-btn ghost" id="cfCancel">取消</button>
+        <button class="dlg-btn danger" id="cfOk">确定</button>
+      </div>
+    </div>
+  </div>
+
   <script src="/static/esc.js"></script>
   <script>
     // 快捷操作：前两个是"主动推送"，后面是常见咨询
@@ -524,7 +541,34 @@
     // ⚠️ 这里刻意没有"预览草稿再点保存"那一步：那要先存一份没收口的定义，
     //    等于给"半份服务"开门；现在能存在的定义都是过校验的，界面直接用它，演示也更直。
     let svcSig = null;   // 上一次真正渲染进 DOM 的清单（JSON 串）
-    async function loadServices() {
+    // #39：通用确认框。写法照管理端那一处（`onclick` 赋值而不是 addEventListener）：
+    // 这框会被反复打开，监听器一层层攒着的话，第二次按【确定】会同时跑好几个回调
+    // —— 而这一页正是 5 秒轮询在重画 DOM 的那一页，最容易撞上。
+    const cfMask = document.getElementById("confirmMask");
+    function stConfirm(opts) {
+      return new Promise(resolve => {
+        document.getElementById("cfHead").textContent = opts.title || "确定吗？";
+        document.getElementById("cfBody").textContent = opts.body || "";
+        const warn = document.getElementById("cfWarn");
+        warn.textContent = opts.warn || "";
+        warn.style.display = opts.warn ? "" : "none";
+        document.getElementById("cfOk").textContent = opts.okText || "确定";
+        cfMask.classList.add("show");
+        document.getElementById("cfCancel").focus();
+        const okBtn = document.getElementById("cfOk");
+        const cancelBtn = document.getElementById("cfCancel");
+        const done = (v) => {
+          cfMask.classList.remove("show");
+          okBtn.onclick = null; cancelBtn.onclick = null; cfMask.onclick = null;
+          resolve(v);
+        };
+        okBtn.onclick = () => done(true);
+        cancelBtn.onclick = () => done(false);
+        cfMask.onclick = (e) => { if (e.target === cfMask) done(false); };
+      });
+    }
+
+    async function loadServices(force) {
       const box = document.getElementById("svcList");
       const cnt = document.getElementById("svcCount");
       try {
@@ -534,7 +578,9 @@
         // 5 秒一次的轮询不许把管理员刚敲进登记表单的字抹掉：清单没变就不重建 DOM；
         // 变了但有人在填（有焦点或有内容）也先跳过，svcSig 不更新 → 填完下一轮自动补渲染。
         // 真机踩出来的：不挡就会在点【登记一条】那一瞬把按钮 detach 掉，提交直接失败。
-        if (sig === svcSig || box.querySelector("input:focus, input:not(:placeholder-shown)")) return;
+        // force（#39-A 删除那一路）：删完必须让屏幕跟上，不然就是"删掉了但还挂着"——
+        //   那道表单保护恰恰会造成这个假象，所以由调用方明确说"这次必须重建"。
+        if (!force && (sig === svcSig || box.querySelector("input:focus, input:not(:placeholder-shown)"))) return;
         svcSig = sig;
         cnt.textContent = `共 ${list.length} 项`;
         if (!list.length) { box.innerHTML = '<div class="woEmpty">还没有服务。</div>'; return; }
@@ -587,6 +633,42 @@
             }
             b.disabled = false;
           });
+          // #39-A：低代码只能一句句长，建错了没法收（用户点名那一件）。
+          // ⚠️ 内置那项（`table=workorders`）**不给按钮** —— 判据与后端 `store.delete_service`
+          //    是同一条（看 table，不是看 id `pkgloss`）：两道都要，但后端那道才是真的，
+          //    前端这一道只是让人不必去点一个注定失败的按钮。
+          //    删的只是**服务定义**：`custom/<id>.json` 里已登记的记录一条不动，确认框里就这么说。
+          if (String(s.table || "") !== "workorders") {
+            const del = document.createElement("button");
+            del.textContent = "删除服务";
+            del.style.cssText = "margin:0 0 6px 6px;";
+            del.addEventListener("click", async () => {
+              if (!await stConfirm({
+                title: "删除服务「" + (s.name || "") + "」？",
+                body: "只删服务定义。它名下已登记的记录留在各自的台账里，不受影响。",
+                warn: "定义删了可以用那句话再生成一份；已登记的记录不会跟着走。",
+                okText: "删除服务",
+              })) return;
+              del.disabled = true;
+              try {
+                const resp = await fetch("/api/station/services/"
+                  + encodeURIComponent(String(s.id || "")), { method: "DELETE" });
+                const r = await resp.json().catch(() => ({}));
+                if (!resp.ok) { last.style.color = "#cf1322"; last.textContent = "没删成：" + httpFailReason(resp, r); del.disabled = false; return; }
+                if (r.error) { last.style.color = "#cf1322"; last.textContent = "没删成：" + r.error; del.disabled = false; return; }
+                // 成功那句只能进聊天流：下面这两句会把整个服务块（连同 `last` 那一行）重建掉，
+                // 把回执写在正在被替换的节点上 = 又变成"点了没反应"。
+                addMsg("系统", "已删除服务「" + (s.name || "") + "」：定义没了，它的历史台账没动", "sys");
+                await loadServices(true);   // force：见上面那道 sig 闸的注释
+                await loadRecords();
+              } catch (e) {
+                last.style.color = "#cf1322";
+                last.textContent = "没删成：" + e.message;
+                del.disabled = false;
+              }
+            });
+            el.appendChild(del);
+          }
           el.appendChild(form);
           el.appendChild(last);
           // 「📋 登记条目」（#24 决策①）：驿站是运营台，学生递进来的东西看不见就没法处理。

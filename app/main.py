@@ -55,7 +55,8 @@ from app.store import (
     set_todo_done_on, done_date_for, DAY_LOGGED_REPEATS,
     REPEAT_NONE, REPEAT_WEEKLY, REPEAT_DAILY, is_past_date,
     add_workorder, list_workorders, update_workorder_status,
-    set_workorder_archived, set_message_archived,
+    set_workorder_archived, set_message_archived, list_archived_workorders,
+    delete_service, delete_custom_record, delete_notice,
     set_current_student, current_student, is_registered, list_accounts, timetable_saved,
 )
 from app.modules.faq import SYSTEM_PROMPT as FAQ_PROMPT, build_tools as faq_tools
@@ -4354,6 +4355,22 @@ async def station_service_create(req: Request):
     if not clean:
         return JSONResponse({"error": f"生成的定义不合规矩：{why}"}, status_code=400)
     return {"ok": True, "service": add_service(clean)}
+
+
+@app.delete("/api/station/services/{sid}")
+async def station_service_delete(sid: str):
+    """删一份服务**定义**（#39-A：低代码只能一句句长，建错了没法收）。
+
+    只删定义、不动 `custom/<sid>.json` 的历史台账（判据与理由都在 `store.delete_service` 那一处）。
+    内置那项（`table=workorders`）后端硬拒 —— 前端不给按钮只是让人不必点，这道才是真的。
+
+    ⚠️ 与同族三个口一样**不挂管理口令**（驿站页没有口令输入框，这是 #18 就定下的演示级口子，
+       限制与代价写在 `#18 单子 2` 那段注释里）。本单没扩大它：这里删的是可重建的定义，
+       不是台账数据；真要上线时给驿站补自己的账号，那一手归 #38 之后那件待办。
+    """
+    if not delete_service(sid):
+        return JSONResponse({"error": "删不掉：内置服务不许删，或者这项服务不存在"}, status_code=400)
+    return {"ok": True}
 
 
 @app.get("/api/station/services/{sid}/records")

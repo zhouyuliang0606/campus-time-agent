@@ -1217,6 +1217,37 @@ def add_service(defn: dict) -> dict:
     return defn
 
 
+def is_builtin_service(svc) -> bool:
+    """内置那项「快递/外卖问题处理」——判据是 `table`，**不是 id**。
+    #39-A 之前这个字面量在 `match_service_by_trigger` 里孤本一份；现在删与路由共用一条：
+    两处各写各的，将来加第二个 workorders 型服务就只会有一边认它。
+    """
+    return str((svc or {}).get("table") or "") == "workorders"
+
+
+def delete_service(sid: str) -> bool:
+    """删一份服务**定义**（#39-A：低代码只长不删，管理员建错了没法收）。
+
+    三条不许顺手改的地方：
+      ① **内置项拒删**：它是"学生说快递丢了 → 出工单上报卡"那条链路的路由标记
+         （见 `match_service_by_trigger`），删了那条链路就断（test_54 钉着）。
+         前端同时不给按钮，两道都要 —— 后端那道才是真的，前端只是让人不必点。
+      ② **只动 services.json，不动 `custom/<sid>.json`**：删定义 ≠ 删历史台账。
+         台账是运营记录，没了找不回来；而定义删错了下一句话就能再建一项。
+      ③ 删完不许把列表清空：`list_services()` 在文件为空时会回**内置种子**，
+         于是"删到空"表现成"东西又长回来了"。①那道拒删顺带把这个形状堵死
+         （内置项永远留在表里），所以这里不再单独兜底。
+    """
+    if is_builtin_service(get_service(sid)):
+        return False
+    rows = list_services()
+    kept = [s for s in rows if str(s.get("id")) != str(sid)]
+    if len(kept) == len(rows):
+        return False
+    _write(SERVICES_FILE, kept)
+    return True
+
+
 # ── 低代码服务在学生端的"名字"（#22 单子 4：接进判定层）───────────────────
 # module 用 `custom:<服务id>` 这种带前缀的写法，而不是复用 lostfound/repair 那种固定键：
 # 判定层给的 service_id **必须回查 services.json 才算数**，模型编一个名字就直接丢弃 ——
@@ -1255,7 +1286,7 @@ def match_service_by_trigger(text: str) -> dict | None:
         return None
     best: tuple | None = None
     for svc in list_services():
-        if str(svc.get("table") or "") == "workorders":
+        if is_builtin_service(svc):
             continue
         for trig in (svc.get("triggers") or []):
             s = str(trig or "").strip().lower()
