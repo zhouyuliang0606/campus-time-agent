@@ -18,7 +18,7 @@ import contextlib
 import json
 import re
 
-from _harness import (Checker, make_client, sandbox, title,
+from _harness import (Checker, make_client, sandbox, title, write_accounts,
                       write_express, write_takeout)
 
 # 一份「两种口径都喂得到」的已知台账：
@@ -82,6 +82,7 @@ def batch_a_http_scopes():
     c = Checker()
     title("A. /api/express 与 /api/takeout 按人分：1 看不见 2，没登录只看见 demo")
     with sandbox():
+        write_accounts(["1", "2"])      # #38：中间件也认名录，cookie 里的学号得在名单里
         write_express(PACKAGES)
         write_takeout(ORDERS)
 
@@ -118,6 +119,7 @@ def batch_b_lookup_scopes():
     c = Checker()
     title("B. 凭取件码查：学生查不到别人的，店员查得到而且看得见归属")
     with sandbox():
+        write_accounts(["1", "2"])      # #38：中间件也认名录，cookie 里的学号得在名单里
         write_express(PACKAGES)
         write_takeout(ORDERS)
         from app.modules import express, takeout
