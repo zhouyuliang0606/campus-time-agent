@@ -829,6 +829,7 @@ html.gx-glass[data-gx-refine="on"] .composer, html.gx-glass[data-gx-refine="on"]
             </select>
             <textarea id="woDesc" rows="2" placeholder="简单描述一下情况（比如：取件码扫不开柜门）"></textarea>
             <button id="woSubmit">提交工单</button>
+            <div class="sub" id="woStatus" style="min-height:14px;"></div>
           </div>
           <b style="font-size:13px;"><svg class="ic"><use href="#gi-doc"/></svg> 我提交过的工单</b>
           <div id="woList" style="margin-top:8px;"></div>
@@ -1114,6 +1115,10 @@ html.gx-glass[data-gx-refine="on"] .composer, html.gx-glass[data-gx-refine="on"]
         } else if (d.kind === "work_order_report") {
           addMsg(botName(), "✅ 已上报驿站：工单已生成，进度可以在快递面板的"
             + "「我提交过的工单」里看到。", "bot", "express");
+          // 报完立刻刷一次那块列表 —— 不刷就是"刚报的单子在这台机器上不存在"，
+          // 而这句话在 #37 之前**确实是真话**（那块读的是 localStorage，聊天这路根本不写）。
+          // 用 void + catch：这是异步回调，未处理的拒绝会把这段回执带崩（#28 那条教训）。
+          void renderWorkOrders().catch(() => {});
         } else {
           addMsg(botName(), "✅ 已经按你的确认改好了，日程已刷新。", "bot", "planner");
           // ④ 入库成功后自动刷新课表/待办面板——只有真的动了课表/待办才刷
@@ -2353,53 +2358,76 @@ html.gx-glass[data-gx-refine="on"] .composer, html.gx-glass[data-gx-refine="on"]
           </div>`;
         }).join("") : '<div class="empty">暂无快递记录</div>';
       } catch (e) { box.innerHTML = '<div class="empty">快递数据加载失败</div>'; }
-      renderWorkOrders();
+      await renderWorkOrders();
     }
 
-    function myWorkOrders() {
-      try { return JSON.parse(localStorage.getItem("campustime_workorders") || "[]"); }
-      catch (e) { return []; }
-    }
-    function renderWorkOrders() {
-      const list = myWorkOrders().slice().reverse(); // 最新在前
+    // ---- 「我提交过的工单」：**唯一数据源是服务端**（#37）----
+    // 以前这里有一份 localStorage 台账，三个问题全在同一条根上：聊天上报那一路根本不往它写
+    //（真立了案学生也看不见，就像"报了没了"）、状态写死"已提交"永远不会变、
+    // 而且它是**浏览器级**的 —— 同一台机器换个账号登录会看到上一个人的工单。
+    // 现在只认 `/api/my/workorders`：靠 cookie 认人，无身份回空（不是全量）。
+    const WO_CLS = { "已解决": "done", "处理中": "cook" };
+    async function renderWorkOrders() {
       const box = document.getElementById("woList");
-      box.innerHTML = list.length ? list.map(w => `
+      if (!box) return;
+      let list = null;
+      try {
+        const resp = await fetch("/api/my/workorders");
+        const d = await resp.json().catch(() => ({}));
+        // 判成功看 HTTP 层（#28 那一族）：非 2xx 时正文里可能根本没有 workorders 字段，
+        // 把它当"没有工单"就是谎报空状态。
+        if (!resp.ok) throw new Error("HTTP " + resp.status + (d.error ? "：" + d.error : ""));
+        list = d.workorders || [];
+      } catch (e) {
+        box.innerHTML = '<div class="empty">工单列表没能加载：' + esc(e.message)
+          + '（这不是"你没有工单"，刷新或重新登录再试）</div>';
+        return;
+      }
+      if (!list.length) {
+        box.innerHTML = '<div class="empty">还没有提交过工单。上面报一条，或是在聊天里让管家上报，'
+          + '这里就会出现进度。</div>';
+        return;
+      }
+      const row = (w) => `
         <div class="wo-item">
-          <span class="st wait">已提交</span>
-          <span class="t">${esc(w.type)}<div class="sub">${esc(w.desc || "（无补充描述）")} · ${esc(w.ts)}</div></span>
-          <button class="mini" data-wo="${esc(w.id)}">让管家跟进</button>
-        </div>`).join("") : '<div class="empty">还没有提交过工单</div>';
-      box.querySelectorAll(".mini").forEach(b => b.addEventListener("click", () => {
-        const w = myWorkOrders().find(x => x.id === b.dataset.wo);
-        if (w) sendMsg(`我的快递工单（${w.ts} 提交）：${w.type} —— ${w.desc || "无补充描述"}。请帮我跟进处理。`);
+          <span class="st ${WO_CLS[w.status] || "wait"}">${esc(w.status || "待处理")}</span>
+          <span class="t">${esc(w.kind || "工单")}<div class="sub">${esc(w.desc || "（无补充描述）")} · ${esc(w.ts || "")}${w.archived ? " · 已结案" : ""}</div></span>
+          <button class="mini" data-wo="${esc(w.id)}" data-kind="${esc(w.kind || "")}" data-st="${esc(w.status || "待处理")}">让管家跟进</button>
+        </div>`;
+      const live = list.filter(w => !w.archived && w.status !== "已解决");
+      const done = list.filter(w => w.archived || w.status === "已解决");
+      box.innerHTML =
+        (live.length ? live.map(row).join("") : '<div class="empty">没有正在处理的工单</div>')
+        + (done.length ? `<div class="sub" style="margin:10px 0 4px;">已结束 ${done.length} 条</div>`
+          + done.map(row).join("") : "");
+      // 选择器带 [data-wo]：这一片里只有"跟进"这一种 .mini，别以后加了别的按钮就顺手绑错了
+      box.querySelectorAll(".mini[data-wo]").forEach(b => b.addEventListener("click", () => {
+        sendMsg(`我的工单 ${b.dataset.wo}（${b.dataset.kind}，当前状态：${b.dataset.st}）。请帮我跟进处理。`);
       }));
     }
+
+    // 面板表单提交：**先上报服务端，成功了才刷新列表**（红线 24：请求回来了 ≠ 事情办成了）。
+    // ⚠️ 不许再往 localStorage 塞一条"假记录"：上报失败时那条会留在本地，看着像成功了。
     document.getElementById("woSubmit").addEventListener("click", async () => {
       const type = document.getElementById("woType").value;
       const desc = document.getElementById("woDesc").value.trim();
-      const list = myWorkOrders();
-      const item = {
-        id: "w" + Date.now(),
-        ts: new Date().toLocaleString("zh-CN", { hour12: false }),
-        type,
-        desc,
-        status: "已提交",
-      };
-      list.push(item);
-      localStorage.setItem("campustime_workorders", JSON.stringify(list));
-      document.getElementById("woDesc").value = "";
-      renderWorkOrders();
-      // 同步上报服务端：驿站端（/station）与管理端（/admin）都读同一份工单台账
+      const st = document.getElementById("woStatus");
       try {
-        const r = await fetch("/api/workorders", {
+        const resp = await fetch("/api/workorders", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ kind: type, desc, source: "panel" }),
         });
-        const d = await r.json();
-        if (d.ok) item.serverId = d.workorder.id;
-        localStorage.setItem("campustime_workorders", JSON.stringify(list));
-      } catch (e) { /* 上报失败不影响本地记录，下次「让管家跟进」还能补报 */ }
+        const d = await resp.json().catch(() => ({}));
+        if (!resp.ok || !d.ok) throw new Error(d.error || ("HTTP " + resp.status));
+        document.getElementById("woDesc").value = "";
+        if (st) st.textContent = "已提交，工单号 " + (d.workorder && d.workorder.id ? d.workorder.id : "")
+          + "。驿站处理后会在这里显示进度。";
+        await renderWorkOrders();
+      } catch (e) {
+        // 失败只说实话，不改列表：这时候刷出来的是服务端真有那几条，一条不多
+        if (st) st.textContent = "❌ 没提交成功：" + e.message + "（服务端没有立案，请重试）";
+      }
     });
 
     // ---- ③ 外卖：订单列表 ----

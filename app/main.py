@@ -4078,8 +4078,10 @@ async def workorder_create(req: Request):
     # 决策A（#18 单子 1）：**双写在同一个函数里** —— 工单落一条，学生消息那边也补一条，
     # 管理端「🛠️ 学生工单」和「📥 学生消息」两个视图都看得见，不用前端各调一次接口
     #（前端调两处 = 两本账，漏一处就静默少一条，是本项目反复栽过的形状）。
-    # ⚠️ 已知缺口、本单不解决：没有学生身份体系，这条消息**认不出是谁报的**，
-    #    内容也只有"类型｜描述"而不是完整上下文（账号体系见 EXPLAIN.md 六）。
+    # 归属（#37）：`add_workorder` / `add_message` 都按 **cookie 里的当前学号**记 `owner`
+    #   （#32 的 ContextVar，判据在 store 那一处，不从 body、不从学生原话里抠）。
+    #   ⚠️ 这条注释以前写着"没有学生身份体系，认不出是谁报的"——**身份体系已经有了，那句话过期了**。
+    #   老记录（那之前立案的）没有 owner，界面上显示「未登记」，**不许回填**（回填=编造证据）。
     add_message(module="workorder",
                 message=f"{kind}｜{(body.get('desc') or '').strip() or '（无补充描述）'}",
                 answer=f"已立案（工单 {item['id']}），状态：{item.get('status') or '待处理'}",
@@ -4092,6 +4094,24 @@ async def workorder_create(req: Request):
         except Exception:
             pass
     return {"ok": True, "workorder": item}
+
+
+@app.get("/api/my/workorders")
+async def my_workorders(include_archived: bool = True):
+    """学生查**自己**报过的工单（人话：快递面板那块「我提交过的工单」，进度的唯一来源）。
+
+    ⚠️ 三条红线，都是这几天刚付过学费的形状：
+      ① **靠 cookie 认人，不收任何"学号"参数**：参数谁都能改，cookie 才是这个人当下的身份
+         （#32 的中间件已经把它放进 ContextVar，这里只读，不另开来源）。
+      ② **无身份时返回空列表，绝不回落到全量**：这条接口不挂口令，回落一次就等于
+         把全校的报障摊给任何打开页面的人看（#34 刚为"驿站不能读学生待办"打过一次架）。
+      ③ 默认**带已归档**：对管理端"归档"是收起，对学生那是"这事结了"，他自己那份历史该看得全 ——
+         看不见才会以为"我的单子被删了"，那是又一次"点了没反应"。
+    """
+    who = current_student()
+    if not who:
+        return {"workorders": []}
+    return {"workorders": list_workorders(include_archived=include_archived, owner=who)}
 
 
 _WO_STATUSES = ("待处理", "处理中", "已解决")
