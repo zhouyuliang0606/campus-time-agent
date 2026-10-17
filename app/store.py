@@ -27,6 +27,47 @@ def current_student() -> str:
     """当前请求的学生学号；没登录 / 测试 / 演示脚本里就是空串。"""
     return _CURRENT_STUDENT.get()
 
+# ============ 台账（快递 / 外卖）的「归属人」（#36） ============
+# 这两份演示台账原先整份**没有 owner**：
+#   · 驿站问「现在有哪些快递还没取走」只能回一张没有归属人的全局表 —— 店员看不出「该催谁」；
+#   · 学生端 `list_my_packages()` 名字叫「我的」、函数体却全量遍历 —— 学生 1 看得见学生 2 的取件码。
+# 所以「归属」先在数据里补上，而**读它的判据只许这一处**（下面的 `visible_rows`）。
+DEMO_OWNER = "demo"
+
+
+def owner_of_row(row: dict) -> str:
+    """这一件归谁（学号）。老记录没有 owner 的按 demo —— 与 `status` / `archived` 同一做法：
+    **不批量迁移文件**（每迁移一次，就多一次改坏真实数据的机会）。
+    """
+    return str(row.get("owner") or DEMO_OWNER)
+
+
+def current_owner() -> str:
+    """当前该按谁的口径读台账：有身份按身份，没身份（测试 / 演示脚本 / 没登录）按 demo。
+
+    ⚠️ 身份来源只有 #32 那一份 —— `current_student()` 是中间件按 cookie 设的 ContextVar。
+       这里**不另开来源**（不自己读 cookie、不从请求体里猜）：两处来源就会打架，
+       而打架的结果永远是「谁读都算数」。
+    """
+    return current_student() or DEMO_OWNER
+
+
+def visible_rows(rows, *, staff: bool = False) -> list[dict]:
+    """台账过滤 —— **过滤判据只有这一处**（`packages_view` / `list_my_*` / `get_by_code` 都调它）。
+
+    · 学生口径（默认）：只留 owner == 当前口径 的那些；
+    · 店员口径（`staff=True`）：看全店 —— 驿站要按人分组才知道该催谁，这是它办件必需的可见范围。
+
+    ⚠️ `staff=True` 放行的是**包裹**，不是「这个人的所有数据」：学生的日程 / 课表 / 待办仍然
+       归 #34 那道端级闸门管（`main._station_surface`），这一条不许顺手扩大范围。
+    """
+    out = list(rows or [])
+    if staff:
+        return out
+    who = current_owner()
+    return [r for r in out if owner_of_row(r) == who]
+
+
 # 数据目录默认是 app/data；但可以用环境变量指到别处。
 # 为什么留这个开关：跑自动化测试时，让测试写一份临时副本，
 # 这样测试再怎么折腾（写假密钥、传文件）都碰不到真实演示数据。
@@ -60,6 +101,17 @@ def _read(name: str, default):
             return json.load(f)
     except FileNotFoundError:
         return default
+
+
+def read_data_file(name: str, default):
+    """给各模块自己读「数据目录下的某份 JSON」（人话：**路径每次现算**，别在模块顶层拼死）。
+
+    为什么要有它（#36，与红线 23 同根）：`express.py` / `takeout.py` 原先在**导入时**把
+    `_DATA_PATH` 拼成「源码旁边的 data/」，于是沙箱把 `CAMPUSTIME_DATA_DIR` 换掉之后，
+    它们照旧读真实台账 —— 表现是「想给测试种一份 1 号同学的快递，根本种不进去」，
+    而这些断言其实一直在量用户那份演示底稿（本机与干净克隆还可能是两个数）。
+    """
+    return _read(name, default)
 
 
 def _write(name: str, data) -> None:
