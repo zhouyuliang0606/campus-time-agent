@@ -49,6 +49,20 @@ def batch_a_separated():
     c = Checker()
     title("A. 三个面都按人分：待办 / 周表 / 对话记忆")
     with sandbox():
+        # ⚠️ 起点自己种老位置那份"底稿"：干净克隆里 `student/` 是**空的**（演示数据不入库），
+        #    而首次登录播种拷的正是它 —— 不种就会出现"本机全绿、评委那台红"的那种假绿
+        #    （A0/A2-bis 第一版在严格克隆里就是这么红的：登录 200，但什么都没拷出来）。
+        base_todo = len(_todos_of(""))
+        seed = make_client()
+        seed.post("/api/todos", json={"title": "底稿待办（播种源）", "date": "2026-12-31",
+                                       "start": "09:00", "end": "10:00"})
+        seed.post("/api/timetable/apply", json={"courses": [
+            {"day": 3, "start": "10:00", "end": "11:40", "course": "线性代数", "location": "教一"}]})
+        # ⚠️ 比的是 **delta**，不是绝对条数：老位置在开发机上可能带着用户的演示待办、在干净克隆里是空的，
+        #    写死 `== 1` 就是"本机绿、评委红"（4o3 那条同一个病）。周表可以写死 1 门 —— apply 是整份覆盖。
+        c.check("A0-pre 播种源（老位置）拿到了内容：待办比基线多 1 条、周表整份是我种的这一门",
+                len(_todos_of("")) == base_todo + 1 and len(_tt_of("")) == 1,
+                f"待办 {base_todo}->{len(_todos_of(''))} 周表 {len(_tt_of(''))} 门")
         a = _cli_as("S001")
         b = _cli_as("S002")
         la = a.post("/api/login", json={"student": "S001"})
