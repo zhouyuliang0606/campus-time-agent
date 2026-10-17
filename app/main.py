@@ -1588,6 +1588,13 @@ async def _chat_impl(req: Request, meta: dict, emit=None):
             if _svc_hit:
                 module_key = custom_module(_svc_hit["id"])
 
+    # ★ 端边界（2026-10-17 #34）：**驿站端那台机器是店员的** —— 他没有"我的待办"，也没有"我的课表"，
+    #   学生个人库既不该读、也不该写。这个判据**只在这里算一次**，下面两处读它：
+    #     ① 该不该把"会挂出待办卡"的排程工具交给模型；② 确定性分支区走不走。
+    #   不在两处各写一遍 `module_key == "station"`：同一判据抄两遍就会漏一处（红线 4/11），
+    #   而漏掉的那一处恰好就是这次 P0 的形状。
+    _station_surface = module_key == "station"
+
     # 1b) 低代码那一路（#22 单子 4）：module 是 `custom:<服务id>`，**它的"注册表"就是 services.json**。
     #     提示和工具箱都按这份运行时数据现算 —— 管理员改了定义，下一句就生效，不用重启；
     #     而且这里能进来越过这道闸，本身就说明 service_id 是真实存在的（`_module_handled` 回查过）。
@@ -1618,2037 +1625,2056 @@ async def _chat_impl(req: Request, meta: dict, emit=None):
     #     否则模型会把闲聊/问候/模块名也当成待办名挂卡。
     #     实测：faq 栏里问"你是谁"，模型却把"校园问答"当待办名、用旧提案的时间出了张确认卡。
     # 这些工具本身只读，但挂出确认条就是"代办"行为，必须对齐真实意图。
-    if _schedule_tools_allowed(module_key, _sem_intent, message):
+    # 驿站端一个排程工具都不给（#34）：这些工具本身只读，但**挂出确认条就是"代办"行为**，
+    # 而店员那句"帮我加个铅球比赛"根本不是在排他自己的日程。
+    if not _station_surface and _schedule_tools_allowed(module_key, _sem_intent, message):
         tools.update(scheduling_tools())
 
-    # 2.5) **课表导入：第一句话就直接出「确认修改」卡**（2026-10-07 学生报障）
-    #   现象：上传课表那句被判成「问事」（语义层给了 chat、module=schedule），
-    #   第一句没弹卡；第二次追问反而弹了张**代办**卡——
-    #   没被课表接走的话就掉进待办补条（那张假卡的老路）。
-    #   学生的要求很明确：**第一次就直接改课表**。
+    # ★ 端级早分流（2026-10-17 P0，#34）：**驿站端没有"我的待办 / 我的课表"这回事**。
+    #   真机事故：店员在 /station 说「我的代办」，被下面"列出待办"那条确定性分支接走，
+    #   直接 `list_todos()` 把**学生个人待办**念给了店员（截图那句「📋 你目前的待办（共 1 条）」）。
+    #   这不只是"看到"：同一个形状还能写 —— 加/删/改待办、改课表那些分支判据全是
+    #   "这句话长什么样"，**没有一处问"谁在说"**（`/api/chat` 的任何调用方都能递这句话）。
     #
-    #   判据：规则层明说（`looks_like_timetable_import` 命中）= **硬信号**，
-    #       语义层猜的「chat / 问事」= 弱信号 → 以规则为准。
-    #       跟 `physio_state_only` 是同款的确定性硬闸门，
-    #       只是一个强制按 chat 走（不出卡），这个强制按办事走（直接出卡）。
+    #   为什么整段圈起来，而不是给二十多个分支各加一句 `and module_key != "station"`：
+    #   那就是同一个判据抄二十遍（红线 4/11），漏一处就再串一次数据；
+    #   而课表那条 `looks_like_timetable_import` 是**硬信号**、位置在最前面，最容易漏。
+    #   ⇒ 端的边界靠**走不到**来保证，不靠"记得加 if"。
+    #   驿站端从这里直接落到下面 4) 组装引擎那一步，由 station 的 agent 回答
+    #   （它的工具箱里只有两个查询工具 —— 本来就没有写库能力，也就没有第二份 agent 调用代码）。
     #
-    #   位置必须在**所有待办分支之前**——分支顺序本身就是判定，
-    #   放在后面就会被待办补条抢走（那正是"第二次弹代办卡"的成因）。
-    #   只有真能从文件原文抠出课程才直接出卡；抠不出就照旧交给模型，不抢它的活
-    #   （模型还能替他把"第几节"换算成钟点，那条路原样保留）。
-    if looks_like_timetable_import(message):
-        _tt_direct = _tt_file_courses(message, session_id)
-        if _tt_direct:
-            _tt_card = {
-                "kind": "timetable_change",
-                # 卡上只给门数：学生要的是"要不要改"，不是把十几门课再念一遍
-                # （2026-10-04 学生原话「不用每门课单独拎出来」）。
-                "summary": f"导入课表（共 {len(_tt_direct)} 门课）",
-                "courses": _tt_direct,
+    #   ⚠️ 只认 `station` 这一个端。`custom:<id>` 低代码那条是**学生端**用的（学生说"我丢了饭卡"
+    #     要出登记卡），跟着拦进去就把那件功能废了；管理端走自己的接口，不在这儿。
+    #   判据在上面算成 `_station_surface`，这里只读它（同一件事不许有两个写法）。
+    if not _station_surface:
+        # 2.5) **课表导入：第一句话就直接出「确认修改」卡**（2026-10-07 学生报障）
+        #   现象：上传课表那句被判成「问事」（语义层给了 chat、module=schedule），
+        #   第一句没弹卡；第二次追问反而弹了张**代办**卡——
+        #   没被课表接走的话就掉进待办补条（那张假卡的老路）。
+        #   学生的要求很明确：**第一次就直接改课表**。
+        #
+        #   判据：规则层明说（`looks_like_timetable_import` 命中）= **硬信号**，
+        #       语义层猜的「chat / 问事」= 弱信号 → 以规则为准。
+        #       跟 `physio_state_only` 是同款的确定性硬闸门，
+        #       只是一个强制按 chat 走（不出卡），这个强制按办事走（直接出卡）。
+        #
+        #   位置必须在**所有待办分支之前**——分支顺序本身就是判定，
+        #   放在后面就会被待办补条抢走（那正是"第二次弹代办卡"的成因）。
+        #   只有真能从文件原文抠出课程才直接出卡；抠不出就照旧交给模型，不抢它的活
+        #   （模型还能替他把"第几节"换算成钟点，那条路原样保留）。
+        if looks_like_timetable_import(message):
+            _tt_direct = _tt_file_courses(message, session_id)
+            if _tt_direct:
+                _tt_card = {
+                    "kind": "timetable_change",
+                    # 卡上只给门数：学生要的是"要不要改"，不是把十几门课再念一遍
+                    # （2026-10-04 学生原话「不用每门课单独拎出来」）。
+                    "summary": f"导入课表（共 {len(_tt_direct)} 门课）",
+                    "courses": _tt_direct,
+                }
+                save_pending(session_id, [_tt_card])
+                append_conversation(session_id, "user", message)
+                append_conversation(session_id, "assistant",
+                                     f"已生成课表修改提案：{_tt_card['summary']}")
+                # 这句规则层明说是"办事"，别再被写成"问事"——轨迹里写假话比不写更坏。
+                meta["read"] = {
+                    "step": 0,
+                    "phase": "🧠 我把这句听成 **办事**（导入课表）｜依据：规则层（课表导入，硬信号）",
+                    "answer": "",
+                }
+                return {
+                    "module": "planner",
+                    "session_id": session_id,
+                    # 回话一律走 `_tt_confirm_answer`：跟下面模型那条路用的是同一句话，
+                    # 免得"第一句话直接出卡"和"模型出卡"两种走法说法不一致
+                    # （也才能带上「（清单来自文件原文）」这句出处）。
+                    "answer": _tt_confirm_answer(len(_tt_direct), "文件原文"),
+                    "trace": [{"step": 1,
+                               "phase": "📄 课表导入：系统直接读文件出卡（第一句话就出，不用二次判断）",
+                               "answer": f"文件原文抠出 {len(_tt_direct)} 门课"}],
+                    "options": [_tt_card],
+                    "awaiting_choice": True,
+                }
+
+        # 2.6) **快递/外卖丢失破损 → 第一句话就出「确认上报」卡**（2026-10-07 学生报障）
+        #   现象：学生说"快递丢了 / 上报管理员"，被语义层判成「问事」，助手只回一长段
+        #   查件话术、从没出卡，学生要上报却找不到入口（"没有出卡，也没有上传"）。
+        #   学生的要求很明确：**说要上报就直接出卡**。
+        #
+        #   判据：规则层 `looks_like_work_order_report` 命中 = **硬信号**（上报/工单/丢失破损），
+        #       语义层猜的「chat / 问事」= 弱信号 → 以规则为准（同款 timetable 硬闸门）。
+        #   位置必须在**所有待办分支之前**——先出卡，不被待办补条抢走。
+        #   卡是可取消的提案：学生点【确认上报】才写工单（走 /api/workorders，系统写库，
+        #   不经过模型，守住"写库只归系统"的红线）；点【取消】什么都不做。
+        _wo_kind = looks_like_work_order_report(message)
+        # ★ 2026-10-16 #24 决策②：**自定义服务优先于通用工单**（红线 21 的下半场）。
+        #   「报修」这个词在 `_WORK_ORDER_RE` 里是硬信号，而它恰好也是很多自建服务的正题
+        #   （宿舍报修、设施报修…）。前面刚把这句归到 `custom:<宿舍报修>`，这里再劫持走，
+        #   管理员建的服务就永远接不到活 —— 通用兜底不该盖过"用户明确说要接管这句话"的服务。
+        #   没有自定义服务接管时（`module_key` 不是 custom）行为一字不变：照旧出上报卡。
+        if _wo_kind and not is_custom_module(module_key):
+            _wo_card = {
+                "kind": "work_order_report",
+                "summary": f"上报驿站：{_wo_kind}",
+                "wo_kind": _wo_kind,
+                "desc": "",
             }
-            save_pending(session_id, [_tt_card])
+            save_pending(session_id, [_wo_card])
             append_conversation(session_id, "user", message)
             append_conversation(session_id, "assistant",
-                                 f"已生成课表修改提案：{_tt_card['summary']}")
-            # 这句规则层明说是"办事"，别再被写成"问事"——轨迹里写假话比不写更坏。
+                                 f"已生成工单上报提案：{_wo_card['summary']}")
+            # 这句规则层明说是"办事"（上报工单），别再被写成"问事"——轨迹里写假话比不写更坏。
             meta["read"] = {
                 "step": 0,
-                "phase": "🧠 我把这句听成 **办事**（导入课表）｜依据：规则层（课表导入，硬信号）",
+                "phase": "🧠 我把这句听成 **办事**（上报工单）｜依据：规则层（快递/外卖问题上报，硬信号）",
                 "answer": "",
             }
             return {
-                "module": "planner",
+                "module": "express",
                 "session_id": session_id,
-                # 回话一律走 `_tt_confirm_answer`：跟下面模型那条路用的是同一句话，
-                # 免得"第一句话直接出卡"和"模型出卡"两种走法说法不一致
-                # （也才能带上「（清单来自文件原文）」这句出处）。
-                "answer": _tt_confirm_answer(len(_tt_direct), "文件原文"),
+                "answer": (
+                    "📮 听起来你的快递/外卖可能出了问题。要不要**上报驿站**立案跟进？\n"
+                    "下面这条确认条点【确认上报】就会生成工单（也可填补充描述）；"
+                    "点【取消】就不上报，数据一点都不会动。"
+                ),
                 "trace": [{"step": 1,
-                           "phase": "📄 课表导入：系统直接读文件出卡（第一句话就出，不用二次判断）",
-                           "answer": f"文件原文抠出 {len(_tt_direct)} 门课"}],
-                "options": [_tt_card],
+                           "phase": "📮 上报工单：系统直接出卡（不走语义判断）",
+                           "answer": f"问题类型 = {_wo_kind}"}],
+                "options": [_wo_card],
                 "awaiting_choice": True,
             }
 
-    # 2.6) **快递/外卖丢失破损 → 第一句话就出「确认上报」卡**（2026-10-07 学生报障）
-    #   现象：学生说"快递丢了 / 上报管理员"，被语义层判成「问事」，助手只回一长段
-    #   查件话术、从没出卡，学生要上报却找不到入口（"没有出卡，也没有上传"）。
-    #   学生的要求很明确：**说要上报就直接出卡**。
-    #
-    #   判据：规则层 `looks_like_work_order_report` 命中 = **硬信号**（上报/工单/丢失破损），
-    #       语义层猜的「chat / 问事」= 弱信号 → 以规则为准（同款 timetable 硬闸门）。
-    #   位置必须在**所有待办分支之前**——先出卡，不被待办补条抢走。
-    #   卡是可取消的提案：学生点【确认上报】才写工单（走 /api/workorders，系统写库，
-    #   不经过模型，守住"写库只归系统"的红线）；点【取消】什么都不做。
-    _wo_kind = looks_like_work_order_report(message)
-    # ★ 2026-10-16 #24 决策②：**自定义服务优先于通用工单**（红线 21 的下半场）。
-    #   「报修」这个词在 `_WORK_ORDER_RE` 里是硬信号，而它恰好也是很多自建服务的正题
-    #   （宿舍报修、设施报修…）。前面刚把这句归到 `custom:<宿舍报修>`，这里再劫持走，
-    #   管理员建的服务就永远接不到活 —— 通用兜底不该盖过"用户明确说要接管这句话"的服务。
-    #   没有自定义服务接管时（`module_key` 不是 custom）行为一字不变：照旧出上报卡。
-    if _wo_kind and not is_custom_module(module_key):
-        _wo_card = {
-            "kind": "work_order_report",
-            "summary": f"上报驿站：{_wo_kind}",
-            "wo_kind": _wo_kind,
-            "desc": "",
-        }
-        save_pending(session_id, [_wo_card])
-        append_conversation(session_id, "user", message)
-        append_conversation(session_id, "assistant",
-                             f"已生成工单上报提案：{_wo_card['summary']}")
-        # 这句规则层明说是"办事"（上报工单），别再被写成"问事"——轨迹里写假话比不写更坏。
-        meta["read"] = {
-            "step": 0,
-            "phase": "🧠 我把这句听成 **办事**（上报工单）｜依据：规则层（快递/外卖问题上报，硬信号）",
-            "answer": "",
-        }
-        return {
-            "module": "express",
-            "session_id": session_id,
-            "answer": (
-                "📮 听起来你的快递/外卖可能出了问题。要不要**上报驿站**立案跟进？\n"
-                "下面这条确认条点【确认上报】就会生成工单（也可填补充描述）；"
-                "点【取消】就不上报，数据一点都不会动。"
-            ),
-            "trace": [{"step": 1,
-                       "phase": "📮 上报工单：系统直接出卡（不走语义判断）",
-                       "answer": f"问题类型 = {_wo_kind}"}],
-            "options": [_wo_card],
-            "awaiting_choice": True,
-        }
-
-    # 3) **确定性确认分支**（人话：学生回一句"确认"就当场执行，不劳模型判断）
-    #    踩过的坑：学生明明打了"确认"，AI 却回"我没有权限删除"，还让学生自己去
-    #    页面上找删除按钮——那里根本没有入口。这里把执行权收归系统，学生点头即写入。
-    # 不按模块卡死：确认卡就渲染在同一条聊天里，学生不管当前切到哪个面板、
-    # 路由把这句分去哪个模块（实测"确认"常被分到 FAQ），点头就是点头，该执行就执行。
-    if is_confirmation(message) and peek_pending(session_id):
-        from app.modules.planner import apply_pending_timetable_change
-        # 待办确认：学生回一句"确认"，把上一轮那张待办确认卡真正写进日程。
-        # 为什么不能等路由决定：实测学生回一句"确认"，路由把它甩到 admin 模块，
-        # 收到的是"你回「确认」了，但我这边还没生成待办提案"——话都说到这份上了还写不进去，
-        # 学生只会觉得系统在耍他。这里把执行权收归系统，点头就是写入。
-        # 第二种"待办确认"：暂存里那张是 `todo_pick`（模型那一路存的形状）——
-        # 见 `_lone_todo_pick` 的说明，不接这一档的话学生回「确认」会原地打转。
-        picked = _pending_todo(session_id) or _lone_todo_pick(session_id, message)
-        if picked:
-            take_pending(session_id)
-            _write_todo(picked)
-            # 改期：旧的那条要挪走（删旧 + 加新，不是就地改字段，方便追溯）。
-            # 旧 id 只在改期提案里带着，普通加待办没有这一项，所以不影响别的路径。
-            _old_id = picked.get("old_todo_id")
-            if _old_id:
-                try:
-                    delete_todo(_old_id)
-                except Exception:
-                    pass
-            # 用 .get() 而不是 picked['summary']：提案里的字段少一个就 500 了，
-            # 学生只会看到一句"网络开小差了"。摘要本来就是可选的，自己拼一句就行。
-            summary = (picked.get("summary")
-                       or f"{picked.get('title', '待办')}｜{picked.get('date', '')}"
-                          f"{picked.get('start', '')}-{picked.get('end', '')}")
-            _retimed = bool(_old_id)
-            append_conversation(session_id, "user", message)
-            append_conversation(session_id, "assistant",
-                                f"{'已改期' if _retimed else '已加入日程'}：{summary}")
-            return {
-                "module": "planner",
-                "session_id": session_id,
-                "answer": (
-                    (f"✅ 已改期：**{picked.get('title', '待办')}**｜{picked.get('date', '')}"
-                     f"（{picked.get('weekday', '')}）"
-                     f"{picked.get('start', '')}-{picked.get('end', '')}，"
-                     f"旧的那段已经挪走了。"
-                     if _retimed else
-                     f"✅ 已加入日程：**{picked.get('title', '待办')}**｜{picked.get('date', '')}"
-                     f"（{picked.get('weekday', '')}）"
-                     f"{picked.get('start', '')}-{picked.get('end', '')}。"
-                     )
-                ),
-                "trace": [{"step": 1, "phase": "✅ 学生确认（系统写入）",
-                           "answer": summary}],
-                "options": [],
-                "awaiting_choice": False,
-            }
-        # 学生回"确认"，可暂存里那张是**二选一卡**（时间由谁定都还没选）——
-        # 这时候更不能写：他确认的可能是"我知道要做这件事"，
-        # 而不是"就按某个时间排上"。写哪个时间都是替他做主，写错了还要再来一轮删。
-        # 正解：把二选一卡**再挂一遍**，说清楚"得先选一种"。
-        only_mode = _pending_todo_mode(session_id)
-        if only_mode:
-            return _offer_response(
-                session_id, only_mode, message,
-                _mode_answer(only_mode,
-                             lead="先别急——**还没选时间怎么定**，我这边一条都没写进去。\n\n"),
-                "🗓️ 只回了「确认」还没选方式 → 二选一卡再挂一遍，不替学生定")
-        # 学生回"确认"，可暂存里那张是**候选时段卡**（几个点摊着、他还没勾）——
-        # 这时候不能当成"他点头了"就随便挑一个写进去：他根本不知道你会写哪一个，
-        # 而写进去的是一条真安排，写错了还得再来一轮删。
-        # 正解：把候选条**再挂一遍**，并且说清楚"得你自己勾一个"。
-        # 这一支必须排在下面任何"执行"之前，也排在 apply_*（会把暂存 take 走）之前。
-        only_slots = _pending_todo_slots(session_id)
-        if only_slots:
-            return _offer_response(
-                session_id, only_slots, message,
-                _slots_answer(only_slots,
-                              lead="先别急——这几个时间段得**你挑一个**，我这边还没收到你的勾选，"
-                                   "**一条都没写进去。**\n\n"),
-                "🗓️ 只回了「确认」还没勾时间 → 候选条再挂一遍，不替学生挑")
-        # **清空课表的确认**：按新规格，弹窗点【确认】是优先方式，
-        # 在聊天框回"确认删除"这类确认文字是**备选方式，同样要执行**（需求③）。
-        # 早先这里为了保护"删空不可恢复"硬加了一道"必须点按钮"的闸门，
-        # 结果学生回「确认」毫无反应，被当成"删除失败"投诉了一轮。闸门让位给规格。
-        # 执行逻辑收在 _execute_clear() 里，跟弹窗按钮走同一段代码——
-        # 模型依然碰不到删除接口，只是"谁来按这个按钮"多了一个入口。
-        entry_now = peek_pending(session_id) or {}
-        clear_held = [o for o in entry_now.get("options") or []
-                      if isinstance(o, dict) and o.get("kind") == "timetable_clear"]
-        if clear_held:
-            done = _execute_clear(session_id)
-            if done is not None:
+        # 3) **确定性确认分支**（人话：学生回一句"确认"就当场执行，不劳模型判断）
+        #    踩过的坑：学生明明打了"确认"，AI 却回"我没有权限删除"，还让学生自己去
+        #    页面上找删除按钮——那里根本没有入口。这里把执行权收归系统，学生点头即写入。
+        # 不按模块卡死：确认卡就渲染在同一条聊天里，学生不管当前切到哪个面板、
+        # 路由把这句分去哪个模块（实测"确认"常被分到 FAQ），点头就是点头，该执行就执行。
+        if is_confirmation(message) and peek_pending(session_id):
+            from app.modules.planner import apply_pending_timetable_change
+            # 待办确认：学生回一句"确认"，把上一轮那张待办确认卡真正写进日程。
+            # 为什么不能等路由决定：实测学生回一句"确认"，路由把它甩到 admin 模块，
+            # 收到的是"你回「确认」了，但我这边还没生成待办提案"——话都说到这份上了还写不进去，
+            # 学生只会觉得系统在耍他。这里把执行权收归系统，点头就是写入。
+            # 第二种"待办确认"：暂存里那张是 `todo_pick`（模型那一路存的形状）——
+            # 见 `_lone_todo_pick` 的说明，不接这一档的话学生回「确认」会原地打转。
+            picked = _pending_todo(session_id) or _lone_todo_pick(session_id, message)
+            if picked:
+                take_pending(session_id)
+                _write_todo(picked)
+                # 改期：旧的那条要挪走（删旧 + 加新，不是就地改字段，方便追溯）。
+                # 旧 id 只在改期提案里带着，普通加待办没有这一项，所以不影响别的路径。
+                _old_id = picked.get("old_todo_id")
+                if _old_id:
+                    try:
+                        delete_todo(_old_id)
+                    except Exception:
+                        pass
+                # 用 .get() 而不是 picked['summary']：提案里的字段少一个就 500 了，
+                # 学生只会看到一句"网络开小差了"。摘要本来就是可选的，自己拼一句就行。
+                summary = (picked.get("summary")
+                           or f"{picked.get('title', '待办')}｜{picked.get('date', '')}"
+                              f"{picked.get('start', '')}-{picked.get('end', '')}")
+                _retimed = bool(_old_id)
                 append_conversation(session_id, "user", message)
                 append_conversation(session_id, "assistant",
-                                    f"已按你的确认清空课表：{done['removed']} 门")
+                                    f"{'已改期' if _retimed else '已加入日程'}：{summary}")
                 return {
                     "module": "planner",
                     "session_id": session_id,
                     "answer": (
-                        f"✅ 已按你的确认执行（{done['summary']}），"
-                        f"清空了 **{done['removed']} 门课**，周表现在一门课都不剩。"
+                        (f"✅ 已改期：**{picked.get('title', '待办')}**｜{picked.get('date', '')}"
+                         f"（{picked.get('weekday', '')}）"
+                         f"{picked.get('start', '')}-{picked.get('end', '')}，"
+                         f"旧的那段已经挪走了。"
+                         if _retimed else
+                         f"✅ 已加入日程：**{picked.get('title', '待办')}**｜{picked.get('date', '')}"
+                         f"（{picked.get('weekday', '')}）"
+                         f"{picked.get('start', '')}-{picked.get('end', '')}。"
+                         )
                     ),
-                    "trace": [{"step": 1, "phase": "✅ 学生确认（系统执行清空）",
-                               "answer": f"清掉 {done['removed']} 门"}],
+                    "trace": [{"step": 1, "phase": "✅ 学生确认（系统写入）",
+                               "answer": summary}],
                     "options": [],
                     "awaiting_choice": False,
                 }
-            # 周表已经是空的：没什么可清，提案作废，直说。
-            clear_pending(session_id)
-            append_conversation(session_id, "user", message)
-            append_conversation(session_id, "assistant", "周表本来就是空的")
-            return {
-                "module": "planner",
-                "session_id": session_id,
-                "answer": "周表本来就是空的，一门课都没有，没有课可清空 🗑️",
-                "trace": [{"step": 1, "phase": "🗑️ 周表已为空",
-                           "answer": "没有课可清，直接告知学生"}],
-                "options": [],
-                "awaiting_choice": False,
-            }
-        # **删待办的确认**：学生回一句"确认"，把上一轮那张【确认删除】真正执行掉。
-        # 跟清空课表同一个道理——执行权在系统手里，模型连删除接口都碰不到。
-        # 规格三条红线里的第一条（"学生没点头就宣布已经删了"）就是靠这里兜住的：
-        # 只有走到这一段，delete_todo 才会被调用到。
-        #
-        # ⚠️ 位置不能挪到下面 apply_pending_timetable_change() 之后：
-        #    那个函数是**先把暂存 take 走**、再按 kind 过滤的（拿不到课表提案也照样清空），
-        #    排在它后面读暂存永远是空的 —— 学生回"确认"就执行不了，
-        #    转头掉进"确认落空"兜底、把确认条又挂一遍，看着像点了没用。
-        #    （这不是推演，是这一步真踩过的坑。）
-        rm = _pending_todo_remove(session_id)
-        if rm:
-            take_pending(session_id)
-            target = get_todo(rm.get("todo_id") or "")
-            if target is None:
-                # 那条已经不在了（比如学生自己在上一条里点过删除条）——
-                # 如实说，不能假装删了一次。
+            # 学生回"确认"，可暂存里那张是**二选一卡**（时间由谁定都还没选）——
+            # 这时候更不能写：他确认的可能是"我知道要做这件事"，
+            # 而不是"就按某个时间排上"。写哪个时间都是替他做主，写错了还要再来一轮删。
+            # 正解：把二选一卡**再挂一遍**，说清楚"得先选一种"。
+            only_mode = _pending_todo_mode(session_id)
+            if only_mode:
+                return _offer_response(
+                    session_id, only_mode, message,
+                    _mode_answer(only_mode,
+                                 lead="先别急——**还没选时间怎么定**，我这边一条都没写进去。\n\n"),
+                    "🗓️ 只回了「确认」还没选方式 → 二选一卡再挂一遍，不替学生定")
+            # 学生回"确认"，可暂存里那张是**候选时段卡**（几个点摊着、他还没勾）——
+            # 这时候不能当成"他点头了"就随便挑一个写进去：他根本不知道你会写哪一个，
+            # 而写进去的是一条真安排，写错了还得再来一轮删。
+            # 正解：把候选条**再挂一遍**，并且说清楚"得你自己勾一个"。
+            # 这一支必须排在下面任何"执行"之前，也排在 apply_*（会把暂存 take 走）之前。
+            only_slots = _pending_todo_slots(session_id)
+            if only_slots:
+                return _offer_response(
+                    session_id, only_slots, message,
+                    _slots_answer(only_slots,
+                                  lead="先别急——这几个时间段得**你挑一个**，我这边还没收到你的勾选，"
+                                       "**一条都没写进去。**\n\n"),
+                    "🗓️ 只回了「确认」还没勾时间 → 候选条再挂一遍，不替学生挑")
+            # **清空课表的确认**：按新规格，弹窗点【确认】是优先方式，
+            # 在聊天框回"确认删除"这类确认文字是**备选方式，同样要执行**（需求③）。
+            # 早先这里为了保护"删空不可恢复"硬加了一道"必须点按钮"的闸门，
+            # 结果学生回「确认」毫无反应，被当成"删除失败"投诉了一轮。闸门让位给规格。
+            # 执行逻辑收在 _execute_clear() 里，跟弹窗按钮走同一段代码——
+            # 模型依然碰不到删除接口，只是"谁来按这个按钮"多了一个入口。
+            entry_now = peek_pending(session_id) or {}
+            clear_held = [o for o in entry_now.get("options") or []
+                          if isinstance(o, dict) and o.get("kind") == "timetable_clear"]
+            if clear_held:
+                done = _execute_clear(session_id)
+                if done is not None:
+                    append_conversation(session_id, "user", message)
+                    append_conversation(session_id, "assistant",
+                                        f"已按你的确认清空课表：{done['removed']} 门")
+                    return {
+                        "module": "planner",
+                        "session_id": session_id,
+                        "answer": (
+                            f"✅ 已按你的确认执行（{done['summary']}），"
+                            f"清空了 **{done['removed']} 门课**，周表现在一门课都不剩。"
+                        ),
+                        "trace": [{"step": 1, "phase": "✅ 学生确认（系统执行清空）",
+                                   "answer": f"清掉 {done['removed']} 门"}],
+                        "options": [],
+                        "awaiting_choice": False,
+                    }
+                # 周表已经是空的：没什么可清，提案作废，直说。
+                clear_pending(session_id)
                 append_conversation(session_id, "user", message)
-                append_conversation(session_id, "assistant", "那条待办已经不在了")
+                append_conversation(session_id, "assistant", "周表本来就是空的")
                 return {
                     "module": "planner",
                     "session_id": session_id,
-                    "answer": (
-                        f"🗑️ 这条待办已经不在日程里了（可能刚才已经删掉了），"
-                        f"没有重复删。\n刚才那条是：**{rm.get('title', '待办')}**｜"
-                        f"{rm.get('date', '')}（{rm.get('weekday', '')}）"
-                        f"{rm.get('start', '')}-{rm.get('end', '')}。"
-                    ),
-                    "trace": [{"step": 1, "phase": "🗑️ 待办已不存在", "answer": "不重复删"}],
+                    "answer": "周表本来就是空的，一门课都没有，没有课可清空 🗑️",
+                    "trace": [{"step": 1, "phase": "🗑️ 周表已为空",
+                               "answer": "没有课可清，直接告知学生"}],
                     "options": [],
                     "awaiting_choice": False,
                 }
-            delete_todo(rm.get("todo_id"))
-            summary = (rm.get("summary")
-                       or f"{rm.get('title', '待办')}｜{rm.get('date', '')}"
-                          f"{rm.get('start', '')}-{rm.get('end', '')}")
-            append_conversation(session_id, "user", message)
-            # 这句回执是"真的删过了"的凭据：下一轮再有确认词进来，
-            # 兜底分支靠它判断"最近写过/删过，别再挂一次条"（跟加待办那边对称）。
-            append_conversation(session_id, "assistant", f"已删除待办：{summary}")
-            return {
-                "module": "planner",
-                "session_id": session_id,
-                "answer": (
-                    f"✅ 已删除：**{rm.get('title', '待办')}**｜{rm.get('date', '')}"
-                    f"（{rm.get('weekday', '')}）{rm.get('start', '')}-{rm.get('end', '')}，"
-                    f"日程里已经没有它了。"
-                ),
-                "trace": [{"step": 1, "phase": "✅ 学生确认（系统删除）",
-                           "answer": summary}],
-                "options": [],
-                "awaiting_choice": False,
-            }
-
-        # **批量删除的确认**：学生说"都删了"时挂的那张条，他回一句"确认"就在这里执行。
-        # 跟单条同一个道理：delete_todo 只有走到这里才会被调用，模型碰不到。
-        # 逐条删、并**如实报数**（有几条已经不在了就说几条，不假装全删了）。
-        rb = _pending_todo_remove_batch(session_id)
-        if rb:
-            take_pending(session_id)
-            items = [x for x in (rb.get("items") or []) if isinstance(x, dict)]
-            gone, ok_titles = [], []
-            for it in items:
-                tid = it.get("todo_id") or ""
-                if tid and get_todo(tid) is not None:
-                    delete_todo(tid)
-                    ok_titles.append(it.get("title") or "待办")
-                else:
-                    gone.append(it.get("title") or "待办")
-            append_conversation(session_id, "user", message)
-            summary = rb.get("summary") or f"共 {len(items)} 条"
-            # 这条回执跟单条删除用的是同一个前缀（_WRITTEN_RECEIPTS 靠它认出"真删过了"）
-            append_conversation(session_id, "assistant",
-                                f"已删除待办：{summary}"
-                                + (f"；另有 {len(gone)} 条已经不在了" if gone else ""))
-            lines = "\n".join(f"· **{t}**" for t in ok_titles)
-            extra = (f"\n\n（另有 {len(gone)} 条本来就已经不在日程里了："
-                     f"{'、'.join(gone)}）") if gone else ""
-            return {
-                "module": "planner",
-                "session_id": session_id,
-                "answer": (
-                    (f"✅ 已按你的确认删掉 {len(ok_titles)} 条：\n{lines}"
-                     if ok_titles else "🗑️ 这几条已经都不在日程里了，没有重复删。")
-                    + extra
-                ),
-                "trace": [{"step": 1, "phase": "✅ 学生确认（系统批量删除）",
-                           "answer": f"删 {len(ok_titles)} 条、已在库里 {len(gone)} 条"}],
-                "options": [],
-                "awaiting_choice": False,
-            }
-
-        # **标记完成的确认**：学生回一句"确认"，把上一轮那张【确认完成】真正执行掉。
-        # 跟删待办同一个道理——执行权在系统手里，模型连改状态的接口都碰不到。
-        # 只有走到这一段，update_todo_status(done) 才会被调用到。
-        done_prop = _pending_todo_done(session_id)
-        if done_prop:
-            take_pending(session_id)
-            target = get_todo(done_prop.get("todo_id") or "")
-            if target is None:
-                # 那条已经不在了（比如刚被删、或库里压根没有）→ 如实说，不假装标记。
+            # **删待办的确认**：学生回一句"确认"，把上一轮那张【确认删除】真正执行掉。
+            # 跟清空课表同一个道理——执行权在系统手里，模型连删除接口都碰不到。
+            # 规格三条红线里的第一条（"学生没点头就宣布已经删了"）就是靠这里兜住的：
+            # 只有走到这一段，delete_todo 才会被调用到。
+            #
+            # ⚠️ 位置不能挪到下面 apply_pending_timetable_change() 之后：
+            #    那个函数是**先把暂存 take 走**、再按 kind 过滤的（拿不到课表提案也照样清空），
+            #    排在它后面读暂存永远是空的 —— 学生回"确认"就执行不了，
+            #    转头掉进"确认落空"兜底、把确认条又挂一遍，看着像点了没用。
+            #    （这不是推演，是这一步真踩过的坑。）
+            rm = _pending_todo_remove(session_id)
+            if rm:
+                take_pending(session_id)
+                target = get_todo(rm.get("todo_id") or "")
+                if target is None:
+                    # 那条已经不在了（比如学生自己在上一条里点过删除条）——
+                    # 如实说，不能假装删了一次。
+                    append_conversation(session_id, "user", message)
+                    append_conversation(session_id, "assistant", "那条待办已经不在了")
+                    return {
+                        "module": "planner",
+                        "session_id": session_id,
+                        "answer": (
+                            f"🗑️ 这条待办已经不在日程里了（可能刚才已经删掉了），"
+                            f"没有重复删。\n刚才那条是：**{rm.get('title', '待办')}**｜"
+                            f"{rm.get('date', '')}（{rm.get('weekday', '')}）"
+                            f"{rm.get('start', '')}-{rm.get('end', '')}。"
+                        ),
+                        "trace": [{"step": 1, "phase": "🗑️ 待办已不存在", "answer": "不重复删"}],
+                        "options": [],
+                        "awaiting_choice": False,
+                    }
+                delete_todo(rm.get("todo_id"))
+                summary = (rm.get("summary")
+                           or f"{rm.get('title', '待办')}｜{rm.get('date', '')}"
+                              f"{rm.get('start', '')}-{rm.get('end', '')}")
                 append_conversation(session_id, "user", message)
-                append_conversation(session_id, "assistant", "那条待办已经不在了")
+                # 这句回执是"真的删过了"的凭据：下一轮再有确认词进来，
+                # 兜底分支靠它判断"最近写过/删过，别再挂一次条"（跟加待办那边对称）。
+                append_conversation(session_id, "assistant", f"已删除待办：{summary}")
                 return {
                     "module": "planner",
                     "session_id": session_id,
                     "answer": (
-                        f"✅ 这条待办已经不在日程里了（可能刚才已经删掉了），"
-                        f"不用再标记完成。\n刚才那条是：**{done_prop.get('title', '待办')}**｜"
+                        f"✅ 已删除：**{rm.get('title', '待办')}**｜{rm.get('date', '')}"
+                        f"（{rm.get('weekday', '')}）{rm.get('start', '')}-{rm.get('end', '')}，"
+                        f"日程里已经没有它了。"
+                    ),
+                    "trace": [{"step": 1, "phase": "✅ 学生确认（系统删除）",
+                               "answer": summary}],
+                    "options": [],
+                    "awaiting_choice": False,
+                }
+
+            # **批量删除的确认**：学生说"都删了"时挂的那张条，他回一句"确认"就在这里执行。
+            # 跟单条同一个道理：delete_todo 只有走到这里才会被调用，模型碰不到。
+            # 逐条删、并**如实报数**（有几条已经不在了就说几条，不假装全删了）。
+            rb = _pending_todo_remove_batch(session_id)
+            if rb:
+                take_pending(session_id)
+                items = [x for x in (rb.get("items") or []) if isinstance(x, dict)]
+                gone, ok_titles = [], []
+                for it in items:
+                    tid = it.get("todo_id") or ""
+                    if tid and get_todo(tid) is not None:
+                        delete_todo(tid)
+                        ok_titles.append(it.get("title") or "待办")
+                    else:
+                        gone.append(it.get("title") or "待办")
+                append_conversation(session_id, "user", message)
+                summary = rb.get("summary") or f"共 {len(items)} 条"
+                # 这条回执跟单条删除用的是同一个前缀（_WRITTEN_RECEIPTS 靠它认出"真删过了"）
+                append_conversation(session_id, "assistant",
+                                    f"已删除待办：{summary}"
+                                    + (f"；另有 {len(gone)} 条已经不在了" if gone else ""))
+                lines = "\n".join(f"· **{t}**" for t in ok_titles)
+                extra = (f"\n\n（另有 {len(gone)} 条本来就已经不在日程里了："
+                         f"{'、'.join(gone)}）") if gone else ""
+                return {
+                    "module": "planner",
+                    "session_id": session_id,
+                    "answer": (
+                        (f"✅ 已按你的确认删掉 {len(ok_titles)} 条：\n{lines}"
+                         if ok_titles else "🗑️ 这几条已经都不在日程里了，没有重复删。")
+                        + extra
+                    ),
+                    "trace": [{"step": 1, "phase": "✅ 学生确认（系统批量删除）",
+                               "answer": f"删 {len(ok_titles)} 条、已在库里 {len(gone)} 条"}],
+                    "options": [],
+                    "awaiting_choice": False,
+                }
+
+            # **标记完成的确认**：学生回一句"确认"，把上一轮那张【确认完成】真正执行掉。
+            # 跟删待办同一个道理——执行权在系统手里，模型连改状态的接口都碰不到。
+            # 只有走到这一段，update_todo_status(done) 才会被调用到。
+            done_prop = _pending_todo_done(session_id)
+            if done_prop:
+                take_pending(session_id)
+                target = get_todo(done_prop.get("todo_id") or "")
+                if target is None:
+                    # 那条已经不在了（比如刚被删、或库里压根没有）→ 如实说，不假装标记。
+                    append_conversation(session_id, "user", message)
+                    append_conversation(session_id, "assistant", "那条待办已经不在了")
+                    return {
+                        "module": "planner",
+                        "session_id": session_id,
+                        "answer": (
+                            f"✅ 这条待办已经不在日程里了（可能刚才已经删掉了），"
+                            f"不用再标记完成。\n刚才那条是：**{done_prop.get('title', '待办')}**｜"
+                            f"{done_prop.get('date', '')}（{done_prop.get('weekday', '')}）"
+                            f"{done_prop.get('start', '')}-{done_prop.get('end', '')}。"
+                        ),
+                        "trace": [{"step": 1, "phase": "✅ 待办已不存在", "answer": "不重复标记"}],
+                        "options": [],
+                        "awaiting_choice": False,
+                    }
+                # 按天记的那一档（weekly/daily）不能整条翻 status —— 读侧一律问 done_dates，
+                # 翻 status 是空操作：真机"背单词完成了"点完确认，明天那条照旧挂着（2026-10-13 查到）。
+                # 记在哪一天由 `store.done_date_for` 一处定（今天算出现就记今天，否则记锚点），
+                # 这里不再自己猜；一次性待办走同一句也对：set_todo_done_on 内部按档位分流。
+                rep = str(target.get("repeat") or "")
+                logged = rep in DAY_LOGGED_REPEATS
+                # 日子不传 —— 判据只写在 `store.done_date_for` 一处，这里只复述它算出来的那天
+                day = done_date_for(target, "") if logged else (done_prop.get("date") or "")
+                set_todo_done_on(done_prop.get("todo_id"), "")
+                summary = (done_prop.get("summary")
+                           or f"{done_prop.get('title', '待办')}｜{done_prop.get('date', '')}"
+                              f"{done_prop.get('start', '')}-{done_prop.get('end', '')}")
+                append_conversation(session_id, "user", message)
+                # 回执是"真的标记过了"的凭据（跟删待办对称），刷新后还看得见。
+                append_conversation(session_id, "assistant", f"已标记完成：{summary}")
+                return {
+                    "module": "planner",
+                    "session_id": session_id,
+                    "answer": (
+                        # 习惯/每周的完成是**记在某一天的**，回执必须说清记的是哪天、
+                        # 并且讲明"它还会出现" —— 不然他以为勾这一次就到底了。
+                        (f"✅ 已标记为完成：**{done_prop.get('title', '待办')}**｜"
+                         f"{day} 这一勾已记下，"
+                         + ("明天它还会出现在「代办事项」里（习惯按天记）。"
+                            if rep == REPEAT_DAILY else
+                            "下周同一个日子它还会出现（每周记一次）。"))
+                        if logged else
+                        f"✅ 已标记为完成：**{done_prop.get('title', '待办')}**｜"
                         f"{done_prop.get('date', '')}（{done_prop.get('weekday', '')}）"
                         f"{done_prop.get('start', '')}-{done_prop.get('end', '')}。"
                     ),
-                    "trace": [{"step": 1, "phase": "✅ 待办已不存在", "answer": "不重复标记"}],
+                    "trace": [{"step": 1, "phase": "✅ 学生确认（系统标记完成）",
+                               "answer": summary}],
                     "options": [],
                     "awaiting_choice": False,
                 }
-            # 按天记的那一档（weekly/daily）不能整条翻 status —— 读侧一律问 done_dates，
-            # 翻 status 是空操作：真机"背单词完成了"点完确认，明天那条照旧挂着（2026-10-13 查到）。
-            # 记在哪一天由 `store.done_date_for` 一处定（今天算出现就记今天，否则记锚点），
-            # 这里不再自己猜；一次性待办走同一句也对：set_todo_done_on 内部按档位分流。
-            rep = str(target.get("repeat") or "")
-            logged = rep in DAY_LOGGED_REPEATS
-            # 日子不传 —— 判据只写在 `store.done_date_for` 一处，这里只复述它算出来的那天
-            day = done_date_for(target, "") if logged else (done_prop.get("date") or "")
-            set_todo_done_on(done_prop.get("todo_id"), "")
-            summary = (done_prop.get("summary")
-                       or f"{done_prop.get('title', '待办')}｜{done_prop.get('date', '')}"
-                          f"{done_prop.get('start', '')}-{done_prop.get('end', '')}")
-            append_conversation(session_id, "user", message)
-            # 回执是"真的标记过了"的凭据（跟删待办对称），刷新后还看得见。
-            append_conversation(session_id, "assistant", f"已标记完成：{summary}")
-            return {
-                "module": "planner",
-                "session_id": session_id,
-                "answer": (
-                    # 习惯/每周的完成是**记在某一天的**，回执必须说清记的是哪天、
-                    # 并且讲明"它还会出现" —— 不然他以为勾这一次就到底了。
-                    (f"✅ 已标记为完成：**{done_prop.get('title', '待办')}**｜"
-                     f"{day} 这一勾已记下，"
-                     + ("明天它还会出现在「代办事项」里（习惯按天记）。"
-                        if rep == REPEAT_DAILY else
-                        "下周同一个日子它还会出现（每周记一次）。"))
-                    if logged else
-                    f"✅ 已标记为完成：**{done_prop.get('title', '待办')}**｜"
-                    f"{done_prop.get('date', '')}（{done_prop.get('weekday', '')}）"
-                    f"{done_prop.get('start', '')}-{done_prop.get('end', '')}。"
-                ),
-                "trace": [{"step": 1, "phase": "✅ 学生确认（系统标记完成）",
-                           "answer": summary}],
-                "options": [],
-                "awaiting_choice": False,
-            }
 
-        # **批量标记完成的确认**：学生说"都完成了"时挂的那张条，在这里执行。
-        db = _pending_todo_done_batch(session_id)
-        if db:
+            # **批量标记完成的确认**：学生说"都完成了"时挂的那张条，在这里执行。
+            db = _pending_todo_done_batch(session_id)
+            if db:
+                take_pending(session_id)
+                items = [x for x in (db.get("items") or []) if isinstance(x, dict)]
+                gone, ok_titles = [], []
+                for it in items:
+                    tid = it.get("todo_id") or ""
+                    if tid and get_todo(tid) is not None:
+                        set_todo_done_on(tid, "")   # 同上：按天记的那档别翻整条（哪天由 done_date_for 定）
+                        ok_titles.append(it.get("title") or "待办")
+                    else:
+                        gone.append(it.get("title") or "待办")
+                append_conversation(session_id, "user", message)
+                append_conversation(session_id, "assistant",
+                                    f"已标记完成：{db.get('summary') or '共 %d 条' % len(items)}")
+                lines = "\n".join(f"· **{t}**" for t in ok_titles)
+                extra = (f"\n\n（另有 {len(gone)} 条已经不在日程里了："
+                         f"{'、'.join(gone)}）") if gone else ""
+                return {
+                    "module": "planner",
+                    "session_id": session_id,
+                    "answer": (
+                        (f"✅ 已按你的确认把 {len(ok_titles)} 条标记为完成：\n{lines}"
+                         if ok_titles else "✅ 这几条已经都不在日程里了，没有重复标记。")
+                        + extra
+                    ),
+                    "trace": [{"step": 1, "phase": "✅ 学生确认（系统批量标记完成）",
+                               "answer": f"标记 {len(ok_titles)} 条"}],
+                    "options": [],
+                    "awaiting_choice": False,
+                }
+
+            # 暂存里只摆着"删待办候选清单"、学生却直接回了一句"确认"——
+            # 他还没点名是哪一条（或者我们列的清单他还没看清）。这时**不能**清掉清单，
+            # 也不能拿任意一条去删：把清单再念一遍，请他点名。
+            held_cand = _pending_remove_candidates(session_id)
+            if held_cand:
+                append_conversation(session_id, "user", message)
+                append_conversation(session_id, "assistant", "删待办缺细节")
+                return {
+                    "module": "planner",
+                    "session_id": session_id,
+                    "answer": (
+                        "🗑️ 先别急——你要删的是哪一条？我还没收到你的选择，"
+                        "**一条都没删。**\n\n"
+                        f"{render_todo_remove_list(held_cand)}\n\n"
+                        "回我一个名字（或序号，比如「第二条」），我就把确认条挂出来。"
+                    ),
+                    "trace": [{"step": 1, "phase": "🗑️ 还没点名是哪一条（不猜、不删）",
+                               "answer": "等学生点名"}],
+                    "options": [],
+                    "awaiting_choice": False,
+                }
+
+            # 走到这儿说明暂存里是**改课类提案**（增删单节课），
+            # 清空类、删待办类已在上面处理掉（那两类都得赶在这个函数前头，它会清空暂存）。
+            # 需求③的备选方式：聊天里回"确认添加/确认删除"这类文字，同样触发后端执行。
+            applied = apply_pending_timetable_change(session_id)
+            if applied:
+                append_conversation(session_id, "user", message)
+                append_conversation(session_id, "assistant", f"已执行：{applied['summary']}")
+                return {
+                    "module": module_key,
+                    "session_id": session_id,
+                    "answer": (
+                        f"✅ 已按你的确认执行（{applied['summary']}）。"
+                        f"周表现在共 {applied['after']} 门课"
+                        f"（原来是 {applied['before']} 门）。"
+                    ),
+                    "trace": [{"step": 1, "phase": "✅ 学生确认", "answer": applied["summary"]}],
+                    "options": [],
+                    "awaiting_choice": False,
+                }
+            # 暂存里只有别的类型提案（比如时间候选）→ 清掉，交回模型按老规矩处理
+            clear_pending(session_id)
+
+        # 3a-bis) **候选卡确认分支**（人话：学生点【确认所选】，系统当场写入他选的那个时段）
+        #     排在加待办提案分支之前——他既然已经点过卡片了，就不该再被问一遍"要不要加"。
+        picked_now = _match_todo_pick(session_id, message)
+        if picked_now:
             take_pending(session_id)
-            items = [x for x in (db.get("items") or []) if isinstance(x, dict)]
-            gone, ok_titles = [], []
-            for it in items:
-                tid = it.get("todo_id") or ""
-                if tid and get_todo(tid) is not None:
-                    set_todo_done_on(tid, "")   # 同上：按天记的那档别翻整条（哪天由 done_date_for 定）
-                    ok_titles.append(it.get("title") or "待办")
-                else:
-                    gone.append(it.get("title") or "待办")
+            _write_todo(picked_now)
             append_conversation(session_id, "user", message)
-            append_conversation(session_id, "assistant",
-                                f"已标记完成：{db.get('summary') or '共 %d 条' % len(items)}")
-            lines = "\n".join(f"· **{t}**" for t in ok_titles)
-            extra = (f"\n\n（另有 {len(gone)} 条已经不在日程里了："
-                     f"{'、'.join(gone)}）") if gone else ""
+            append_conversation(session_id, "assistant", f"已加入日程：{picked_now['summary']}")
             return {
                 "module": "planner",
                 "session_id": session_id,
                 "answer": (
-                    (f"✅ 已按你的确认把 {len(ok_titles)} 条标记为完成：\n{lines}"
-                     if ok_titles else "✅ 这几条已经都不在日程里了，没有重复标记。")
-                    + extra
+                    f"✅ 已加入日程：**{picked_now['title']}**｜{picked_now['date']}"
+                    f"（{picked_now['weekday']}）{picked_now['start']}-{picked_now['end']}。"
                 ),
-                "trace": [{"step": 1, "phase": "✅ 学生确认（系统批量标记完成）",
-                           "answer": f"标记 {len(ok_titles)} 条"}],
+                "trace": [{"step": 1, "phase": "✅ 学生选定时段（系统写入）",
+                           "answer": picked_now["summary"]}],
                 "options": [],
                 "awaiting_choice": False,
             }
 
-        # 暂存里只摆着"删待办候选清单"、学生却直接回了一句"确认"——
-        # 他还没点名是哪一条（或者我们列的清单他还没看清）。这时**不能**清掉清单，
-        # 也不能拿任意一条去删：把清单再念一遍，请他点名。
-        held_cand = _pending_remove_candidates(session_id)
-        if held_cand:
-            append_conversation(session_id, "user", message)
-            append_conversation(session_id, "assistant", "删待办缺细节")
-            return {
-                "module": "planner",
-                "session_id": session_id,
-                "answer": (
-                    "🗑️ 先别急——你要删的是哪一条？我还没收到你的选择，"
-                    "**一条都没删。**\n\n"
-                    f"{render_todo_remove_list(held_cand)}\n\n"
-                    "回我一个名字（或序号，比如「第二条」），我就把确认条挂出来。"
-                ),
-                "trace": [{"step": 1, "phase": "🗑️ 还没点名是哪一条（不猜、不删）",
-                           "answer": "等学生点名"}],
-                "options": [],
-                "awaiting_choice": False,
-            }
-
-        # 走到这儿说明暂存里是**改课类提案**（增删单节课），
-        # 清空类、删待办类已在上面处理掉（那两类都得赶在这个函数前头，它会清空暂存）。
-        # 需求③的备选方式：聊天里回"确认添加/确认删除"这类文字，同样触发后端执行。
-        applied = apply_pending_timetable_change(session_id)
-        if applied:
-            append_conversation(session_id, "user", message)
-            append_conversation(session_id, "assistant", f"已执行：{applied['summary']}")
-            return {
-                "module": module_key,
-                "session_id": session_id,
-                "answer": (
-                    f"✅ 已按你的确认执行（{applied['summary']}）。"
-                    f"周表现在共 {applied['after']} 门课"
-                    f"（原来是 {applied['before']} 门）。"
-                ),
-                "trace": [{"step": 1, "phase": "✅ 学生确认", "answer": applied["summary"]}],
-                "options": [],
-                "awaiting_choice": False,
-            }
-        # 暂存里只有别的类型提案（比如时间候选）→ 清掉，交回模型按老规矩处理
-        clear_pending(session_id)
-
-    # 3a-bis) **候选卡确认分支**（人话：学生点【确认所选】，系统当场写入他选的那个时段）
-    #     排在加待办提案分支之前——他既然已经点过卡片了，就不该再被问一遍"要不要加"。
-    picked_now = _match_todo_pick(session_id, message)
-    if picked_now:
-        take_pending(session_id)
-        _write_todo(picked_now)
-        append_conversation(session_id, "user", message)
-        append_conversation(session_id, "assistant", f"已加入日程：{picked_now['summary']}")
-        return {
-            "module": "planner",
-            "session_id": session_id,
-            "answer": (
-                f"✅ 已加入日程：**{picked_now['title']}**｜{picked_now['date']}"
-                f"（{picked_now['weekday']}）{picked_now['start']}-{picked_now['end']}。"
-            ),
-            "trace": [{"step": 1, "phase": "✅ 学生选定时段（系统写入）",
-                       "answer": picked_now["summary"]}],
-            "options": [],
-            "awaiting_choice": False,
-        }
-
-    # 3a-c) **确认落空的兜底**：学生回"确认"，可暂存里已经没有待确认的提案。
-    #     什么时候会走到这：① 清空课表的弹窗被学生点了【取消】（取消=作废，本来就该这样）；
-    #     ② 提案过了有效期；③ 服务重启过（暂存是内存态）；④ 学生刷新了页面。
-    #     实测这种情况交给模型，模型会顺嘴撒谎——"我重新帮你出一次提案"（根本没出）、
-    #     "请你在弹出的确认卡上点确认"（根本没有卡）、"回我一句「确认清空」就会执行"
-    #     （回什么都不会执行）。学生照做三连失败，正是"卡片没显示、确认不删、删除失败"的来历。
-    #     如果会话最近聊的就是清空课表，最贴心的做法是把弹窗**重新请出来**（只出提案不写库，
-    #     硬约束不变：真删仍要学生点弹窗按钮）；其余情况不动，继续交给模型正常聊天，
-    #     免得把"好的/嗯"这种日常应答也误伤成"没有待确认事项"。
-    if is_confirmation(message) and not peek_pending(session_id):
-        recent = [m for m in get_conversation(session_id)[-6:]
-                  if m.get("role") == "assistant"]
-        # 匹配要收着点：只认系统自己写进会话的标记（"已生成清空提案"），
-        # 或明确说到"清空课表/清空全部课程"的句子。"清空缓存"这类闲聊词不认，
-        # 免得学生随口应一声"好的"，弹出一个莫名其妙的清空弹窗。
-        talked_clear = any(
-            "已生成清空提案" in (m.get("content") or "")
-            or ("清空" in (m.get("content") or "")
-                and ("课表" in (m.get("content") or "") or "课程" in (m.get("content") or "")))
-            for m in recent)
-        if talked_clear:
-            proposal = _parse_clear_proposal()
+        # 3a-c) **确认落空的兜底**：学生回"确认"，可暂存里已经没有待确认的提案。
+        #     什么时候会走到这：① 清空课表的弹窗被学生点了【取消】（取消=作废，本来就该这样）；
+        #     ② 提案过了有效期；③ 服务重启过（暂存是内存态）；④ 学生刷新了页面。
+        #     实测这种情况交给模型，模型会顺嘴撒谎——"我重新帮你出一次提案"（根本没出）、
+        #     "请你在弹出的确认卡上点确认"（根本没有卡）、"回我一句「确认清空」就会执行"
+        #     （回什么都不会执行）。学生照做三连失败，正是"卡片没显示、确认不删、删除失败"的来历。
+        #     如果会话最近聊的就是清空课表，最贴心的做法是把弹窗**重新请出来**（只出提案不写库，
+        #     硬约束不变：真删仍要学生点弹窗按钮）；其余情况不动，继续交给模型正常聊天，
+        #     免得把"好的/嗯"这种日常应答也误伤成"没有待确认事项"。
+        if is_confirmation(message) and not peek_pending(session_id):
+            recent = [m for m in get_conversation(session_id)[-6:]
+                      if m.get("role") == "assistant"]
+            # 匹配要收着点：只认系统自己写进会话的标记（"已生成清空提案"），
+            # 或明确说到"清空课表/清空全部课程"的句子。"清空缓存"这类闲聊词不认，
+            # 免得学生随口应一声"好的"，弹出一个莫名其妙的清空弹窗。
+            talked_clear = any(
+                "已生成清空提案" in (m.get("content") or "")
+                or ("清空" in (m.get("content") or "")
+                    and ("课表" in (m.get("content") or "") or "课程" in (m.get("content") or "")))
+                for m in recent)
+            if talked_clear:
+                proposal = _parse_clear_proposal()
+                if proposal is not None:
+                    save_pending(session_id, [proposal])
+                    append_conversation(session_id, "user", message)
+                    append_conversation(session_id, "assistant",
+                                        f"已生成清空提案：{proposal.get('summary', '')}")
+                    return {
+                        "module": "planner",
+                        "session_id": session_id,
+                        "answer": (
+                            "🗑️ 上一次的确认条可能已经关掉了，我又把它请了出来——"
+                            "在下面这条确认条上点【确认清空】执行，点【取消】就什么都不变。\n"
+                            "（也可以直接在聊天框回一句「确认删除」，一样会执行。）"
+                        ),
+                        "trace": [{"step": 1, "phase": "🗑️ 确认落空 → 重新挂出清空确认条",
+                                   "answer": "提案已过期/被取消，重新出提案"}],
+                        "options": [proposal],
+                        "awaiting_choice": True,
+                    }
+                # 周表已经是空的：没什么可清。
+                append_conversation(session_id, "user", message)
+                append_conversation(session_id, "assistant", "周表本来就是空的")
+                return {
+                    "module": "planner",
+                    "session_id": session_id,
+                    "answer": "周表本来就是空的，一门课都没有，没有课可清空 🗑️",
+                    "trace": [{"step": 1, "phase": "🗑️ 周表已为空",
+                               "answer": "没有课可清，直接告知学生"}],
+                    "options": [],
+                    "awaiting_choice": False,
+                }
+            # 加待办的确认落空：学生上一句加待办的原话没被确定性分支接住
+            # （比如「周二下午两点到三点游泳」这种中文报时，老解析器认不出时间），
+            # 掉给模型嘴上说"搞定！已经正式写进待办啦"——schedule 模块连一个写入
+            # 工具都没有，日程里其实什么都没有。照清空课表的样子把话捞回来：
+            # 找到学生最近那句加待办的原话，重新走一遍确定性解析，
+            # 出得了提案就重新挂确认条；出不了就继续交给模型正常聊。
+            #
+            # 但有个前提：最近几轮**没真的写进去过**。学生加完待办、回一句"好的"，
+            # 话里也带确认词，这时再挂一次确认条、他再点一下就是重复写两条。
+            # 判据就是系统自己写进会话的那句回执（"已加入日程"）。
+            #
+            # 这一段跟"模型那一路"的兜底**共用 `_recent_add_request`**：
+            # 两边要问的是同一个问题（学生最近想加的是哪件事），
+            # 各写一份迟早会走样，症状还特别像"回确认能补条、说别的补不出来"。
+            recent_msgs = get_conversation(session_id)[-6:]
+            already_written = _already_written_recently(session_id)
+            add_req = _recent_add_request(session_id)
+            proposal = parse_add_todo(add_req) if add_req else None
+            from_butler = False
+            auto_filled = False      # 时间是不是系统替学生挑的（话术要区分，见下）
+            # 学生原话也解析不出来？那就捞**管家自己写的那句"提案"**。
+            # 这正是被截屏投诉的那一幕：管家在文字里写
+            # 「好，那我按这个出个提案：- 任务：健身 - 时间：周一 16:30~18:00 …
+            #   提案这就发给你，点一下【确认】就入库了！」
+            # 界面上却连一个按钮都没有——因为它压根没调工具，暂存是空的。
+            # 学生回"可以"，系统就替它把这张确认条挂出来（写库仍要学生点按钮）。
+            # 只认固定格式（"任务/事项/标题：" 配 "时间/时段："），闲聊里捞不出东西就返回 None，
+            # 宁可这条不挂，也不从闲聊里瞎猜一个待办出来。
+            # 判据要问的是"**这场商量是不是还没落地**"。
+            # 这句话看着绕，可问错了两版都出事，两版的病历都留在这儿：
+            #   · 第一版问"最近这几轮有没有写过库"（`already_written`，整段挡掉）——太粗。
+            #     只要附近出现过一次「已加入日程」，往后哪怕管家又给了一份干净方案、
+            #     学生老老实实回一句「确认添加」，也照样一个字都捞不回来 → 掉到 3c
+            #     反问他「好——**要安排的是什么事**？」。对着一份已经写好的提案问
+            #     "要做什么"，正是报障那一幕（截图里管家的提案白纸黑字挂在那儿）。
+            #   · 第二版问"这句话是不是系统自己写的账"（跳过回执句）——粒度对了，
+            #     可漏了后半截：**提案本身也会过期**。一条提案就算已经被学生点完、
+            #     库都写好了，它的文字照样留在历史里；只跳回执、不往前看的 starting
+            #     线，就会把这份**（早已落实过的）旧提案**重新捞出来挂一遍，
+            #     他再点一下就是重复写两条（第六批那条断言守的就是它）。
+            #
+            # 正解是划一条**起跑线**：找到最近一次写库回执的位置，只在它**之后**
+            # 的那些话里找方案。回执之前的提案，在这一幕之前已经执行过了，不许翻回去。
+            receipt_at = [i for i, m in enumerate(recent_msgs)
+                          if m.get("role") == "assistant"
+                          and any(k in (m.get("content") or "")
+                                  for k in _WRITTEN_RECEIPTS)]
+            started = (receipt_at[-1] + 1) if receipt_at else 0
+            if proposal is None:
+                for m in reversed(recent_msgs[started:]):
+                    if m.get("role") != "assistant":
+                        continue
+                    text = m.get("content") or ""
+                    # 挂卡标记（"已生成待办确认："）也不是方案，别从它里头抠。
+                    if _is_system_note(text):
+                        continue
+                    guessed = parse_todo_from_reply(text)
+                    if guessed is not None:
+                        proposal, from_butler = guessed, True
+                        break
+            # 还有第三种：学生原话只说了"哪天"、没说"几点"（「那你帮我加一个健身在周四」），
+            # 管家上一轮又只是在文字里客气了一句（既没调工具、格式也对不上）——
+            # 前两路都解析不出完整提案。这时**别再让他空等**：
+            # 照 3c 分支的正解，查空档、把候选时段摊出来，让他打勾。
+            # 这正是截图那一幕：学生回「确认」→ 界面上什么都没有、日程里也没写进去。
+            #
+            # 注意顺序：先出**二选一卡**（本轮规格：先问"你自己定 / 我帮你挑"），
+            # 再退回"摊候选"，最后才退回"替他挑一个"的旧路子——
+            # 旧路子只在卡都出不来时才用（比如标题没了），聊胜于无。
+            if proposal is None and not already_written and add_req:
+                mode_card = todo_mode_proposal(add_req)
+                if mode_card is not None:
+                    return _offer_response(
+                        session_id, mode_card, message,
+                        _mode_answer(mode_card,
+                                     lead="刚才那次可能没接上——这件事咱们再对一次，"
+                                          "先说清时间怎么定：\n\n"),
+                        "🗓️ 确认落空 → 重新挂出二选一卡（先问时间怎么定）")
+                slots_card = todo_slots_proposal(add_req)
+                if slots_card is not None:
+                    return _offer_response(
+                        session_id, slots_card, message,
+                        _slots_answer(slots_card,
+                                      lead="刚才那次可能没接上，我把空着的时间段重新列一遍——\n\n"),
+                        "🗓️ 确认落空 → 重新摊出候选时段（让打勾）")
+                guessed = auto_todo_proposal(add_req)
+                if guessed is not None:
+                    proposal, from_butler, auto_filled = guessed, True, True
             if proposal is not None:
                 save_pending(session_id, [proposal])
                 append_conversation(session_id, "user", message)
                 append_conversation(session_id, "assistant",
-                                    f"已生成清空提案：{proposal.get('summary', '')}")
+                                    f"已生成待办确认：{proposal['summary']}")
+                if auto_filled:
+                    # 时间是系统挑的，得说明白——否则学生以为自己说过这个点。
+                    answer = (
+                        "📝 刚才那次可能没接上，我把确认条又挂了出来——"
+                        f"**{proposal['date']}（{proposal['weekday']}）"
+                        f"{proposal['start']}-{proposal['end']} 是空着的**，"
+                        f"就把 **{proposal['title']}** 排在这儿了。\n"
+                        "点【确认加入】执行；直接回一句「确认」也一样。\n"
+                        "这个点不合适，说一句「改成晚上七点到八点」就行。"
+                    )
+                    phase = "🗓️ 确认落空 → 学生只说了哪天，系统挑空档补出确认条"
+                else:
+                    # 方案是从**管家自己那句话**里捞回来的（from_butler）→ 得说清是
+                    # "它只在文字里写了方案、卡片没跟上"。笼统一句"刚才那次可能没接上"
+                    # 学生听不懂：他看到的正是"它说要有提案，可我这儿没有弹窗"。
+                    lead = ("📝 我上一条只在文字里写了方案，**确认条没跟上**——我补一张：\n\n"
+                            if from_butler else
+                            "📝 刚才那次可能没接上，我把确认条又挂了出来——")
+                    answer = (
+                        lead
+                        + f"要不要把 **{proposal['title']}** 排进日程？"
+                        f"{proposal['date']}（{proposal['weekday']}）"
+                        f"{proposal['start']}-{proposal['end']}。\n"
+                        "点【确认加入】执行；直接回一句「确认」也一样。"
+                    )
+                    phase = ("📝 确认落空 → 从管家文字里的方案捞回确认条" if from_butler
+                             else "📝 确认落空 → 重新挂出待办确认条")
+                return {
+                    "module": "planner",
+                    "session_id": session_id,
+                    "answer": answer,
+                    "trace": [{"step": 1, "phase": phase,
+                               "answer": proposal["summary"]}],
+                    "options": [proposal],
+                    "awaiting_choice": True,
+                }
+
+            # 删待办的确认落空：跟加待办对称的一支。
+            # 场景：学生上一句「把游泳那条待办删掉」，系统出了确认条；可学生刷新了页面
+            # （暂存是内存态，一刷就空），再回一句「确认」——此时照旧把**学生原话**捞回来
+            # 重新解析、重新挂确认条。"说了删、确认没删"的老毛病不该在这儿复现。
+            rm_req = "" if already_written else next(
+                (m.get("content") or "" for m in reversed(get_conversation(session_id)[-8:])
+                 if m.get("role") == "user"
+                 and not is_confirmation(m.get("content") or "")
+                 and (wants_remove_todo(m.get("content") or "")
+                      or wants_remove_todo_loose(m.get("content") or ""))),
+                "")
+            if rm_req:
+                res_rm = resolve_todo_remove(rm_req)
+                if res_rm.get("status") == "ok":
+                    rm_prop = res_rm["proposal"]
+                    save_pending(session_id, [rm_prop])
+                    append_conversation(session_id, "user", message)
+                    append_conversation(session_id, "assistant",
+                                        f"已生成删待办提案：{rm_prop['summary']}")
+                    return {
+                        "module": "planner",
+                        "session_id": session_id,
+                        "answer": (
+                            "🗑️ 刚才那次可能没接上，我把确认条又挂了出来——"
+                            f"要删的是 **{rm_prop['title']}**｜{rm_prop['date']}"
+                            f"（{rm_prop['weekday']}）{rm_prop['start']}-{rm_prop['end']}。\n"
+                            "点【确认删除】执行；直接回一句「确认」也一样。"
+                        ),
+                        "trace": [{"step": 1, "phase": "🗑️ 确认落空 → 重新挂出删待办确认条",
+                                   "answer": rm_prop["summary"]}],
+                        "options": [rm_prop],
+                        "awaiting_choice": True,
+                    }
+
+        # 3b) **确定性清空分支**（人话：学生明说"课表全删了"，直接出弹窗，不劳模型判断）
+        #    跟上面"一句确认即落库"是同一个思路：能由代码定死的，就别交给模型。
+        #    实测同一句话，模型时而是调 propose_clear_timetable，时而是反问"你确定要全删吗"，
+        #    学生被绕回来，链路当场断掉——清空意图本来就明明白白，该由系统接管。
+        #    这里只负责"出提案 + 弹窗"，**一个字节都不写库**；真删要等学生点弹窗上的【确认】。
+        if wants_clear_timetable(message) and not _rule_veto:
+            proposal = _parse_clear_proposal()
+            if proposal is None:
+                # 周表本来就是空的：一句话说清楚就完事。
+                # 实测这个状态会掉回模型，模型就来一句"这个操作影响比较大，我先跟你确认一下…"
+                # 还列四条问题——学生只看到"弹窗不来、卡片不出"，还以为系统坏了。
+                # 空表没得可清，本来就没得确认，交给模型只会多绕一圈。
+                append_conversation(session_id, "user", message)
+                append_conversation(session_id, "assistant", "周表本来就是空的")
                 return {
                     "module": "planner",
                     "session_id": session_id,
                     "answer": (
-                        "🗑️ 上一次的确认条可能已经关掉了，我又把它请了出来——"
-                        "在下面这条确认条上点【确认清空】执行，点【取消】就什么都不变。\n"
-                        "（也可以直接在聊天框回一句「确认删除」，一样会执行。）"
+                        "周表本来就是空的，一门课都没有，没有课可清空 🗑️\n"
+                        "想往课表里加课的话：点一下「📤 上传课表」传一份文件，"
+                        "或者直接跟我说「周一加一节高等数学，教三-201」就行。"
                     ),
-                    "trace": [{"step": 1, "phase": "🗑️ 确认落空 → 重新挂出清空确认条",
-                               "answer": "提案已过期/被取消，重新出提案"}],
+                    "trace": [{"step": 1, "phase": "🗑️ 周表已为空",
+                               "answer": "没有课可清，直接告知学生"}],
+                    "options": [],
+                    "awaiting_choice": False,
+                }
+            else:
+                save_pending(session_id, [proposal])
+                append_conversation(session_id, "user", message)
+                append_conversation(session_id, "assistant", f"已生成清空提案：{proposal.get('summary', '')}")
+                return {
+                    "module": "planner",
+                    "session_id": session_id,
+                    "answer": (
+                        f"🗑️ 已为你生成**清空 {proposal.get('clear_count', 0)} 门课**的确认条"
+                        f"（就在下面这条消息里），点【确认清空】才会执行，"
+                        f"点【取消】就什么都不变。\n"
+                        f"（也可以直接在聊天框回一句「确认删除」，一样会执行。）"
+                    ),
+                    "trace": [{"step": 1, "phase": "🧹 生成清空提案（系统判定）",
+                               "answer": str(proposal.get("summary") or "")}],
                     "options": [proposal],
                     "awaiting_choice": True,
                 }
-            # 周表已经是空的：没什么可清。
-            append_conversation(session_id, "user", message)
-            append_conversation(session_id, "assistant", "周表本来就是空的")
-            return {
-                "module": "planner",
-                "session_id": session_id,
-                "answer": "周表本来就是空的，一门课都没有，没有课可清空 🗑️",
-                "trace": [{"step": 1, "phase": "🗑️ 周表已为空",
-                           "answer": "没有课可清，直接告知学生"}],
-                "options": [],
-                "awaiting_choice": False,
-            }
-        # 加待办的确认落空：学生上一句加待办的原话没被确定性分支接住
-        # （比如「周二下午两点到三点游泳」这种中文报时，老解析器认不出时间），
-        # 掉给模型嘴上说"搞定！已经正式写进待办啦"——schedule 模块连一个写入
-        # 工具都没有，日程里其实什么都没有。照清空课表的样子把话捞回来：
-        # 找到学生最近那句加待办的原话，重新走一遍确定性解析，
-        # 出得了提案就重新挂确认条；出不了就继续交给模型正常聊。
+
+        # 3c) **确定性加待办分支**（人话：学生说"把 X 安排到今天 19:00-20:30"，
+        #     日期时刻由系统算、确认卡由系统出，学生点卡片或回一句"确认"才真写）
+        #     为什么不能交给路由和模型：实测同一句"帮我把今天的『复习线性代数』安排到 19:00 到 20:30"，
+        #     路由时而定 planner、时而定 schedule、时而定 admin——只有 planner 手里有写待办的工具，
+        #     于是客服这边时说"已经加上"、时说"你回确认了，但我这边还没生成待办提案"，
+        #     学生刷新日程也看不到东西。这条链路不能碰运气。
+        #     跟清空课表一个规矩：这里**只出提案，一个字节都不写库**。
         #
-        # 但有个前提：最近几轮**没真的写进去过**。学生加完待办、回一句"好的"，
-        # 话里也带确认词，这时再挂一次确认条、他再点一下就是重复写两条。
-        # 判据就是系统自己写进会话的那句回执（"已加入日程"）。
-        #
-        # 这一段跟"模型那一路"的兜底**共用 `_recent_add_request`**：
-        # 两边要问的是同一个问题（学生最近想加的是哪件事），
-        # 各写一份迟早会走样，症状还特别像"回确认能补条、说别的补不出来"。
-        recent_msgs = get_conversation(session_id)[-6:]
-        already_written = _already_written_recently(session_id)
-        add_req = _recent_add_request(session_id)
-        proposal = parse_add_todo(add_req) if add_req else None
-        from_butler = False
-        auto_filled = False      # 时间是不是系统替学生挑的（话术要区分，见下）
-        # 学生原话也解析不出来？那就捞**管家自己写的那句"提案"**。
-        # 这正是被截屏投诉的那一幕：管家在文字里写
-        # 「好，那我按这个出个提案：- 任务：健身 - 时间：周一 16:30~18:00 …
-        #   提案这就发给你，点一下【确认】就入库了！」
-        # 界面上却连一个按钮都没有——因为它压根没调工具，暂存是空的。
-        # 学生回"可以"，系统就替它把这张确认条挂出来（写库仍要学生点按钮）。
-        # 只认固定格式（"任务/事项/标题：" 配 "时间/时段："），闲聊里捞不出东西就返回 None，
-        # 宁可这条不挂，也不从闲聊里瞎猜一个待办出来。
-        # 判据要问的是"**这场商量是不是还没落地**"。
-        # 这句话看着绕，可问错了两版都出事，两版的病历都留在这儿：
-        #   · 第一版问"最近这几轮有没有写过库"（`already_written`，整段挡掉）——太粗。
-        #     只要附近出现过一次「已加入日程」，往后哪怕管家又给了一份干净方案、
-        #     学生老老实实回一句「确认添加」，也照样一个字都捞不回来 → 掉到 3c
-        #     反问他「好——**要安排的是什么事**？」。对着一份已经写好的提案问
-        #     "要做什么"，正是报障那一幕（截图里管家的提案白纸黑字挂在那儿）。
-        #   · 第二版问"这句话是不是系统自己写的账"（跳过回执句）——粒度对了，
-        #     可漏了后半截：**提案本身也会过期**。一条提案就算已经被学生点完、
-        #     库都写好了，它的文字照样留在历史里；只跳回执、不往前看的 starting
-        #     线，就会把这份**（早已落实过的）旧提案**重新捞出来挂一遍，
-        #     他再点一下就是重复写两条（第六批那条断言守的就是它）。
-        #
-        # 正解是划一条**起跑线**：找到最近一次写库回执的位置，只在它**之后**
-        # 的那些话里找方案。回执之前的提案，在这一幕之前已经执行过了，不许翻回去。
-        receipt_at = [i for i, m in enumerate(recent_msgs)
-                      if m.get("role") == "assistant"
-                      and any(k in (m.get("content") or "")
-                              for k in _WRITTEN_RECEIPTS)]
-        started = (receipt_at[-1] + 1) if receipt_at else 0
-        if proposal is None:
-            for m in reversed(recent_msgs[started:]):
-                if m.get("role") != "assistant":
-                    continue
-                text = m.get("content") or ""
-                # 挂卡标记（"已生成待办确认："）也不是方案，别从它里头抠。
-                if _is_system_note(text):
-                    continue
-                guessed = parse_todo_from_reply(text)
-                if guessed is not None:
-                    proposal, from_butler = guessed, True
-                    break
-        # 还有第三种：学生原话只说了"哪天"、没说"几点"（「那你帮我加一个健身在周四」），
-        # 管家上一轮又只是在文字里客气了一句（既没调工具、格式也对不上）——
-        # 前两路都解析不出完整提案。这时**别再让他空等**：
-        # 照 3c 分支的正解，查空档、把候选时段摊出来，让他打勾。
-        # 这正是截图那一幕：学生回「确认」→ 界面上什么都没有、日程里也没写进去。
-        #
-        # 注意顺序：先出**二选一卡**（本轮规格：先问"你自己定 / 我帮你挑"），
-        # 再退回"摊候选"，最后才退回"替他挑一个"的旧路子——
-        # 旧路子只在卡都出不来时才用（比如标题没了），聊胜于无。
-        if proposal is None and not already_written and add_req:
-            mode_card = todo_mode_proposal(add_req)
-            if mode_card is not None:
+        #     先把"学生是不是在补上一轮追问的信息"算出来：
+        #     补充句往往只有时间（"下午两点到三点"），不满足 wants_add_todo 的"得带日期"，
+        #     光看这一句会被当成闲聊掉回模型——那里就是"搞定！已经写进"的老家。
+        conv = get_conversation(session_id)
+        prev_user = next((m.get("content") or "" for m in reversed(conv)
+                          if m.get("role") == "user"), "")
+        asking_add = any("加待办缺细节" in (m.get("content") or "")
+                         for m in conv[-4:] if m.get("role") == "assistant")
+
+        # 3c-pre) **学生嫌系统挑的点不合适、自己报了个时刻** → 换时间重新出条。
+        #     背景：学生只说了"哪天"时，系统会替他挑一段并说明"这个点不合适你说个点"。
+        #     他真说了（"下午两点到三点"、"改成晚上七点到八点"、"改成周六"），
+        #     就得接住——不然那句"你说个点"等于放空炮，学生会觉得"我说了它当没听见"。
+        #     只认"纯时间短句"或带"改成/换到"这类词的话，免得把一句新的下单吃掉。
+        held_add = _pending_todo(session_id)
+        if held_add and not is_confirmation(message) \
+                and (is_add_todo_followup(message) or wants_retime_todo(message)):
+            retimed = retime_todo_proposal(held_add, message)
+            if retimed is not None:
                 return _offer_response(
-                    session_id, mode_card, message,
-                    _mode_answer(mode_card,
-                                 lead="刚才那次可能没接上——这件事咱们再对一次，"
-                                      "先说清时间怎么定：\n\n"),
-                    "🗓️ 确认落空 → 重新挂出二选一卡（先问时间怎么定）")
-            slots_card = todo_slots_proposal(add_req)
-            if slots_card is not None:
+                    session_id, retimed, message,
+                    (f"📝 好，按你说的改成 **{retimed['date']}（{retimed['weekday']}）"
+                     f"{retimed['start']}-{retimed['end']}**——"
+                     f"要不要把 **{retimed['title']}** 排在这儿？\n"
+                     f"下面点一下【确认加入】我就写进去，回一句「确认」也一样。"),
+                    "🕘 按学生说的点换时间 → 重出确认条")
+
+        # 3c-pre2) **学生刚看到一串候选、在聊天里自己报了个点** → 就着他给的点出条。
+        #     为什么要有这一支：候选卡摊出来的是"几个时间让你挑"，学生的答法有两种——
+        #     ① 在确认条上打勾（走弹框按钮，前端直连 /api/todos/batch）；
+        #     ② **直接在聊天里说**（"改成晚上七点到八点"、"那就周六吧"）。
+        #     ② 是最自然的，接不住就掉回模型——模型只会说"已经帮你排好啦"，日程里空的。
+        #     判据用 is_slot_answer：只认"纯时间/纯日期"的句子，"周六加个游泳"那种
+        #     换了事情的说法不算，它得走下面的正常加待办链路重新解析标题。
+        held_slots = _pending_todo_slots(session_id)
+        if held_slots and not is_confirmation(message) and is_slot_answer(message):
+            fb = next((s.get("date") or "" for s in (held_slots.get("slots") or [])
+                       if isinstance(s, dict)), "")
+            one = parse_slot_text(message, held_slots.get("title") or "待办", fb)
+            if one is not None:
                 return _offer_response(
-                    session_id, slots_card, message,
-                    _slots_answer(slots_card,
-                                  lead="刚才那次可能没接上，我把空着的时间段重新列一遍——\n\n"),
-                    "🗓️ 确认落空 → 重新摊出候选时段（让打勾）")
-            guessed = auto_todo_proposal(add_req)
-            if guessed is not None:
-                proposal, from_butler, auto_filled = guessed, True, True
-        if proposal is not None:
-            save_pending(session_id, [proposal])
+                    session_id, one, message,
+                    (f"📝 好，那 **{one['title']}** 就定在 "
+                     f"**{one['date']}（{one['weekday']}）{one['start']}-{one['end']}**。\n"
+                     f"下面点一下【确认加入】我就写进去，回一句「确认」也一样。"),
+                    "🕘 学生在候选卡下面自己报了时间 → 出单条确认条")
+            # 报的是 1..6 点又没说上下午 → **在这儿就把这句问清楚**，别掉回模型。
+            # 掉回去的代价实测过（2026-10-11）：模型自己"替他挑了下午三点"，
+            # 还顺手把 `propose_todo_tool {json}` 当成回话打出来 —— 一次错时间 + 一次内脏外露。
+            # 候选卡留着不撤：他补一句「下午三点」照样走上面那条正路。
+            _ask = _bare_clock_note(message)
+            if _ask:
+                append_conversation(session_id, "user", message)
+                append_conversation(session_id, "assistant", _ask)
+                return {
+                    "module": "planner",
+                    "session_id": session_id,
+                    "answer": _ask,
+                    "trace": [{"step": 1, "phase": "🕐 这个钟点没报上下午 → 问清楚，不替他猜",
+                               "answer": "候选卡照旧挂着"}],
+                    "options": [],
+                    "awaiting_choice": False,
+                }
+
+        # 3c-pre3) **学生在聊天里回"你自己定 / 你帮我挑"** → 就着他选的那条路出卡。
+        #     为什么必须有这一支：两选一卡上的按钮是最好走的路（前端直接打
+        #     /api/todos/mode），但学生**更习惯直接在聊天框里说一句**——
+        #     「你帮我定吧」「我自己有时间」。这两句一个字都不含时间，
+        #     掉回模型那边就是又一轮自由发挥（实测模型会说"好的，方案A记下了"，
+        #     然后反问他"游泳馆周二中午开不开"——答完回"确认"，它说"我按你说的提上去"，
+        #     结果连一张确认条都没有，学生只能追问"确认条呢"）。
+        #     ⚠️ 必须排在 3c 前面：`is_mode_answer` 认的"帮我安排"里含 `_ADD_INTENT` 的
+        #     "安排"，排在后面就永远轮不到它。
+        held_mode = _pending_todo_mode(session_id)
+        if held_mode and not is_confirmation(message) and is_mode_answer(message):
+            mode = parse_mode_answer(message)
+            if mode is not None:
+                new_card = mode_to_card(held_mode, mode)
+                if new_card is None:
+                    # 两条路都出不来（那天/那几天真排不下）→ 如实说，别硬凑一个时间
+                    clear_pending(session_id)
+                    title = held_mode.get("title") or "待办"
+                    append_conversation(session_id, "user", message)
+                    append_conversation(session_id, "assistant", f"{title}排不下")
+                    return {
+                        "module": "planner",
+                        "session_id": session_id,
+                        "answer": (f"😥 **{title}** 这几天实在插不进去了——课和已经排好的事"
+                                   f"把空档都占了。\n换个日子，或者你说个具体钟点，"
+                                   f"我看看能不能挤一挤。"),
+                        "trace": [{"step": 1, "phase": "🗓️ 二分卡两条路都排不下",
+                                   "answer": "如实告知，不硬凑时间"}],
+                        "options": [],
+                        "awaiting_choice": False,
+                    }
+                if mode == "ai" and new_card.get("kind") != "todo_slots":
+                    # **核心**：他让系统替他安排，那就真去规划——并把"为什么排在这儿"说清
+                    ans = (f"🤖 好，我替你挑了：**{new_card['title']}** 排在 "
+                           f"**{new_card['date']}（{new_card['weekday']}）"
+                           f"{new_card['start']}-{new_card['end']}**。\n"
+                           f"{new_card.get('reason') or ''}\n"
+                           f"下面点一下【确认加入】我就写进去，回一句「确认」也一样。")
+                    phase = "🤖 学生选了「你帮我挑」→ 系统规划出一段（单条确认条）"
+                elif mode == "ai":
+                    # 报了"一周三次"又要系统替他挑 → 挑出来的不是一段而是 N 段，
+                    # 走的还是候选卡（前 N 段已勾上）。文案不能写"时间你自己定"——那不是他选的。
+                    ans = _slots_answer(new_card, lead="🤖 好，我按你说的次数替你挑好了——")
+                    phase = "🤖 「你帮我挑」+ 报了频次 → 系统挑出 N 段（候选卡，已预选）"
+                else:
+                    ans = _slots_answer(new_card, lead="🙋 好，时间你自己定——")
+                    phase = "🙋 学生选了「我自己定」→ 列出候选时段（让打勾）"
+                return _offer_response(session_id, new_card, message, ans, phase)
+
+        # 3c-pre4) **单条确认条已经挂在那儿，可学生说"我自己挑"** → 换出候选卡让他勾。
+        #     为什么必须有这一支：第六轮改版把第一站改成了"直接敲定"，
+        #     于是"我自己定"那颗按钮从第一站消失了——可"**进行列举、由我打勾**"
+        #     是他明确要过的（学生原话，见第九批）。效率是默认，但不能把这条口子焊死：
+        #     默认我替你定，你要自己挑就说一声，摊开让你勾。
+        #     ⚠️ 只认"敲定出来的那条"（`auto` 标记）：学生自己报了钟点换出来的条
+        #     不该再被摊一堆候选盖掉——他已经说清楚要哪个点了。
+        held_auto = _pending_todo(session_id)
+        if held_auto and held_auto.get("auto") and not is_confirmation(message) \
+                and _SELF_PICK_RE.search(message or ""):
+            slots = todo_slots_proposal(
+                f"{held_auto.get('date') or ''} {held_auto.get('title') or ''}".strip())
+            if slots is not None:
+                return _offer_response(
+                    session_id, slots, message,
+                    _slots_answer(slots, lead="🙋 好，那时间你自己挑——"),
+                    "🙋 他要自己挑 → 摊出候选时段（让打勾）")
+
+        # 3c-pre5) **语义兜底的收尾**（判定本身已经在 `0) 判定层` 做完了，这里只留回执）。
+        #     `_sem` / `_sem_intent` / `_sem_module` / `_rule_veto` 都在那一处算好，
+        #     所以下面每条确定性分支都能用上同一次判定——**同一句话只判一次**。
+        def _sem_done(resp: dict | None) -> dict | None:
+            """语义层命中、并且真的出了卡 → 把这句原话学进样本库（越用越懂）。
+
+            只在**办成了**的时候记。模型自由发挥那一句不算——那会把错误意图学进去。
+            """
+            if resp is not None and _sem_intent:
+                try:
+                    remember(message, _sem_intent, _sem or {})
+                except Exception:
+                    pass
+            return resp
+
+        # ★ 「今晚安排点啥」这类**问该做什么**的句子：给一句实在的空档建议，**不建卡、不写库**。
+        #   用户 2026-10-14 定的做法（原话：「这种是问事情闲聊的，不入库」；三个走法里他挑了
+        #   "不建卡，但给一句实在的建议"）。
+        #   判据只有一份（`planner._asking_what_to_do`：句里带疑问代词 **且** 剥掉时间/动作后
+        #   剩下的那串本身就是疑问串；在删东西的、在查现有清单的两类当场排除）。
+        #   「你帮我安排」这种**没疑问代词**的半句话不在这儿——它照旧走 3c 的追问档，
+        #   那句「要安排的是什么事？」有 test_06 十五批钉着。
+        #   ⚠️ 位置必须在**列表档之前**（2026-10-14 真机实测出来的顺序问题）：开发机的样本库
+        #   早就把「今晚安排点啥」学成了 list_todo，排到列表档后面就永远轮不到这档，
+        #   学生看到的是一句「📋 你目前的待办（共 11 条）」——他没在看清单，他在问该做什么。
+        #   ⚠️ 也**不走 `_sem_done`**（同下面周期否决那条的理由）：`_sem_done` 里面是
+        #   `remember()` 学样本那一步 —— 把一句问话学成模板，下次近似说法照着错。
+        if _asking_what_to_do(message):
+            answer, _free = what_to_do_suggestion(message)
             append_conversation(session_id, "user", message)
-            append_conversation(session_id, "assistant",
-                                f"已生成待办确认：{proposal['summary']}")
-            if auto_filled:
-                # 时间是系统挑的，得说明白——否则学生以为自己说过这个点。
-                answer = (
-                    "📝 刚才那次可能没接上，我把确认条又挂了出来——"
-                    f"**{proposal['date']}（{proposal['weekday']}）"
-                    f"{proposal['start']}-{proposal['end']} 是空着的**，"
-                    f"就把 **{proposal['title']}** 排在这儿了。\n"
-                    "点【确认加入】执行；直接回一句「确认」也一样。\n"
-                    "这个点不合适，说一句「改成晚上七点到八点」就行。"
-                )
-                phase = "🗓️ 确认落空 → 学生只说了哪天，系统挑空档补出确认条"
-            else:
-                # 方案是从**管家自己那句话**里捞回来的（from_butler）→ 得说清是
-                # "它只在文字里写了方案、卡片没跟上"。笼统一句"刚才那次可能没接上"
-                # 学生听不懂：他看到的正是"它说要有提案，可我这儿没有弹窗"。
-                lead = ("📝 我上一条只在文字里写了方案，**确认条没跟上**——我补一张：\n\n"
-                        if from_butler else
-                        "📝 刚才那次可能没接上，我把确认条又挂了出来——")
-                answer = (
-                    lead
-                    + f"要不要把 **{proposal['title']}** 排进日程？"
-                    f"{proposal['date']}（{proposal['weekday']}）"
-                    f"{proposal['start']}-{proposal['end']}。\n"
-                    "点【确认加入】执行；直接回一句「确认」也一样。"
-                )
-                phase = ("📝 确认落空 → 从管家文字里的方案捞回确认条" if from_butler
-                         else "📝 确认落空 → 重新挂出待办确认条")
+            append_conversation(session_id, "assistant", answer)
             return {
                 "module": "planner",
                 "session_id": session_id,
                 "answer": answer,
-                "trace": [{"step": 1, "phase": phase,
-                           "answer": proposal["summary"]}],
-                "options": [proposal],
-                "awaiting_choice": True,
-            }
-
-        # 删待办的确认落空：跟加待办对称的一支。
-        # 场景：学生上一句「把游泳那条待办删掉」，系统出了确认条；可学生刷新了页面
-        # （暂存是内存态，一刷就空），再回一句「确认」——此时照旧把**学生原话**捞回来
-        # 重新解析、重新挂确认条。"说了删、确认没删"的老毛病不该在这儿复现。
-        rm_req = "" if already_written else next(
-            (m.get("content") or "" for m in reversed(get_conversation(session_id)[-8:])
-             if m.get("role") == "user"
-             and not is_confirmation(m.get("content") or "")
-             and (wants_remove_todo(m.get("content") or "")
-                  or wants_remove_todo_loose(m.get("content") or ""))),
-            "")
-        if rm_req:
-            res_rm = resolve_todo_remove(rm_req)
-            if res_rm.get("status") == "ok":
-                rm_prop = res_rm["proposal"]
-                save_pending(session_id, [rm_prop])
-                append_conversation(session_id, "user", message)
-                append_conversation(session_id, "assistant",
-                                    f"已生成删待办提案：{rm_prop['summary']}")
-                return {
-                    "module": "planner",
-                    "session_id": session_id,
-                    "answer": (
-                        "🗑️ 刚才那次可能没接上，我把确认条又挂了出来——"
-                        f"要删的是 **{rm_prop['title']}**｜{rm_prop['date']}"
-                        f"（{rm_prop['weekday']}）{rm_prop['start']}-{rm_prop['end']}。\n"
-                        "点【确认删除】执行；直接回一句「确认」也一样。"
-                    ),
-                    "trace": [{"step": 1, "phase": "🗑️ 确认落空 → 重新挂出删待办确认条",
-                               "answer": rm_prop["summary"]}],
-                    "options": [rm_prop],
-                    "awaiting_choice": True,
-                }
-
-    # 3b) **确定性清空分支**（人话：学生明说"课表全删了"，直接出弹窗，不劳模型判断）
-    #    跟上面"一句确认即落库"是同一个思路：能由代码定死的，就别交给模型。
-    #    实测同一句话，模型时而是调 propose_clear_timetable，时而是反问"你确定要全删吗"，
-    #    学生被绕回来，链路当场断掉——清空意图本来就明明白白，该由系统接管。
-    #    这里只负责"出提案 + 弹窗"，**一个字节都不写库**；真删要等学生点弹窗上的【确认】。
-    if wants_clear_timetable(message) and not _rule_veto:
-        proposal = _parse_clear_proposal()
-        if proposal is None:
-            # 周表本来就是空的：一句话说清楚就完事。
-            # 实测这个状态会掉回模型，模型就来一句"这个操作影响比较大，我先跟你确认一下…"
-            # 还列四条问题——学生只看到"弹窗不来、卡片不出"，还以为系统坏了。
-            # 空表没得可清，本来就没得确认，交给模型只会多绕一圈。
-            append_conversation(session_id, "user", message)
-            append_conversation(session_id, "assistant", "周表本来就是空的")
-            return {
-                "module": "planner",
-                "session_id": session_id,
-                "answer": (
-                    "周表本来就是空的，一门课都没有，没有课可清空 🗑️\n"
-                    "想往课表里加课的话：点一下「📤 上传课表」传一份文件，"
-                    "或者直接跟我说「周一加一节高等数学，教三-201」就行。"
-                ),
-                "trace": [{"step": 1, "phase": "🗑️ 周表已为空",
-                           "answer": "没有课可清，直接告知学生"}],
-                "options": [],
-                "awaiting_choice": False,
-            }
-        else:
-            save_pending(session_id, [proposal])
-            append_conversation(session_id, "user", message)
-            append_conversation(session_id, "assistant", f"已生成清空提案：{proposal.get('summary', '')}")
-            return {
-                "module": "planner",
-                "session_id": session_id,
-                "answer": (
-                    f"🗑️ 已为你生成**清空 {proposal.get('clear_count', 0)} 门课**的确认条"
-                    f"（就在下面这条消息里），点【确认清空】才会执行，"
-                    f"点【取消】就什么都不变。\n"
-                    f"（也可以直接在聊天框回一句「确认删除」，一样会执行。）"
-                ),
-                "trace": [{"step": 1, "phase": "🧹 生成清空提案（系统判定）",
-                           "answer": str(proposal.get("summary") or "")}],
-                "options": [proposal],
-                "awaiting_choice": True,
-            }
-
-    # 3c) **确定性加待办分支**（人话：学生说"把 X 安排到今天 19:00-20:30"，
-    #     日期时刻由系统算、确认卡由系统出，学生点卡片或回一句"确认"才真写）
-    #     为什么不能交给路由和模型：实测同一句"帮我把今天的『复习线性代数』安排到 19:00 到 20:30"，
-    #     路由时而定 planner、时而定 schedule、时而定 admin——只有 planner 手里有写待办的工具，
-    #     于是客服这边时说"已经加上"、时说"你回确认了，但我这边还没生成待办提案"，
-    #     学生刷新日程也看不到东西。这条链路不能碰运气。
-    #     跟清空课表一个规矩：这里**只出提案，一个字节都不写库**。
-    #
-    #     先把"学生是不是在补上一轮追问的信息"算出来：
-    #     补充句往往只有时间（"下午两点到三点"），不满足 wants_add_todo 的"得带日期"，
-    #     光看这一句会被当成闲聊掉回模型——那里就是"搞定！已经写进"的老家。
-    conv = get_conversation(session_id)
-    prev_user = next((m.get("content") or "" for m in reversed(conv)
-                      if m.get("role") == "user"), "")
-    asking_add = any("加待办缺细节" in (m.get("content") or "")
-                     for m in conv[-4:] if m.get("role") == "assistant")
-
-    # 3c-pre) **学生嫌系统挑的点不合适、自己报了个时刻** → 换时间重新出条。
-    #     背景：学生只说了"哪天"时，系统会替他挑一段并说明"这个点不合适你说个点"。
-    #     他真说了（"下午两点到三点"、"改成晚上七点到八点"、"改成周六"），
-    #     就得接住——不然那句"你说个点"等于放空炮，学生会觉得"我说了它当没听见"。
-    #     只认"纯时间短句"或带"改成/换到"这类词的话，免得把一句新的下单吃掉。
-    held_add = _pending_todo(session_id)
-    if held_add and not is_confirmation(message) \
-            and (is_add_todo_followup(message) or wants_retime_todo(message)):
-        retimed = retime_todo_proposal(held_add, message)
-        if retimed is not None:
-            return _offer_response(
-                session_id, retimed, message,
-                (f"📝 好，按你说的改成 **{retimed['date']}（{retimed['weekday']}）"
-                 f"{retimed['start']}-{retimed['end']}**——"
-                 f"要不要把 **{retimed['title']}** 排在这儿？\n"
-                 f"下面点一下【确认加入】我就写进去，回一句「确认」也一样。"),
-                "🕘 按学生说的点换时间 → 重出确认条")
-
-    # 3c-pre2) **学生刚看到一串候选、在聊天里自己报了个点** → 就着他给的点出条。
-    #     为什么要有这一支：候选卡摊出来的是"几个时间让你挑"，学生的答法有两种——
-    #     ① 在确认条上打勾（走弹框按钮，前端直连 /api/todos/batch）；
-    #     ② **直接在聊天里说**（"改成晚上七点到八点"、"那就周六吧"）。
-    #     ② 是最自然的，接不住就掉回模型——模型只会说"已经帮你排好啦"，日程里空的。
-    #     判据用 is_slot_answer：只认"纯时间/纯日期"的句子，"周六加个游泳"那种
-    #     换了事情的说法不算，它得走下面的正常加待办链路重新解析标题。
-    held_slots = _pending_todo_slots(session_id)
-    if held_slots and not is_confirmation(message) and is_slot_answer(message):
-        fb = next((s.get("date") or "" for s in (held_slots.get("slots") or [])
-                   if isinstance(s, dict)), "")
-        one = parse_slot_text(message, held_slots.get("title") or "待办", fb)
-        if one is not None:
-            return _offer_response(
-                session_id, one, message,
-                (f"📝 好，那 **{one['title']}** 就定在 "
-                 f"**{one['date']}（{one['weekday']}）{one['start']}-{one['end']}**。\n"
-                 f"下面点一下【确认加入】我就写进去，回一句「确认」也一样。"),
-                "🕘 学生在候选卡下面自己报了时间 → 出单条确认条")
-        # 报的是 1..6 点又没说上下午 → **在这儿就把这句问清楚**，别掉回模型。
-        # 掉回去的代价实测过（2026-10-11）：模型自己"替他挑了下午三点"，
-        # 还顺手把 `propose_todo_tool {json}` 当成回话打出来 —— 一次错时间 + 一次内脏外露。
-        # 候选卡留着不撤：他补一句「下午三点」照样走上面那条正路。
-        _ask = _bare_clock_note(message)
-        if _ask:
-            append_conversation(session_id, "user", message)
-            append_conversation(session_id, "assistant", _ask)
-            return {
-                "module": "planner",
-                "session_id": session_id,
-                "answer": _ask,
-                "trace": [{"step": 1, "phase": "🕐 这个钟点没报上下午 → 问清楚，不替他猜",
-                           "answer": "候选卡照旧挂着"}],
+                "trace": [{"step": 1, "phase": "🤔 这句在问『该做什么』→ 报空档，不替他决定",
+                           "answer": "没出卡、没写库，也没把这句学进去"}],
                 "options": [],
                 "awaiting_choice": False,
             }
 
-    # 3c-pre3) **学生在聊天里回"你自己定 / 你帮我挑"** → 就着他选的那条路出卡。
-    #     为什么必须有这一支：两选一卡上的按钮是最好走的路（前端直接打
-    #     /api/todos/mode），但学生**更习惯直接在聊天框里说一句**——
-    #     「你帮我定吧」「我自己有时间」。这两句一个字都不含时间，
-    #     掉回模型那边就是又一轮自由发挥（实测模型会说"好的，方案A记下了"，
-    #     然后反问他"游泳馆周二中午开不开"——答完回"确认"，它说"我按你说的提上去"，
-    #     结果连一张确认条都没有，学生只能追问"确认条呢"）。
-    #     ⚠️ 必须排在 3c 前面：`is_mode_answer` 认的"帮我安排"里含 `_ADD_INTENT` 的
-    #     "安排"，排在后面就永远轮不到它。
-    held_mode = _pending_todo_mode(session_id)
-    if held_mode and not is_confirmation(message) and is_mode_answer(message):
-        mode = parse_mode_answer(message)
-        if mode is not None:
-            new_card = mode_to_card(held_mode, mode)
-            if new_card is None:
-                # 两条路都出不来（那天/那几天真排不下）→ 如实说，别硬凑一个时间
-                clear_pending(session_id)
-                title = held_mode.get("title") or "待办"
-                append_conversation(session_id, "user", message)
-                append_conversation(session_id, "assistant", f"{title}排不下")
-                return {
-                    "module": "planner",
-                    "session_id": session_id,
-                    "answer": (f"😥 **{title}** 这几天实在插不进去了——课和已经排好的事"
-                               f"把空档都占了。\n换个日子，或者你说个具体钟点，"
-                               f"我看看能不能挤一挤。"),
-                    "trace": [{"step": 1, "phase": "🗓️ 二分卡两条路都排不下",
-                               "answer": "如实告知，不硬凑时间"}],
-                    "options": [],
-                    "awaiting_choice": False,
-                }
-            if mode == "ai" and new_card.get("kind") != "todo_slots":
-                # **核心**：他让系统替他安排，那就真去规划——并把"为什么排在这儿"说清
-                ans = (f"🤖 好，我替你挑了：**{new_card['title']}** 排在 "
-                       f"**{new_card['date']}（{new_card['weekday']}）"
-                       f"{new_card['start']}-{new_card['end']}**。\n"
-                       f"{new_card.get('reason') or ''}\n"
-                       f"下面点一下【确认加入】我就写进去，回一句「确认」也一样。")
-                phase = "🤖 学生选了「你帮我挑」→ 系统规划出一段（单条确认条）"
-            elif mode == "ai":
-                # 报了"一周三次"又要系统替他挑 → 挑出来的不是一段而是 N 段，
-                # 走的还是候选卡（前 N 段已勾上）。文案不能写"时间你自己定"——那不是他选的。
-                ans = _slots_answer(new_card, lead="🤖 好，我按你说的次数替你挑好了——")
-                phase = "🤖 「你帮我挑」+ 报了频次 → 系统挑出 N 段（候选卡，已预选）"
+        # 3d) **读我已有待办（纯读，不写库、不弹窗）**
+        #     学生说「我的代办呢」「看看我的代办」「待办列表」「代办显示不出来」这类话，
+        #     没有任何"加/删"意图，就是想看一眼现在有哪些待办。
+        #     规矩跟别处一致：能由系统算死的就别交给模型——模型会**凭空编**一堆
+        #     "你目前有 3 条待办"（其实一个字都没读库）。这里直接 list_todos() 真查，
+        #     查到什么说什么；一条都没有也如实讲。
+        #     ⚠️ 位置必须在 3c-ter 之前：「代办显示不出来」既像"看不见 X"、又该走"读列表"，
+        #     但学生真正要的是"你把我的待办念给我听"——读出来比一句"确实还没有"更有用。
+        if (wants_list_todo(message) and not _rule_veto) or _sem_intent == INTENT_LIST_TODO:
+            todos = list_todos()
+            if not todos:
+                fallback = ("📋 你目前还没有任何待办。\n"
+                            "说一句「加个游泳，周四 19:00-20:30」，我就给你出确认条。")
+                facts = {"intent": "list_todos", "count": 0, "todos": []}
             else:
-                ans = _slots_answer(new_card, lead="🙋 好，时间你自己定——")
-                phase = "🙋 学生选了「我自己定」→ 列出候选时段（让打勾）"
-            return _offer_response(session_id, new_card, message, ans, phase)
-
-    # 3c-pre4) **单条确认条已经挂在那儿，可学生说"我自己挑"** → 换出候选卡让他勾。
-    #     为什么必须有这一支：第六轮改版把第一站改成了"直接敲定"，
-    #     于是"我自己定"那颗按钮从第一站消失了——可"**进行列举、由我打勾**"
-    #     是他明确要过的（学生原话，见第九批）。效率是默认，但不能把这条口子焊死：
-    #     默认我替你定，你要自己挑就说一声，摊开让你勾。
-    #     ⚠️ 只认"敲定出来的那条"（`auto` 标记）：学生自己报了钟点换出来的条
-    #     不该再被摊一堆候选盖掉——他已经说清楚要哪个点了。
-    held_auto = _pending_todo(session_id)
-    if held_auto and held_auto.get("auto") and not is_confirmation(message) \
-            and _SELF_PICK_RE.search(message or ""):
-        slots = todo_slots_proposal(
-            f"{held_auto.get('date') or ''} {held_auto.get('title') or ''}".strip())
-        if slots is not None:
-            return _offer_response(
-                session_id, slots, message,
-                _slots_answer(slots, lead="🙋 好，那时间你自己挑——"),
-                "🙋 他要自己挑 → 摊出候选时段（让打勾）")
-
-    # 3c-pre5) **语义兜底的收尾**（判定本身已经在 `0) 判定层` 做完了，这里只留回执）。
-    #     `_sem` / `_sem_intent` / `_sem_module` / `_rule_veto` 都在那一处算好，
-    #     所以下面每条确定性分支都能用上同一次判定——**同一句话只判一次**。
-    def _sem_done(resp: dict | None) -> dict | None:
-        """语义层命中、并且真的出了卡 → 把这句原话学进样本库（越用越懂）。
-
-        只在**办成了**的时候记。模型自由发挥那一句不算——那会把错误意图学进去。
-        """
-        if resp is not None and _sem_intent:
-            try:
-                remember(message, _sem_intent, _sem or {})
-            except Exception:
-                pass
-        return resp
-
-    # ★ 「今晚安排点啥」这类**问该做什么**的句子：给一句实在的空档建议，**不建卡、不写库**。
-    #   用户 2026-10-14 定的做法（原话：「这种是问事情闲聊的，不入库」；三个走法里他挑了
-    #   "不建卡，但给一句实在的建议"）。
-    #   判据只有一份（`planner._asking_what_to_do`：句里带疑问代词 **且** 剥掉时间/动作后
-    #   剩下的那串本身就是疑问串；在删东西的、在查现有清单的两类当场排除）。
-    #   「你帮我安排」这种**没疑问代词**的半句话不在这儿——它照旧走 3c 的追问档，
-    #   那句「要安排的是什么事？」有 test_06 十五批钉着。
-    #   ⚠️ 位置必须在**列表档之前**（2026-10-14 真机实测出来的顺序问题）：开发机的样本库
-    #   早就把「今晚安排点啥」学成了 list_todo，排到列表档后面就永远轮不到这档，
-    #   学生看到的是一句「📋 你目前的待办（共 11 条）」——他没在看清单，他在问该做什么。
-    #   ⚠️ 也**不走 `_sem_done`**（同下面周期否决那条的理由）：`_sem_done` 里面是
-    #   `remember()` 学样本那一步 —— 把一句问话学成模板，下次近似说法照着错。
-    if _asking_what_to_do(message):
-        answer, _free = what_to_do_suggestion(message)
-        append_conversation(session_id, "user", message)
-        append_conversation(session_id, "assistant", answer)
-        return {
-            "module": "planner",
-            "session_id": session_id,
-            "answer": answer,
-            "trace": [{"step": 1, "phase": "🤔 这句在问『该做什么』→ 报空档，不替他决定",
-                       "answer": "没出卡、没写库，也没把这句学进去"}],
-            "options": [],
-            "awaiting_choice": False,
-        }
-
-    # 3d) **读我已有待办（纯读，不写库、不弹窗）**
-    #     学生说「我的代办呢」「看看我的代办」「待办列表」「代办显示不出来」这类话，
-    #     没有任何"加/删"意图，就是想看一眼现在有哪些待办。
-    #     规矩跟别处一致：能由系统算死的就别交给模型——模型会**凭空编**一堆
-    #     "你目前有 3 条待办"（其实一个字都没读库）。这里直接 list_todos() 真查，
-    #     查到什么说什么；一条都没有也如实讲。
-    #     ⚠️ 位置必须在 3c-ter 之前：「代办显示不出来」既像"看不见 X"、又该走"读列表"，
-    #     但学生真正要的是"你把我的待办念给我听"——读出来比一句"确实还没有"更有用。
-    if (wants_list_todo(message) and not _rule_veto) or _sem_intent == INTENT_LIST_TODO:
-        todos = list_todos()
-        if not todos:
-            fallback = ("📋 你目前还没有任何待办。\n"
-                        "说一句「加个游泳，周四 19:00-20:30」，我就给你出确认条。")
-            facts = {"intent": "list_todos", "count": 0, "todos": []}
-        else:
-            todos_sorted = sorted(
-                todos,
-                key=lambda x: (x.get("date") or "9999-99-99", x.get("start") or "00:00"))
-            lines = [f"📋 你目前的待办（共 {len(todos)} 条）："]
-            for t in todos_sorted:
-                wd = t.get("weekday") or _weekday_name(t.get("date") or "")
-                lines.append(
-                    f"· {t.get('title', '')}｜{t.get('date', '')}"
-                    f"（{wd}）{t.get('start', '')}-{t.get('end', '')}")
-            fallback = "\n".join(lines)
-            # 交给模型润色的是**结构化事实**（系统 list_todos() 真查出来的），模型只复述、不改事实
-            facts = {
-                "intent": "list_todos", "count": len(todos),
-                "todos": [{"title": t.get("title", ""),
-                           "date": t.get("date", ""),
-                           "weekday": t.get("weekday") or _weekday_name(t.get("date") or ""),
-                           "start": t.get("start", ""),
-                           "end": t.get("end", "")} for t in todos_sorted],
-            }
-        # ★ 架构升级 · 试点 1：系统查出列表 → 模型说人话（润色）。
-        #   失败 / 超时 / 没配 key → 原样退回上面的模板话术（离线兜底，现象与迁移前一致）。
-        #   模型只复述、不决定事实；列表数据始终来自 list_todos()，与迁移前逐字一致。
-        from app.agent.polish import polish_reply
-        answer = await polish_reply(facts, fallback, override=model_config)
-        append_conversation(session_id, "user", message)
-        append_conversation(session_id, "assistant", f"已列出待办：{len(todos)} 条")
-        return _sem_done({
-            "module": "planner",
-            "session_id": session_id,
-            "answer": answer,
-            "trace": [{"step": 1, "phase": "📋 列出待办（系统读取）",
-                       "answer": f"{len(todos)} 条"}],
-            "options": [],
-            "awaiting_choice": False,
-        })
-
-    # 3d-ret) **改期（已经排进日程的待办想换个时间）**——"把周四那个健身挪到周五"。
-    #     跟删待办同一套规矩：只出提案、学生点头才动；而且是"删旧 + 加新"，
-    #     不是就地改字段，这样一旦新时间不合适还能追溯旧的那条。
-    #     规则认得（含"改成/挪到"等词）或语义层兜回来的 retime_todo 都走这儿；
-    #     前提：手上没有挂着的待确认卡（那种是 3c-pre 那一档，已在前面处理过了）。
-    if ((wants_retime_todo(message) and not _rule_veto)
-            or _sem_intent == INTENT_RETIME) and not held_add:
-        from app.modules.planner import build_retime_existing_proposal, _weekday_name as _wd2
-        _rt = build_retime_existing_proposal(
-            message, _sem if _sem_intent == INTENT_RETIME else None)
-        _rt_status = _rt.get("status")
-        if _rt_status == "ok":
-            _rt_prop = _rt["proposal"]
-            save_pending(session_id, [_rt_prop])
-            # 提案纠正过名字（如样本库把"瑜伽"误记为"健身"）时，把纠正后的真名字
-            # 写回语义层字段——否则 remember() 会把错的"健身"学进样本库，越错越深。
-            if _sem is not None and _rt_prop.get("title"):
-                _sem = dict(_sem)
-                _sem["title"] = _rt_prop["title"]
-            _sem_done(_rt_prop)
-            return _offer_response(
-                session_id, _rt_prop, message,
-                (f"📝 好，把 **{_rt_prop['title']}** 从 "
-                 f"{_rt.get('old_label', '原时间')} 改到 "
-                 f"**{_rt_prop['date']}（{_rt_prop['weekday']}）"
-                 f"{_rt_prop['start']}-{_rt_prop['end']}**——\n"
-                 # 改的是习惯/每周那条就得说一句"还是每天/每周"：
-                 # 这一条是删旧加新，他不看到这句就会以为长期那半没了。
-                 + (f"它**仍然是每天**都要做的事（只改了钟点，勾完成还是只算当天）。\n"
-                    if _rt_prop.get("repeat") == REPEAT_DAILY else
-                    (f"它**仍然是每周{_rt_prop['weekday']}**都要做的事（只改了钟点）。\n"
-                     if _rt_prop.get("repeat") == REPEAT_WEEKLY else ""))
-                 + f"下面点【确认加入】我就改好（旧的那段会挪走）。"
-                 f"回一句「确认」也一样。"),
-                "🕘 改期提案（系统判定）")
-        if _rt_status == "many":
-            _rt_lines = "\n".join(
-                f"· **{x.get('title', '')}**｜{x.get('date', '')}"
-                f"（{_wd2(x.get('date', ''))}）"
-                f"{x.get('start', '')}-{x.get('end', '')}"
-                for x in _rt.get("todos", [])[:6])
+                todos_sorted = sorted(
+                    todos,
+                    key=lambda x: (x.get("date") or "9999-99-99", x.get("start") or "00:00"))
+                lines = [f"📋 你目前的待办（共 {len(todos)} 条）："]
+                for t in todos_sorted:
+                    wd = t.get("weekday") or _weekday_name(t.get("date") or "")
+                    lines.append(
+                        f"· {t.get('title', '')}｜{t.get('date', '')}"
+                        f"（{wd}）{t.get('start', '')}-{t.get('end', '')}")
+                fallback = "\n".join(lines)
+                # 交给模型润色的是**结构化事实**（系统 list_todos() 真查出来的），模型只复述、不改事实
+                facts = {
+                    "intent": "list_todos", "count": len(todos),
+                    "todos": [{"title": t.get("title", ""),
+                               "date": t.get("date", ""),
+                               "weekday": t.get("weekday") or _weekday_name(t.get("date") or ""),
+                               "start": t.get("start", ""),
+                               "end": t.get("end", "")} for t in todos_sorted],
+                }
+            # ★ 架构升级 · 试点 1：系统查出列表 → 模型说人话（润色）。
+            #   失败 / 超时 / 没配 key → 原样退回上面的模板话术（离线兜底，现象与迁移前一致）。
+            #   模型只复述、不决定事实；列表数据始终来自 list_todos()，与迁移前逐字一致。
+            from app.agent.polish import polish_reply
+            answer = await polish_reply(facts, fallback, override=model_config)
             append_conversation(session_id, "user", message)
-            append_conversation(session_id, "assistant", "改期缺细节")
-            return {
-                "module": "planner", "session_id": session_id,
-                "answer": ("🕘 你想改的是哪一条？我找到好几条同名的：\n\n"
-                           f"{_rt_lines}\n\n回我一个（比如「周四那条」），我帮你改。"),
-                "trace": [{"step": 1, "phase": "🕘 改期遇到多条同名（不猜）",
-                           "answer": "等学生点名"}],
-                "options": [], "awaiting_choice": False,
-            }
-        if _rt_status == "empty":
-            append_conversation(session_id, "user", message)
-            append_conversation(session_id, "assistant", "没找到要改的待办")
-            return {
-                "module": "planner", "session_id": session_id,
-                "answer": "📋 没找到那条待办——你先加进日程，或者告诉我它叫什么、在哪天？",
-                "trace": [{"step": 1, "phase": "🕘 改期未找到目标", "answer": "请学生确认名字"}],
-                "options": [], "awaiting_choice": False,
-            }
-        # unclear：新时间认不出来
-        append_conversation(session_id, "user", message)
-        append_conversation(session_id, "assistant", "改期时间没说清")
-        return {
-            "module": "planner", "session_id": session_id,
-            "answer": "🕘 新时间我没听清——说清楚要改到哪天几点？比如「改到周五 15:00-16:00」。",
-            "trace": [{"step": 1, "phase": "🕘 改期新时间缺失", "answer": "请学生补时间"}],
-            "options": [], "awaiting_choice": False,
-        }
-
-    # 3c-ter) **「看不见 X」的报障**——学生不是要加新事，是**问在不在**。
-    #     实测那一幕（截图）：学生说「我现在没有看见日程显示周二游泳代办项目啊」，
-    #     这句话哪个确定性分支都不认，整句掉给模型，它就开始**编原因**：
-    #     「基本可以确定是系统推送出了问题……得让管理端那边看一下」，
-    #     还让学生"再刷新一次，二选一"——系统明明能真查库，学生日程操作
-    #     又默认自主（场景边界：不提管理端、不说权限不足），这一段全是反面教材。
-    #     规矩：系统先**核实**，真查库，然后按查到什么说什么：
-    #       ① 待办里有 → 如实告诉他哪天几点（他说的那天没有、别处有时也要讲清）；
-    #       ② 课表里有（他找的是课，不是待办）→ 指给他看；
-    #       ③ 都没有、但最近说过要加 → 那条**还没写进日程**，确认条补挂出来；
-    #       ④ 都没有、最近也没说过 → 如实说"还没有"，要加说一声。
-    #     全程不诊断"推送出了问题"、不提管理端、不让学生"二选一"。
-
-    # ★ 让路：这句话问的其实是**校园知识库里有的东西**（"校车在哪坐"）→ 交给知识库，
-    #   别拿"查日程"去兜。
-    #   实测那一幕：学生问「校车在哪坐」，`_MISSING_RE` 里的「在哪」把它当成报障，
-    #   抠出一个根本不存在的待办名"校车坐"，回「查了日程，确实还没有「校车坐」」——
-    #   他问的是校车在哪发车、几点发车，系统却在自己的日程里翻。
-    # ⚠️ 判据要**两条同时成立**才让路，宁可漏也不可把真报障让出去：
-    #   ① 话里没有"待办/日程/周表/课表/清单"这类**说自己日程**的词
-    #      （"我的校车待办没显示"仍然是报障，得由这条确定性分支接）；
-    #   ② 知识库里**真的有答案**（查不到就让这条分支照旧查日程，别把话甩冷宫）。
-    if (missing_thing_of(message) is not None
-            and not any(w in message for w in ("待办", "代办", "日程", "周表",
-                                               "月表", "课表", "清单", "列表"))
-            and _kb_has_answer(message)):
-        missing = None
-    else:
-        missing = missing_thing_of(message)
-    if missing is not None:
-        title, day = missing["title"], missing["date"]
-        # 他没点名，就拿"最近要加的那件事"当默认答案——十有八九问的就是它
-        if not title:
-            req0 = _recent_add_request(session_id)
-            rt0 = todo_title_of(req0) if req0 else "待办"
-            title = rt0 if rt0 != "待办" else ""
-
-        if title:
-            todos = [t for t in list_todos()
-                     if _planner_name_match(title, t.get("title") or "")]
-            here = [t for t in todos if not day or t.get("date") == day]
-            # 他说的那天没排、可别处有一条同名的 → 也要讲清（人话：他可能记错天了）
-            if not here and todos and day:
-                ot = todos[0]
-                append_conversation(session_id, "user", message)
-                append_conversation(
-                    session_id, "assistant",
-                    f"已核实：你说的那天没排，别处有一条——{ot.get('summary') or ''}")
-                return {
-                    "module": "planner",
-                    "session_id": session_id,
-                    "answer": (
-                        f"👀 你说的{_cn_day(day)}没排这一条，倒是 **{ot.get('date')}"
-                        f"（{ot.get('weekday') or _cn_day(ot.get('date') or '')}）** "
-                        f"有一条：**{ot.get('title')}** "
-                        f"{ot.get('start')}-{ot.get('end')}。\n"
-                        "想在那天也排一条，说一句「帮我周二加个游泳」这样的，"
-                        "我按新的重排一张。"
-                    ),
-                    "trace": [{"step": 1, "phase": "👀 查日程（系统核实）",
-                               "answer": f"那天没排；{ot.get('summary') or ''} 有一条"}],
-                    "options": [],
-                    "awaiting_choice": False,
-                }
-            if here:
-                td = here[0]
-                wd_name = td.get("weekday") or _cn_day(td.get("date") or "")
-                elsewhere = ""
-                if day and len(todos) > len(here):
-                    ot = todos[len(here)]
-                    elsewhere = (f"\n（你说的那天没排，倒是 **{ot.get('date')}"
-                                 f"（{ot.get('weekday') or _cn_day(ot.get('date') or '')}"
-                                 f"）** 有一条同名的。）")
-                append_conversation(session_id, "user", message)
-                append_conversation(
-                    session_id, "assistant",
-                    f"已核实：待办在日程里——{td.get('summary') or ''}")
-                return {
-                    "module": "planner",
-                    "session_id": session_id,
-                    "answer": (
-                        f"👀 在的，日程里排着呢：**{td.get('title')}**｜"
-                        f"{td.get('date')}（{wd_name}）"
-                        f"{td.get('start')}-{td.get('end')}。{elsewhere}\n"
-                        "面板没刷出来的话，切一下周表/月表那一格就能看到。"
-                    ),
-                    "trace": [{"step": 1, "phase": "👀 查日程（系统核实）",
-                               "answer": f"待办在：{td.get('summary') or ''}"}],
-                    "options": [],
-                    "awaiting_choice": False,
-                }
-            # 不是待办，找的会不会是**课**？（「怎么没有周一的高数」）
-            wd = _iso_wd(day) if day else None
-            courses = [c for c in ((get_timetable_data() or {}).get("courses") or [])
-                       if _planner_name_match(title, c.get("course") or "")]
-            here_c = [c for c in courses if not day or c.get("day") == wd]
-            if here_c:
-                c0 = here_c[0]
-                append_conversation(session_id, "user", message)
-                append_conversation(
-                    session_id, "assistant",
-                    f"已核实：那是课表里的课——{DAY_NAMES.get(c0.get('day'), '')} "
-                    f"{c0.get('start')}-{c0.get('end')} {c0.get('course')}")
-                return {
-                    "module": "planner",
-                    "session_id": session_id,
-                    "answer": (
-                        f"👀 那是**课**，在周表里：{DAY_NAMES.get(c0.get('day'), '')}"
-                        f"{c0.get('start')}-{c0.get('end')} "
-                        f"{c0.get('course')}@{c0.get('location') or ''}。\n"
-                        "周表那一栏直接能看到；要往某天加一条相关的待办，说一声就行。"
-                    ),
-                    "trace": [{"step": 1, "phase": "👀 查课表（系统核实）",
-                               "answer": f"课在：{DAY_NAMES.get(c0.get('day'), '')} "
-                                         f"{c0.get('start')}-{c0.get('end')}"}],
-                    "options": [],
-                    "awaiting_choice": False,
-                }
-
-        # 日程里真没有 → 是不是那条提案压根没确认成？最近说过要加的话，补条出来
-        req = _recent_add_request(session_id)
-        if not req and asking_add and prev_user:
-            req = prev_user
-        prop = None
-        if req:
-            prop = parse_add_todo(req)
-            if prop is None:
-                mc = todo_mode_proposal(req)
-                prop = mode_to_card(mc, "ai") if mc else None
-        if prop is not None:
-            day_note = f"（你说的{_cn_day(day)}）" if day else ""
-            return _offer_response(
-                session_id, prop, message,
-                (f"👀 查了日程{day_note}，**这一条还没写进去**——"
-                 "刚才那次没确认成。确认条给你补上了：\n\n"
-                 f"要不要把 **{prop['title']}** 排进日程？"
-                 f"{prop['date']}（{prop['weekday']}）"
-                 f"{prop['start']}-{prop['end']}。\n"
-                 "点【确认加入】就写进去，回一句「确认」也一样。"),
-                "👀 他说看不见 → 核实确实没写入 → 补挂确认条")
-
-        append_conversation(session_id, "user", message)
-        append_conversation(
-            session_id, "assistant",
-            f"已核实：日程里没有这一条（{title or '没点名'}）")
-        return {
-            "module": "planner",
-            "session_id": session_id,
-            "answer": (
-                f"👀 查了日程，**确实还没有**"
-                f"「{title or '这条'}」{f'（{_cn_day(day)}）' if day else ''}。\n"
-                "要加的话说一句「帮我加个什么什么」，我马上排好给你确认。"
-            ),
-            "trace": [{"step": 1, "phase": "👀 查日程（系统核实）",
-                       "answer": "没有这一条，如实说"}],
-            "options": [],
-            "awaiting_choice": False,
-        }
-
-    # —— 「卡片呢 / 怎么没弹卡」：学生在找上一轮的确认卡 ——
-    # 实测原话：「卡片呢」——被 router 分给 lostfound（LLM 把"卡"联想成校园卡），
-    # 模型还嘴上说"卡片挂出来了"，界面上一张卡都没有。规则：
-    #   · 话很短、在找卡 → 暂存里有提案就**原样重挂**（不重新生成、更不写库）；
-    #   · 暂存是空的 → 如实说"没有挂着的卡"，绝不让模型凭空编一张。
-    _FIND_CARD_WORDS = ("卡片", "弹卡", "卡呢", "没卡", "弹窗", "弹框", "确认条")
-    # ⚠️ 别把"报障"当成"找卡"：实测原话「**没有收到弹窗**」里也有"弹窗"两个字，
-    # 可它不是在问"上一张卡去哪了"，而是**投诉那张卡压根没生成**——
-    # 那一幕的正解在下面的「补条兜底」：从模型那段自相矛盾的话里把 16:00-17:30
-    # 捞出来、重新挂一张卡。被这里截走的话，学生只能收到一句"手上没有挂着的卡"，
-    # 报障那一幕就又白修了（第十一批测试钉的就是它）。
-    _CARD_NEVER_ARRIVED = ("没有收到", "没收到", "收不到", "没弹出来", "没出来",
-                           "没有出现", "没出现", "看不见", "没看见")
-    if (_sem_intent == INTENT_FIND_CARD
-            or (len(message) <= 12 and any(w in message for w in _FIND_CARD_WORDS)
-                and "吗" not in message
-                and not any(w in message for w in _CARD_NEVER_ARRIVED))):
-        _held = peek_pending(session_id) or {}
-        _held_opts = [o for o in (_held.get("options") or []) if isinstance(o, dict)]
-        append_conversation(session_id, "user", message)
-        if _held_opts:
+            append_conversation(session_id, "assistant", f"已列出待办：{len(todos)} 条")
             return _sem_done({
                 "module": "planner",
                 "session_id": session_id,
-                "answer": "📑 卡还在呢——就是下面这条，勾好/点【确认】就办。",
-                "trace": [{"step": 1, "phase": "📑 学生找卡 → 原样重挂暂存里的提案",
-                           "answer": _held.get("summary") or "已重挂"}],
-                "options": _held_opts,
-                "awaiting_choice": True,
+                "answer": answer,
+                "trace": [{"step": 1, "phase": "📋 列出待办（系统读取）",
+                           "answer": f"{len(todos)} 条"}],
+                "options": [],
+                "awaiting_choice": False,
             })
-        return _sem_done({
-            "module": "planner",
-            "session_id": session_id,
-            "answer": ("📑 现在手上没有挂着的卡。说一句「加个什么什么」"
-                       "（比如「我要周六去吃火锅」），我马上把确认条给你挂出来。"),
-            "trace": [{"step": 1, "phase": "📑 学生找卡 → 暂存为空，如实说",
-                       "answer": "暂存里没有提案"}],
-            "options": [],
-            "awaiting_choice": False,
-        })
 
-    # ★ 「每月 / 每个周末 / 下个月」这一类周期说法：**任何一档判成加待办都不许出卡**
-    #   （「每天」2026-10-13 起不在这儿了 —— 它现在表达得了：一条 daily 习惯，只进代办不进日历）
-    #   （2026-10-11 补，判据在 planner.unsupported_period）。
-    #   病根不是规则层读错了 —— 规则层从来不接这一类，是**样本库/语义层能绕过它单独接单**：
-    #   用户原话「在下个月的每个周末三点开始大约三个小时」被样本库判成 add_todo、
-    #   事名学成「活动」，最后排出一条 15:00-18:00 的孤零零待办。
-    #   他要的是"以后每个周末"，拿到的却是"某一天一次"，而且这条还**学进样本库**了，
-    #   以后每次近似说法都照着错。所以这里做两件事：
-    #   ① 一处不分层的否决（规则/样本库/语义层哪档判的都拦）；
-    #   ② 这条分支**不走 `_sem_done`**（它就是 `remember()` 学样本的那一步），
-    #      否掉的句子绝不许再学进去 —— 否则同一个错会自己繁殖。
-    #   只做这两件，不去"听懂每月/每个周末"：一条日程只能落**某一天**、**每周固定某天**或**每天**，
-    #   硬扩表达等于替学生造他没说要的几十条安排（判据同 `weekly_repeat_day` 的取舍）。
-    if _period_block:
-        return _period_reject_response(session_id, message, _period)
-
-    # ⚠️ 末尾的 `and not wants_add_course(message)` 是「加课优先于加待办」的硬闸门：
-    # 学生说"周一早上加一节高数课"时，语义层（样本库/大模型）很可能把它判成 add_todo，
-    # 于是这句话会先进到上面的加待办分支、被当成待办塞进日程——正是报障那一幕。
-    # 加课没有独立的语义意图（白名单里没有 add_course），纯靠 wants_add_course 这条
-    # 确定性分支接管；所以只要它认得，加待办这边就必须让路，绝不抢。
-    #
-    # 开头的 `not _rule_veto`：规则想"加一条"，可语义层判它**不是**要办事
-    # （多半在问事：在校园问答栏问「我要去哪里取快递」），就以语义层为准——
-    # 否则那张卡会写着「哪取快递」挂到学生眼前，而他只是想知道去哪儿取。
-    # 末尾的 `and not _physio`：**纯生理状态感叹（"我饿了""好累啊"）任何情况下
-    #   都不许进这条分支** —— 哪怕语义层硬判了 add_todo。这是他的一条安全绳，
-    #   判据见 `intent.physio_state_only`（生理词 + 无行动词 + 没报钟点 + 短句）。
-    if ((not _rule_veto
-            and (wants_add_todo(message) or (asking_add and is_add_todo_answer(message))))
-            or _sem_intent == INTENT_ADD_TODO) \
-            and not _physio and not wants_add_course(message):
-        # 追问后的补充回答（学生先说"帮我安排周二的游泳"，再补"下午两点到三点"）：
-        # 补充那句里没有标题、也没有日期，单独解析会把标题弄丢——
-        # 把上一句原话拼回来一起算。识别标记就是下面追问分支写进会话历史的那句"加待办缺细节"。
-        # 语义层那一路（`_sem_intent`）：它把口语翻成了"加个吃火锅，76分钟，工作日"
-        # 这种**解析器认得的规范话**（`to_canonical`），所以照旧喂给同一套老解析，
-        # 不用再抄一份"从 JSON 造卡片"的逻辑。
-        # 语义层那一路：把口语翻成"加个吃火锅，76分钟，工作日"这种**解析器认得的规范话**
-        # （`to_canonical`），照旧喂给同一套老解析——不另抄一份"从 JSON 造卡片"的逻辑。
-        # ⚠️ 但**规则明明认得这句话时不能这么替**：规范话是拿语义字段拼的，字段里没有的
-        #    信息会整段丢掉——"帮我安排周二的游泳"里的"周二"就不在语义字段里，一替下去
-        #    候选时段会摊到一整周（实测踩过）。所以只在规则读不出来时才用规范话兜。
-        if _sem_intent == INTENT_ADD_TODO and _sem and not wants_add_todo(message):
-            blob = carry_period(carry_freq(to_canonical(message, _sem), message), message)
-        else:
-            blob = (prev_user + "，" + message) if (asking_add and prev_user) else message
-        proposal = None
-        if asking_add and prev_user:
-            proposal = parse_add_todo(prev_user + "，" + message)
-        if proposal is None:
-            proposal = parse_add_todo(blob)
-        if proposal is None and _sem_intent == INTENT_ADD_TODO and _sem:
-            # ★ 2026-09-30 补：语义层/样本库说了"这是件要办的事"、这句话里也**报了钟点**，
-            #   可就是**没说哪天** —— 学生报障那句「中文12点的车」正是这一档。
-            #   `parse_add_todo` 的契约是"日期和起始时刻缺一个就返回 None"，于是
-            #   12 点被丢掉、改去摊一堆候选时段；而摊出来的候选里**根本没有他说的那个点**，
-            #   等于让他把自己刚说过的钟点重挑一遍。
-            #   就着他报的那个点出条、一条就够（本文件下面那句注释早就这么写了，
-            #   只是"没说哪天"这一档一直没人接）。见 planner.span_only_proposal：
-            #   兜底日期用今天，今天这个点已经过了就顺延到明天。
-            # ⚠️ **只在语义层这一路兜**：规则层那句里的时间未必是这件事的时间
-            #   （「三点下课，帮我加个买水果」会被读成 03:00），交不出日期时摊候选更安全。
-            proposal = span_only_proposal(blob, (_sem.get("title") or "").strip())
-        if proposal is not None:
-            # 学生**自己报了准点** → 就着他给的这个点出条，一条就够。
-            # 不必再摊候选：他已经说清要哪个点了，再摊三个等于让他重挑一遍。
-            # ★ 架构升级 · 试点 2：确认卡字段 / 暂存 / 写库路径**一个字节都不改**，
-            #   只把下面那段模板话术交给模型润色（超时/失败/没 key → 原样退回模板）。
-            #   模型只复述事实，不许新增、不许说"已办好"（承诺词守卫在 polish 里）。
-            _wd_bare = (proposal.get("weekday") or "").replace("周", "") or "那天"
-            _card_fallback = (
-                f"📝 要不要把 **{proposal['title']}** 排进日程？"
-                f"{proposal['date']}（{proposal['weekday']}）"
-                f"{proposal['start']}-{proposal['end']}。\n"
-                # 学生说了"每个周六"就得在回话里把这件事确认一遍 —— 只报一个日子，
-                # 他会以为就排这一天，下周那天不再出现（2026-10-11 真机就是这么掉的）。
-                + (f"这是**每周{_wd_bare}**都要做的事，我只建一条："
-                   f"以后每个周{_wd_bare}它自己会出现在日程里。\n"
-                   if proposal.get("repeat") == "weekly" else "")
-                # 「每天都要背单词 + 报了准点」同理：不说清"每天"和"不进日程"，
-                # 他会以为就排这一天，第二天在日程里找不到，判成系统没记上。
-                + (f"这是**每天**都要做的事，我只建一条："
-                   f"以后每天它都会出现在你的「代办事项」里（习惯不占日程格子）。\n"
-                   if proposal.get("repeat") == "daily" else "")
-                + f"下面点一下【确认加入】我就写进去，回一句「确认」也一样。")
-            # ★ 卡片类出口**不润色**（2026-10-14 第一刀 B，用户点的"同类出口不一致"）。
-            #   上面那段 `_card_fallback` 就是系统按事实拼好的话 —— 连「这是每周六都要做的事，
-            #   我只建一条」这种最容易丢的说明都在里面，交给模型复述它只会把回复拖慢 3~4 秒
-            #   （实测这一档 3223ms），换不到任何信息量。
-            #   长列表出口（列待办）仍走润色，全仓只剩那一处润色调用。
-            #   ⚠️ 摘的是**位置**，不是守卫：承诺词/JSON 守卫在 polish 内部（另一处仍生效）、
-            #   引擎 claim 守卫与出口内脏保险都不许跟着删（test_46 D 批钉着四条）。
-            _card_answer = _card_fallback
-            return _sem_done(_offer_response(
-                session_id, proposal, message, _card_answer,
-                "📝 生成待办提案（系统判定）"))
-
-        # 学生没说时间（「那你帮我加一个健身在周四」「加个健身」「帮我加个游泳」）。
-        #
-        # 这一档的规格**改过两次**，三版都记在这儿，免得后人再翻回去：
-        #   · 第一版：系统**替他挑一个**时间、出一张"就排在这儿了"的单条确认条。
-        #     理由是"不许反问学生几点"（投诉原话：「没有帮我想时间，是我问了才说的」）。
-        #     方向对，但做法太死——学生回：
-        #     「**我定的太严了，你改一下，由 ai 帮我去挑选合适时间，进行列举**……
-        #      由我打勾，进行增加」。
-        #   · 第二版：**摊开几个空档让他自己打勾**（todo_slots 卡 + /api/todos/batch）。
-        #     这回方向也对了，但又漏了学生后半句：
-        #     「**要区分两种，一种是我有时间规划了，一种是我没有时间规划让他帮我安排，
-        #      不要一上来就询问详细时间，先给弹窗，（有时间规划）（还没有，你帮我定）**」。
-        #     不分这两种，一律先摊候选 —— 对一个"随便，你看着办"的学生，
-        #     摊三个时间段等于又把决定权推回去了。
-        #   · **这一版**：先出**二选一卡**（todo_mode，什么都不定），
-        #     学生点"我自己定" → 候选卡（勾 / 其他自填）；
-        #     点"你帮我挑" → 系统真去规划一段（`plan_todo_slot`，卡片上写清为什么排这儿）。
-        #
-        # 不变的两条铁律：
-        #   ① 这里**只出提案，一个字节都不写库**；挑不出来的照样如实说，绝不硬凑一个时间。
-        #   ② 反问学生"几点到几点"依然禁止——他去查空档是他的正事。
-        #
-        # ⚠️ 还有第三件必须做的事：**先确认他真说了"要做什么事"**。
-        #    学生原话：「**要识别啥才是真的事情，不是随便拿那一句话就去当代办加入日程了**」。
-        #    实测「大概一个小时帮我安排时间」被 `_pick_title` 抠成「大概小时帮我时间」，
-        #    还照样挂出了一张候选卡让他勾时间——可连要做什么都还不知道，挑时间往哪写？
-        #    `todo_mode_proposal` 里已经过了 `_pick_title` 的判真关，判不出事名返回 None，
-        #    就落到下面的追问分支去问"要安排什么事"。
-        # ⚡ 第六轮改版（学生原话：「**不需要先问，直接去安排，重复的确认太麻烦，
-        #    直接敲定结果，主打效率**」）：以前这里先出一张"你自己定 / 我帮你挑"的
-        #    二选一卡（"要区分两种"是第十批的规格），可真用起来，**这一轮问答本身
-        #    就是他嫌麻烦的东西**——他要的是结果。现在直接敲定：
-        #    `todo_mode_proposal` 照旧算（它里头有过标题判真和时长解析，丢不得），
-        #    但**不再把二选一卡递出去**，就地走"你帮我挑"那条路——
-        #    系统从真实空档里挑一段，出一张"就排在这儿"的单条确认条，
-        #    卡上写清为什么排这儿、想换怎么说。写库仍要他点【确认加入】——
-        #    效率提上去，一步都不越权。
-        #    直接挑不出（那几天都排满）→ 退回候选卡让他勾；连事名都判不出
-        #    → 才落到下面的追问。每一级都比上一级多问一句，能不问就不问。
-        # ⚡ 第七轮改版（学生原话：「**现在就是在时间安排上，将多种合理时间提出让我挑选，
-        #    也是弹窗里进行选择**」，见 2026-09-25 对话）：第六轮的"系统先替他敲定唯一一个"
-        #    又被打回了——学生要的是**从多个合理时段里自己挑**，不是系统替他定。
-        #    所以把主路径从 `mode_to_card(mode_card, "ai")`（单条）换成
-        #    `mode_to_card(mode_card, "self")`（多段候选卡）：系统只负责列出空档、
-        #    学生自己打勾（可勾多个、可"其他时间"自填），写库仍走 /api/todos/batch，
-        #    一步不越权。只有当**连一个空档都排不出**（那几天全满）时，
-        #    才退回第六轮的"系统单条 AI 敲定兜底"。每一级都比上一级少替学生做主。
-        # 这一句里没说清要做什么，但学生最近说过 → 从上下文把事名**继承**过来。
-        # 实测那一幕（截图）：学生说「我想去游泳，帮我安排时间」，管家客气了一轮
-        # 「你想安排在哪天？还是我直接帮你按本周的空闲时间找找？」，学生回
-        # 「这周安排一个时间」——这句话本身没有"游泳"，系统却反问他
-        # 「要安排的是什么事」。他刚刚才说过！规则（学生原话）：
-        # 「**禁止反复追问、不要多余客套啰嗦**」「人性化自动检索，直接给方案」。
-        # 继承源用 `_recent_add_request`：它要求那句原话本身带着"安排/加"的意图、
-        # 不是确认词、且最近没真的写过库——不会把闲聊里随便一个词抓来当事名
-        # （「要识别啥才是真的事情」这条红线不破）。
-        if todo_title_of(blob) == "待办":
-            inherited = _recent_add_request(session_id)
-            if inherited:
-                inh_title = todo_title_of(inherited)
-                if inh_title != "待办":
-                    merged = f"{inherited}，{message}"
-                    # ⚠️ 合并完还得核对一次：抠出来的必须**还是这一个事名**。
-                    # 不核对的话，「帮我安排一下健身」+「再安排一个」会糊成
-                    # 「健身再」——两句话被揉成一个谁也没说过的怪名字挂出去。
-                    # 对不上就说明这一句不是在接着上一句说（可能是另一件事），
-                    # 那就别硬凑，照旧问清楚。
-                    if todo_title_of(merged) == inh_title:
-                        blob = merged
-
-        mode_card = todo_mode_proposal(blob)
-        if mode_card is not None:
-            # 本轮（第七轮）规格：学生没定时间 → **先摊开多个候选时段让他自己挑**，
-            # 他要的就是"多种合理时间提出让我挑选，在弹窗里选"（见 2026-09-25 对话）。
-            # 不再由系统先替他敲定唯一一个——上一版那样等于又替他做了主，来回换。
-            # 能列出空档就出候选卡（多段、可勾多个、可"其他时间"自填）；
-            # 实在一个空档都排不出（那几天全满）→ 才退回系统单条 AI 敲定兜底。
-            # 写库仍要他点【加入日程】，一步不越权。
-            slots = mode_to_card(mode_card, "self")
-            if slots is not None:
-                # 开场那句带上学生自己选的性格腔调（没选就退回下面这句默认引导语）
-                _lead = _slots_lead(persona_key) or (
-                    "⏰ 给你找了几个空着的时间段，挑方便的勾上（可勾多个）：\n\n")
-                return _sem_done(_offer_response(
-                    session_id, slots, message,
-                    _slots_answer(slots, lead=_lead),
-                    "🙋 学生没定时间 → 摊出多个候选时段（让他打勾挑选，本轮规格）"))
-            # 连一个空档都排不出来（那几天全满）→ 退回系统单条 AI 敲定兜底
-            picked = mode_to_card(mode_card, "ai")
-            if picked is not None:
-                return _sem_done(_offer_response(
-                    session_id, picked, message,
-                    (f"⏰ 直接帮你定好了：**{picked['title']}** 排在 "
-                     f"**{picked['date']}（{picked['weekday']}）"
-                     f"{picked['start']}-{picked['end']}**。\n"
-                     f"{picked.get('reason') or ''}\n"
-                     "点【确认加入】就写进日程。这个点不合适，说一句"
-                     "「改成周四晚上七点到八点」这样的话，我按新的重出一张。"),
-                    "⚡ 候选空档都排不出 → 系统单条 AI 敲定兜底"))
-
-        # 出不了卡。两类情况，话术不能混为一谈（todo_missing_advice 分得清）：
-        #   ① 学生根本没说要加什么事（只有时长、或只有"帮我安排"）→ 问他要加什么；
-        #   ② 学生说了哪天、可**那天真排不进**（候选/规划都试过了）
-        #      → 要如实说"这天满了"，别让他一遍遍补"几点几点"。
-        #
-        # 也**不能**把话交给模型——实测它会回"搞定！已经正式写进你的待办啦"，
-        # 日程里其实什么都没有（schedule 模块连一个写入工具都没有，纯属嘴甜）。
-        # 照删课的规矩：缺什么就追问什么，标记"加待办缺细节"写进历史，
-        # 学生下一句补充由上面的合并逻辑接着算。
-        #
-        # ⚠️ 这个标记只用于**内部接续**（下一轮把上一句原话拼回来一起解析），
-        #    它本身**绝不能出现在学生看到的回答里**。学生截屏投诉过一句光秃秃的
-        #    「加待办缺细节」——那是内部状态码漏到了对话框里，他完全不知道要干嘛。
-        #    学生看到的永远是 `todo_missing_advice` 拼出来的人话。
-        clear_pending(session_id)
-        missing = pick_todo_missing(blob)
-        append_conversation(session_id, "user", message)
-        append_conversation(session_id, "assistant", "加待办缺细节")
-        return {
-            "module": "planner",
-            "session_id": session_id,
-            "answer": todo_missing_advice(blob),
-            "trace": [{"step": 1, "phase": "🤔 加待办缺细节（系统追问）",
-                       "answer": f"缺{missing}，先问清楚再出提案"}],
-            "options": [],
-            "awaiting_choice": False,
-        }
-
-    # 3c-bis) **确定性加课分支**（人话：学生说"周一加一节体育，19:00-20:40，体育馆"）
-    #     跟加待办同一个道理——配了密钥之后跑的是真模型，模型最爱说"已经加上了"，
-    #     结果周表里什么都没多。这里由系统算出新课表（整表替换的提案），
-    #     卡片上点【确认】才写入，学生看得见自己点头了什么。
-    if wants_add_course(message):
-        proposal = parse_add_course(message)
-        if proposal is not None:
-            save_pending(session_id, [proposal])
-            append_conversation(session_id, "user", message)
-            append_conversation(session_id, "assistant", f"已生成加课提案：{proposal.get('summary', '')}")
-            return {
-                "module": "planner",
-                "session_id": session_id,
-                "answer": (
-                    f"🗓️ 要不要往周表里加一节？\"{proposal.get('summary', '')}\"。"
-                    f"下面点一下【确认】我才写；点【取消】周表原封不动。"
-                ),
-                "trace": [{"step": 1, "phase": "🗓️ 生成加课提案（系统判定）",
-                           "answer": str(proposal.get("summary") or "")}],
-                "options": [proposal],
-                "awaiting_choice": True,
-            }
-        # 算不出提案只有两种可能：缺星期，或说了星期却连"上午/下午/晚上"都没给。
-        # 这种情况下**不能**把话交给模型——它多半回一句"已经加上了"，学生再去周表里找。
-        # 缺哪样就追哪样，别一股脑只问星期（说了星期、只差时间的会被问蒙）。
-        clear_pending(session_id)
-        append_conversation(session_id, "user", message)
-        append_conversation(session_id, "assistant", "加课缺细节")
-        if _pick_day(message) is None:
-            return {
-                "module": "planner",
-                "session_id": session_id,
-                "answer": (
-                    "这门课要加在**星期几**？把星期说一下（比如「周三加一节《毛概》，"
-                    "10:00-11:40」），我算出新课表给你确认，你点头我才写进周表。"
-                ),
-                "trace": [{"step": 1, "phase": "🤔 加课缺星期（系统追问）",
-                           "answer": "学生没说星期，先问清楚再出提案"}],
-                "options": [],
-                "awaiting_choice": False,
-            }
-        return {
-            "module": "planner",
-            "session_id": session_id,
-            "answer": (
-                "星期我记下了，这门课想排在**几点**？说个钟点（「10:00 到 11:40」），"
-                "或者说「上午/下午/晚上」也行，我算出新课表给你确认，你点头我才写进周表。"
-            ),
-            "trace": [{"step": 1, "phase": "🤔 加课缺时间（系统追问）",
-                       "answer": "学生说了星期却没给时间，先问清楚再出提案"}],
-            "options": [],
-            "awaiting_choice": False,
-        }
-
-    # 3h) **确定性标记完成分支**（人话：学生说"把游泳标记完成""勾掉交电费"——
-    #     系统接管：先列清楚是哪一条，出确认条，学生点头才算数，**模型碰不到改状态的接口**）
-    #
-    # 为什么必须系统接管：老版本模型手里有一个真能改状态的 update_todo_status 工具，
-    # 规矩只写在提示层（"必须先确认"）。提示是软的，模型口语一变就可能绕过去——
-    # 学生没点头就把待办置成已完成，他还在以为没办完，复盘时才发现已经"完成"了。
-    # 所以两件事一起做（跟删待办一个模子）：
-    #   ① 写工具从工具箱撤掉（planner 里只留只读的 propose_todo_done，出不了任何状态）；
-    #   ② 判定和列清单收归系统，三种情况各有各的走法（规格里的"3 确定性分支"）：
-    #      · 点名了唯一一条 → 出确认条（原样念一遍标题+日期+时段），等学生点头
-    #      · 命中好几条 / 没说清是哪条 → **列清单问是哪一条，列完就停**，绝不猜
-    #      · 一条都没命中 → 如实说，绝不编一条出来标记
-    # ⚠️ 必须排在删待办（3g）前面：学生说"把周二那条**待办**标记完成"也带"周二"，
-    #     让删待办先接会误判成"要删"，跑偏。标记完成不是删除，顺序摆正。
-    # ⚠️ "学生在回答是哪一条吗" 也只看**紧挨着的上一句**（同删待办的串味教训）。
-    _last_bot = next((m.get("content") or "" for m in reversed(get_conversation(session_id))
-                      if m.get("role") == "assistant"), "").strip()
-    asking_done = _last_bot == "标记完成缺细节"
-    done_intent = ((_done_claim and not _rule_veto)
-                   or _sem_intent == INTENT_DONE)
-    # ★★ 先算"这句是不是在回答**删待办**那份候选清单"，再决定要不要让标记完成接。
-    #
-    # 真机踩到的坑（学生回「游泳」，系统却弹出一张"标记完成"卡）：上一句是删待办的
-    # 候选清单（"1. 游泳 2. 游泳"），学生回名字是在**点名**；可**语义层**把「游泳」
-    # 单独一句判成了 done_todo（光看这两个字，它确实更像"办完了"）。而标记完成分支
-    # 排在上面（3h 在 3g 前），于是这句被它抢走 —— 判定层再怎么按上下文解析都没机会跑。
-    #
-    # 判据分两层，只让**弱信号**（语义层猜的 done）让位：
-    #   · 规则层明说这是标记完成（"把游泳标记完成/勾掉…"，且没被 _rule_veto 否掉）
-    #     → 硬信号，还是标记完成接（别让一个"都"字/一份清单把它盖掉）；
-    #   · 只有语义层判 done（主语就俩字名字）→ 弱信号，让给删待办。
-    _rm_held_now = _pending_remove_candidates(session_id)
-    _rm_asking = _last_bot == "删待办缺细节"
-    _rm_answers_held = bool(_rm_held_now) and (
-        bool(_pick_todo_indexes(message, len(_rm_held_now)))
-        or (_pending_todo_remove(session_id) is not None and _wants_rechoose(message)))
-    _rm_reply_pending = _rm_asking or _rm_answers_held
-    _done_hard = _done_claim and not _rule_veto
-    if (done_intent or asking_done) and not (_rm_reply_pending and not _done_hard):
-        # 学生是不是在回答"是哪一条"（回一句"第二条"/"23"/"游泳那条"）。
-        # 同删待办：不能再 and not done_intent——语义层会把「第二条」判成某类办事意图，
-        # 关掉 followup 就会退化成"没找到"。resolve_todo_done_reply 自带名字兜底。
-        followup = asking_done
-        held = _pending_todo_done_candidates(session_id)
-        if followup:
-            res = resolve_todo_done_reply(message, held)
-        else:
-            res = resolve_todo_done(message)
-        status = res.get("status")
-
-        if status == "ok":
-            proposal = res["proposal"]
-            save_pending(session_id, [proposal])
-            append_conversation(session_id, "user", message)
-            append_conversation(session_id, "assistant",
-                                f"已生成标记完成提案：{proposal['summary']}")
-            return {
-                "module": "planner",
-                "session_id": session_id,
-                "answer": (
-                    f"✅ 要标记为完成的是这一条：**{proposal['title']}**｜{proposal['date']}"
-                    f"（{proposal['weekday']}）{proposal['start']}-{proposal['end']}。\n"
-                    "确认条就在下面这条消息里，点【确认完成】我才改状态；"
-                    "点【取消】这条待办原封不动。"
-                    "（也可以直接在聊天框回一句「确认」，一样会执行。）"
-                ),
-                "trace": [{"step": 1, "phase": "✅ 生成标记完成提案（系统判定）",
-                           "answer": proposal["summary"]}],
-                "options": [proposal],
-                "awaiting_choice": True,
-            }
-
-        # 学生对着刚列出的清单说"都完成了 / 全标记完成" —— 同删待办：
-        # 接着上一句指代"你列的那几条我都要办"，一次点头、一次办完。
-        if status == "all" and res.get("todos"):
-            todos = res["todos"]
-            proposal = todo_done_batch_proposal(todos)
-            save_pending(session_id, [proposal])
-            append_conversation(session_id, "user", message)
-            append_conversation(session_id, "assistant",
-                                f"已生成标记完成提案：{proposal['summary']}")
-            return {
-                "module": "planner",
-                "session_id": session_id,
-                "answer": (
-                    f"✅ 好，你说的是**上面那 {proposal['count']} 条全都要标记完成**。"
-                    "我把它们一条条列在下面的确认条上了——"
-                    "点【确认完成全部】我才改状态；点【取消】原封不动。"
-                    "（也可以直接在聊天框回一句「确认」，一样会执行。）"
-                ),
-                "trace": [{"step": 1,
-                           "phase": "✅ 学生说「都」→ 生成批量标记完成提案（系统判定）",
-                           "answer": proposal["summary"]}],
-                "options": [proposal],
-                "awaiting_choice": True,
-            }
-
-        # 命中好几条：**列清单，问是下面哪一条，列完就停**。
-        # 这一支就是规格第 2 条——"不许猜"。清单同时记进暂存，
-        # 学生回"第二条"时系统接得住（见上面的 resolve_todo_done_reply）。
-        if status in ("many", "unclear") and res.get("todos"):
-            todos = res["todos"]
-            save_pending(session_id, [{"kind": "todo_done_candidates",
-                                       "todos": todos, "summary": "待标记候选"}])
-            append_conversation(session_id, "user", message)
-            append_conversation(session_id, "assistant", "标记完成缺细节")
-            head = ("你说的这条对上了好几条待办，我不敢替你挑 ✅"
-                    if status == "many" else "没太看明白你指哪一条 ✅")
-            return {
-                "module": "planner",
-                "session_id": session_id,
-                "answer": (
-                    f"{head}\n\n{render_todo_done_list(todos)}\n\n"
-                    "是下面哪一条？回我一个名字（或序号，比如「第二条」），"
-                    "我再把确认条挂出来——**你点头之前我一条都不会动。**"
-                ),
-                "trace": [{"step": 1, "phase": "✅ 标记完成命中多条（列清单，不猜）",
-                           "answer": f"候选 {len(todos)} 条，等学生点名"}],
-                "options": [],
-                "awaiting_choice": False,
-            }
-
-        # 一条都没命中：如实说。绝不从"没找到"里编一条出来标记。
-        clear_pending(session_id)
-        day = res.get("day")
-        where = f"{day}（{_weekday_of(day)}）" if day else ""
-        append_conversation(session_id, "user", message)
-        append_conversation(session_id, "assistant", "标记完成：没找到符合条件的")
-        return {
-            "module": "planner",
-            "session_id": session_id,
-            "answer": (
-                f"✅ 我在{where or '日程里'}没找到叫这个的待办，什么都没动。\n"
-                "你可以：① 说得再具体点（哪一天 + 叫什么）；"
-                "② 直接问我「那天排了什么」，我列给你看。"
-            ),
-            "trace": [{"step": 1, "phase": "✅ 标记完成没找到（如实说，不猜）",
-                       "answer": "没有匹配的待办，什么都不改"}],
-            "options": [],
-            "awaiting_choice": False,
-        }
-
-    # 3g) **确定性删待办分支**（规格：跟删课同一套规矩——先列清楚，再动手，学生点头才算数）
-    #
-    # 为什么必须由系统接管：删待办**不可逆**，而模型手里原先有一个真能删的 remove_todo，
-    # 规矩只写在提示层（"必须先确认"）。提示是软的，模型口语一变就可能绕过去——
-    # 学生没点头就删掉，找不回来。所以两件事一起做：
-    #   ① 写工具从工具箱里撤掉（模型只能拿到提案，删不动库）；
-    #   ② 判定和列清单也收归系统，三种情况各有各的走法：
-    #      · 点名了唯一一条 → 出确认条（原样念一遍标题+日期+时段），等学生点头
-    #      · 命中好几条 / 只说"明天那条" → **列清单问是哪一条，列完就停**，绝不猜
-    #      · 一条都没命中 → 如实说，绝不编一条出来删
-    # 注意这一段**必须排在删课（3f）前面**：学生说"把周二那条**待办**删掉"也带了"周二"，
-    # 让删课先接就会跑到课表那条路上追问"想删哪一节"——问错人了。
-    # ⚠️ "学生在回答是哪一条吗" 只看**紧挨着的上一句**。
-    # 早先写成"最近 4 条 assistant 里有这个标记就算"，结果标记会一直赖在窗口里：
-    # 学生先删了一条待办、隔两轮又说「去掉周二的高数」，这句话还会被当成"在挑待办"，
-    # 于是落到"没找到这条待办、一条都没删"——**课表那条路压根没机会接手**。
-    # 判据收紧成"上一句就是我那句追问"，就不存在这个串味问题。
-    # ⚠️ `_last_bot` / `asking_rm_todo` / `held_now` / `answers_held` 已在上面
-    #    （3h 标记完成分支之前）算好：那边要先知道"这句是不是在回答删候选清单"，
-    #    才能决定让不让标记完成接。这里直接复用，别再算第二遍——两处各算一遍，
-    #    将来改一处就会悄悄不一致（同一个判据两个说法是这类 bug 的老家）。
-    asking_rm_todo = _rm_asking
-    rm_intent = (((wants_remove_todo(message) or wants_remove_todo_loose(message))
-                  and not _rule_veto)
-                 or _sem_intent == INTENT_REMOVE_TODO)
-    # ★ 手里还攥着上一句那份候选清单时，"报个序号 / 说声换一条"就是在回答我们——
-    #   跟上一句是不是那句追问**无关**：清单指的是"我们刚列过"，而裸序号离开清单
-    #   根本没有别的主人。少了这一条，系统替他挑过一条之后他说"不对，换一条/第二条"
-    #   就没人接得住（卡上的出口是断的，他会觉得"它自己定了就不听我"）。
-    # ⚠️ 收紧两处，免得把别的意图串味进来：
-    #   · 报序号 —— 只认**整句基本就是个序号**（"2"/"第二条"/"23"），由 _pick_todo_indexes 把住；
-    #   · 说"不对" —— 只在**刚挂过一张删待办卡**时才算（说明他是在否掉那张卡）。
-    held_now = _rm_held_now
-    answers_held = _rm_answers_held
-    # ★ 软取消优先作废**还没点头的加待办提案**，别去日程里翻一条出来删。
-    #   真机那一幕（用户截图）：「明天去吃自助」出了候选时段卡《吃自助》，
-    #   他紧接着说「算了不吃了」—— 库里**压根还没有这条**，可执行层把这句听成
-    #   "删一条待办"，于是端出整张日程问他"是下面哪一条"。他要的是把这张卡撤掉。
-    #   这一支只清暂存：**一个字节都不写库，也不删库**（判定/执行分离照旧）。
-    # ⚠️ 只认 `_ADD_PROPOSAL_KINDS` 那几种 = 天然避开了"他正在回答删待办那份清单"：
-    #   暂存每个会话**只有一个位置**（`save_pending` 整份覆盖），挂着 `todo_remove_candidates`
-    #   的时候这里拿到的就是 None，不需要再叠一层 `asking_rm_todo / answers_held` 的判断
-    #   （早先按施工单加了那道，实测是**死条件** —— 永远为真，白占一行还让人以为它在把关）。
-    _active_add = _active_add_proposal(session_id)
-    if _active_add is not None and _cancels_active_proposal(message, _active_add):
-        _back_out = (_active_add.get("title") or "").strip() or "这件事"
-        _back_out_summary = _active_add.get("summary") or _back_out
-        clear_pending(session_id)
-        append_conversation(session_id, "user", message)
-        append_conversation(session_id, "assistant", f"已取消待办提案：{_back_out_summary}")
-        return {
-            "module": "planner",
-            "session_id": session_id,
-            "answer": (f"好，**{_back_out}** 先不加了 —— 那张卡我撤了，日程一个字都没动。\n"
-                       "改主意了再说一声就行。"),
-            "trace": [{"step": 1,
-                       "phase": "🗑️ 学生反悔：作废还没点头的待办提案（不写库也不删库）",
-                       "answer": _back_out_summary}],
-            "options": [],
-            "awaiting_choice": False,
-        }
-    if rm_intent or asking_rm_todo or answers_held:
-        # 学生是不是在回答"是哪一条"（回一句"第二条"/"23"/"游泳那条"）。
-        # ⚠️ 只看"上一句是不是我那句追问"，**不能再 and not rm_intent**：
-        #    真机上语义层会把「第二条」判成 remove_todo（实测 confidence 0.85），
-        #    一旦因此把 followup 关掉，这句就被当成一次全新的删除指令 → 报"没找到"
-        #    （学生截图吐槽"记忆有问题"就是这么来的）。resolve_todo_remove_reply
-        #    内部已经"先按序号、再按名字"兜底，直接走它最稳。
-        #
-        # ⚠️ 再加一种：学生手里**有清单**、又**明确报了个序号**（"2"/"第二条"/"23"）、
-        #    或在刚挂过删待办卡时说"不对/换一条"——这两种都是在回答我们，
-        #    跟上一句是不是那句追问无关（见上面 answers_held 的注释）。
-        held = held_now if held_now else _pending_remove_candidates(session_id)
-        followup = asking_rm_todo or answers_held
-        # 「不去了删了吧」这种**没点名**的删除 → 十有八九指的就是刚写入的那条。
-        # 系统手里有这份账（自己写的写库回执），把名字补上再走同一条解析路，
-        # 出卡、确认、落库全部沿用原有代码——不另抄一份"从回执造删卡"的逻辑。
-        probe = message
-        _blind_recent = None
-        if not followup and _is_blind_delete(message):
-            _blind_recent = _recent_written_todos(session_id)
-            _still = [t for t, ok in _blind_recent if ok]
-            _gone = [t for t, ok in _blind_recent if not ok]
-            # ★ 回执里记着的**就那一条**、而它现在已经不在库里（他自己删过）→
-            #   先如实说"已经不在"，**不要**跑去解析、更不要端出整张日程。
-            #   放在这里（解析之前）是因为：他压根没点名，解析只会拿到"全部待办"
-            #   然后回一句"对上了好几条，我不敢替你挑"——学生刚删掉的那条，
-            #   在他听来就是系统装作不知道（这是在**有账可查**的前提下说的，
-            #   不是猜：回执是系统自己写的）。
-            if _gone and not _still and not wants_remove_course(message):
-                clear_pending(session_id)
+        # 3d-ret) **改期（已经排进日程的待办想换个时间）**——"把周四那个健身挪到周五"。
+        #     跟删待办同一套规矩：只出提案、学生点头才动；而且是"删旧 + 加新"，
+        #     不是就地改字段，这样一旦新时间不合适还能追溯旧的那条。
+        #     规则认得（含"改成/挪到"等词）或语义层兜回来的 retime_todo 都走这儿；
+        #     前提：手上没有挂着的待确认卡（那种是 3c-pre 那一档，已在前面处理过了）。
+        if ((wants_retime_todo(message) and not _rule_veto)
+                or _sem_intent == INTENT_RETIME) and not held_add:
+            from app.modules.planner import build_retime_existing_proposal, _weekday_name as _wd2
+            _rt = build_retime_existing_proposal(
+                message, _sem if _sem_intent == INTENT_RETIME else None)
+            _rt_status = _rt.get("status")
+            if _rt_status == "ok":
+                _rt_prop = _rt["proposal"]
+                save_pending(session_id, [_rt_prop])
+                # 提案纠正过名字（如样本库把"瑜伽"误记为"健身"）时，把纠正后的真名字
+                # 写回语义层字段——否则 remember() 会把错的"健身"学进样本库，越错越深。
+                if _sem is not None and _rt_prop.get("title"):
+                    _sem = dict(_sem)
+                    _sem["title"] = _rt_prop["title"]
+                _sem_done(_rt_prop)
+                return _offer_response(
+                    session_id, _rt_prop, message,
+                    (f"📝 好，把 **{_rt_prop['title']}** 从 "
+                     f"{_rt.get('old_label', '原时间')} 改到 "
+                     f"**{_rt_prop['date']}（{_rt_prop['weekday']}）"
+                     f"{_rt_prop['start']}-{_rt_prop['end']}**——\n"
+                     # 改的是习惯/每周那条就得说一句"还是每天/每周"：
+                     # 这一条是删旧加新，他不看到这句就会以为长期那半没了。
+                     + (f"它**仍然是每天**都要做的事（只改了钟点，勾完成还是只算当天）。\n"
+                        if _rt_prop.get("repeat") == REPEAT_DAILY else
+                        (f"它**仍然是每周{_rt_prop['weekday']}**都要做的事（只改了钟点）。\n"
+                         if _rt_prop.get("repeat") == REPEAT_WEEKLY else ""))
+                     + f"下面点【确认加入】我就改好（旧的那段会挪走）。"
+                     f"回一句「确认」也一样。"),
+                    "🕘 改期提案（系统判定）")
+            if _rt_status == "many":
+                _rt_lines = "\n".join(
+                    f"· **{x.get('title', '')}**｜{x.get('date', '')}"
+                    f"（{_wd2(x.get('date', ''))}）"
+                    f"{x.get('start', '')}-{x.get('end', '')}"
+                    for x in _rt.get("todos", [])[:6])
                 append_conversation(session_id, "user", message)
-                append_conversation(session_id, "assistant", "删待办：已经不在了")
+                append_conversation(session_id, "assistant", "改期缺细节")
                 return {
-                    "module": "planner",
-                    "session_id": session_id,
-                    "answer": (f"🗑️ 「{_gone[0]}」已经不在日程里了——"
-                               "可能刚才已经删掉（或在月表里手动删过）。"
-                               "现在日程里一条都没少，不用再操作。"),
-                    "trace": [{"step": 1,
-                               "phase": "🗑️ 没点名的删除 → 那条已经不在库里，如实说",
-                               "answer": f"{_gone[0]} 已不在"}],
-                    "options": [],
-                    "awaiting_choice": False,
+                    "module": "planner", "session_id": session_id,
+                    "answer": ("🕘 你想改的是哪一条？我找到好几条同名的：\n\n"
+                               f"{_rt_lines}\n\n回我一个（比如「周四那条」），我帮你改。"),
+                    "trace": [{"step": 1, "phase": "🕘 改期遇到多条同名（不猜）",
+                               "answer": "等学生点名"}],
+                    "options": [], "awaiting_choice": False,
                 }
-            if len(_still) == 1:
-                probe = f"删除{_still[0]}"
-        if followup:
-            res = resolve_todo_remove_reply(message, held)
+            if _rt_status == "empty":
+                append_conversation(session_id, "user", message)
+                append_conversation(session_id, "assistant", "没找到要改的待办")
+                return {
+                    "module": "planner", "session_id": session_id,
+                    "answer": "📋 没找到那条待办——你先加进日程，或者告诉我它叫什么、在哪天？",
+                    "trace": [{"step": 1, "phase": "🕘 改期未找到目标", "answer": "请学生确认名字"}],
+                    "options": [], "awaiting_choice": False,
+                }
+            # unclear：新时间认不出来
+            append_conversation(session_id, "user", message)
+            append_conversation(session_id, "assistant", "改期时间没说清")
+            return {
+                "module": "planner", "session_id": session_id,
+                "answer": "🕘 新时间我没听清——说清楚要改到哪天几点？比如「改到周五 15:00-16:00」。",
+                "trace": [{"step": 1, "phase": "🕘 改期新时间缺失", "answer": "请学生补时间"}],
+                "options": [], "awaiting_choice": False,
+            }
+
+        # 3c-ter) **「看不见 X」的报障**——学生不是要加新事，是**问在不在**。
+        #     实测那一幕（截图）：学生说「我现在没有看见日程显示周二游泳代办项目啊」，
+        #     这句话哪个确定性分支都不认，整句掉给模型，它就开始**编原因**：
+        #     「基本可以确定是系统推送出了问题……得让管理端那边看一下」，
+        #     还让学生"再刷新一次，二选一"——系统明明能真查库，学生日程操作
+        #     又默认自主（场景边界：不提管理端、不说权限不足），这一段全是反面教材。
+        #     规矩：系统先**核实**，真查库，然后按查到什么说什么：
+        #       ① 待办里有 → 如实告诉他哪天几点（他说的那天没有、别处有时也要讲清）；
+        #       ② 课表里有（他找的是课，不是待办）→ 指给他看；
+        #       ③ 都没有、但最近说过要加 → 那条**还没写进日程**，确认条补挂出来；
+        #       ④ 都没有、最近也没说过 → 如实说"还没有"，要加说一声。
+        #     全程不诊断"推送出了问题"、不提管理端、不让学生"二选一"。
+
+        # ★ 让路：这句话问的其实是**校园知识库里有的东西**（"校车在哪坐"）→ 交给知识库，
+        #   别拿"查日程"去兜。
+        #   实测那一幕：学生问「校车在哪坐」，`_MISSING_RE` 里的「在哪」把它当成报障，
+        #   抠出一个根本不存在的待办名"校车坐"，回「查了日程，确实还没有「校车坐」」——
+        #   他问的是校车在哪发车、几点发车，系统却在自己的日程里翻。
+        # ⚠️ 判据要**两条同时成立**才让路，宁可漏也不可把真报障让出去：
+        #   ① 话里没有"待办/日程/周表/课表/清单"这类**说自己日程**的词
+        #      （"我的校车待办没显示"仍然是报障，得由这条确定性分支接）；
+        #   ② 知识库里**真的有答案**（查不到就让这条分支照旧查日程，别把话甩冷宫）。
+        if (missing_thing_of(message) is not None
+                and not any(w in message for w in ("待办", "代办", "日程", "周表",
+                                                   "月表", "课表", "清单", "列表"))
+                and _kb_has_answer(message)):
+            missing = None
         else:
-            res = resolve_todo_remove(probe)
-        status = res.get("status")
+            missing = missing_thing_of(message)
+        if missing is not None:
+            title, day = missing["title"], missing["date"]
+            # 他没点名，就拿"最近要加的那件事"当默认答案——十有八九问的就是它
+            if not title:
+                req0 = _recent_add_request(session_id)
+                rt0 = todo_title_of(req0) if req0 else "待办"
+                title = rt0 if rt0 != "待办" else ""
 
-        if status == "ok":
-            proposal = res["proposal"]
-            # 手上有清单（不管是**系统替他挑的**那条，还是他**自己报序号**挑的那条）
-            # 就把这份清单一并留在暂存里 —— 他说"换一条"/"第二条"时还有人接。
-            # 只留提案的话，"不对"两个字就会掉回大模型瞎猜（**出口就断了**）。
-            # （早先只在 picked_by 时留。可"换一条"这个出口跟他怎么挑的没关系：
-            #   自己报了序号照样可能挑错，把他困在卡上只能取消，是同一类毛病。）
-            pending_out = [proposal]
-            if held:
-                pending_out = [proposal, {"kind": "todo_remove_candidates",
-                                          "todos": list(held), "summary": "待删候选"}]
-            save_pending(session_id, pending_out)
-            append_conversation(session_id, "user", message)
-            append_conversation(session_id, "assistant",
-                                f"已生成删待办提案：{proposal['summary']}")
-            # 挑的依据必须让学生**在卡外面也看得见**：不写出来，他会产生虚假确定感
-            # ——不看卡就点确认，那跟"直接删"没区别。
-            why = ""
-            if proposal.get("picked_by"):
-                why = f"\n（{proposal.get('note', '')}）"
-            return {
-                "module": "planner",
-                "session_id": session_id,
-                "answer": (
-                    f"🗑️ 要删的是这一条：**{proposal['title']}**｜{proposal['date']}"
-                    f"（{proposal['weekday']}）{proposal['start']}-{proposal['end']}。"
-                    + why + "\n"
-                    "确认条就在下面这条消息里，点【确认删除】我才删；"
-                    "点【取消】日程原封不动。"
-                    "（也可以直接在聊天框回一句「确认」，一样会执行。）"
-                ),
-                "trace": [{"step": 1, "phase": "🗑️ 生成删待办提案（系统判定）",
-                           "answer": proposal["summary"]}],
-                "options": [proposal],
-                "awaiting_choice": True,
-            }
-
-        # 学生说「每个删一个 / 每组删一个 / 重复的删掉一个」——他是要**去重**：
-        # 每组重复的只留一条，不是把整张清单清空。这两句话字面上都带量词，
-        # 混在一起就会把"去重"听成"全删"（学生截图批注"脑子有问题"）。
-        # 规则在回话里说清楚（留最早写入的那条），卡上把要删的逐条列出来 —— 他点头才动。
-        if status == "dedup" and res.get("todos"):
-            todos = res["todos"]
-            proposal = todo_remove_batch_proposal(todos)
-            save_pending(session_id, [proposal])
-            append_conversation(session_id, "user", message)
-            append_conversation(session_id, "assistant",
-                                f"已生成删待办提案：{proposal['summary']}")
-            return {
-                "module": "planner",
-                "session_id": session_id,
-                "answer": (
-                    f"🗑️ 明白，你是要**去重**：同一组重复的只留一条，多出来的这 "
-                    f"{proposal['count']} 条删掉。\n"
-                    "（每组留的是**先写进去的那条**；要留另一条的话，"
-                    "取消之后直接说序号也行。）\n"
-                    "我把要删的一条条列在下面的确认条上了——"
-                    "点【确认删除全部】我才删；点【取消】日程原封不动。"
-                    "（也可以直接在聊天框回一句「确认」，一样会执行。）"
-                ),
-                "trace": [{"step": 1,
-                           "phase": "🗑️ 学生说「每个删一个」→ 生成去重删除提案（系统判定）",
-                           "answer": proposal["summary"]}],
-                "options": [proposal],
-                "awaiting_choice": True,
-            }
-
-        # 学生对着刚列出的清单说"都删了 / 全删掉 / 一起删了吧" —— 这是在**接着上一句
-        # 指代**"你列的那几条我全都要删"，不是"没说名字"。所以该**一次点头、一次删完**：
-        # 挂一张批量确认条，上面把每一条原样念清楚。
-        # 旧写法把这句话当"没点名"，端出**整张日程**（学生截图：列了 2 条，
-        # 他回「都删了」，屏幕却冒出 11 条 —— "上下文连不上"就是这一处）。
-        # ⚠️ 红线没破：这张条只是**提案**，他点【确认删除全部】之前一条都不会删。
-        if status == "all" and res.get("todos"):
-            todos = res["todos"]
-            proposal = todo_remove_batch_proposal(todos)
-            save_pending(session_id, [proposal])
-            append_conversation(session_id, "user", message)
-            append_conversation(session_id, "assistant",
-                                f"已生成删待办提案：{proposal['summary']}")
-            return {
-                "module": "planner",
-                "session_id": session_id,
-                "answer": (
-                    f"🗑️ 好，你说的是**上面那 {proposal['count']} 条全都要删**。"
-                    "我把它们一条条列在下面的确认条上了——"
-                    "点【确认删除全部】我才删；点【取消】日程原封不动。"
-                    "（也可以直接在聊天框回一句「确认」，一样会执行。）"
-                ),
-                "trace": [{"step": 1,
-                           "phase": "🗑️ 学生说「都」→ 生成批量删除提案（系统判定）",
-                           "answer": proposal["summary"]}],
-                "options": [proposal],
-                "awaiting_choice": True,
-            }
-
-        # 命中好几条：**列清单，问是下面哪一条，列完就停**。
-        # 这一支就是规格第 2 条——"不许猜"。清单同时记进暂存，
-        # 学生回"第二条"时系统接得住（见上面的 resolve_todo_remove_reply）。
-        if status in ("many", "unclear") and res.get("todos"):
-            todos = res["todos"]
-            save_pending(session_id, [{"kind": "todo_remove_candidates",
-                                       "todos": todos, "summary": "待删候选"}])
-            append_conversation(session_id, "user", message)
-            append_conversation(session_id, "assistant", "删待办缺细节")
-            head = ("你说的这条对上了好几条待办，我不敢替你挑 🗑️"
-                    if status == "many" else "没太看明白你指哪一条 🗑️")
-            return {
-                "module": "planner",
-                "session_id": session_id,
-                "answer": (
-                    f"{head}\n\n{render_todo_remove_list(todos)}\n\n"
-                    "是下面哪一条？回我一个名字（或序号，比如「第二条」），"
-                    "我再把确认条挂出来——**你点头之前我一条都不会删。**"
-                ),
-                "trace": [{"step": 1, "phase": "🗑️ 删待办命中多条（列清单，不猜）",
-                           "answer": f"候选 {len(todos)} 条，等学生点名"}],
-                "options": [],
-                "awaiting_choice": False,
-            }
-
-        # 一条都没命中：如实说。绝不从"没找到"里编一条出来删。
-        #
-        # 但有一类句子要放行：它其实是在说**课**（"去掉周二的高数"），只是
-        # 顺手触发了删待办的开关。这种情况不能抢答"我没找到这条待办"——
-        # 那会让课表那条路（3f）压根没机会接手，学生只会觉得"我想删课，它跟我扯待办"。
-        # 放它过去，交给删课分支去追问/出卡。
-        if not wants_remove_course(message):
-            clear_pending(session_id)
-            day = res.get("day")
-            where = f"{day}（{_weekday_of(day)}）" if day else ""
-            # 没点名的那几种情形，都比"没找到"有用（截图实测：学生被这句推去
-            # 月表手动删——可他明明刚在对话里加过，账就在回执里）：
-            if _blind_recent is not None:
-                _still = [t for t, ok in _blind_recent if ok]
-                _gone = [t for t, ok in _blind_recent if not ok]
-                if len(_still) > 1:
-                    # 最近写入的好几条都还在 → 列出来让他点名（绝不替他猜哪条）
-                    todos = [x for x in list_todos() if x.get("title") in _still]
-                    save_pending(session_id, [{"kind": "todo_remove_candidates",
-                                               "todos": todos,
-                                               "summary": "待删候选"}])
+            if title:
+                todos = [t for t in list_todos()
+                         if _planner_name_match(title, t.get("title") or "")]
+                here = [t for t in todos if not day or t.get("date") == day]
+                # 他说的那天没排、可别处有一条同名的 → 也要讲清（人话：他可能记错天了）
+                if not here and todos and day:
+                    ot = todos[0]
                     append_conversation(session_id, "user", message)
-                    append_conversation(session_id, "assistant", "删待办缺细节")
+                    append_conversation(
+                        session_id, "assistant",
+                        f"已核实：你说的那天没排，别处有一条——{ot.get('summary') or ''}")
                     return {
                         "module": "planner",
                         "session_id": session_id,
-                        "answer": ("你最近刚排了这几条，要删的是哪一条？\n\n"
-                                   f"{render_todo_remove_list(todos)}\n\n"
-                                   "回我名字或序号就行——**你点头之前我一条都不会删。**"),
-                        "trace": [{"step": 1,
-                                   "phase": "🗑️ 没点名的删除 → 列出最近写入的几条让他点名",
-                                   "answer": f"候选 {len(todos)} 条"}],
+                        "answer": (
+                            f"👀 你说的{_cn_day(day)}没排这一条，倒是 **{ot.get('date')}"
+                            f"（{ot.get('weekday') or _cn_day(ot.get('date') or '')}）** "
+                            f"有一条：**{ot.get('title')}** "
+                            f"{ot.get('start')}-{ot.get('end')}。\n"
+                            "想在那天也排一条，说一句「帮我周二加个游泳」这样的，"
+                            "我按新的重排一张。"
+                        ),
+                        "trace": [{"step": 1, "phase": "👀 查日程（系统核实）",
+                                   "answer": f"那天没排；{ot.get('summary') or ''} 有一条"}],
                         "options": [],
                         "awaiting_choice": False,
                     }
-                # （「已经不在了」那一支已挪到解析**之前**：他没点名时，解析只会
-                #   拿回"全部待办"，等走到这儿再说"已经不在"就晚了 —— 见上面。）
+                if here:
+                    td = here[0]
+                    wd_name = td.get("weekday") or _cn_day(td.get("date") or "")
+                    elsewhere = ""
+                    if day and len(todos) > len(here):
+                        ot = todos[len(here)]
+                        elsewhere = (f"\n（你说的那天没排，倒是 **{ot.get('date')}"
+                                     f"（{ot.get('weekday') or _cn_day(ot.get('date') or '')}"
+                                     f"）** 有一条同名的。）")
+                    append_conversation(session_id, "user", message)
+                    append_conversation(
+                        session_id, "assistant",
+                        f"已核实：待办在日程里——{td.get('summary') or ''}")
+                    return {
+                        "module": "planner",
+                        "session_id": session_id,
+                        "answer": (
+                            f"👀 在的，日程里排着呢：**{td.get('title')}**｜"
+                            f"{td.get('date')}（{wd_name}）"
+                            f"{td.get('start')}-{td.get('end')}。{elsewhere}\n"
+                            "面板没刷出来的话，切一下周表/月表那一格就能看到。"
+                        ),
+                        "trace": [{"step": 1, "phase": "👀 查日程（系统核实）",
+                                   "answer": f"待办在：{td.get('summary') or ''}"}],
+                        "options": [],
+                        "awaiting_choice": False,
+                    }
+                # 不是待办，找的会不会是**课**？（「怎么没有周一的高数」）
+                wd = _iso_wd(day) if day else None
+                courses = [c for c in ((get_timetable_data() or {}).get("courses") or [])
+                           if _planner_name_match(title, c.get("course") or "")]
+                here_c = [c for c in courses if not day or c.get("day") == wd]
+                if here_c:
+                    c0 = here_c[0]
+                    append_conversation(session_id, "user", message)
+                    append_conversation(
+                        session_id, "assistant",
+                        f"已核实：那是课表里的课——{DAY_NAMES.get(c0.get('day'), '')} "
+                        f"{c0.get('start')}-{c0.get('end')} {c0.get('course')}")
+                    return {
+                        "module": "planner",
+                        "session_id": session_id,
+                        "answer": (
+                            f"👀 那是**课**，在周表里：{DAY_NAMES.get(c0.get('day'), '')}"
+                            f"{c0.get('start')}-{c0.get('end')} "
+                            f"{c0.get('course')}@{c0.get('location') or ''}。\n"
+                            "周表那一栏直接能看到；要往某天加一条相关的待办，说一声就行。"
+                        ),
+                        "trace": [{"step": 1, "phase": "👀 查课表（系统核实）",
+                                   "answer": f"课在：{DAY_NAMES.get(c0.get('day'), '')} "
+                                             f"{c0.get('start')}-{c0.get('end')}"}],
+                        "options": [],
+                        "awaiting_choice": False,
+                    }
+
+            # 日程里真没有 → 是不是那条提案压根没确认成？最近说过要加的话，补条出来
+            req = _recent_add_request(session_id)
+            if not req and asking_add and prev_user:
+                req = prev_user
+            prop = None
+            if req:
+                prop = parse_add_todo(req)
+                if prop is None:
+                    mc = todo_mode_proposal(req)
+                    prop = mode_to_card(mc, "ai") if mc else None
+            if prop is not None:
+                day_note = f"（你说的{_cn_day(day)}）" if day else ""
+                return _offer_response(
+                    session_id, prop, message,
+                    (f"👀 查了日程{day_note}，**这一条还没写进去**——"
+                     "刚才那次没确认成。确认条给你补上了：\n\n"
+                     f"要不要把 **{prop['title']}** 排进日程？"
+                     f"{prop['date']}（{prop['weekday']}）"
+                     f"{prop['start']}-{prop['end']}。\n"
+                     "点【确认加入】就写进去，回一句「确认」也一样。"),
+                    "👀 他说看不见 → 核实确实没写入 → 补挂确认条")
+
             append_conversation(session_id, "user", message)
-            append_conversation(session_id, "assistant", "删待办：没找到符合条件的")
+            append_conversation(
+                session_id, "assistant",
+                f"已核实：日程里没有这一条（{title or '没点名'}）")
             return {
                 "module": "planner",
                 "session_id": session_id,
                 "answer": (
-                    f"🗑️ 我在{where or '日程里'}没找到叫这个的待办，一条都没删。\n"
-                    "你可以：① 说得再具体点（哪一天 + 叫什么）；"
-                    "② 直接问我「那天排了什么」，我列给你看。"
+                    f"👀 查了日程，**确实还没有**"
+                    f"「{title or '这条'}」{f'（{_cn_day(day)}）' if day else ''}。\n"
+                    "要加的话说一句「帮我加个什么什么」，我马上排好给你确认。"
                 ),
-                "trace": [{"step": 1, "phase": "🗑️ 删待办没找到（如实说，不猜）",
-                           "answer": "没有匹配的待办，什么都不删"}],
+                "trace": [{"step": 1, "phase": "👀 查日程（系统核实）",
+                           "answer": "没有这一条，如实说"}],
                 "options": [],
                 "awaiting_choice": False,
             }
 
-    # 3f) **确定性删课分支**：跟清空/加课同一个思路，"删除周一第一节课"这种话
-    #     学生说得明明白白，剩下"新课表长什么样"该由服务端算，不该赌模型调不调工具。
-    #     实测真模型会**只在文字里给个预览、让学生回「确认」**，可它压根没调出提案工具
-    #     ——暂存里什么都没有，学生回了确认也是白回：弹窗不来、确认不删、删除失败。
-    #
-    #     两种进路：
-    #     a) 这句话本身带着删课意图（"删除周一第一节课"）；
-    #     b) **系统上一轮刚追问过"想删哪一节"**，学生补一句"周一的第一节"——
-    #        这句话里没有"删除"两个字，wants_remove_course 认不出来，
-    #        但它是对追问的回答，必须接着处理。不接住的话又掉回模型，
-    #        模型会嘴上说"删课提案已经生成啦"（根本没生成），弹窗照样不来。
-    #        识别标记就是追问分支写进会话历史的那句"删课缺细节"。
-    recent = [m for m in get_conversation(session_id)[-4:] if m.get("role") == "assistant"]
-    asking_remove = any("删课缺细节" in (m.get("content") or "") for m in recent)
-    if wants_remove_course(message) or asking_remove:
-        proposal = parse_remove_course(message)
-        if proposal is not None:
-            save_pending(session_id, [proposal])
+        # —— 「卡片呢 / 怎么没弹卡」：学生在找上一轮的确认卡 ——
+        # 实测原话：「卡片呢」——被 router 分给 lostfound（LLM 把"卡"联想成校园卡），
+        # 模型还嘴上说"卡片挂出来了"，界面上一张卡都没有。规则：
+        #   · 话很短、在找卡 → 暂存里有提案就**原样重挂**（不重新生成、更不写库）；
+        #   · 暂存是空的 → 如实说"没有挂着的卡"，绝不让模型凭空编一张。
+        _FIND_CARD_WORDS = ("卡片", "弹卡", "卡呢", "没卡", "弹窗", "弹框", "确认条")
+        # ⚠️ 别把"报障"当成"找卡"：实测原话「**没有收到弹窗**」里也有"弹窗"两个字，
+        # 可它不是在问"上一张卡去哪了"，而是**投诉那张卡压根没生成**——
+        # 那一幕的正解在下面的「补条兜底」：从模型那段自相矛盾的话里把 16:00-17:30
+        # 捞出来、重新挂一张卡。被这里截走的话，学生只能收到一句"手上没有挂着的卡"，
+        # 报障那一幕就又白修了（第十一批测试钉的就是它）。
+        _CARD_NEVER_ARRIVED = ("没有收到", "没收到", "收不到", "没弹出来", "没出来",
+                               "没有出现", "没出现", "看不见", "没看见")
+        if (_sem_intent == INTENT_FIND_CARD
+                or (len(message) <= 12 and any(w in message for w in _FIND_CARD_WORDS)
+                    and "吗" not in message
+                    and not any(w in message for w in _CARD_NEVER_ARRIVED))):
+            _held = peek_pending(session_id) or {}
+            _held_opts = [o for o in (_held.get("options") or []) if isinstance(o, dict)]
             append_conversation(session_id, "user", message)
-            append_conversation(session_id, "assistant", f"已生成删课提案：{proposal.get('summary', '')}")
+            if _held_opts:
+                return _sem_done({
+                    "module": "planner",
+                    "session_id": session_id,
+                    "answer": "📑 卡还在呢——就是下面这条，勾好/点【确认】就办。",
+                    "trace": [{"step": 1, "phase": "📑 学生找卡 → 原样重挂暂存里的提案",
+                               "answer": _held.get("summary") or "已重挂"}],
+                    "options": _held_opts,
+                    "awaiting_choice": True,
+                })
+            return _sem_done({
+                "module": "planner",
+                "session_id": session_id,
+                "answer": ("📑 现在手上没有挂着的卡。说一句「加个什么什么」"
+                           "（比如「我要周六去吃火锅」），我马上把确认条给你挂出来。"),
+                "trace": [{"step": 1, "phase": "📑 学生找卡 → 暂存为空，如实说",
+                           "answer": "暂存里没有提案"}],
+                "options": [],
+                "awaiting_choice": False,
+            })
+
+        # ★ 「每月 / 每个周末 / 下个月」这一类周期说法：**任何一档判成加待办都不许出卡**
+        #   （「每天」2026-10-13 起不在这儿了 —— 它现在表达得了：一条 daily 习惯，只进代办不进日历）
+        #   （2026-10-11 补，判据在 planner.unsupported_period）。
+        #   病根不是规则层读错了 —— 规则层从来不接这一类，是**样本库/语义层能绕过它单独接单**：
+        #   用户原话「在下个月的每个周末三点开始大约三个小时」被样本库判成 add_todo、
+        #   事名学成「活动」，最后排出一条 15:00-18:00 的孤零零待办。
+        #   他要的是"以后每个周末"，拿到的却是"某一天一次"，而且这条还**学进样本库**了，
+        #   以后每次近似说法都照着错。所以这里做两件事：
+        #   ① 一处不分层的否决（规则/样本库/语义层哪档判的都拦）；
+        #   ② 这条分支**不走 `_sem_done`**（它就是 `remember()` 学样本的那一步），
+        #      否掉的句子绝不许再学进去 —— 否则同一个错会自己繁殖。
+        #   只做这两件，不去"听懂每月/每个周末"：一条日程只能落**某一天**、**每周固定某天**或**每天**，
+        #   硬扩表达等于替学生造他没说要的几十条安排（判据同 `weekly_repeat_day` 的取舍）。
+        if _period_block:
+            return _period_reject_response(session_id, message, _period)
+
+        # ⚠️ 末尾的 `and not wants_add_course(message)` 是「加课优先于加待办」的硬闸门：
+        # 学生说"周一早上加一节高数课"时，语义层（样本库/大模型）很可能把它判成 add_todo，
+        # 于是这句话会先进到上面的加待办分支、被当成待办塞进日程——正是报障那一幕。
+        # 加课没有独立的语义意图（白名单里没有 add_course），纯靠 wants_add_course 这条
+        # 确定性分支接管；所以只要它认得，加待办这边就必须让路，绝不抢。
+        #
+        # 开头的 `not _rule_veto`：规则想"加一条"，可语义层判它**不是**要办事
+        # （多半在问事：在校园问答栏问「我要去哪里取快递」），就以语义层为准——
+        # 否则那张卡会写着「哪取快递」挂到学生眼前，而他只是想知道去哪儿取。
+        # 末尾的 `and not _physio`：**纯生理状态感叹（"我饿了""好累啊"）任何情况下
+        #   都不许进这条分支** —— 哪怕语义层硬判了 add_todo。这是他的一条安全绳，
+        #   判据见 `intent.physio_state_only`（生理词 + 无行动词 + 没报钟点 + 短句）。
+        if ((not _rule_veto
+                and (wants_add_todo(message) or (asking_add and is_add_todo_answer(message))))
+                or _sem_intent == INTENT_ADD_TODO) \
+                and not _physio and not wants_add_course(message):
+            # 追问后的补充回答（学生先说"帮我安排周二的游泳"，再补"下午两点到三点"）：
+            # 补充那句里没有标题、也没有日期，单独解析会把标题弄丢——
+            # 把上一句原话拼回来一起算。识别标记就是下面追问分支写进会话历史的那句"加待办缺细节"。
+            # 语义层那一路（`_sem_intent`）：它把口语翻成了"加个吃火锅，76分钟，工作日"
+            # 这种**解析器认得的规范话**（`to_canonical`），所以照旧喂给同一套老解析，
+            # 不用再抄一份"从 JSON 造卡片"的逻辑。
+            # 语义层那一路：把口语翻成"加个吃火锅，76分钟，工作日"这种**解析器认得的规范话**
+            # （`to_canonical`），照旧喂给同一套老解析——不另抄一份"从 JSON 造卡片"的逻辑。
+            # ⚠️ 但**规则明明认得这句话时不能这么替**：规范话是拿语义字段拼的，字段里没有的
+            #    信息会整段丢掉——"帮我安排周二的游泳"里的"周二"就不在语义字段里，一替下去
+            #    候选时段会摊到一整周（实测踩过）。所以只在规则读不出来时才用规范话兜。
+            if _sem_intent == INTENT_ADD_TODO and _sem and not wants_add_todo(message):
+                blob = carry_period(carry_freq(to_canonical(message, _sem), message), message)
+            else:
+                blob = (prev_user + "，" + message) if (asking_add and prev_user) else message
+            proposal = None
+            if asking_add and prev_user:
+                proposal = parse_add_todo(prev_user + "，" + message)
+            if proposal is None:
+                proposal = parse_add_todo(blob)
+            if proposal is None and _sem_intent == INTENT_ADD_TODO and _sem:
+                # ★ 2026-09-30 补：语义层/样本库说了"这是件要办的事"、这句话里也**报了钟点**，
+                #   可就是**没说哪天** —— 学生报障那句「中文12点的车」正是这一档。
+                #   `parse_add_todo` 的契约是"日期和起始时刻缺一个就返回 None"，于是
+                #   12 点被丢掉、改去摊一堆候选时段；而摊出来的候选里**根本没有他说的那个点**，
+                #   等于让他把自己刚说过的钟点重挑一遍。
+                #   就着他报的那个点出条、一条就够（本文件下面那句注释早就这么写了，
+                #   只是"没说哪天"这一档一直没人接）。见 planner.span_only_proposal：
+                #   兜底日期用今天，今天这个点已经过了就顺延到明天。
+                # ⚠️ **只在语义层这一路兜**：规则层那句里的时间未必是这件事的时间
+                #   （「三点下课，帮我加个买水果」会被读成 03:00），交不出日期时摊候选更安全。
+                proposal = span_only_proposal(blob, (_sem.get("title") or "").strip())
+            if proposal is not None:
+                # 学生**自己报了准点** → 就着他给的这个点出条，一条就够。
+                # 不必再摊候选：他已经说清要哪个点了，再摊三个等于让他重挑一遍。
+                # ★ 架构升级 · 试点 2：确认卡字段 / 暂存 / 写库路径**一个字节都不改**，
+                #   只把下面那段模板话术交给模型润色（超时/失败/没 key → 原样退回模板）。
+                #   模型只复述事实，不许新增、不许说"已办好"（承诺词守卫在 polish 里）。
+                _wd_bare = (proposal.get("weekday") or "").replace("周", "") or "那天"
+                _card_fallback = (
+                    f"📝 要不要把 **{proposal['title']}** 排进日程？"
+                    f"{proposal['date']}（{proposal['weekday']}）"
+                    f"{proposal['start']}-{proposal['end']}。\n"
+                    # 学生说了"每个周六"就得在回话里把这件事确认一遍 —— 只报一个日子，
+                    # 他会以为就排这一天，下周那天不再出现（2026-10-11 真机就是这么掉的）。
+                    + (f"这是**每周{_wd_bare}**都要做的事，我只建一条："
+                       f"以后每个周{_wd_bare}它自己会出现在日程里。\n"
+                       if proposal.get("repeat") == "weekly" else "")
+                    # 「每天都要背单词 + 报了准点」同理：不说清"每天"和"不进日程"，
+                    # 他会以为就排这一天，第二天在日程里找不到，判成系统没记上。
+                    + (f"这是**每天**都要做的事，我只建一条："
+                       f"以后每天它都会出现在你的「代办事项」里（习惯不占日程格子）。\n"
+                       if proposal.get("repeat") == "daily" else "")
+                    + f"下面点一下【确认加入】我就写进去，回一句「确认」也一样。")
+                # ★ 卡片类出口**不润色**（2026-10-14 第一刀 B，用户点的"同类出口不一致"）。
+                #   上面那段 `_card_fallback` 就是系统按事实拼好的话 —— 连「这是每周六都要做的事，
+                #   我只建一条」这种最容易丢的说明都在里面，交给模型复述它只会把回复拖慢 3~4 秒
+                #   （实测这一档 3223ms），换不到任何信息量。
+                #   长列表出口（列待办）仍走润色，全仓只剩那一处润色调用。
+                #   ⚠️ 摘的是**位置**，不是守卫：承诺词/JSON 守卫在 polish 内部（另一处仍生效）、
+                #   引擎 claim 守卫与出口内脏保险都不许跟着删（test_46 D 批钉着四条）。
+                _card_answer = _card_fallback
+                return _sem_done(_offer_response(
+                    session_id, proposal, message, _card_answer,
+                    "📝 生成待办提案（系统判定）"))
+
+            # 学生没说时间（「那你帮我加一个健身在周四」「加个健身」「帮我加个游泳」）。
+            #
+            # 这一档的规格**改过两次**，三版都记在这儿，免得后人再翻回去：
+            #   · 第一版：系统**替他挑一个**时间、出一张"就排在这儿了"的单条确认条。
+            #     理由是"不许反问学生几点"（投诉原话：「没有帮我想时间，是我问了才说的」）。
+            #     方向对，但做法太死——学生回：
+            #     「**我定的太严了，你改一下，由 ai 帮我去挑选合适时间，进行列举**……
+            #      由我打勾，进行增加」。
+            #   · 第二版：**摊开几个空档让他自己打勾**（todo_slots 卡 + /api/todos/batch）。
+            #     这回方向也对了，但又漏了学生后半句：
+            #     「**要区分两种，一种是我有时间规划了，一种是我没有时间规划让他帮我安排，
+            #      不要一上来就询问详细时间，先给弹窗，（有时间规划）（还没有，你帮我定）**」。
+            #     不分这两种，一律先摊候选 —— 对一个"随便，你看着办"的学生，
+            #     摊三个时间段等于又把决定权推回去了。
+            #   · **这一版**：先出**二选一卡**（todo_mode，什么都不定），
+            #     学生点"我自己定" → 候选卡（勾 / 其他自填）；
+            #     点"你帮我挑" → 系统真去规划一段（`plan_todo_slot`，卡片上写清为什么排这儿）。
+            #
+            # 不变的两条铁律：
+            #   ① 这里**只出提案，一个字节都不写库**；挑不出来的照样如实说，绝不硬凑一个时间。
+            #   ② 反问学生"几点到几点"依然禁止——他去查空档是他的正事。
+            #
+            # ⚠️ 还有第三件必须做的事：**先确认他真说了"要做什么事"**。
+            #    学生原话：「**要识别啥才是真的事情，不是随便拿那一句话就去当代办加入日程了**」。
+            #    实测「大概一个小时帮我安排时间」被 `_pick_title` 抠成「大概小时帮我时间」，
+            #    还照样挂出了一张候选卡让他勾时间——可连要做什么都还不知道，挑时间往哪写？
+            #    `todo_mode_proposal` 里已经过了 `_pick_title` 的判真关，判不出事名返回 None，
+            #    就落到下面的追问分支去问"要安排什么事"。
+            # ⚡ 第六轮改版（学生原话：「**不需要先问，直接去安排，重复的确认太麻烦，
+            #    直接敲定结果，主打效率**」）：以前这里先出一张"你自己定 / 我帮你挑"的
+            #    二选一卡（"要区分两种"是第十批的规格），可真用起来，**这一轮问答本身
+            #    就是他嫌麻烦的东西**——他要的是结果。现在直接敲定：
+            #    `todo_mode_proposal` 照旧算（它里头有过标题判真和时长解析，丢不得），
+            #    但**不再把二选一卡递出去**，就地走"你帮我挑"那条路——
+            #    系统从真实空档里挑一段，出一张"就排在这儿"的单条确认条，
+            #    卡上写清为什么排这儿、想换怎么说。写库仍要他点【确认加入】——
+            #    效率提上去，一步都不越权。
+            #    直接挑不出（那几天都排满）→ 退回候选卡让他勾；连事名都判不出
+            #    → 才落到下面的追问。每一级都比上一级多问一句，能不问就不问。
+            # ⚡ 第七轮改版（学生原话：「**现在就是在时间安排上，将多种合理时间提出让我挑选，
+            #    也是弹窗里进行选择**」，见 2026-09-25 对话）：第六轮的"系统先替他敲定唯一一个"
+            #    又被打回了——学生要的是**从多个合理时段里自己挑**，不是系统替他定。
+            #    所以把主路径从 `mode_to_card(mode_card, "ai")`（单条）换成
+            #    `mode_to_card(mode_card, "self")`（多段候选卡）：系统只负责列出空档、
+            #    学生自己打勾（可勾多个、可"其他时间"自填），写库仍走 /api/todos/batch，
+            #    一步不越权。只有当**连一个空档都排不出**（那几天全满）时，
+            #    才退回第六轮的"系统单条 AI 敲定兜底"。每一级都比上一级少替学生做主。
+            # 这一句里没说清要做什么，但学生最近说过 → 从上下文把事名**继承**过来。
+            # 实测那一幕（截图）：学生说「我想去游泳，帮我安排时间」，管家客气了一轮
+            # 「你想安排在哪天？还是我直接帮你按本周的空闲时间找找？」，学生回
+            # 「这周安排一个时间」——这句话本身没有"游泳"，系统却反问他
+            # 「要安排的是什么事」。他刚刚才说过！规则（学生原话）：
+            # 「**禁止反复追问、不要多余客套啰嗦**」「人性化自动检索，直接给方案」。
+            # 继承源用 `_recent_add_request`：它要求那句原话本身带着"安排/加"的意图、
+            # 不是确认词、且最近没真的写过库——不会把闲聊里随便一个词抓来当事名
+            # （「要识别啥才是真的事情」这条红线不破）。
+            if todo_title_of(blob) == "待办":
+                inherited = _recent_add_request(session_id)
+                if inherited:
+                    inh_title = todo_title_of(inherited)
+                    if inh_title != "待办":
+                        merged = f"{inherited}，{message}"
+                        # ⚠️ 合并完还得核对一次：抠出来的必须**还是这一个事名**。
+                        # 不核对的话，「帮我安排一下健身」+「再安排一个」会糊成
+                        # 「健身再」——两句话被揉成一个谁也没说过的怪名字挂出去。
+                        # 对不上就说明这一句不是在接着上一句说（可能是另一件事），
+                        # 那就别硬凑，照旧问清楚。
+                        if todo_title_of(merged) == inh_title:
+                            blob = merged
+
+            mode_card = todo_mode_proposal(blob)
+            if mode_card is not None:
+                # 本轮（第七轮）规格：学生没定时间 → **先摊开多个候选时段让他自己挑**，
+                # 他要的就是"多种合理时间提出让我挑选，在弹窗里选"（见 2026-09-25 对话）。
+                # 不再由系统先替他敲定唯一一个——上一版那样等于又替他做了主，来回换。
+                # 能列出空档就出候选卡（多段、可勾多个、可"其他时间"自填）；
+                # 实在一个空档都排不出（那几天全满）→ 才退回系统单条 AI 敲定兜底。
+                # 写库仍要他点【加入日程】，一步不越权。
+                slots = mode_to_card(mode_card, "self")
+                if slots is not None:
+                    # 开场那句带上学生自己选的性格腔调（没选就退回下面这句默认引导语）
+                    _lead = _slots_lead(persona_key) or (
+                        "⏰ 给你找了几个空着的时间段，挑方便的勾上（可勾多个）：\n\n")
+                    return _sem_done(_offer_response(
+                        session_id, slots, message,
+                        _slots_answer(slots, lead=_lead),
+                        "🙋 学生没定时间 → 摊出多个候选时段（让他打勾挑选，本轮规格）"))
+                # 连一个空档都排不出来（那几天全满）→ 退回系统单条 AI 敲定兜底
+                picked = mode_to_card(mode_card, "ai")
+                if picked is not None:
+                    return _sem_done(_offer_response(
+                        session_id, picked, message,
+                        (f"⏰ 直接帮你定好了：**{picked['title']}** 排在 "
+                         f"**{picked['date']}（{picked['weekday']}）"
+                         f"{picked['start']}-{picked['end']}**。\n"
+                         f"{picked.get('reason') or ''}\n"
+                         "点【确认加入】就写进日程。这个点不合适，说一句"
+                         "「改成周四晚上七点到八点」这样的话，我按新的重出一张。"),
+                        "⚡ 候选空档都排不出 → 系统单条 AI 敲定兜底"))
+
+            # 出不了卡。两类情况，话术不能混为一谈（todo_missing_advice 分得清）：
+            #   ① 学生根本没说要加什么事（只有时长、或只有"帮我安排"）→ 问他要加什么；
+            #   ② 学生说了哪天、可**那天真排不进**（候选/规划都试过了）
+            #      → 要如实说"这天满了"，别让他一遍遍补"几点几点"。
+            #
+            # 也**不能**把话交给模型——实测它会回"搞定！已经正式写进你的待办啦"，
+            # 日程里其实什么都没有（schedule 模块连一个写入工具都没有，纯属嘴甜）。
+            # 照删课的规矩：缺什么就追问什么，标记"加待办缺细节"写进历史，
+            # 学生下一句补充由上面的合并逻辑接着算。
+            #
+            # ⚠️ 这个标记只用于**内部接续**（下一轮把上一句原话拼回来一起解析），
+            #    它本身**绝不能出现在学生看到的回答里**。学生截屏投诉过一句光秃秃的
+            #    「加待办缺细节」——那是内部状态码漏到了对话框里，他完全不知道要干嘛。
+            #    学生看到的永远是 `todo_missing_advice` 拼出来的人话。
+            clear_pending(session_id)
+            missing = pick_todo_missing(blob)
+            append_conversation(session_id, "user", message)
+            append_conversation(session_id, "assistant", "加待办缺细节")
+            return {
+                "module": "planner",
+                "session_id": session_id,
+                "answer": todo_missing_advice(blob),
+                "trace": [{"step": 1, "phase": "🤔 加待办缺细节（系统追问）",
+                           "answer": f"缺{missing}，先问清楚再出提案"}],
+                "options": [],
+                "awaiting_choice": False,
+            }
+
+        # 3c-bis) **确定性加课分支**（人话：学生说"周一加一节体育，19:00-20:40，体育馆"）
+        #     跟加待办同一个道理——配了密钥之后跑的是真模型，模型最爱说"已经加上了"，
+        #     结果周表里什么都没多。这里由系统算出新课表（整表替换的提案），
+        #     卡片上点【确认】才写入，学生看得见自己点头了什么。
+        if wants_add_course(message):
+            proposal = parse_add_course(message)
+            if proposal is not None:
+                save_pending(session_id, [proposal])
+                append_conversation(session_id, "user", message)
+                append_conversation(session_id, "assistant", f"已生成加课提案：{proposal.get('summary', '')}")
+                return {
+                    "module": "planner",
+                    "session_id": session_id,
+                    "answer": (
+                        f"🗓️ 要不要往周表里加一节？\"{proposal.get('summary', '')}\"。"
+                        f"下面点一下【确认】我才写；点【取消】周表原封不动。"
+                    ),
+                    "trace": [{"step": 1, "phase": "🗓️ 生成加课提案（系统判定）",
+                               "answer": str(proposal.get("summary") or "")}],
+                    "options": [proposal],
+                    "awaiting_choice": True,
+                }
+            # 算不出提案只有两种可能：缺星期，或说了星期却连"上午/下午/晚上"都没给。
+            # 这种情况下**不能**把话交给模型——它多半回一句"已经加上了"，学生再去周表里找。
+            # 缺哪样就追哪样，别一股脑只问星期（说了星期、只差时间的会被问蒙）。
+            clear_pending(session_id)
+            append_conversation(session_id, "user", message)
+            append_conversation(session_id, "assistant", "加课缺细节")
+            if _pick_day(message) is None:
+                return {
+                    "module": "planner",
+                    "session_id": session_id,
+                    "answer": (
+                        "这门课要加在**星期几**？把星期说一下（比如「周三加一节《毛概》，"
+                        "10:00-11:40」），我算出新课表给你确认，你点头我才写进周表。"
+                    ),
+                    "trace": [{"step": 1, "phase": "🤔 加课缺星期（系统追问）",
+                               "answer": "学生没说星期，先问清楚再出提案"}],
+                    "options": [],
+                    "awaiting_choice": False,
+                }
             return {
                 "module": "planner",
                 "session_id": session_id,
                 "answer": (
-                    f"🗑️ 要删的是这一节：\"{proposal.get('summary', '')}\"。"
-                    f"确认条就在下面这条消息里，点【确认变更】我才写；"
-                    f"点【取消】周表原封不动。"
+                    "星期我记下了，这门课想排在**几点**？说个钟点（「10:00 到 11:40」），"
+                    "或者说「上午/下午/晚上」也行，我算出新课表给你确认，你点头我才写进周表。"
                 ),
-                "trace": [{"step": 1, "phase": "🗑️ 生成删课提案（系统判定）",
-                           "answer": str(proposal.get("summary") or "")}],
-                "options": [proposal],
-                "awaiting_choice": True,
+                "trace": [{"step": 1, "phase": "🤔 加课缺时间（系统追问）",
+                           "answer": "学生说了星期却没给时间，先问清楚再出提案"}],
+                "options": [],
+                "awaiting_choice": False,
             }
-        # 解析不出来（没说星期 / 当天好几节课没说哪节）→ 系统追问，不交给模型
-        clear_pending(session_id)
-        append_conversation(session_id, "user", message)
-        append_conversation(session_id, "assistant", "删课缺细节")
-        return {
-            "module": "planner",
-            "session_id": session_id,
-            "answer": (
-                "想删哪一节，说得更具体一点：\n"
-                "· 说星期 + 节次，比如「删除周二第二节」；\n"
-                "· 或直接说课名，比如「去掉周五的心理学选修」。\n"
-                "我算出新课表给你确认，你点头我才写进周表。"
-            ),
-            "trace": [{"step": 1, "phase": "🤔 删课缺细节（系统追问）",
-                       "answer": "没说清是哪节，先问清楚再出提案"}],
-            "options": [],
-            "awaiting_choice": False,
-        }
 
-    # 3i) **知识库直答**（人话：问的是校园信息，就别让大模型现编）
-    #     真机实测出来的漏子：在**日程栏**问「校车在哪里坐」，所有确定性分支都不认
-    #     （它既不是加待办也不是删待办），最后掉给大模型——大模型手里没知识库，
-    #     回了一句"我这边查不到，你去看学校公众号"，可知识库里**明明躺着校车时刻表**。
-    #     所以位置很有讲究：放在**所有确定性分支之后、交给模型之前**——
-    #     该接的都接过了才轮到它，绝不会从待办操作手里抢话。
-    #     四道闸门缺一不可（宁可漏给模型，也不许在学生的待办操作上乱插嘴）：
-    #       ① 手上没有待确认的卡（有卡时他多半在跟卡对话，别把卡弄丢）；
-    #       ② 这句话不带"待办/日程/课表"这类词（"我的校车待办显示不出来"是报障）；
-    #       ③ 没有任何改数据的意图（加/删/改待办、加/删课、清空课表）；
-    #       ④ 它**像问句**，且知识库**真的**答得出来——答不出就老实交给模型。
-    #     ⚠️ 只给**日程栏（planner）**用：校园问答栏本来就有自己的知识库链路，
-    #       接管它反而会盖掉那一栏"没配密钥"的降级提示（test_01 就是这么被撞红的）。
-    #       这里补的正是**日程栏问校园信息没人管**的这个洞。
-    _holding_card = any(f(session_id) for f in (
-        _pending_todo, _pending_todo_remove, _pending_todo_done,
-        _pending_todo_remove_batch, _pending_todo_done_batch, _pending_todo_slots))
-    if (module_key == "planner"
-            and not _holding_card
-            and not any(w in message for w in ("待办", "代办", "日程", "周表",
-                                               "月表", "课表", "清单", "列表"))
-            and not (wants_add_todo(message) or wants_remove_todo(message)
-                     or _done_claim or wants_add_course(message)
-                     or wants_remove_course(message)
-                     or wants_clear_timetable(message))
-            and looks_like_question(message)
-            and _kb_has_answer(message)):
-        from app.modules.faq import search_kb
-        append_conversation(session_id, "user", message)
-        append_conversation(session_id, "assistant", "校园问答：知识库直答")
-        return {
-            "module": module_key,
-            "session_id": session_id,
-            "answer": "📚 " + search_kb(message),
-            "trace": [{"step": 1, "phase": "📚 问的是校园信息 → 翻知识库（按台账答，不现编）",
-                       "answer": "知识库命中"}],
-            "options": [],
-            "awaiting_choice": False,
-        }
+        # 3h) **确定性标记完成分支**（人话：学生说"把游泳标记完成""勾掉交电费"——
+        #     系统接管：先列清楚是哪一条，出确认条，学生点头才算数，**模型碰不到改状态的接口**）
+        #
+        # 为什么必须系统接管：老版本模型手里有一个真能改状态的 update_todo_status 工具，
+        # 规矩只写在提示层（"必须先确认"）。提示是软的，模型口语一变就可能绕过去——
+        # 学生没点头就把待办置成已完成，他还在以为没办完，复盘时才发现已经"完成"了。
+        # 所以两件事一起做（跟删待办一个模子）：
+        #   ① 写工具从工具箱撤掉（planner 里只留只读的 propose_todo_done，出不了任何状态）；
+        #   ② 判定和列清单收归系统，三种情况各有各的走法（规格里的"3 确定性分支"）：
+        #      · 点名了唯一一条 → 出确认条（原样念一遍标题+日期+时段），等学生点头
+        #      · 命中好几条 / 没说清是哪条 → **列清单问是哪一条，列完就停**，绝不猜
+        #      · 一条都没命中 → 如实说，绝不编一条出来标记
+        # ⚠️ 必须排在删待办（3g）前面：学生说"把周二那条**待办**标记完成"也带"周二"，
+        #     让删待办先接会误判成"要删"，跑偏。标记完成不是删除，顺序摆正。
+        # ⚠️ "学生在回答是哪一条吗" 也只看**紧挨着的上一句**（同删待办的串味教训）。
+        _last_bot = next((m.get("content") or "" for m in reversed(get_conversation(session_id))
+                          if m.get("role") == "assistant"), "").strip()
+        asking_done = _last_bot == "标记完成缺细节"
+        done_intent = ((_done_claim and not _rule_veto)
+                       or _sem_intent == INTENT_DONE)
+        # ★★ 先算"这句是不是在回答**删待办**那份候选清单"，再决定要不要让标记完成接。
+        #
+        # 真机踩到的坑（学生回「游泳」，系统却弹出一张"标记完成"卡）：上一句是删待办的
+        # 候选清单（"1. 游泳 2. 游泳"），学生回名字是在**点名**；可**语义层**把「游泳」
+        # 单独一句判成了 done_todo（光看这两个字，它确实更像"办完了"）。而标记完成分支
+        # 排在上面（3h 在 3g 前），于是这句被它抢走 —— 判定层再怎么按上下文解析都没机会跑。
+        #
+        # 判据分两层，只让**弱信号**（语义层猜的 done）让位：
+        #   · 规则层明说这是标记完成（"把游泳标记完成/勾掉…"，且没被 _rule_veto 否掉）
+        #     → 硬信号，还是标记完成接（别让一个"都"字/一份清单把它盖掉）；
+        #   · 只有语义层判 done（主语就俩字名字）→ 弱信号，让给删待办。
+        _rm_held_now = _pending_remove_candidates(session_id)
+        _rm_asking = _last_bot == "删待办缺细节"
+        _rm_answers_held = bool(_rm_held_now) and (
+            bool(_pick_todo_indexes(message, len(_rm_held_now)))
+            or (_pending_todo_remove(session_id) is not None and _wants_rechoose(message)))
+        _rm_reply_pending = _rm_asking or _rm_answers_held
+        _done_hard = _done_claim and not _rule_veto
+        if (done_intent or asking_done) and not (_rm_reply_pending and not _done_hard):
+            # 学生是不是在回答"是哪一条"（回一句"第二条"/"23"/"游泳那条"）。
+            # 同删待办：不能再 and not done_intent——语义层会把「第二条」判成某类办事意图，
+            # 关掉 followup 就会退化成"没找到"。resolve_todo_done_reply 自带名字兜底。
+            followup = asking_done
+            held = _pending_todo_done_candidates(session_id)
+            if followup:
+                res = resolve_todo_done_reply(message, held)
+            else:
+                res = resolve_todo_done(message)
+            status = res.get("status")
+
+            if status == "ok":
+                proposal = res["proposal"]
+                save_pending(session_id, [proposal])
+                append_conversation(session_id, "user", message)
+                append_conversation(session_id, "assistant",
+                                    f"已生成标记完成提案：{proposal['summary']}")
+                return {
+                    "module": "planner",
+                    "session_id": session_id,
+                    "answer": (
+                        f"✅ 要标记为完成的是这一条：**{proposal['title']}**｜{proposal['date']}"
+                        f"（{proposal['weekday']}）{proposal['start']}-{proposal['end']}。\n"
+                        "确认条就在下面这条消息里，点【确认完成】我才改状态；"
+                        "点【取消】这条待办原封不动。"
+                        "（也可以直接在聊天框回一句「确认」，一样会执行。）"
+                    ),
+                    "trace": [{"step": 1, "phase": "✅ 生成标记完成提案（系统判定）",
+                               "answer": proposal["summary"]}],
+                    "options": [proposal],
+                    "awaiting_choice": True,
+                }
+
+            # 学生对着刚列出的清单说"都完成了 / 全标记完成" —— 同删待办：
+            # 接着上一句指代"你列的那几条我都要办"，一次点头、一次办完。
+            if status == "all" and res.get("todos"):
+                todos = res["todos"]
+                proposal = todo_done_batch_proposal(todos)
+                save_pending(session_id, [proposal])
+                append_conversation(session_id, "user", message)
+                append_conversation(session_id, "assistant",
+                                    f"已生成标记完成提案：{proposal['summary']}")
+                return {
+                    "module": "planner",
+                    "session_id": session_id,
+                    "answer": (
+                        f"✅ 好，你说的是**上面那 {proposal['count']} 条全都要标记完成**。"
+                        "我把它们一条条列在下面的确认条上了——"
+                        "点【确认完成全部】我才改状态；点【取消】原封不动。"
+                        "（也可以直接在聊天框回一句「确认」，一样会执行。）"
+                    ),
+                    "trace": [{"step": 1,
+                               "phase": "✅ 学生说「都」→ 生成批量标记完成提案（系统判定）",
+                               "answer": proposal["summary"]}],
+                    "options": [proposal],
+                    "awaiting_choice": True,
+                }
+
+            # 命中好几条：**列清单，问是下面哪一条，列完就停**。
+            # 这一支就是规格第 2 条——"不许猜"。清单同时记进暂存，
+            # 学生回"第二条"时系统接得住（见上面的 resolve_todo_done_reply）。
+            if status in ("many", "unclear") and res.get("todos"):
+                todos = res["todos"]
+                save_pending(session_id, [{"kind": "todo_done_candidates",
+                                           "todos": todos, "summary": "待标记候选"}])
+                append_conversation(session_id, "user", message)
+                append_conversation(session_id, "assistant", "标记完成缺细节")
+                head = ("你说的这条对上了好几条待办，我不敢替你挑 ✅"
+                        if status == "many" else "没太看明白你指哪一条 ✅")
+                return {
+                    "module": "planner",
+                    "session_id": session_id,
+                    "answer": (
+                        f"{head}\n\n{render_todo_done_list(todos)}\n\n"
+                        "是下面哪一条？回我一个名字（或序号，比如「第二条」），"
+                        "我再把确认条挂出来——**你点头之前我一条都不会动。**"
+                    ),
+                    "trace": [{"step": 1, "phase": "✅ 标记完成命中多条（列清单，不猜）",
+                               "answer": f"候选 {len(todos)} 条，等学生点名"}],
+                    "options": [],
+                    "awaiting_choice": False,
+                }
+
+            # 一条都没命中：如实说。绝不从"没找到"里编一条出来标记。
+            clear_pending(session_id)
+            day = res.get("day")
+            where = f"{day}（{_weekday_of(day)}）" if day else ""
+            append_conversation(session_id, "user", message)
+            append_conversation(session_id, "assistant", "标记完成：没找到符合条件的")
+            return {
+                "module": "planner",
+                "session_id": session_id,
+                "answer": (
+                    f"✅ 我在{where or '日程里'}没找到叫这个的待办，什么都没动。\n"
+                    "你可以：① 说得再具体点（哪一天 + 叫什么）；"
+                    "② 直接问我「那天排了什么」，我列给你看。"
+                ),
+                "trace": [{"step": 1, "phase": "✅ 标记完成没找到（如实说，不猜）",
+                           "answer": "没有匹配的待办，什么都不改"}],
+                "options": [],
+                "awaiting_choice": False,
+            }
+
+        # 3g) **确定性删待办分支**（规格：跟删课同一套规矩——先列清楚，再动手，学生点头才算数）
+        #
+        # 为什么必须由系统接管：删待办**不可逆**，而模型手里原先有一个真能删的 remove_todo，
+        # 规矩只写在提示层（"必须先确认"）。提示是软的，模型口语一变就可能绕过去——
+        # 学生没点头就删掉，找不回来。所以两件事一起做：
+        #   ① 写工具从工具箱里撤掉（模型只能拿到提案，删不动库）；
+        #   ② 判定和列清单也收归系统，三种情况各有各的走法：
+        #      · 点名了唯一一条 → 出确认条（原样念一遍标题+日期+时段），等学生点头
+        #      · 命中好几条 / 只说"明天那条" → **列清单问是哪一条，列完就停**，绝不猜
+        #      · 一条都没命中 → 如实说，绝不编一条出来删
+        # 注意这一段**必须排在删课（3f）前面**：学生说"把周二那条**待办**删掉"也带了"周二"，
+        # 让删课先接就会跑到课表那条路上追问"想删哪一节"——问错人了。
+        # ⚠️ "学生在回答是哪一条吗" 只看**紧挨着的上一句**。
+        # 早先写成"最近 4 条 assistant 里有这个标记就算"，结果标记会一直赖在窗口里：
+        # 学生先删了一条待办、隔两轮又说「去掉周二的高数」，这句话还会被当成"在挑待办"，
+        # 于是落到"没找到这条待办、一条都没删"——**课表那条路压根没机会接手**。
+        # 判据收紧成"上一句就是我那句追问"，就不存在这个串味问题。
+        # ⚠️ `_last_bot` / `asking_rm_todo` / `held_now` / `answers_held` 已在上面
+        #    （3h 标记完成分支之前）算好：那边要先知道"这句是不是在回答删候选清单"，
+        #    才能决定让不让标记完成接。这里直接复用，别再算第二遍——两处各算一遍，
+        #    将来改一处就会悄悄不一致（同一个判据两个说法是这类 bug 的老家）。
+        asking_rm_todo = _rm_asking
+        rm_intent = (((wants_remove_todo(message) or wants_remove_todo_loose(message))
+                      and not _rule_veto)
+                     or _sem_intent == INTENT_REMOVE_TODO)
+        # ★ 手里还攥着上一句那份候选清单时，"报个序号 / 说声换一条"就是在回答我们——
+        #   跟上一句是不是那句追问**无关**：清单指的是"我们刚列过"，而裸序号离开清单
+        #   根本没有别的主人。少了这一条，系统替他挑过一条之后他说"不对，换一条/第二条"
+        #   就没人接得住（卡上的出口是断的，他会觉得"它自己定了就不听我"）。
+        # ⚠️ 收紧两处，免得把别的意图串味进来：
+        #   · 报序号 —— 只认**整句基本就是个序号**（"2"/"第二条"/"23"），由 _pick_todo_indexes 把住；
+        #   · 说"不对" —— 只在**刚挂过一张删待办卡**时才算（说明他是在否掉那张卡）。
+        held_now = _rm_held_now
+        answers_held = _rm_answers_held
+        # ★ 软取消优先作废**还没点头的加待办提案**，别去日程里翻一条出来删。
+        #   真机那一幕（用户截图）：「明天去吃自助」出了候选时段卡《吃自助》，
+        #   他紧接着说「算了不吃了」—— 库里**压根还没有这条**，可执行层把这句听成
+        #   "删一条待办"，于是端出整张日程问他"是下面哪一条"。他要的是把这张卡撤掉。
+        #   这一支只清暂存：**一个字节都不写库，也不删库**（判定/执行分离照旧）。
+        # ⚠️ 只认 `_ADD_PROPOSAL_KINDS` 那几种 = 天然避开了"他正在回答删待办那份清单"：
+        #   暂存每个会话**只有一个位置**（`save_pending` 整份覆盖），挂着 `todo_remove_candidates`
+        #   的时候这里拿到的就是 None，不需要再叠一层 `asking_rm_todo / answers_held` 的判断
+        #   （早先按施工单加了那道，实测是**死条件** —— 永远为真，白占一行还让人以为它在把关）。
+        _active_add = _active_add_proposal(session_id)
+        if _active_add is not None and _cancels_active_proposal(message, _active_add):
+            _back_out = (_active_add.get("title") or "").strip() or "这件事"
+            _back_out_summary = _active_add.get("summary") or _back_out
+            clear_pending(session_id)
+            append_conversation(session_id, "user", message)
+            append_conversation(session_id, "assistant", f"已取消待办提案：{_back_out_summary}")
+            return {
+                "module": "planner",
+                "session_id": session_id,
+                "answer": (f"好，**{_back_out}** 先不加了 —— 那张卡我撤了，日程一个字都没动。\n"
+                           "改主意了再说一声就行。"),
+                "trace": [{"step": 1,
+                           "phase": "🗑️ 学生反悔：作废还没点头的待办提案（不写库也不删库）",
+                           "answer": _back_out_summary}],
+                "options": [],
+                "awaiting_choice": False,
+            }
+        if rm_intent or asking_rm_todo or answers_held:
+            # 学生是不是在回答"是哪一条"（回一句"第二条"/"23"/"游泳那条"）。
+            # ⚠️ 只看"上一句是不是我那句追问"，**不能再 and not rm_intent**：
+            #    真机上语义层会把「第二条」判成 remove_todo（实测 confidence 0.85），
+            #    一旦因此把 followup 关掉，这句就被当成一次全新的删除指令 → 报"没找到"
+            #    （学生截图吐槽"记忆有问题"就是这么来的）。resolve_todo_remove_reply
+            #    内部已经"先按序号、再按名字"兜底，直接走它最稳。
+            #
+            # ⚠️ 再加一种：学生手里**有清单**、又**明确报了个序号**（"2"/"第二条"/"23"）、
+            #    或在刚挂过删待办卡时说"不对/换一条"——这两种都是在回答我们，
+            #    跟上一句是不是那句追问无关（见上面 answers_held 的注释）。
+            held = held_now if held_now else _pending_remove_candidates(session_id)
+            followup = asking_rm_todo or answers_held
+            # 「不去了删了吧」这种**没点名**的删除 → 十有八九指的就是刚写入的那条。
+            # 系统手里有这份账（自己写的写库回执），把名字补上再走同一条解析路，
+            # 出卡、确认、落库全部沿用原有代码——不另抄一份"从回执造删卡"的逻辑。
+            probe = message
+            _blind_recent = None
+            if not followup and _is_blind_delete(message):
+                _blind_recent = _recent_written_todos(session_id)
+                _still = [t for t, ok in _blind_recent if ok]
+                _gone = [t for t, ok in _blind_recent if not ok]
+                # ★ 回执里记着的**就那一条**、而它现在已经不在库里（他自己删过）→
+                #   先如实说"已经不在"，**不要**跑去解析、更不要端出整张日程。
+                #   放在这里（解析之前）是因为：他压根没点名，解析只会拿到"全部待办"
+                #   然后回一句"对上了好几条，我不敢替你挑"——学生刚删掉的那条，
+                #   在他听来就是系统装作不知道（这是在**有账可查**的前提下说的，
+                #   不是猜：回执是系统自己写的）。
+                if _gone and not _still and not wants_remove_course(message):
+                    clear_pending(session_id)
+                    append_conversation(session_id, "user", message)
+                    append_conversation(session_id, "assistant", "删待办：已经不在了")
+                    return {
+                        "module": "planner",
+                        "session_id": session_id,
+                        "answer": (f"🗑️ 「{_gone[0]}」已经不在日程里了——"
+                                   "可能刚才已经删掉（或在月表里手动删过）。"
+                                   "现在日程里一条都没少，不用再操作。"),
+                        "trace": [{"step": 1,
+                                   "phase": "🗑️ 没点名的删除 → 那条已经不在库里，如实说",
+                                   "answer": f"{_gone[0]} 已不在"}],
+                        "options": [],
+                        "awaiting_choice": False,
+                    }
+                if len(_still) == 1:
+                    probe = f"删除{_still[0]}"
+            if followup:
+                res = resolve_todo_remove_reply(message, held)
+            else:
+                res = resolve_todo_remove(probe)
+            status = res.get("status")
+
+            if status == "ok":
+                proposal = res["proposal"]
+                # 手上有清单（不管是**系统替他挑的**那条，还是他**自己报序号**挑的那条）
+                # 就把这份清单一并留在暂存里 —— 他说"换一条"/"第二条"时还有人接。
+                # 只留提案的话，"不对"两个字就会掉回大模型瞎猜（**出口就断了**）。
+                # （早先只在 picked_by 时留。可"换一条"这个出口跟他怎么挑的没关系：
+                #   自己报了序号照样可能挑错，把他困在卡上只能取消，是同一类毛病。）
+                pending_out = [proposal]
+                if held:
+                    pending_out = [proposal, {"kind": "todo_remove_candidates",
+                                              "todos": list(held), "summary": "待删候选"}]
+                save_pending(session_id, pending_out)
+                append_conversation(session_id, "user", message)
+                append_conversation(session_id, "assistant",
+                                    f"已生成删待办提案：{proposal['summary']}")
+                # 挑的依据必须让学生**在卡外面也看得见**：不写出来，他会产生虚假确定感
+                # ——不看卡就点确认，那跟"直接删"没区别。
+                why = ""
+                if proposal.get("picked_by"):
+                    why = f"\n（{proposal.get('note', '')}）"
+                return {
+                    "module": "planner",
+                    "session_id": session_id,
+                    "answer": (
+                        f"🗑️ 要删的是这一条：**{proposal['title']}**｜{proposal['date']}"
+                        f"（{proposal['weekday']}）{proposal['start']}-{proposal['end']}。"
+                        + why + "\n"
+                        "确认条就在下面这条消息里，点【确认删除】我才删；"
+                        "点【取消】日程原封不动。"
+                        "（也可以直接在聊天框回一句「确认」，一样会执行。）"
+                    ),
+                    "trace": [{"step": 1, "phase": "🗑️ 生成删待办提案（系统判定）",
+                               "answer": proposal["summary"]}],
+                    "options": [proposal],
+                    "awaiting_choice": True,
+                }
+
+            # 学生说「每个删一个 / 每组删一个 / 重复的删掉一个」——他是要**去重**：
+            # 每组重复的只留一条，不是把整张清单清空。这两句话字面上都带量词，
+            # 混在一起就会把"去重"听成"全删"（学生截图批注"脑子有问题"）。
+            # 规则在回话里说清楚（留最早写入的那条），卡上把要删的逐条列出来 —— 他点头才动。
+            if status == "dedup" and res.get("todos"):
+                todos = res["todos"]
+                proposal = todo_remove_batch_proposal(todos)
+                save_pending(session_id, [proposal])
+                append_conversation(session_id, "user", message)
+                append_conversation(session_id, "assistant",
+                                    f"已生成删待办提案：{proposal['summary']}")
+                return {
+                    "module": "planner",
+                    "session_id": session_id,
+                    "answer": (
+                        f"🗑️ 明白，你是要**去重**：同一组重复的只留一条，多出来的这 "
+                        f"{proposal['count']} 条删掉。\n"
+                        "（每组留的是**先写进去的那条**；要留另一条的话，"
+                        "取消之后直接说序号也行。）\n"
+                        "我把要删的一条条列在下面的确认条上了——"
+                        "点【确认删除全部】我才删；点【取消】日程原封不动。"
+                        "（也可以直接在聊天框回一句「确认」，一样会执行。）"
+                    ),
+                    "trace": [{"step": 1,
+                               "phase": "🗑️ 学生说「每个删一个」→ 生成去重删除提案（系统判定）",
+                               "answer": proposal["summary"]}],
+                    "options": [proposal],
+                    "awaiting_choice": True,
+                }
+
+            # 学生对着刚列出的清单说"都删了 / 全删掉 / 一起删了吧" —— 这是在**接着上一句
+            # 指代**"你列的那几条我全都要删"，不是"没说名字"。所以该**一次点头、一次删完**：
+            # 挂一张批量确认条，上面把每一条原样念清楚。
+            # 旧写法把这句话当"没点名"，端出**整张日程**（学生截图：列了 2 条，
+            # 他回「都删了」，屏幕却冒出 11 条 —— "上下文连不上"就是这一处）。
+            # ⚠️ 红线没破：这张条只是**提案**，他点【确认删除全部】之前一条都不会删。
+            if status == "all" and res.get("todos"):
+                todos = res["todos"]
+                proposal = todo_remove_batch_proposal(todos)
+                save_pending(session_id, [proposal])
+                append_conversation(session_id, "user", message)
+                append_conversation(session_id, "assistant",
+                                    f"已生成删待办提案：{proposal['summary']}")
+                return {
+                    "module": "planner",
+                    "session_id": session_id,
+                    "answer": (
+                        f"🗑️ 好，你说的是**上面那 {proposal['count']} 条全都要删**。"
+                        "我把它们一条条列在下面的确认条上了——"
+                        "点【确认删除全部】我才删；点【取消】日程原封不动。"
+                        "（也可以直接在聊天框回一句「确认」，一样会执行。）"
+                    ),
+                    "trace": [{"step": 1,
+                               "phase": "🗑️ 学生说「都」→ 生成批量删除提案（系统判定）",
+                               "answer": proposal["summary"]}],
+                    "options": [proposal],
+                    "awaiting_choice": True,
+                }
+
+            # 命中好几条：**列清单，问是下面哪一条，列完就停**。
+            # 这一支就是规格第 2 条——"不许猜"。清单同时记进暂存，
+            # 学生回"第二条"时系统接得住（见上面的 resolve_todo_remove_reply）。
+            if status in ("many", "unclear") and res.get("todos"):
+                todos = res["todos"]
+                save_pending(session_id, [{"kind": "todo_remove_candidates",
+                                           "todos": todos, "summary": "待删候选"}])
+                append_conversation(session_id, "user", message)
+                append_conversation(session_id, "assistant", "删待办缺细节")
+                head = ("你说的这条对上了好几条待办，我不敢替你挑 🗑️"
+                        if status == "many" else "没太看明白你指哪一条 🗑️")
+                return {
+                    "module": "planner",
+                    "session_id": session_id,
+                    "answer": (
+                        f"{head}\n\n{render_todo_remove_list(todos)}\n\n"
+                        "是下面哪一条？回我一个名字（或序号，比如「第二条」），"
+                        "我再把确认条挂出来——**你点头之前我一条都不会删。**"
+                    ),
+                    "trace": [{"step": 1, "phase": "🗑️ 删待办命中多条（列清单，不猜）",
+                               "answer": f"候选 {len(todos)} 条，等学生点名"}],
+                    "options": [],
+                    "awaiting_choice": False,
+                }
+
+            # 一条都没命中：如实说。绝不从"没找到"里编一条出来删。
+            #
+            # 但有一类句子要放行：它其实是在说**课**（"去掉周二的高数"），只是
+            # 顺手触发了删待办的开关。这种情况不能抢答"我没找到这条待办"——
+            # 那会让课表那条路（3f）压根没机会接手，学生只会觉得"我想删课，它跟我扯待办"。
+            # 放它过去，交给删课分支去追问/出卡。
+            if not wants_remove_course(message):
+                clear_pending(session_id)
+                day = res.get("day")
+                where = f"{day}（{_weekday_of(day)}）" if day else ""
+                # 没点名的那几种情形，都比"没找到"有用（截图实测：学生被这句推去
+                # 月表手动删——可他明明刚在对话里加过，账就在回执里）：
+                if _blind_recent is not None:
+                    _still = [t for t, ok in _blind_recent if ok]
+                    _gone = [t for t, ok in _blind_recent if not ok]
+                    if len(_still) > 1:
+                        # 最近写入的好几条都还在 → 列出来让他点名（绝不替他猜哪条）
+                        todos = [x for x in list_todos() if x.get("title") in _still]
+                        save_pending(session_id, [{"kind": "todo_remove_candidates",
+                                                   "todos": todos,
+                                                   "summary": "待删候选"}])
+                        append_conversation(session_id, "user", message)
+                        append_conversation(session_id, "assistant", "删待办缺细节")
+                        return {
+                            "module": "planner",
+                            "session_id": session_id,
+                            "answer": ("你最近刚排了这几条，要删的是哪一条？\n\n"
+                                       f"{render_todo_remove_list(todos)}\n\n"
+                                       "回我名字或序号就行——**你点头之前我一条都不会删。**"),
+                            "trace": [{"step": 1,
+                                       "phase": "🗑️ 没点名的删除 → 列出最近写入的几条让他点名",
+                                       "answer": f"候选 {len(todos)} 条"}],
+                            "options": [],
+                            "awaiting_choice": False,
+                        }
+                    # （「已经不在了」那一支已挪到解析**之前**：他没点名时，解析只会
+                    #   拿回"全部待办"，等走到这儿再说"已经不在"就晚了 —— 见上面。）
+                append_conversation(session_id, "user", message)
+                append_conversation(session_id, "assistant", "删待办：没找到符合条件的")
+                return {
+                    "module": "planner",
+                    "session_id": session_id,
+                    "answer": (
+                        f"🗑️ 我在{where or '日程里'}没找到叫这个的待办，一条都没删。\n"
+                        "你可以：① 说得再具体点（哪一天 + 叫什么）；"
+                        "② 直接问我「那天排了什么」，我列给你看。"
+                    ),
+                    "trace": [{"step": 1, "phase": "🗑️ 删待办没找到（如实说，不猜）",
+                               "answer": "没有匹配的待办，什么都不删"}],
+                    "options": [],
+                    "awaiting_choice": False,
+                }
+
+        # 3f) **确定性删课分支**：跟清空/加课同一个思路，"删除周一第一节课"这种话
+        #     学生说得明明白白，剩下"新课表长什么样"该由服务端算，不该赌模型调不调工具。
+        #     实测真模型会**只在文字里给个预览、让学生回「确认」**，可它压根没调出提案工具
+        #     ——暂存里什么都没有，学生回了确认也是白回：弹窗不来、确认不删、删除失败。
+        #
+        #     两种进路：
+        #     a) 这句话本身带着删课意图（"删除周一第一节课"）；
+        #     b) **系统上一轮刚追问过"想删哪一节"**，学生补一句"周一的第一节"——
+        #        这句话里没有"删除"两个字，wants_remove_course 认不出来，
+        #        但它是对追问的回答，必须接着处理。不接住的话又掉回模型，
+        #        模型会嘴上说"删课提案已经生成啦"（根本没生成），弹窗照样不来。
+        #        识别标记就是追问分支写进会话历史的那句"删课缺细节"。
+        recent = [m for m in get_conversation(session_id)[-4:] if m.get("role") == "assistant"]
+        asking_remove = any("删课缺细节" in (m.get("content") or "") for m in recent)
+        if wants_remove_course(message) or asking_remove:
+            proposal = parse_remove_course(message)
+            if proposal is not None:
+                save_pending(session_id, [proposal])
+                append_conversation(session_id, "user", message)
+                append_conversation(session_id, "assistant", f"已生成删课提案：{proposal.get('summary', '')}")
+                return {
+                    "module": "planner",
+                    "session_id": session_id,
+                    "answer": (
+                        f"🗑️ 要删的是这一节：\"{proposal.get('summary', '')}\"。"
+                        f"确认条就在下面这条消息里，点【确认变更】我才写；"
+                        f"点【取消】周表原封不动。"
+                    ),
+                    "trace": [{"step": 1, "phase": "🗑️ 生成删课提案（系统判定）",
+                               "answer": str(proposal.get("summary") or "")}],
+                    "options": [proposal],
+                    "awaiting_choice": True,
+                }
+            # 解析不出来（没说星期 / 当天好几节课没说哪节）→ 系统追问，不交给模型
+            clear_pending(session_id)
+            append_conversation(session_id, "user", message)
+            append_conversation(session_id, "assistant", "删课缺细节")
+            return {
+                "module": "planner",
+                "session_id": session_id,
+                "answer": (
+                    "想删哪一节，说得更具体一点：\n"
+                    "· 说星期 + 节次，比如「删除周二第二节」；\n"
+                    "· 或直接说课名，比如「去掉周五的心理学选修」。\n"
+                    "我算出新课表给你确认，你点头我才写进周表。"
+                ),
+                "trace": [{"step": 1, "phase": "🤔 删课缺细节（系统追问）",
+                           "answer": "没说清是哪节，先问清楚再出提案"}],
+                "options": [],
+                "awaiting_choice": False,
+            }
+
+        # 3i) **知识库直答**（人话：问的是校园信息，就别让大模型现编）
+        #     真机实测出来的漏子：在**日程栏**问「校车在哪里坐」，所有确定性分支都不认
+        #     （它既不是加待办也不是删待办），最后掉给大模型——大模型手里没知识库，
+        #     回了一句"我这边查不到，你去看学校公众号"，可知识库里**明明躺着校车时刻表**。
+        #     所以位置很有讲究：放在**所有确定性分支之后、交给模型之前**——
+        #     该接的都接过了才轮到它，绝不会从待办操作手里抢话。
+        #     四道闸门缺一不可（宁可漏给模型，也不许在学生的待办操作上乱插嘴）：
+        #       ① 手上没有待确认的卡（有卡时他多半在跟卡对话，别把卡弄丢）；
+        #       ② 这句话不带"待办/日程/课表"这类词（"我的校车待办显示不出来"是报障）；
+        #       ③ 没有任何改数据的意图（加/删/改待办、加/删课、清空课表）；
+        #       ④ 它**像问句**，且知识库**真的**答得出来——答不出就老实交给模型。
+        #     ⚠️ 只给**日程栏（planner）**用：校园问答栏本来就有自己的知识库链路，
+        #       接管它反而会盖掉那一栏"没配密钥"的降级提示（test_01 就是这么被撞红的）。
+        #       这里补的正是**日程栏问校园信息没人管**的这个洞。
+        _holding_card = any(f(session_id) for f in (
+            _pending_todo, _pending_todo_remove, _pending_todo_done,
+            _pending_todo_remove_batch, _pending_todo_done_batch, _pending_todo_slots))
+        if (module_key == "planner"
+                and not _holding_card
+                and not any(w in message for w in ("待办", "代办", "日程", "周表",
+                                                   "月表", "课表", "清单", "列表"))
+                and not (wants_add_todo(message) or wants_remove_todo(message)
+                         or _done_claim or wants_add_course(message)
+                         or wants_remove_course(message)
+                         or wants_clear_timetable(message))
+                and looks_like_question(message)
+                and _kb_has_answer(message)):
+            from app.modules.faq import search_kb
+            append_conversation(session_id, "user", message)
+            append_conversation(session_id, "assistant", "校园问答：知识库直答")
+            return {
+                "module": module_key,
+                "session_id": session_id,
+                "answer": "📚 " + search_kb(message),
+                "trace": [{"step": 1, "phase": "📚 问的是校园信息 → 翻知识库（按台账答，不现编）",
+                           "answer": "知识库命中"}],
+                "options": [],
+                "awaiting_choice": False,
+            }
 
     # 4) 组装引擎并跑 ReAct 循环（会按需调用工具）
     engine = AgentEngine(
