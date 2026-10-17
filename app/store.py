@@ -4,10 +4,28 @@
 每个文件就是一张表：student_messages.json = 学生消息表，notices.json = 通知表。
 真上线时把这里换成数据库即可，接口不变。
 """
+import contextvars
 import datetime
 import json
 import os
 import uuid
+
+# ============ 当前请求的学生身份（#32） ============
+# 只放"这次请求是谁"这一件事，而且**唯一写入口是 main.bind_student 那个中间件**。
+# 为什么是 ContextVar 而不是模块级全局变量：全局变量在并发请求下会被后来者盖掉，
+# 出现"A 的请求读到 B 的学号"这种偶发串号（本仓的并发写盘那条是同一个病根）。
+# 默认空串 = 没有身份 ⇒ `_spath` 走老位置 `student/`，测试与未登录都靠它兜底。
+_CURRENT_STUDENT: contextvars.ContextVar[str] = contextvars.ContextVar("current_student", default="")
+
+
+def set_current_student(sid: str) -> None:
+    """每个请求进来设一次（只有中间件调它，别在业务函数里再设一遍——那是"半路换人"）。"""
+    _CURRENT_STUDENT.set(sid or "")
+
+
+def current_student() -> str:
+    """当前请求的学生学号；没登录 / 测试 / 演示脚本里就是空串。"""
+    return _CURRENT_STUDENT.get()
 
 # 数据目录默认是 app/data；但可以用环境变量指到别处。
 # 为什么留这个开关：跑自动化测试时，让测试写一份临时副本，
@@ -414,9 +432,37 @@ def get_upload_raw_path(fid: str) -> str | None:
 MAX_HISTORY = 20
 
 
+def student_root() -> str:
+    """个人库根目录 `<data>/student` —— 老位置那份**演示底稿**就在这儿（登录播种只读它）。"""
+    return os.path.join(_data_dir(), "student")
+
+
+def student_dir(sid: str) -> str:
+    """某个学号的个人库目录；没有学号就是根目录（老位置）。
+
+    ⚠️ 这是给"按人分目录"这件事用的（登录播种、测试核对路径）；
+    业务代码**拼文件路径仍然只许走 `_spath`**，别在这儿再拼一遍名字 —— 那就会变成第二份判据。
+    """
+    return os.path.join(student_root(), sid) if sid else student_root()
+
+
 def _spath(name: str) -> str:
-    """学生个人库里某个文件的路径。"""
-    return os.path.join(_data_dir(), "student", name)
+    """学生个人库里某个文件的路径。
+
+    ⚠️ **按学号分**：`student/<学号>/timetable.json`；**没有学号时退回老位置 `student/`**。
+    兜底那半条不是偷懒：50 多个护栏文件、既有演示数据、以及"没登录直接打开 /student"
+    都走无学号这条路 —— 去掉它这群会一起红（`test_59` B 批钉这条）。
+    分人之后课表 / 待办 / 会话历史**自动全部分开**，因为它们的读写只有 `_sread`/`_swrite` 两个调用点，
+    而这两个都从这里取路径 —— 这就是"接缝只有一处"的价值：**别在别处再拼一遍 `student/`**。
+
+    学号是谁定的？浏览器每次请求带的 cookie（`main.bind_student` 中间件设进 ContextVar）。
+    这**不是鉴权**（学号谁都能填），只解决"同一台机器换账号时数据不共用"。
+    用 ContextVar 而不是模块级全局变量：全局变量在并发请求下会互相盖掉，出现
+    "A 的请求读到 B 的学号"这种偶发串号 —— 与"并发写盘丢更新"同一个病根。
+    """
+    base = student_root()
+    who = _CURRENT_STUDENT.get()
+    return os.path.join(base, who, name) if who else os.path.join(base, name)
 
 
 def _sread(name: str, default):
@@ -430,7 +476,7 @@ def _sread(name: str, default):
 
 def _swrite(name: str, data) -> None:
     """写学生个人库里的一个 JSON 文件。"""
-    os.makedirs(os.path.join(_data_dir(), "student"), exist_ok=True)
+    os.makedirs(os.path.dirname(_spath(name)), exist_ok=True)
     with open(_spath(name), "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
