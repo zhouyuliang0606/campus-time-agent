@@ -52,6 +52,41 @@ def current_owner() -> str:
     return current_student() or DEMO_OWNER
 
 
+# ============ 账号名单（#38：只开放登记过的学号） ============
+# 「只校验格式」= 任何 1~20 位字母数字都能进：随手打一个 `abc` 就多一个"学生"、
+# 多一个空库、多一条谁都看不懂的会话 —— 今天 `student/` 下那几个空目录就是这么来的。
+# ⚠️ 这道门挡得住"手输学号"，**挡不住"手改 cookie"**；后者由 #38 的签名 cookie 管
+#    （`main._clean_student`）。两层判据各一处，别指望这一层去管那一层的事。
+ACCOUNTS_FILE = "accounts.json"
+
+
+def list_accounts() -> list:
+    """已开通的学号名录（人话：谁能进这个系统）。
+
+    ⚠️ **每次现读**，不缓存：演示前改完 JSON 直接重登就生效，不用重启服务；
+       缓存一份就得处理"改完什么时候失效"，那是白送一类 bug。
+    ⚠️ 文件不存在 / 被改坏 ⇒ 返回**空列表**（= 谁都进不来），不是"全部放行"。
+       坏文件当全放行是安全上最坏的那种fallback：看起来一切正常，门其实开着。
+       空名单这件事由 `main._check_accounts()` 在启动时喊出来。
+    """
+    try:
+        return list(_read(ACCOUNTS_FILE, {"accounts": []}).get("accounts") or [])
+    except (json.JSONDecodeError, AttributeError):
+        return []
+
+
+def is_registered(sid: str) -> str | None:
+    """这个学号开通了就返回它那份名录项，否则 None（`/api/login` 是唯一判点）。
+
+    返回整条而不只是 bool：将来"显示名字 / 按人限流"要用，调用方不必再读第二遍文件。
+    """
+    want = str(sid or "")
+    for a in list_accounts():
+        if str(a.get("sid") or "") == want:
+            return a
+    return None
+
+
 def visible_rows(rows, *, staff: bool = False) -> list[dict]:
     """台账过滤 —— **过滤判据只有这一处**（`packages_view` / `list_my_*` / `get_by_code` 都调它）。
 
