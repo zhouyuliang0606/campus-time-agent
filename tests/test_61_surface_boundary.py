@@ -267,8 +267,12 @@ def batch_c_shape():
                          if isinstance(call, ast.Call) and getattr(call.func, "id", "") == "Tool"
                          for kw in call.keywords if kw.arg == "name"
                          and isinstance(kw.value, ast.Constant)})
-    c.check("C7 驿站工具箱仍然只有那两个快递查询（不许拿「删工具」当本单的修法）",
-            tool_names == ["get_by_code", "list_pending_pickup"], str(tool_names))
+    c.check("C7 驿站工具箱仍然只有两个查询（不许拿「删工具」当本单的修法）",
+            tool_names == ["get_by_code", "list_pending_by_student"], str(tool_names))
+    # ⚠️ C7 这份名单在 #36 换过一次名字：`list_pending_pickup` 是**学生口径**那一份
+    #   （说「你有 N 件、请尽快取」），驿站换成了 `list_pending_by_student`（全店 + 按学号分组 +
+    #   店员语气）。本单要钉的本数是"驿站手里只有查询、一个写入都没有"—— 名字换了，这件事没变，
+    #   所以这里是**改口**而不是放松：断言仍然要求恰好这两件、且都不带写。
 
     p = _fn(sstat, "build_system_prompt")
     ptxt = ast.unparse(p) if p else ""
