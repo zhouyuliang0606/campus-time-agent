@@ -26,7 +26,7 @@ from app.agent.intent import (
     to_canonical,
 )
 from app.agent.pending import (
-    clear_pending, is_confirmation, peek_pending, save_pending, take_pending,
+    clear_pending, is_confirmation, mark_applied, peek_pending, save_pending, take_pending,
 )
 from app.agent.router import Router
 from app.config import (DEBUG, BaseUrlError, check_base_url_ssrf, check_config, get_llm_config,
@@ -4653,10 +4653,55 @@ async def todos_month(month: str = ""):
     return {"month": month, "days": list_todos_in_month(month)}
 
 
+def _card_close_guard(sid: str, body: dict) -> str:
+    """「点卡片上的确认按钮写库」这条路的**幂等判据 —— 唯一一份**，三个入口共用。
+
+    返回空串 = 可以写；返回一句话 = **这张卡刚刚已经办过，别再写一遍**（那句直接回给学生）。
+
+    为什么需要它（2026-10-17 真机，用户原话）：
+    「我先前加入一个代办，点击确认后，退出去刷新回来，又弹了一次卡，再点击确认重新加了一个相同代办」。
+    根因不在读接口 —— `/api/pending/{sid}` 一直只回"未 applied"的卡；
+    是 `/api/todos`（以及 PUT/DELETE 那两个）**写完从来不销卡**，卡于是刷新后复活、再点就再写一条。
+    课表 `/api/timetable/apply` 与批量 `/api/todos/batch` 早就写了 `mark_applied`，这一路是**漏了两个入口**，
+    不是机制缺失。
+
+    为什么还要认 `from_card`：`/api/todos` 这几个口不只卡片在用
+    （代办栏的勾选框、面板上的删除、以及 50 多个护栏测试都直接打它们）。
+    无条件销卡会把学生手里**另一张**没点头的卡一起作废 —— 那是误杀，
+    后果比这个 bug 更难受（他回头说"确认删除"，系统答"没有待确认的提案"）。
+
+    ⚠️ 已知限制（照实写，别当已经原子）：两个请求**真正同时**到达时（双击落在同一毫秒），
+    仍有一个极小窗口两条都写进去 —— 本仓现在一处锁都没有（`读全量→改→整份写回`，见 EXPLAIN 六 并发写盘）。
+    这一档挡的是"人类的重复点击"与"刷新后重点"，不是并发安全。
+    """
+    if not sid or not (body or {}).get("from_card"):
+        return ""
+    entry = peek_pending(sid)
+    if not entry:
+        return ""
+    if entry.get("applied"):
+        return "这条刚刚已经办过了，不用再点一次。"
+    return ""
+
+
+def _close_card(sid: str, body: dict) -> None:
+    """写库**成功之后**销卡（唯一一处打标记的写法，形状与 /api/timetable/apply 一致）。
+
+    ⚠️ 顺序是有讲究的：guard 必须在写之前问、这里必须在写成功之后打。
+    反过来（先销卡再写）会变成"写失败了卡也没了，学生点了个寂寞"。
+    """
+    if sid and (body or {}).get("from_card"):
+        mark_applied(sid)
+
+
 @app.post("/api/todos")
 async def todo_add(req: Request):
-    """手动加一条待办（人话：不走 AI 也能自己往日程里塞一件事）。"""
+    """手动加一条待办 / 点【确认加入】把提案卡落库（两条路共用这个口，靠 from_card 分清）。"""
     body = await req.json()
+    sid = (body.get("session_id") or "").strip()
+    already = _card_close_guard(sid, body)      # ← 写之前问：这张卡是不是已经办过了
+    if already:
+        return {"ok": True, "already": True, "message": already}
     date = (body.get("date") or "").strip()
     start = (body.get("start") or "").strip()
     end = (body.get("end") or "").strip()
@@ -4685,10 +4730,10 @@ async def todo_add(req: Request):
             pass
     # 学生是点卡片上的【确认加入】才走到这里的，这话得进会话历史——
     # 否则一刷新页面，那两条"✅ 已加入日程"就消失了，学生又会以为刚才没加上。
-    sid = (body.get("session_id") or "").strip()
     if sid:
         append_conversation(sid, "assistant", f"已加入日程：{item.get('title', title)}"
                             f"｜{date}（{_weekday_of(date)}）{start}-{end}")
+    _close_card(sid, body)      # ← 写完销卡。不销就是"刷新后卡复活 → 再点加第二条相同的"（#33 那一幕）
     return {"ok": True, "todo": item}
 
 
@@ -4905,17 +4950,23 @@ async def todo_update(tid: str, req: Request):
     分流只写在 `store.set_todo_done_on` 一处，这个入口不再自己判档位。
     """
     body = await req.json()
+    sid = (body.get("session_id") or "").strip()
+    already = _card_close_guard(sid, body)      # ← 写之前问（#33：完成卡刷新后复活会被再点一次）
+    if already:
+        return {"ok": True, "already": True, "message": already}
     on = (body.get("on") or "").strip()
     if "status" in body:
         done = str(body.get("status") or "").lower() in ("done", "true", "1")
         item = set_todo_done_on(tid, on, done)
         if not item:
             return JSONResponse({"error": "待办不存在"}, status_code=404)
+        _close_card(sid, body)
         return {"ok": True, "todo": item, "on": on}
     patch = {k: v for k, v in body.items() if k in ("title", "date", "start", "end", "note", "status")}
     item = update_todo(tid, patch)
     if not item:
         return JSONResponse({"error": "待办不存在"}, status_code=404)
+    _close_card(sid, body)
     return {"ok": True, "todo": item}
 
 
@@ -4935,16 +4986,22 @@ async def todo_delete(tid: str, req: Request):
         body = await req.json()
     except Exception:
         body = {}
+    if not isinstance(body, dict):
+        body = {}
+    sid = (body.get("session_id") or "").strip()
+    already = _card_close_guard(sid, body)      # ← 写之前问（#33：删除卡刷新后复活，再点会删到同名另一条）
+    if already:
+        return {"ok": True, "already": True, "message": already}
     item = get_todo(tid)
     if not delete_todo(tid):
         return JSONResponse({"error": "待办不存在"}, status_code=404)
-    sid = (body.get("session_id") or "").strip() if isinstance(body, dict) else ""
     if sid and item:
         date = item.get("date", "")
         append_conversation(
             sid, "assistant",
             f"已删除待办：{item.get('title', '待办')}｜{date}（{_weekday_of(date)}）"
             f"{item.get('start', '')}-{item.get('end', '')}")
+    _close_card(sid, body)
     return {"ok": True}
 
 
