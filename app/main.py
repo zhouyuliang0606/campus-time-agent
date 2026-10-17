@@ -9,7 +9,8 @@ import asyncio
 import json
 import os
 import re
-import shutil
+import hashlib
+import hmac
 import uuid
 from typing import Any
 
@@ -55,7 +56,7 @@ from app.store import (
     REPEAT_NONE, REPEAT_WEEKLY, REPEAT_DAILY, is_past_date,
     add_workorder, list_workorders, update_workorder_status,
     set_workorder_archived, set_message_archived,
-    set_current_student, current_student, student_root, student_dir,
+    set_current_student, current_student, is_registered, list_accounts, timetable_saved,
 )
 from app.modules.faq import SYSTEM_PROMPT as FAQ_PROMPT, build_tools as faq_tools
 from app.modules.express import SYSTEM_PROMPT as EXPRESS_PROMPT, build_tools as express_tools
@@ -155,6 +156,21 @@ app = FastAPI(title="校园时间管家 CampusTime", version="0.1.0")
 check_config()
 
 
+def _check_accounts() -> None:
+    """启动时喊一句"名单是空的"（人话：不然全站谁都进不去，还没有任何地方告诉你为什么）。
+
+    #38 把"没开通就进不去"做成了**默认行为**，那"名单文件被删/被改坏"就是一次全站锁死 ——
+    这种时候唯一能被发现的地方就是启动日志。判据仍然只有 `list_accounts()` 那一份。
+    """
+    if not list_accounts():
+        print("[配置提醒] app/data/accounts.json 里一个学号都没有 —— 现在**任何学号都登不进去**。")
+        print("          要么把学号写进去（形如 {\"accounts\": [{\"sid\": \"admin1\"}]}，改完不用重启），")
+        print("          要么检查这个文件是不是被删了 / 改坏了（坏文件也按空名单算，宁可进不去也不全放行）。")
+
+
+_check_accounts()
+
+
 # —— 请求体解码失败的收口（全项目一处，2026-10-16 #22 单子 5）——
 # 病根是真机撞出来的：从 Git Bash 的 curl 发一句中文过去，那壳按控制台码页（GBK）把字节发出去，
 # `req.json()` 当场抛 UnicodeDecodeError → 未捕获 → **500 + 服务端整段 traceback**。
@@ -179,10 +195,54 @@ _STUDENT_COOKIE = "ct_student"
 _STUDENT_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,20}$")
 
 
+def _cookie_secret() -> str:
+    """签名用的密钥：**每次现读环境变量**，不在导入时定死（红线 23 那一族）。
+
+    没配 = 不签名也不验签，行为与 #38 之前逐字相同 —— 这条刻意留着，
+    否则 `tests/` 里那些直接塞 `Cookie: ct_student=...` 的用例会整批变红，
+    而且"忘了配密钥"会从"退化成老行为"变成"全站谁都进不去"。
+    """
+    return (os.environ.get("CAMPUSTIME_COOKIE_SECRET") or "").strip()
+
+
+def _sign_student(sid: str) -> str:
+    """签发 cookie 值：`学号.签名`。没密钥就退回只写学号。"""
+    secret = _cookie_secret()
+    if not secret or not sid:
+        return sid
+    mac = hmac.new(secret.encode("utf-8"), sid.encode("utf-8"), hashlib.sha256).hexdigest()[:16]
+    return sid + "." + mac
+
+
 def _clean_student(raw: str | None) -> str:
-    """把外面来的学号收进白名单；不合规则的**一律当没身份**（空串），不猜、不回退到别人。"""
-    sid = (raw or "").strip()
-    return sid if _STUDENT_ID_RE.fullmatch(sid) else ""
+    """把外面来的学号收进白名单；不合规则的**一律当没身份**（空串），不猜、不回退到别人。
+
+    两层，各挡一件事：
+      · 格式白名单：学号会被**拼进文件路径**，`../../x` 这种必须挡（这是路径安全，不是账号存在性）；
+      · 签名校验（配了密钥才有）：挡"开发者工具里把 `ct_student` 改成名单里别人的学号"。
+        名单本身**不在这里判** —— 那是 `/api/login` 那一道的活（签发点只有一处，
+        没签过的值本来就进不到"名单内"这个状态；这里再查一次名单只会多一次文件读）。
+    """
+    val = (raw or "").strip()
+    if not val:
+        return ""
+    sid, _, mac = val.partition(".")
+    if not _STUDENT_ID_RE.fullmatch(sid):
+        return ""
+    secret = _cookie_secret()
+    if secret:
+        expect = hmac.new(secret.encode("utf-8"), sid.encode("utf-8"), hashlib.sha256).hexdigest()[:16]
+        # 比签用 compare_digest，不用 ==：差的长度/内容不该从响应时间里漏出去
+        if not hmac.compare_digest(mac, expect):
+            return ""
+    # 名单也在这里判（#38 §2.1.2：登录与中间件**共用同一处**判据）。
+    # 为什么两处都要：只查签名的话，"没开通的学号"仍然能靠一个旧 cookie 读到那份库；
+    # 只查登录的话，cookie 是浏览器里可以手改的东西 —— 那就是"门锁只装了一半"（#32 同一个教训）。
+    # 代价说清楚：这一下是**每个带 cookie 的请求**都现读一次 accounts.json（很小、不缓存，
+    # 换来"改完名录立刻生效"）。真觉得贵，就把名录挪进 SQLite，别改成缓存。
+    if not is_registered(sid):
+        return ""
+    return sid                                        # 没密钥时到这里 = 只认格式 + 名单
 
 
 @app.middleware("http")
@@ -200,33 +260,21 @@ async def bind_student(request: Request, call_next):
     return await call_next(request)
 
 
-def _seed_first_login(sid: str) -> None:
-    """某个学号**第一次**登录时，把老位置那份演示底稿拷一份给他（可关：拷过就不再动）。
-
-    为什么要拷：不拷的话新学生进去课表是空的、待办是空的 ——
-    演示时"两个人的课表不一样"这件事根本看不出来。
-    ⚠️ 两条红线：① **已存在的个人库绝不覆盖**（重登一次把人家数据盖掉 = 事故）；
-       ② 只拷课表与待办，**不拷对话历史** —— 那段"这个人说过什么"是本人隐私的一部分，
-          拷过去等于把上一位的话递给下一位，正是本单要消灭的那种共用。
-    """
-    src_dir = student_root()
-    dst_dir = student_dir(sid)
-    if os.path.exists(os.path.join(dst_dir, "todos.json")):
-        return
-    os.makedirs(dst_dir, exist_ok=True)
-    for name in ("todos.json", "timetable.json"):
-        src = os.path.join(src_dir, name)
-        dst = os.path.join(dst_dir, name)
-        if os.path.exists(src) and not os.path.exists(dst):
-            shutil.copy2(src, dst)
-
-
 @app.post("/api/login")
 async def student_login(req: Request):
-    """学生登录（演示级）：**只认学号，没有密码**。
+    """学生登录（演示级）：**只认名单里的学号，没有密码**。
 
     返回里带上规范化的学号，前端存 localStorage 只为显示；**后端认的是 cookie**。
     `path="/"` 是必须的：不写就只在当前路径下带得上，学生端那些 `/api/...` 请求会裸奔。
+
+    三道各管各的，顺序不许换（格式在前、名单在后）：
+      ① 空 / 格式不对 ⇒ **400 说格式**（学号会拼进路径，这关是路径安全）；
+      ② 格式对但没开通 ⇒ **403 说没开通**，且**错误里不回名单**；
+      ③ 都过了才签发（配了密钥 ⇒ `学号.hmac`；没配 ⇒ 只写学号，等价于本单之前）。
+    ⚠️ 这里**不再播种**（#35）：以前首次登录会拷一份老位置的演示底稿给新学号，
+      用户真机的原话是「所有账号进去都自带这个代办，应该是库的问题」——
+      它既看着像串数据，又多开了一条写库路径。新账号就该是**空库**，
+      从【上传课表】开始（空状态引导见 `student.html` 的日程面板）。
     """
     try:
         body = await req.json()
@@ -238,9 +286,11 @@ async def student_login(req: Request):
     if not _STUDENT_ID_RE.fullmatch(raw):
         # 不许"默默回退到默认学生"：那会让人以为登录成功了，其实写进了别人的库
         return JSONResponse({"error": "学号只能是 1~20 位字母、数字、下划线或短横线"}, status_code=400)
-    _seed_first_login(raw)
+    if not is_registered(raw):
+        # ⚠️ 不回名单：把 admin1/admin2 打在错误页上，等于告诉任何人"试这两个"。
+        return JSONResponse({"error": "这个学号还没有开通，请联系管理员或核对后重试"}, status_code=403)
     resp = JSONResponse({"ok": True, "student": raw})
-    resp.set_cookie(_STUDENT_COOKIE, raw, path="/", samesite="lax")
+    resp.set_cookie(_STUDENT_COOKIE, _sign_student(raw), path="/", samesite="lax")
     return resp
 
 
