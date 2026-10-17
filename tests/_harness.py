@@ -319,6 +319,22 @@ def write_takeout(orders: list, student: str = "测试台账") -> list:
 ADMIN_TOKEN = "test-admin-token"
 
 
+def write_accounts(sids) -> list:
+    """把**当前沙箱**的账号名录覆盖成这些学号（#38：只有名录里的学号登得进 `/api/login`）。
+
+    为什么要有它：名单校验一上，测试里那些 `S001 / S002` 之类的学号如果不写进名录，
+    登录直接 403 —— 那时红的是"赛前状态没摆好"，不是隔离坏了（红线 18 同一个病，只是这次多一道门）。
+    真实名录 `app/data/accounts.json` 是 tracked 的（admin1/admin2），**别拿它当测试起点**。
+    """
+    import json
+
+    dest = _require_sandbox("write_accounts()")
+    rows = [{"sid": str(s), "name": "测试 " + str(s), "created_at": "测试"} for s in (sids or [])]
+    with open(os.path.join(dest, "accounts.json"), "w", encoding="utf-8") as f:
+        json.dump({"accounts": rows}, f, ensure_ascii=False, indent=2)
+    return rows
+
+
 def make_client(headers: dict | None = None, admin_token: str | None = ADMIN_TOKEN):
     """造一个"假浏览器"（人话：不用真的 uvicorn 启服务，也能调接口试）。
 
