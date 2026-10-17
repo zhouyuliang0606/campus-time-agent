@@ -410,6 +410,21 @@
         ? "（接口不存在 —— 多半是服务还在跑旧代码，重启一次再试）" : "");
     }
 
+    // 驿站端固定一段会话（#25 S2 → #30，2026-10-17 用户澄清：「驿站是店员，学生通过自己 ai 给驿站发消息」
+    // ⇒ 那台机器上只有一个店员，"上一位同学的提问带到下一位"这个顾虑不存在了，可以固定了）。
+    // 固定之后客服才有跨轮记忆，`sessions.json` 也不再一轮攒一条（改前实测 657 个会话里 580 个是随机 id）。
+    // ⚠️ 用 **sessionStorage** 而不是学生端那个 localStorage：这台机器是店员的 ——
+    //   · 关窗 = 这次值班结束，天然该重开一段；localStorage 会把上一班的上下文递给下一班；
+    //   · 柜台常开两三个标签，localStorage 同源共享会把几个窗口的对话串成一段；
+    //   · 同标签内按 F5 不丢，所以手滑刷新不会把刚说的忘了。
+    const STATION_SID_KEY = "campustime_station_session";
+    function newStationSid() { return "st" + Math.random().toString(16).slice(2, 12); }
+    function stationSid() {
+      let s = sessionStorage.getItem(STATION_SID_KEY);
+      if (!s) { s = newStationSid(); sessionStorage.setItem(STATION_SID_KEY, s); }
+      return s;
+    }
+
     let woSig = null;    // 上一次真正渲染进 DOM 的清单（同 svcSig，见 #18 单子 3 那条坑）
     let woBusy = false;  // 有一条改状态的请求在飞
 
@@ -735,7 +750,7 @@
         const resp = await fetch("/api/chat", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ message: msg, module: "station" }),
+          body: JSON.stringify({ message: msg, module: "station", session_id: stationSid() }),
         });
         const data = await resp.json().catch(() => ({}));
         // 第 5 处同形状（#28 施工单只点了 4 处，整族扫在这儿多找到一处）：
@@ -806,13 +821,38 @@
     }
     function closeClearDialog() { clearMask.classList.remove("show"); }
 
-    function doClearChat() {
+    async function doClearChat() {
+      // #30 之后服务端**真的**存着这段对话（会话固定了），所以"清空"必须是两件事，且顺序不能反：
+      //   ① 先清服务端 → ② 清成功才动屏幕 → ③ 换一个新的 session id。
+      // 先擦屏幕的话，"清失败"会被演成"已经清干净了"，而按 F5 会把整段历史原样捞回来。
+      // reset 顺手还会 clear_pending（那张没人认领的卡一起作废）—— 页面上**不许**再清一次，那是第二份判据。
+      const sid = stationSid();
+      let ok = false, removed = 0;
+      try {
+        const resp = await fetch("/api/chat/reset", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ session_id: sid }),
+        });
+        const d = await resp.json().catch(() => ({}));
+        ok = resp.ok && d.ok !== false;
+        removed = Number(d.removed || 0);
+      } catch (e) { ok = false; }
+      if (!ok) {
+        // 一个字都不擦：宁可让店员再点一次，也别演一出"清了"
+        addMsg("系统", "清空没成功，聊天记录原样保留，请再试一次。", "sys");
+        closeClearDialog();
+        return;
+      }
+      // ③ 最关键的一步：**换一个新的 id**。不换 = 按 F5 历史又回来，清了跟没清一个样
+      //     （学生端那一轮踩过同一条，别在这儿重犯）。
+      sessionStorage.setItem(STATION_SID_KEY, newStationSid());
       // 整块清干净再把开场白放回去：原来那种"留着第一条、删掉其余"会越清越攒 ——
       // 每次清空都留下一条系统回执，第二次点【清空】时计数就把这些回执也算成"对话内容"。
       while (log.firstChild) log.removeChild(log.firstChild);
       if (greetEl) log.appendChild(greetEl);
       renderChips(CHIPS);      // 快捷操作恢复成默认 5 条（上传资料后会被换成 3 条建议问题）
-      addMsg("系统", "对话已清空。左边「待处理问题」「服务与登记」里的台账一条没动。", "sys");
+      addMsg("系统", "对话已清空，并已开一段新的" + (removed ? "（服务端清了 " + removed + " 条）" : "")
+        + "。左边「待处理问题」「服务与登记」里的台账一条没动。", "sys");
       closeClearDialog();
     }
 
