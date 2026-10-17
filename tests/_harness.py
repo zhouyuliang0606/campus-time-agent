@@ -282,6 +282,35 @@ def write_timetable(courses: list, updated: str = "2026-01-01 00:00:00") -> list
     return courses
 
 
+def write_express(packages: list, student: str = "测试台账") -> list:
+    """把**当前沙箱**的快递台账覆盖成这一份（人话：测试自己摆"谁有哪几件"）。
+
+    形状与 `app/data/express.json` 一致（顶层 `{"student", "packages"}`，每条带 `owner`）。
+    ⚠️ 只写沙箱：`_require_sandbox` 不在沙箱里就直接拒绝 —— 这份是 tracked 的演示底稿，
+       写错了就是一次真实数据事故（同 `seed_todos` 那道闸的理由）。
+    """
+    import json
+
+    dest = _require_sandbox("write_express()")
+    p = os.path.join(dest, "express.json")
+    with open(p, "w", encoding="utf-8") as f:
+        json.dump({"student": student, "packages": list(packages or [])}, f,
+                  ensure_ascii=False, indent=2)
+    return packages
+
+
+def write_takeout(orders: list, student: str = "测试台账") -> list:
+    """把**当前沙箱**的外卖台账覆盖成这一份（同 `write_express`）。"""
+    import json
+
+    dest = _require_sandbox("write_takeout()")
+    p = os.path.join(dest, "takeout.json")
+    with open(p, "w", encoding="utf-8") as f:
+        json.dump({"student": student, "orders": list(orders or [])}, f,
+                  ensure_ascii=False, indent=2)
+    return orders
+
+
 # 测试用的管理口令。真实环境里这串来自 .env 的 CAMPUSTIME_ADMIN_TOKEN，
 # 由 app/admin_guard.py 逐个请求校验；测试在这里定死一个，让那 40 处
 # 本来就合法的管理接口调用不必各自想起来带 header（"忘了带"和"该被拒"
