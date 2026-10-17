@@ -1,8 +1,9 @@
 {
-  "student": "示例同学（演示数据）",
+  "student": "多人演示数据（按 owner 分成 admin1 / admin2 / demo 三份）",
   "orders": [
-    { "id": "T1", "shop": "麦当劳",     "items": "麦辣鸡腿堡套餐", "eta": "12:30", "status": "配送中", "pickup_point": "宿舍楼外卖柜 A 区" },
-    { "id": "T2", "shop": "蜜雪冰城",   "items": "柠檬水 x2",      "eta": "12:45", "status": "待取",  "pickup_code": "B12", "pickup_point": "外卖柜 B12" },
-    { "id": "T3", "shop": "一食堂档口", "items": "麻辣香锅",       "eta": "13:10", "status": "制作中", "pickup_point": "一食堂自取窗口" }
+    { "id": "T1", "owner": "admin1", "shop": "麦当劳",     "items": "麦辣鸡腿堡套餐", "eta": "12:30", "status": "配送中", "pickup_point": "宿舍楼外卖柜 A 区" },
+    { "id": "T2", "owner": "admin1", "shop": "蜜雪冰城",   "items": "柠檬水 x2",      "eta": "12:45", "status": "待取",  "pickup_code": "B12", "pickup_point": "外卖柜 B12" },
+    { "id": "T3", "owner": "admin2", "shop": "一食堂档口", "items": "麻辣香锅",       "eta": "13:10", "status": "制作中", "pickup_point": "一食堂自取窗口" },
+    { "id": "T4", "owner": "demo",   "shop": "三食堂",     "items": "演示订单",       "eta": "12:00", "status": "待取",  "pickup_code": "D01", "pickup_point": "三食堂外卖柜" }
   ]
 }
