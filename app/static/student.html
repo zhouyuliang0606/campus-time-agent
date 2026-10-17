@@ -2126,6 +2126,7 @@ html.gx-glass[data-gx-refine="on"] .composer, html.gx-glass[data-gx-refine="on"]
     }
 
     let schTab = "week", schWeekOffset = 0, schMonthOffset = 0, schSelDate = null;
+    let schUploaded = null;      // null = 还没拿到；true/false = 服务端说的"传过课表没有"（#35）
     // 逐日明细默认只列「今天起四天」。真测过（2026-10-10，530px 宽的窗口）：
     // 七天在这种情况下排成 2 列 × 4 行、整块 862px 高，而面板体又限高 430px 自己滚 ——
     // 学生的原话「日程看着很累，要上下翻」就是这一屏。展开状态记本机。
@@ -2136,12 +2137,27 @@ html.gx-glass[data-gx-refine="on"] .composer, html.gx-glass[data-gx-refine="on"]
     async function loadScheduleView() {
       try {
         const t = await (await fetch("/api/timetable")).json(); schCourses = t.courses || [];
+        schUploaded = t.uploaded === true;   // 只认服务端那个字段，前端不猜（#35）
         const td = await (await fetch("/api/todos")).json(); schTodos = td.todos || [];
         updateTodoBadge(schTodos);      // 日程这一栏也刷角标：改完待办回到日程看的就是这个数
       } catch (e) { /* 拉不到就按空数据渲染，不炸面板 */ }
       renderSchCurrent();
       setSchTab();   // 周表/月表同源，统一由 setSchTab 显隐切换并刷新当前 tab
     }
+    // 空课表的两种空态要说**不同**的话（#35：撤掉登录播种之后，新账号是空库）：
+    // 「从没传过」和「传过又清空了」混成一句，刚清完课表的人会以为系统把他的上传弄丢了。
+    function schEmptyHtml() {
+      if (schUploaded === false) {
+        return '<div class="empty" style="padding:14px 2px;"><b>还没有课表。</b>'
+             + '点上面的【上传课表】传一份（docx / xlsx / pdf / txt / csv 都行），'
+             + '我读出清单、你确认之后才写进周表 —— 在那之前这边一条数据都不会有。'
+             + '<br><span class="small">没有文件也可以直接跟我说，例如「周一 08:00-09:40 高等数学 教三301」，'
+             + '我照样能记进周表。</span></div>';
+      }
+      return '<div class="empty" style="padding:14px 2px;">课表已清空。要重新开始的话，'
+           + '点上面的【上传课表】把文件再传一次 —— 传上来是先预览，你点【确认修改】才会写进周表。</div>';
+    }
+
     function renderSchCurrent() { if (schTab === "week") renderSchWeek(); else renderSchMonth(); }
 
     function renderSchWeek() {
@@ -2192,7 +2208,8 @@ html.gx-glass[data-gx-refine="on"] .composer, html.gx-glass[data-gx-refine="on"]
           <div class="day ${dIso === todayIso ? "today" : ""}">${inner || '<div class="empty" style="padding:10px 2px;">无安排</div>'}</div>
         </div>`;
       });
-      document.getElementById("schWeek").innerHTML = html + "</div>";
+      // 一门课都没有 ⇒ 不画那张七天空网格（看着像"系统坏了"），改说引导（#35）
+      document.getElementById("schWeek").innerHTML = schCourses.length ? (html + "</div>") : schEmptyHtml();
     }
 
     function renderSchMonth() {
@@ -2228,7 +2245,7 @@ html.gx-glass[data-gx-refine="on"] .composer, html.gx-glass[data-gx-refine="on"]
         if (evts.length > 2) inner += `<div class="more">还有 ${evts.length - 2} 项…</div>`;
         html += `<div class="d ${isT ? "today" : ""} ${dIso === schSelDate ? "sel" : ""}" data-date="${dIso}">${inner}</div>`;
       }
-      document.getElementById("schMonth").innerHTML = html + "</div>";
+      document.getElementById("schMonth").innerHTML = schCourses.length ? (html + "</div>") : schEmptyHtml();
       document.querySelectorAll("#schMonth .d[data-date]").forEach(el =>
         el.addEventListener("click", () => { schSelDate = el.dataset.date; renderSchMonth(); renderSchDay(); }));
       renderSchDay();
@@ -2900,7 +2917,9 @@ html.gx-glass[data-gx-refine="on"] .composer, html.gx-glass[data-gx-refine="on"]
       try{
         var d=await (await fetch("/api/todos")).json();
         var list=d.todos||[];
-        if(!list.length){ box.innerHTML='<div class="empty">还没有待办。直接跟我说“提醒我周五交作业”就能加上。</div>'; return; }
+        if(!list.length){ box.innerHTML='<div class="empty">还没有待办。直接跟我说“提醒我周五交作业”就能加上。'
+            + (schCourses.length ? '' : '<br>想让我帮你挑时间的话，先把课表传上来（日程页【上传课表】）—— 不然我不知道你哪天空着。')
+            + '</div>'; return; }
         var WD=["周一","周二","周三","周四","周五","周六","周日"];
         // 重复待办没有"整条完成"这回事 —— 面板上那一勾对应的是**最近该出现的那一天**，
         // 所以每行都要带着那个日期（data-on），点勾时一起发给后端记进 done_dates。

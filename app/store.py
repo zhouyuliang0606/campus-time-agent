@@ -35,6 +35,17 @@ def current_student() -> str:
 DEMO_OWNER = "demo"
 
 
+def timetable_saved() -> bool:
+    """这个人的 `timetable.json` 在不在（人话：他**传过**课表没有）。
+
+    为什么要有它（#35）：撤掉登录播种之后，新账号是**空库**，界面上得区分
+    「从没传过」和「传过又清空了」——这两种空要说的话不一样。
+    这个信息只有服务端知道（文件在他自己的个人库目录里），所以由这儿判、
+    `GET /api/timetable` 带出去，**前端不许自己猜**。路径仍走 `_spath` 那一处接缝（按学号分）。
+    """
+    return os.path.exists(_spath("timetable.json"))
+
+
 def owner_of_row(row: dict) -> str:
     """这一件归谁（学号）。老记录没有 owner 的按 demo —— 与 `status` / `archived` 同一做法：
     **不批量迁移文件**（每迁移一次，就多一次改坏真实数据的机会）。

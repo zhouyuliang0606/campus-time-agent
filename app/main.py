@@ -4749,9 +4749,15 @@ async def usage_clear():
 
 @app.get("/api/timetable")
 async def timetable_get():
-    """读周表课程（人话：日程页周视图的课程格子数据源）。"""
+    """读周表课程（人话：日程页周视图的课程格子数据源）。
+
+    `uploaded`（#35）：**他传过课表没有** —— 撤掉登录播种之后新账号是空库，
+    界面要分清「还没传」与「传过又清空了」。判据只有 `store.timetable_saved()` 这一处，
+    前端拿不到文件系统，所以由这儿带出去。**只加字段，原有结构一字不动**（向后兼容）。
+    """
     data = get_timetable_data()
-    return {"courses": data.get("courses", []), "updated_at": data.get("updated_at", "")}
+    return {"courses": data.get("courses", []), "updated_at": data.get("updated_at", ""),
+            "uploaded": timetable_saved()}
 
 
 @app.post("/api/timetable/clear")

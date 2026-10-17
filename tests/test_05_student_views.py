@@ -87,8 +87,12 @@ def test_student_panel_markup():
         c.check("快递列表容器 expList", 'id="expList"' in html)
         c.check("工单表单（woType/woDesc/woSubmit）",
                 all(f'id="{x}"' in html for x in ("woType", "woDesc", "woSubmit")))
-        c.check("工单记录容器 woList（localStorage 持久）",
-                'id="woList"' in html and "campustime_workorders" in html)
+        # ⚠️ 这条按 #37 改过口：以前写的是「woList（localStorage 持久）」，
+        #    而"持久在浏览器里"那本账正是 bug（聊天上报不进它、状态写死、换账号串号）。
+        #    现在这块只认服务端：容器 + 数据源两样都在，才算这条钉住。
+        c.check("工单记录容器 woList + 数据源是服务端接口（#37：不再是 localStorage 那本假账）",
+                'id="woList"' in html and "/api/my/workorders" in html,
+                "读的是接口吗")
         # 外卖视图
         c.check("外卖列表容器 tkList", 'id="tkList"' in html)
         # 校园问答视图：高频问题按钮墙
