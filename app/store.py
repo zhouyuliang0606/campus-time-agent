@@ -126,7 +126,7 @@ def _now() -> str:
 
 
 def add_message(module: str, message: str, answer: str, kind: str = "chat",
-                ref: str = "") -> dict:
+                ref: str = "", owner: str | None = None) -> dict:
     """记一条学生消息（人话：学生说了啥、在哪个模块、管家怎么答的，存进收件箱）。
 
     `kind` 是给"这条是从哪儿来的"打的标签：`chat`=学生端每轮自己存档的对话，
@@ -145,6 +145,8 @@ def add_message(module: str, message: str, answer: str, kind: str = "chat",
         "message": message,
         "answer": answer or "",
         "kind": kind or "chat",
+        # 谁报的：**默认由系统取当前身份**（#37）。无身份就是空串 —— 不是 "demo"，更不许编一个。
+        "owner": current_student() if owner is None else str(owner),
     }
     if ref:
         item["ref"] = str(ref)
@@ -176,12 +178,19 @@ def list_messages(kind: str | None = None, include_archived: bool = False) -> li
 # 按学生助手的人设规矩：普通日常对话不上报驿站，只有工单才进管理端视图
 #（2026-10-16 #18 单子 2：报障去向改成驿站；后半句仍然对 —— 工单在管理端也看得见，是监督位）。
 
-def add_workorder(kind: str, desc: str, source: str = "chat") -> dict:
+def add_workorder(kind: str, desc: str, source: str = "chat",
+                  owner: str | None = None) -> dict:
     """记一条工单（人话：学生确认要上报的问题，正式立案给管理员处理）。
 
     :param kind: 问题类型，如 "疑似丢件" / "外卖丢失" / "包裹破损"
     :param desc: 学生的补充描述
     :param source: 来源，"chat"=聊天里跟管家说并确认的 / "panel"=快递面板表单提交的
+    :param owner: 报这条的学号。**默认 None = 系统自己取 `current_student()`**，
+        两条写入口（`/api/workorders` 与 AI 的 `submit_work_order` 工具）就自动都有了归属，
+        调用方一个字都不用改。为什么不许调用方传：
+          ① 那个工具只拿到 kind/desc，让它传 owner 等于让**模型决定"我是谁"**；
+          ② body 里的字段谁都能改，前端传 owner = 任何人都能冒充别人立案。
+        无身份时是空串（不是 "demo"，也不编一个学号）。
     """
     items = _read("workorders.json", [])
     item = {
@@ -191,15 +200,25 @@ def add_workorder(kind: str, desc: str, source: str = "chat") -> dict:
         "desc": desc or "",
         "source": source,
         "status": "待处理",
+        "owner": current_student() if owner is None else str(owner),
     }
     items.append(item)
     _write("workorders.json", items)
     return item
 
 
-def list_workorders(include_archived: bool = False) -> list:
-    """列出全部工单，倒序（最新在前）。已归档的默认不出现（判据同 `list_messages`）。"""
+def list_workorders(include_archived: bool = False, owner: str | None = None) -> list:
+    """列出工单，倒序（最新在前）。已归档的默认不出现（判据同 `list_messages`）。
+
+    :param owner: `None` = **不过滤**（管理端 / 驿站端要全量，行为一个字不变）；
+        传学号 = 只要这个人报的（学生端「我提交过的工单」，#37）；
+        传空串 `""` = 只要**没归属的老单**。
+    ⚠️ `None` 与 `""` 的语义必须分开，判据写成 `if owner:` 就把"老单"那一档永远查不出来了
+       （而它正是我们判断"归属是从哪天开始落的"唯一证据）。过滤只写在这一处。
+    """
     items = _read("workorders.json", [])
+    if owner is not None:
+        items = [w for w in items if (w.get("owner") or "") == owner]
     if not include_archived:
         items = [w for w in items if not w.get("archived")]
     return list(reversed(items))
