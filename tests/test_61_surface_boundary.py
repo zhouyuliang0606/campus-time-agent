@@ -183,6 +183,13 @@ def _code_only(src):
     return "\n".join(out)
 
 
+def _strip(text):
+    """剔注释（HTML 块 + JS 块/行注释）—— 页面上"数次数"的断言先剥再比。"""
+    t = re.sub(r"<!--.*?-->", "", text, flags=re.S)
+    t = re.sub(r"/\*.*?\*/", "", t, flags=re.S)
+    return "\n".join(ln.split("//")[0] for ln in t.splitlines())
+
+
 def batch_c_shape():
     """C 批 · 形状与位置：钉的是"走不到"，不是"回话好不好看"。"""
     c = Checker()
@@ -270,6 +277,16 @@ def batch_c_shape():
     c.check("C9 分支区里不许再出现散的 `== \"station\"` 判据（本单要避免的写法，出现一处就是抄第二遍）",
             'module_key == "station"' not in code.split("_station_surface = module_key == \"station\"")[-1],
             f"判据之后还出现 {code.split('_station_surface = module_key == \"station\"')[-1].count('module_key == \"station\"')} 处")
+
+    # C10 端边界的地基在前端那一行：**`module` 一摘，后端就以为这是学生在说话** ——
+    #   闸门当场失效，而且不会报错，只是又回到事故那个样子。
+    #   ⚠️ 剔注释再数：station.html 里那句注释「显式带 module:"station"」跟代码长得一样。
+    sta_raw = open("app/static/station.html", encoding="utf-8").read()
+    sta_code = _strip(sta_raw)
+    c.check("C10 驿站端每次对话都显式带 `module: \"station\"`（闸门靠它认出这是店员，摘掉就形同虚设）",
+            sta_code.count('module: "station"') == 1
+            and re.search(r'JSON\.stringify\(\{[^}]*module: "station"[^}]*\}\)', sta_code) is not None,
+            f"代码里 {sta_code.count('module: \"station\"')} 处")
     return c
 
 
