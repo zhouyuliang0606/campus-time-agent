@@ -2771,8 +2771,14 @@ html.gx-glass[data-gx-refine="on"] .composer, html.gx-glass[data-gx-refine="on"]
       // 只会让流跳一下、并把刚接回来的待确认卡又冲掉一次。模块切换只换右侧面板。
     }
     switchNavRef = switchNav; // 暴露给上方卡片点击逻辑复用
-    document.getElementById("sbNav").addEventListener("click", function(e){
-      var item=e.target.closest(".sb-item"); if(!item) return; switchNav(item.dataset.nav);
+    // ⚠️ 委托必须挂在**整个侧栏**（aside#sidebar）上，不能只挂 #sbNav（#37 实测的那件大事）：
+    //    「快递」「外卖」那两项在 `#sbMore > #sbMoreBody` 里（:747/:748），**不在 #sbNav 里面**，
+    //    而顶部那四张模块卡又被 CSS 写死 `#modules { display:none !important }`（:397）——
+    //    挂 #sbNav 等于这两项根本没有监听器：点下去 switchNav 一次都不会被调用，
+    //    表现就是"那两栏打不开"（不是加载失败、不是面板空 —— 是一条能走的路都没有）。
+    //    选择器带 [data-nav]：「更多服务 ▾」那个 toggle 也是 .sb-item，但它不该被当成导航。
+    document.getElementById("sidebar").addEventListener("click", function(e){
+      var item=e.target.closest(".sb-item[data-nav]"); if(!item) return; switchNav(item.dataset.nav);
     });
     document.getElementById("sbMoreToggle").addEventListener("click", function(){
       var m=document.getElementById("sbMore"); m.classList.toggle("open");
