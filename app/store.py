@@ -270,6 +270,15 @@ def list_workorders(include_archived: bool = False, owner: str | None = None) ->
     return list(reversed(items))
 
 
+def list_archived_workorders() -> list:
+    """被 #29 收起的那几条工单（#39-C：驿站也要看得见"已处理"的历史）。
+
+    为什么在 store 而不是路由里挑：`test_58` 钉着"main 里不许出现按 archived 过滤列表的写法"——
+    **过滤判据一处，视图只管画**。两处各挑一遍，将来归档加一档（比如"已关闭"）就会有一边漏。
+    """
+    return [w for w in list_workorders(include_archived=True) if w.get("archived")]
+
+
 def update_workorder_status(wo_id: str, status: str) -> dict | None:
     """管理员处理工单后改状态（待处理 / 处理中 / 已解决）。"""
     items = _read("workorders.json", [])

@@ -4272,8 +4272,30 @@ async def workorder_set_status(wo_id: str, req: Request):
 
 @app.get("/api/station/workorders")
 async def station_workorder_list():
-    """驿站看到的报障列表（倒序，最新在前）。"""
-    return {"workorders": list_workorders()}
+    """驿站看到的报障列表（倒序，最新在前）。
+
+    #39-C 顺带带一个 `archived_count`：标「已解决」会被 #29 自动收起，
+    驿站那块表**没有**管理端那行「🗄 已归档 N 条」，于是办完一条就地消失 ——
+    用户那句"管理端能找到处理完的历史记录，驿站没有"正身是这一处。
+    这里只给**条数**不给明细：这个接口 5 秒轮询一次，不该每轮都把历史整包搬一遍。
+    """
+    rows = list_workorders()
+    return {"workorders": rows, "archived_count": len(list_archived_workorders())}
+
+
+@app.get("/api/station/workorders/archived")
+async def station_workorder_archived():
+    """驿站那行「🗄 已处理 N 条」点开后要的明细 —— **只有读，没有写**。
+
+    ⚠️ 这条 GET 是这一单唯一碰"归档"的驿站接口，也是 `test_58` D 批那条钉子改口的原因：
+       那条钉的是**免口令面不许出现归档口**（谁不用口令就能收台账 = 事故），
+       本单加的是同一份台账的**只读历史视图** —— 驿站本来就是这些案子的处理人，
+       数据没跨过端，只是以前办完就看不见去哪了。写的那道（`/archive`）照旧只在管理端、照旧挂口令。
+    ⚠️ **不放回**：把它改回「处理中」走既有的 `POST /api/station/workorders/{id}/status`，
+       反向的 `auto_unarchived` 在 `_workorder_status_response` 那一处（#29）。
+    挑"哪些算已处理"也不在这儿：那在 `store.list_archived_workorders()` 一处（路由不筛列表）。
+    """
+    return {"workorders": list_archived_workorders()}
 
 
 @app.post("/api/station/workorders/{wo_id}/status")

@@ -459,6 +459,89 @@
       }
     }
 
+    // #39-C：驿站这块「待处理问题」标成已解决会被 #29 **自动收起**，而这里以前没有
+    // 管理端那行「🗄 已归档 N 条」—— 办完一条就当场消失。用户那句
+    // 「管理端能找到处理完的历史记录，驿站没有」正身是这一处。
+    // 三条纪律：
+    //   · 措辞里**不许出现"删除"**（那是软删，台账一条没少），沿用 #29 那句"从列表收起、可随时放回"；
+    //   · 条数与明细都由后端给（`archived_count` / `/api/station/workorders/archived`），
+    //     前端不自己猜"哪一条算办完"——判据只许有一处；
+    //   · 放回**不开新接口**：走既有的状态口（反向 auto_unarchived 在服务端那一处）。
+    //
+    // 下面这三个小函数是**两块表共用**的（工单 + 登记条目）：一处写两遍就会有一天只改一遍，
+    // 措辞、颜色、点开/收起的脾气都会分叉 —— 这个项目为"两份表"付过几次钱了。
+    function archShell(box, n, fill) {
+      if (!n) return null;                     // 一条都没收起就不挂这行（挂个「已处理 0 条」是噪音）
+      const line = document.createElement("div");
+      line.textContent = `🗄 已处理 ${n} 条（点开查看，台账里没动）`;
+      line.style.cssText = "cursor:pointer;color:#8a93a6;font-size:12px;margin:8px 0;";
+      const pane = document.createElement("div");
+      pane.style.display = "none";
+      line.addEventListener("click", () => {
+        const opening = pane.style.display === "none";
+        pane.style.display = opening ? "" : "none";
+        if (opening && !pane.dataset.filled) fill(pane);
+      });
+      box.appendChild(line);
+      box.appendChild(pane);
+      return { line: line, pane: pane };
+    }
+
+    function archRow(pane, text, onBack) {
+      const row = document.createElement("div");
+      row.className = "woItem";
+      row.textContent = text;                  // 一律 textContent：这些字段是学生写的或接口给的
+      const back = document.createElement("button");
+      back.textContent = "放回列表";
+      back.addEventListener("click", async () => {
+        back.disabled = true;
+        try {
+          await onBack();
+        } catch (e) {
+          addMsg("系统", "放回没成功：" + e.message, "sys");
+        }
+        back.disabled = false;
+      });
+      row.appendChild(back);
+      pane.appendChild(row);
+      return row;
+    }
+
+    function renderWoArch(box, n) {
+      archShell(box, n, async (pane) => {
+        pane.textContent = "读取中…";
+        try {
+          const resp = await fetch("/api/station/workorders/archived");
+          if (!resp.ok) throw new Error(httpFailReason(resp, {}));
+          const a = await resp.json();
+          const rows = a.workorders || [];
+          pane.innerHTML = "";
+          rows.forEach(w => archRow(pane, (w.ts || "") + "｜" + (w.kind || "其他问题") + "｜"
+            + (w.desc || "（学生没补充描述）") + "｜👤 " + (w.owner || "未登记"), async () => {
+            // 放回走既有的状态口：这里**不复制**一份"什么算放回"的判断
+            const r2 = await fetch("/api/station/workorders/"
+              + encodeURIComponent(w.id || "") + "/status", {
+              method: "POST", headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ status: "处理中" }),
+            });
+            const r = await r2.json().catch(() => ({}));
+            if (!r2.ok) addMsg("系统", "放回没成功：" + httpFailReason(r2, r), "sys");
+            else if (r.error) addMsg("系统", "放回没成功：" + r.error, "sys");
+            else addMsg("系统", "已放回列表（台账里那条一直在）", "sys");
+            // 整块重读，这一行连 pane 一起换新（局部删一行 = 第二份"什么算已处理"）
+            pane.dataset.filled = "";
+            woSig = null;
+            loadWorkorders();
+          }));
+          if (!rows.length) pane.textContent = "这一会儿已经没有已处理的记录了（刚被放回去？）";
+          else pane.dataset.filled = "1";
+        } catch (e) {
+          pane.textContent = "读不到已处理的历史（服务没起来？）";
+          pane.dataset.filled = "";            // 这次没读到，下次点开再试 —— 别把"读失败"当"没历史"挂死
+        }
+      });
+    }
+
     async function loadWorkorders() {
       const box = document.getElementById("woList");
       try {
@@ -476,6 +559,9 @@
         woSig = sig;
         if (!list.length) {
           box.innerHTML = '<div class="woEmpty">还没有学生报障。学生确认上报后会落到这里。</div>';
+          // ⚠️ 空表**更要**挂这一行：全部办完的那一刻，正是"东西不见了"的那一刻。
+          //    （施工单把插入点写在 `box.innerHTML = ""` 之后，那样这条路永远走不到空表分支。）
+          renderWoArch(box, d.archived_count || 0);
           return;
         }
         box.innerHTML = "";
@@ -509,8 +595,10 @@
               else if (r.error) addMsg("系统", "改状态没成功：" + r.error, "sys");
               // #29：标成「已解决」会**自动**从驿站这块列表里收起 —— 那一行就此不见。
               // 不写一句"去哪了、在哪儿能找回来"，驿站管理员看到的就等于"东西凭空消失"（措辞里不许有"删除"）。
-              else if (r.auto_archived) addMsg("系统", "已标为「" + to + "」，这条已从驿站列表收起"
-                + "（驿站不显示已收起的；管理端「🗄 已归档」那一行里看得见、可放回；台账里那条没动）", "sys");
+              // #39-C 之后那句"去哪找"改了：驿站本页下面那行「🗄 已处理 N 条」就能看、能放回，
+              // 不再只指向管理端 —— 旧话术留着就是指着远处让人绕路（过期注释/过期回执同一族）。
+              else if (r.auto_archived) addMsg("系统", "已标为「" + to + "」，这条已从上面那张表收起"
+                + "（下面那行「🗄 已处理 N 条」里看得见、可放回；台账里那条没动）", "sys");
               else if (r.auto_unarchived) addMsg("系统", "已改回「" + to
                 + "」，并从归档里放回，列表里重新看得见", "sys");
             } catch (e) {
@@ -522,6 +610,8 @@
           el.appendChild(b);
           box.appendChild(el);
         });
+        // #39-C：未结那张表画完，再挂"已处理"那一行（两条分支都要挂，见上面空表那一支）
+        renderWoArch(box, d.archived_count || 0);
       } catch (e) {
         document.getElementById("woCount").textContent = "读取失败";
         // 读不到的时候把角标也收掉：挂着一个上一分钟的红点，比没红点更容易让人以为"还有几条等着"
@@ -713,16 +803,30 @@
         }
         if (rows === null) {
           rec.textContent = "📋 登记条目：读不到（服务没起来？）";
+          rec.dataset.sig = "";   // 读失败要把签名清掉：下一次读到了才允许重建（同 svcSig 那条规矩）
           continue;
         }
+        // ⚠️ 内容没变就不重建（真机撞出来的）：这块原本每 5 秒无条件 `rec.innerHTML = ""`，
+        //    于是管理员刚点开「🗄 已处理 N 条」那一行，下一轮轮询就把它自己合上了 ——
+        //    本单要解决的正是"处理完的历史看不见"，面板自己关掉等于没做。
+        //    状态一改、记录一删，JSON 就变了，照样立刻重画（不影响 #27/#39-B 那两颗按钮的节奏）。
+        const sig = JSON.stringify(rows);
+        if (rec.dataset.sig === sig) continue;
+        rec.dataset.sig = sig;
         rec.innerHTML = "";     // 只装下面我们自己建的节点
+        // #39-C：登记这块也分"未结 / 已处理"两层，与上面那张工单表同一个长相。
+        // ⚠️ 词表用 `已解决` —— 登记记录与工单**共用那一份 `_WO_STATUSES`**（待处理/处理中/已解决），
+        //    没有"已处理"这一档（施工单 §39-C③ 写的是"已处理"，照抄会一行都挑不出来，
+        //    功能静默不生效）。"已处理"只是这行**标题**的人话说法，判据仍是状态。
+        const liveRows = rows.filter(x => (x.status || "待处理") !== "已解决");
+        const doneRows = rows.filter(x => (x.status || "待处理") === "已解决");
         const head = document.createElement("div");
         head.className = "recHead";
         head.textContent = rows.length
-          ? `📋 已登记 ${rows.length} 条（列最新 ${Math.min(5, rows.length)} 条）`
+          ? `📋 已登记 ${rows.length} 条（未结 ${liveRows.length}，列最新 ${Math.min(5, liveRows.length)} 条）`
           : "📋 已登记：还没有一条";
         rec.appendChild(head);
-        rows.slice(0, 5).forEach(item => {
+        liveRows.slice(0, 5).forEach(item => {
           const f = item.fields || {};
           const bits = Object.keys(f).filter(k => String(f[k] || "").trim())
             .map(k => k + "：" + f[k]);
@@ -759,8 +863,63 @@
           });
           tail.appendChild(chip);
           tail.appendChild(sbtn);
+          // #39-B：每行补一颗「删除」。这条是**真删**（登记记录没有归档那一档，
+          // 状态词表与工单共用 `_WO_STATUSES`，多不出"已收起"这种状态），
+          // 所以确认框与回执都不许含糊：说清楚"删了台账里就没了、找不回来"。
+          // ⚠️ 已知边界与上面「改成」那颗一样：这块只列**最新 5 条**，
+          //    第 6 条往外的记录点不到删除 —— 翻页是另一件事，不在本单，别以为删不了就是坏了。
+          const del = document.createElement("button");
+          del.textContent = "删除";
+          del.addEventListener("click", async () => {
+            if (!await stConfirm({
+              title: "删除这条登记记录？",
+              body: "登记记录没有「归档」这一档 —— 这是真删，台账里那条就没了。",
+              warn: "想留着记录只是先放一放的话，别删：用旁边那颗【改成】标成「处理中」，它会留在未结那张表里。",
+              okText: "删除记录",
+            })) return;
+            del.disabled = true;
+            let done = false;
+            try {
+              const resp = await fetch("/api/station/services/" + encodeURIComponent(sid)
+                + "/records/" + encodeURIComponent(String(item.id || "")), { method: "DELETE" });
+              const r = await resp.json().catch(() => ({}));
+              if (!resp.ok) addMsg("系统", "没删成：" + httpFailReason(resp, r), "sys");
+              else if (r.error) addMsg("系统", "没删成：" + r.error, "sys");
+              else { addMsg("系统", "已删除这条登记记录（台账里少一条，找不回来）", "sys"); done = true; }
+            } catch (e) {
+              addMsg("系统", "没删成：" + e.message, "sys");
+            }
+            if (done) svcTick();   // 只有真删成才重读；没成时把那颗按钮留着，让人看得见那一行还在
+            else del.disabled = false;
+          });
+          tail.appendChild(del);
           line.appendChild(tail);
           rec.appendChild(line);
+        });
+        // #39-C：登记这块也要有"已处理"那一层（用户那句"已处理遮不住"是同一件事的两半）。
+        // 标题说人话"已处理"，**判据是状态里那一档「已解决」**（词表与工单共用一份，没有"已处理"这一档）。
+        // 明细就在手里（GET …/records 本来就全量返回），所以这里不另开接口，只补一层视图。
+        archShell(rec, doneRows.length, (pane) => {
+          pane.innerHTML = "";
+          doneRows.forEach(item => {
+            const f = item.fields || {};
+            const bits = Object.keys(f).filter(k => String(f[k] || "").trim())
+              .map(k => k + "：" + f[k]);
+            archRow(pane, (item.ts || "") + "｜" + (bits.join("；") || "（没填内容）"), async () => {
+              const resp = await fetch("/api/station/services/" + encodeURIComponent(sid)
+                + "/records/" + encodeURIComponent(String(item.id || "")) + "/status", {
+                method: "POST", headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ status: "待处理" }),
+              });
+              const r = await resp.json().catch(() => ({}));
+              if (!resp.ok) addMsg("系统", "放回没成功：" + httpFailReason(resp, r), "sys");
+              else if (r.error) addMsg("系统", "放回没成功：" + r.error, "sys");
+              else addMsg("系统", "已放回列表（这条的状态改回「待处理」）", "sys");
+              pane.dataset.filled = "";
+              svcTick();
+            });
+          });
+          pane.dataset.filled = "1";
         });
       }
     }
