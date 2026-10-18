@@ -4,7 +4,8 @@
 `/api/admin/settings`（改模型密钥）、`/api/admin/usage`、`/api/admin/messages`（读走
 全部学生消息）、`POST /api/persona`（改客服人设）这些接口，任何能连到端口的人
 直接就能读、能写。这轮加了一道门：环境变量 `CAMPUSTIME_ADMIN_TOKEN`，
-请求头 `X-Admin-Token`，由 `app/admin_guard.py` 校验，挂在 14 个管理侧接口上。
+请求头 `X-Admin-Token`，由 `app/admin_guard.py` 校验，挂在管理侧接口上
+（立案时是 14 条；涨到几条以 E2 那张**逐条承认**的清单为准，这里不数数 —— 数数迟早自己撞自己）。
 
 **但门最容易犯的错不是没装，是装过了**：`POST /api/workorders` 是学生点
 【确认上报】用的，`GET /api/persona` 是驿站页显示客服名字用的，
@@ -24,7 +25,7 @@ from _harness import Checker, PROJ_DIR, sandbox, title  # noqa: E402
 
 SERVER_TOKEN = "s3cret-admin-token"
 
-# 挂门的 14 个管理侧接口
+# 挂门的管理侧接口（逐条列在下面 ADMIN_ENDPOINTS；有几条以 E2 那张清单为准，别在这儿数）
 ADMIN_ENDPOINTS = [
     ("GET", "/api/admin/messages", None),
     ("GET", "/api/admin/kb", None),
@@ -40,6 +41,11 @@ ADMIN_ENDPOINTS = [
     ("POST", "/api/admin/usage/clear", None),
     ("GET", "/api/workorders", None),
     ("POST", "/api/workorders/没有这条/status", {"status": "已解决"}),
+    # 2026-10-18 #40：文档知识库那三条（列表 / 删除 / 重建索引）。删除与重切都指向一条
+    # 不存在的 id —— 这一批只问"门挡不挡"，业务上回 400 正是我们要的（参数不对不等于门没挂）。
+    ("GET", "/api/admin/docs", None),
+    ("DELETE", "/api/admin/docs/nosuchdoc", None),
+    ("POST", "/api/admin/docs/nosuchdoc/reindex", None),
 ]
 # 其中这几个「带对口令后」不去实跑：/settings/test 真会往大模型发一次请求，
 # 用一个假 key 打真网络既慢又不稳定，门该验的只是「没口令进不去」。
@@ -205,9 +211,12 @@ def batch_wiring(c):
         # 2026-10-18 #39-D：撤回通知是管理动作 ⇒ 也挂门（清单从 16 涨到 17 是**承认过的**，
         # 这条清单存在的理由就是"新增一个挂门口必须在这儿留名"，所以涨不是坏消息，悄悄涨才是）。
         "DELETE /api/admin/notices/{nid}",
+        # 2026-10-18 #40：文档知识库三条（列表/删除/重建索引）⇒ 17 涨到 20，同样是承认过的。
+        # 其中【删除】是本单唯一一条会把用户上传的文件**真删**的口，漏挂等于任何人都能清知识库。
+        "GET /api/admin/docs", "DELETE /api/admin/docs/{fid}", "POST /api/admin/docs/{fid}/reindex",
     }
     got = _guarded_routes()
-    c.check("E2 挂门的接口正好是这 17 个（多一个少一个都算错）", got == expect,
+    c.check("E2 挂门的接口正好是这 20 个（多一个少一个都算错）", got == expect,
             f"多挂：{sorted(got - expect)}｜漏挂：{sorted(expect - got)}")
     # #29 的另一半：归档**写口**只许在管理端。驿站端 `/api/station/*` 是免口令的（演示级），
     # 免口令还能收台账 = 任何人不用口令就能清工单，所以这条反向钉死。
