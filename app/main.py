@@ -14,7 +14,7 @@ import hmac
 import uuid
 from typing import Any
 
-from fastapi import Depends, FastAPI, File, Request, UploadFile
+from fastapi import Depends, FastAPI, File, Form, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -49,7 +49,7 @@ from app.store import (
     summarize_llm_usage, clear_llm_usage,
     MAX_UPLOAD_BYTES,
     save_upload, list_uploads, get_upload, get_upload_meta, get_upload_raw_path,
-    list_chunks, reindex_upload, delete_upload, upload_notice_refs,
+    list_docs, upload_purpose, list_chunks, reindex_upload, delete_upload, upload_notice_refs,
     get_conversation, append_conversation, clear_conversation,
     get_timetable_data, list_todos, list_todos_in_month,
     add_todo, update_todo, delete_todo, get_todo, save_timetable,
@@ -4615,20 +4615,44 @@ async def admin_kb_delete(index: int):
     return {"ok": True}
 
 
-# ============ 管理控制台：文档知识库（上传的那些长文件） ============
-# 跟上面那份 kb.json（一问一答的条目）是两条线：这边是管理员/学生**上传的整份文件**，
-# 已经切成块存着（uploads/<fid>.chunks.json），AI 靠 search_docs 在里面检索。
-# 这一档存在的意义就是让管理员看得见"传进来的东西到底被切开没有"，并且能删、能重切。
+# ============ 管理控制台：文档知识库（**只收管理员在这一档传的知识文档**） ============
+# 跟上面那份 kb.json（一问一答的条目）是两条线：这边是**整份文件**，切成块存着
+# （uploads/<fid>.chunks.json），AI 靠 search_docs 在里面检索。
+# ⚠️ 边界（#40 补）：`uploads.json` 本身是一个全局桶 —— 学生传的课表、通知附件、驿站批次清单
+# 都在这同一份表里。这一档只认其中 `purpose == "kb"` 的那批：
+# 不然学生的个人课表会先以**文件名**泄一次（管理端一眼看见「2026秋季课表-软件工程25级3班」），
+# 再被点一下【重建索引】就变成谁都查得到的"知识"。
+# 数据层已经不给非 kb 的文件建索引（`store.save_upload`），这里这两条口再各判一次，是为了把"为什么不行"说清。
+
+
+def _doc_gate(fid: str):
+    """这一档的门口判一次：该放行就回 None，不该放行就把话说清楚（JSONResponse）。
+
+    ⚠️ 三种拒绝各有各的话，别合成一句"操作失败"：
+      没这条 / 不是知识文档 / （删除那条还有一档：挂在通知上，见下面）。
+    顺序也定在这儿：**先认存在、再认归属** —— 归属要查 meta，meta 不在就只能说"没这条"。
+    """
+    if get_upload_meta(fid) is None:
+        return JSONResponse({"error": "文档不存在（可能已经删掉了）"}, status_code=400)
+    if upload_purpose(fid) != "kb":
+        return JSONResponse(
+            {"error": "这不是知识文档，不能在这里操作 —— 学生上传的课表等个人文件不在这张表里"},
+            status_code=400,
+        )
+    return None
+
 
 @app.get("/api/admin/docs", dependencies=[Depends(verify_admin)])
 async def admin_docs_list():
-    """列出上传文档：文件名 / 字数 / 块数 / 索引状态 / 时间。
+    """列出知识文档：文件名 / 字数 / 块数 / 索引状态 / 时间。
 
+    只走 `list_docs()`（purpose=="kb"）—— 不是 `list_uploads()`：后者是"上传桶里有啥"，
+    把那个桶整个抖给管理端就是 #40 补要修的那件事（学生文件全暴露在列表里）。
     块数**现读索引文件**，不是从 uploads.json 抄的（那份表里根本没存这个数，
     理由写在 store.save_upload）—— 抄来的数字在重建索引之后就会开始说谎。
     """
     docs = []
-    for f in list_uploads():
+    for f in list_docs():
         n = len(list_chunks(f.get("id") or ""))
         docs.append({
             "id": f.get("id"),
@@ -4645,10 +4669,13 @@ async def admin_docs_list():
 async def admin_doc_reindex(fid: str):
     """按已经存下来的文字重新切块（改了分块参数、或给老文档补建索引用）。
 
-    "没这份文档"回 **400 不是 404**：404 在管理端那段闸门（adminFetch）里会被翻成
-    「接口不存在 —— 多半是服务在跑旧代码」，而这里接口是存在的，缺的是那份文件。
+    "没这份文档"与"这不是知识文档"都回 **400 不是 404**：404 在管理端那段闸门（adminFetch）里
+    会被翻成「接口不存在 —— 多半是服务在跑旧代码」，而这里接口是存在的，缺的是那条记录。
     同一个理由见 #39-D 的撤回通知。
     """
+    blocked = _doc_gate(fid)
+    if blocked is not None:
+        return blocked
     n = reindex_upload(fid)
     if n is None:
         return JSONResponse({"error": "文档不存在（可能已经删掉了）"}, status_code=400)
@@ -4657,13 +4684,16 @@ async def admin_doc_reindex(fid: str):
 
 @app.delete("/api/admin/docs/{fid}", dependencies=[Depends(verify_admin)])
 async def admin_doc_delete(fid: str):
-    """删掉一份上传文档，连带它的分块索引（#40）。
+    """删掉一份知识文档，连带它的分块索引（#40）。
 
     这是**真删**：文字、原件、索引、表里那条一起没，找不回来。
-    还挂在通知上的那份**不许删**（#39-D 定过的口径）—— 抽走附件之后，
-    学生点开那条通知看见的是个坏链接，而这不在管理员这次点动的预期里。
-    这里只回话，**不动那些通知**（要撤通知去「发布通知」那档，一次一次来）。
+    两道闸：① 不是知识文档 → 拒（学生的上传文件不许从这一档删，那是另一件事、另一套确认话术）；
+    ② 还挂在通知上 → 拒（#39-D 定过的口径）—— 抽走附件之后，学生点开那条通知看见的是个坏链接，
+    而这不在管理员这次点动的预期里。这里只回话，**不动那些通知**（要撤通知去「发布通知」那档）。
     """
+    blocked = _doc_gate(fid)
+    if blocked is not None:
+        return blocked
     refs = upload_notice_refs(fid)
     if refs:
         names = "、".join((r["title"] or "（无标题）")[:20] for r in refs[:3])
@@ -4713,10 +4743,19 @@ async def student_personas_get():
 # ============ 文件上传（给 AI 助手读资料 / 给通知挂附件） ============
 
 @app.post("/api/upload")
-async def upload_file(file: UploadFile = File(...)):
+async def upload_file(file: UploadFile = File(...), purpose: str = Form("file")):
     """接收一个上传文件，提取成文字存档（人话：让用户把资料交给 AI 读）。
 
     同时保留原件，这样通知的附件还能让学生下载回去。
+
+    `purpose`（#40 补）：这一份是"给某句对话用的材料"（默认 file）还是"进知识库的文档"（kb）。
+    只有 kb 会被切块、被 search_docs 检索、列在管理端「文档知识库」里 ——
+    因为 `uploads.json` 是一个全局桶，不分开就会把学生的课表当成公共知识（文件名先泄一次）。
+    ⚠️ 已知边界（照实写在这儿）：这个值是**客户端传来的表单字段**，
+    而 `/api/upload` 是学生/管理员共用的免口令口（通知附件也走它，另开一条带口令的口就会长出两套上传行为）。
+    所以理论上有人自己标 `purpose=kb` 把他的文件放进那张表 —— 放进来的是**他自己的**内容，
+    不是别人的隐私；这一版按"边界清楚 + 一套上传口"取舍，要不要收紧成"只有带管理口令的请求才认 kb"归产品决定。
+    非法值由 `store.norm_purpose` 统一退回 file（白名单只有那一处，别在这儿再抄一份）。
     """
     data = await file.read()
     # 三道校验：空文件、过大、不支持的格式，都要给出说得清楚的提示
@@ -4738,7 +4777,7 @@ async def upload_file(file: UploadFile = File(...)):
     except UploadError as e:
         return JSONResponse({"error": str(e)}, status_code=400)
 
-    item = save_upload(file.filename, text, raw=data)
+    item = save_upload(file.filename, text, raw=data, purpose=purpose)
     return {"ok": True, "file": item}
 
 
