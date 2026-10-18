@@ -506,7 +506,25 @@ def _upload_body_path(fid: str) -> str:
     return os.path.join(_upload_dir(), fid + ".txt")
 
 
-def save_upload(filename: str, content: str, raw: bytes | None = None) -> dict:
+# 上传文件的用途（#40 补）。白名单**只在 store 判一次**（norm_purpose），
+# 接口层再判一遍就是两份各说一份、迟早漂移：
+#   file      —— 默认。学生聊天里传的资料、通知附件、驿站批次清单……都是"某个人给某句话用的材料"
+#   kb        —— 管理端「文档知识库」这一档传进来的知识文档：会被切块、进检索、列在管理端
+#   timetable —— 留的枚举位（学生课表严格说该归这一档），目前没有调用方在传，行为等同 file
+# 为什么非分不可：`uploads.json` 是一个全局桶，而 #40 把"AI 读得到"升级成了"谁都查得到"。
+# 不分用途，学生的个人课表就和管理手册混在同一份知识库列表里被切块 ——
+# 而且文件名先泄一次（管理端一眼看见「2026秋季课表-软件工程25级3班」）。
+PURPOSES = ("file", "kb", "timetable")
+
+
+def norm_purpose(purpose) -> str:
+    """把用途夹进白名单：非法值一律退回 "file"（既不让任意字符串进库，更不让它混进 kb）。"""
+    p = str(purpose or "").strip().lower()
+    return p if p in PURPOSES else "file"
+
+
+def save_upload(filename: str, content: str, raw: bytes | None = None,
+                purpose: str = "file") -> dict:
     """保存一个上传文件（人话：既留原件供下载，也提取文字给 AI 读）。
 
     为什么要存两份？
@@ -514,7 +532,9 @@ def save_upload(filename: str, content: str, raw: bytes | None = None) -> dict:
     - 文字：AI 真正能"看懂"的形态
 
     :param raw: 文件原始字节；不传就只有文字、没有原件可下载
+    :param purpose: 见 PURPOSES —— **只有 "kb" 会被切块进检索**，别的一概不建索引
     """
+    purpose = norm_purpose(purpose)
     os.makedirs(_upload_dir(), exist_ok=True)
     fid = uuid.uuid4().hex[:12]
     # 1) 提取出的文字
@@ -525,11 +545,14 @@ def save_upload(filename: str, content: str, raw: bytes | None = None) -> dict:
     if raw is not None:
         with open(os.path.join(_upload_dir(), fid + ext), "wb") as f:
             f.write(raw)
-    # 3) 分块索引：上传当场建好，免得"传完了还得去后台点一下才查得到"（#40）。
-    #    ⚠️ 块数**不写进 uploads.json**：那份表是台账，写了就变成两个地方各说一份块数
-    #    （重建索引后 uploads.json 里那个旧数字就开始说谎）。列表页要块数，
-    #    现读 `<fid>.chunks.json` 就行 —— 单一来源，也就不会有"状态对不上"那种账。
-    save_chunks(fid, chunk_text(content))
+    # 3) 分块索引：知识文档在上传当场就切好块，免得"传完了还得去后台点一下才查得到"（#40）。
+    #    ⚠️ 这道 purpose 闸是本单的关键，不是装饰：#40 最初版是"凡是上传就切块"，
+    #    于是学生传的课表**不用谁点一下就已经变成人人可检索的"知识"**了（#40 补 §一 那条比施工单
+    #    写的还严重一档）。不建索引 = 既进不了 search_docs，也省掉一份没用的文件。
+    #    ⚠️ 块数**不写进 uploads.json**：那份表是台账，写了就是两个地方各说一份块数
+    #    （重建索引后旧数字立刻说谎）。列表页要块数，现读 `<fid>.chunks.json` 就行。
+    if purpose == "kb":
+        save_chunks(fid, chunk_text(content))
 
     item = {
         "id": fid,
@@ -540,6 +563,7 @@ def save_upload(filename: str, content: str, raw: bytes | None = None) -> dict:
         "ts": _now(),
         "chars": len(content),
         "preview": content[:200],  # 列表页给个预览，不用真的再读一遍文件
+        "purpose": purpose,
     }
     data = _read("uploads.json", {"files": []})
     data.setdefault("files", []).append(item)
@@ -550,6 +574,23 @@ def save_upload(filename: str, content: str, raw: bytes | None = None) -> dict:
 def list_uploads() -> list:
     """列出所有上传文件，倒序（最新在前）。"""
     return list(reversed(_read("uploads.json", {"files": []}).get("files", [])))
+
+
+def list_docs() -> list:
+    """只列**知识文档**（purpose=="kb"），倒序。
+
+    这是管理端「文档知识库」那一张表的数据源。为什么单开一个函数而不给 `list_uploads` 加参数：
+    `list_uploads` 的语义就是"上传桶里有啥"，学生问「我传的文件」要的是那一份；
+    把两个口径塞进一个函数，下一次有人顺手加个默认过滤就会把学生那边筛没。
+    """
+    return [f for f in list_uploads() if upload_purpose(f) == "kb"]
+
+
+def upload_purpose(meta) -> str:
+    """这份上传文件是什么用途。老记录没这个键 ⇒ 按 "file" 处理（**不批量迁移**，同 status/archived 那两单）。"""
+    if isinstance(meta, str):
+        meta = get_upload_meta(meta)
+    return norm_purpose((meta or {}).get("purpose"))
 
 
 def get_upload(fid: str) -> str | None:
@@ -617,8 +658,14 @@ def all_chunks():
 
     每次现扫（demo 规模几百块，读几个小 JSON 而已）。真嫌慢再加内存缓存，
     按 uploads.json 的 mtime 失效 —— 那是换函数体，接口不用动。
+
+    ⚠️ 只吐知识文档（purpose=="kb"）：这是"检索面"的那道闸，和 `save_upload` 里"不给非 kb 建索引"
+    是同一件事的两头 —— 一头保证磁盘上不会有学生课表的块，这一头保证**就算有**（#40 最初版留下的旧块、
+    或手改文件）也进不了模型的检索结果。少一头都不算修完。
     """
     for f in list_uploads():
+        if upload_purpose(f) != "kb":
+            continue
         fid = str(f.get("id") or "")
         if not fid:
             continue
@@ -635,9 +682,13 @@ def all_chunks():
 def reindex_upload(fid: str) -> int | None:
     """按已存下来的 .txt 重新分块（改了分块参数、或老文档补建索引时用）。
 
-    返回块数；**找不到这个文件时返回 None** —— 调用方要分得清
-    "没这份文档"和"这份文档切出了 0 块"，两者对管理员说的话完全不同。
+    返回块数；**回 None 有两种原因**：没这份文档 / 它不是知识文档。
+    调用方（管理端那两条口）**必须自己先分开判**再走过来，好把话说准 ——
+    "文档不存在"和"这不是知识文档，不能在这里操作"是两句完全不同的话。
+    这里那道 purpose 闸是**兜底**：万一以后有人新加一个调用方忘了判，也不会把学生课表切成块。
     """
+    if upload_purpose(fid) != "kb":
+        return None
     text = get_upload(fid)
     if text is None:
         return None
@@ -661,20 +712,29 @@ def upload_notice_refs(fid: str) -> list[dict]:
 
 
 def delete_upload(fid: str) -> bool:
-    """彻底删掉一份上传文档：文字 + 原件 + 分块索引 + uploads.json 里那条。
+    """彻底删掉一份**知识文档**：文字 + 原件 + 分块索引 + uploads.json 里那条。
 
-    两道守门，都故意留在 store 层（放在接口层就等于绕过去只要换个调用方）：
-      ① 还挂在通知上 → **不删**。不许替管理员把一条通知的附件抽走（#39-D 定过的口径），
+    三道守门，都故意留在 store 层（放在接口层就等于"换个调用方就能绕过去"）：
+      ① 不是知识文档（purpose != "kb"）→ 不删。这一档的口只管管理员自己传进来的知识文档；
+         学生的上传文件要删得另开一道口、配它自己的确认话术（本单没有这道口，别误以为这里有）。
+      ② 还挂在通知上 → **不删**。不许替管理员把一条通知的附件抽走（#39-D 定过的口径），
          真删了的表现是通知列表里那条点开下载 404，学生看见的是坏链接。
-      ② uploads.json 里没这条 id → False。
+      ③ uploads.json 里没这条 id → False。
     ⚠️ 这是**真删、不可逆**，跟"归档"那种软删不是一回事，措辞与实现都不许互借。
     """
     fid = str(fid or "")
-    if not fid or upload_notice_refs(fid):
+    if not fid or upload_purpose(fid) != "kb":
+        return False
+    if upload_notice_refs(fid):
         return False
     meta = get_upload_meta(fid)
     if meta is None:
         return False
+
+    # ⚠️ 三个路径**必须在改表之前算好**：`get_upload_raw_path` 内部要回查 uploads.json，
+    #    而表里这条一删它就查不到 meta、只能回 None —— 于是原件永远删不掉，
+    #    表现是"删过了但磁盘上还躺着一份原文件"（#40 最初版就是这个顺序，实测才抓到）。
+    paths = (_upload_body_path(fid), _upload_chunks_path(fid), get_upload_raw_path(fid))
 
     files = _read("uploads.json", {"files": []}).get("files") or []
     kept = [f for f in files if str(f.get("id")) != fid]
@@ -682,7 +742,7 @@ def delete_upload(fid: str) -> bool:
         return False
     _write("uploads.json", {"files": kept})
 
-    for p in (_upload_body_path(fid), _upload_chunks_path(fid), get_upload_raw_path(fid)):
+    for p in paths:
         if not p:
             continue
         try:
