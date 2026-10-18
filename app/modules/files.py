@@ -65,7 +65,8 @@ def read_uploaded_file(file_id: str) -> str:
 #
 # ⚠️ 这段是**可替换的骨架**：第二步上 embedding 时，把打分那段换成"BM25 召回 + 向量重排"，
 #    search_docs 的入参和返回形状都不用动（护栏 test_66 钉的是形状与"深处查得到"，不是算法）。
-DOC_TOP_K = 4        # 最多给模型几块。再多就是把整本手册抄进上下文
+DOC_TOP_K = 6        # 给**模型**最多几块。4 块实测不够（#42-B：一份长手册的三块能把另一份的例外挤出去）
+DOC_PER_SOURCE = 2   # 同一份文档最多占几块（配额的"上限"那一头）
 BM25_K1 = 1.5        # 词频饱和：一个词出现 20 次不该比出现 2 次高十倍
 BM25_B = 0.75        # 长度归一：长块不许光靠"字多、啥词都沾"取胜
 
@@ -143,6 +144,58 @@ def doc_hits(query: str) -> list[dict]:
     return [{**c, "score": s} for s, c in hits]
 
 
+def pick_diverse(hits: list[dict], limit: int, per_source: int = DOC_PER_SOURCE) -> list[dict]:
+    """从**已按相关度排好**的块里挑 `limit` 块，但一份文档最多占 `per_source` 席。
+
+    为什么要配额（#42-B，实测不是猜）：造一份约 3700 字 / 5 块的《办事手册》（四个章节各写一遍
+    「补办学生证……工本费二十元」），再放一份约 1200 字 / 2 块的《困难生资助细则》（例外那句
+    写在第 1 块）—— 问「补办学生证 工本费」时 BM25 的全局名次实测是
+    `手册#2 8.26 / 手册#1 7.66 / 细则#1 5.94 / 手册#3 2.16`，于是**前两名都是同一份手册**，
+    "困难生免收"那条例外一个字都进不了上下文（改之前 `search_kb` 的返回里连「免收」都没有）。
+    而取到前 4 名又能把细则带进来 —— 问题不在"k 太小"，在**k 里没有来源这一维**：
+    光把 4 提到 8，一份啰嗦的手册照样能把例外挤出去，同时把预算全喂给重复内容。
+
+    挑法（两遍，都只按名次，不引第二个打分）：
+    ① 每份先拿它**最好的一块**，各份按这一块的排名先后排队 —— 保证"每份都发声"；
+    ② 预算没花完，再按全局名次往下补次好的块，同一份补到 `per_source` 为止。
+    ⚠️ **不硬凑**：只有一份文档相关时结果就只有那一份的块，不会为"看起来有两份"去拉无关文档。
+    ⚠️ 也**不自砍**：全场只有一份文档时配额没有对手，这时直接给到 `limit` 块 ——
+       硬卡"同一份最多 2 块"会让单文档的问题比改之前**少**拿到两块（实测从 4 掉到 2），
+       那是为了一个不存在的竞争者砍掉正主的内容。
+    """
+    if limit <= 0 or not hits:
+        return []
+    if len({str(h.get("fid") or h.get("name") or "") for h in hits}) <= 1:
+        return list(hits[:limit])
+    rank = {id(h): i for i, h in enumerate(hits)}   # 名次按 doc_hits 的原顺序（含它的平手 tie-break）
+    firsts: list[dict] = []
+    seen: set[str] = set()
+    for h in hits:
+        fid = str(h.get("fid") or h.get("name") or "")
+        if fid in seen:
+            continue
+        seen.add(fid)
+        firsts.append(h)
+        if len(firsts) >= limit:
+            break
+    picked = list(firsts)
+    counts = {str(h.get("fid") or h.get("name") or ""): 1 for h in picked}
+    picked_ids = {id(h) for h in picked}
+    for h in hits:
+        if len(picked) >= limit:
+            break
+        if id(h) in picked_ids:
+            continue
+        fid = str(h.get("fid") or h.get("name") or "")
+        if counts.get(fid, 0) >= per_source:
+            continue
+        picked.append(h)
+        picked_ids.add(id(h))
+        counts[fid] = counts.get(fid, 0) + 1
+    picked.sort(key=lambda h: rank[id(h)])
+    return picked
+
+
 def _best_window(text: str, query: str, cap: int) -> str:
     """从一块里挑**最贴这个问题的那一句**做起点，往后取 `cap` 个字。
 
@@ -166,15 +219,18 @@ def _best_window(text: str, query: str, cap: int) -> str:
     return text[start:start + cap]
 
 
-def format_doc_hits(hits: list[dict], per_chunk: int = 0, query: str = "") -> str:
+def format_doc_hits(hits: list[dict], per_chunk: int = 0, query: str = "",
+                    limit: int = DOC_TOP_K) -> str:
     """把命中的块排成"给人/给模型看"的那段文字（带出处）。
 
     :param per_chunk: 每块最多留多少字，0 = 不截。
         直答那一路（日程栏问校园信息 → 不经模型，把这段原样贴进气泡）必须截，
-        不然 `DOC_TOP_K` 四块两千多字原文会整块砸进对话气泡里。
+        不然几块两千多字原文会整块砸进对话气泡里。
+    :param limit: 这一路最多给几块，**选块走 `pick_diverse`**（同一份不超过 `DOC_PER_SOURCE` 块）——
+        直接 `hits[:limit]` 会让一份啰嗦的手册占满名额，把另一份里的例外那句挤出去（#42-B）。
     """
     lines = ["在文档里找到以下相关段落（按相关度，出自第几块都已标明）："]
-    for rank, c in enumerate(hits[:DOC_TOP_K], 1):
+    for rank, c in enumerate(pick_diverse(hits, limit), 1):
         body = _best_window(c["text"], query, per_chunk)
         cut = len(body) < len(c["text"])
         lines.append(
@@ -186,7 +242,8 @@ def format_doc_hits(hits: list[dict], per_chunk: int = 0, query: str = "") -> st
     return "\n\n".join(lines)
 
 
-def format_doc_hits_for_student(hits: list[dict], per_chunk: int, query: str = "") -> str:
+def format_doc_hits_for_student(hits: list[dict], per_chunk: int, query: str = "",
+                                *, limit: int) -> str:
     """把命中的块排成**给学生看**的那段：只有《文档名》+ 正文片段。
 
     为什么要第二个视图（#41-A）：日程栏那条「知识库直答」不经模型，
@@ -194,9 +251,13 @@ def format_doc_hits_for_student(hits: list[dict], per_chunk: int, query: str = "
     「（原文第 X 字起，相关度 Y）」「第 N 块」是**给模型定位用的**元数据 ——
     学生看见只觉得系统在背数据库（同 `test_38` 那一族：技术底座不许漏到学生端）。
     文档名要留：学生看得懂，也算出处（他去翻那份文件找得到）。
+
+    :param limit: 学生这一路的块数预算（比模型那一路小得多，气泡得看得完），
+        但**配额和模型那一路是同一个函数**：两块也尽量是"两份各一块"，
+        而不是同一份手册的头两块（#42-B 实测「补办学生证多少钱」就是这样丢掉例外的）。
     """
     lines = []
-    for c in hits[:DOC_TOP_K]:
+    for c in pick_diverse(hits, limit):
         body = _best_window(c["text"], query, per_chunk)
         cut = len(body) < len(c["text"])
         lines.append(f"《{c['name']}》里是这么写的：{body}"

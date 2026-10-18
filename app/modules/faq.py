@@ -70,7 +70,11 @@ def _kb_fuzzy_hit(q: str, kw: str) -> bool:
     return False
 
 
-FAQ_DOC_HITS = 2        # 合并进 search_kb 的文档段落最多几块（直答那一路不经模型，砸太长没法看）
+# ⚠️ #42-B 起它只卡**学生那一路**（日程栏直答气泡），不再卡模型那一路：
+#    以前 `_kb_parts` 先按它砍一刀，于是 `search_kb` 最多只拿到两块 —— 实测问「补办学生证多少钱」，
+#    两块全是同一份手册的重复章节，另一份《资助细则》里"困难生免收"那条例外一个字都没进上下文。
+#    模型那一路的预算改由 `files.DOC_TOP_K`（6）管，两边共用 `files.pick_diverse` 的来源配额。
+FAQ_DOC_HITS = 2        # 学生直答气泡里最多几块文档段落（不经模型，太长没法看）
 FAQ_DOC_CHARS = 320     # 每块最多留多少字
 
 # ⚠️ 这句 miss 文案是**一份契约**：`main._kb_has_answer` 要判"知识库里到底有没有"，
@@ -105,8 +109,12 @@ def _kb_parts(query: str) -> tuple[list[dict], list[dict]]:
             if any(kw and _kb_fuzzy_hit(q, kw) for kw in keywords):
                 hits.append(item)
 
-    # 文档那一路：只在**真命中**时才有内容（空查询/没文档/没命中都回空表）
-    return hits, doc_hits(query)[:FAQ_DOC_HITS]
+    # 文档那一路：只在**真命中**时才有内容（空查询/没文档/没命中都回空表）。
+    # 这里**不做块数裁剪**（#42-B）：以前顺手 `[:FAQ_DOC_HITS]` 一刀，把"学生气泡别太长"
+    # 的限制加到了模型那一路头上 —— 两份文档才答得全的问题，模型只看见先挤进来的那一份。
+    # 各视图自己的预算在渲染时给（模型 = `files.DOC_TOP_K`，学生 = `FAQ_DOC_HITS`），
+    # 选块统一走 `files.pick_diverse`（同一份不超过它两块，保证每份相关文档都发声）。
+    return hits, doc_hits(query)
 
 
 def search_kb(query: str) -> str:
@@ -161,7 +169,8 @@ def answer_for_student(query: str) -> str:
 
     parts = [f"问：{h['question']}\n答：{h['answer']}" for h in hits[:3]]
     if docs:
-        parts.append(format_doc_hits_for_student(docs, per_chunk=FAQ_DOC_CHARS, query=query))
+        parts.append(format_doc_hits_for_student(docs, per_chunk=FAQ_DOC_CHARS,
+                                                 query=query, limit=FAQ_DOC_HITS))
     return "\n\n".join(parts)
 
 
