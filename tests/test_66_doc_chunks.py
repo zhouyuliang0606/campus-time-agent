@@ -253,18 +253,27 @@ def batch_c_search():
         c.check("C12 一份文档都不剩时不炸，说的是『还没有可检索的文档』（跟『没检索到』分得开）",
                 "还没有可检索的文档" in search_docs("gym101"), search_docs("gym101")[:60].replace("\n", " "))
 
-        # G7 的另一半：kb.json 那 11 条 Q&A 的检索线不许被本单带跑。
+        # G7 的另一半：kb.json 那批 Q&A 的检索线不许被本单带跑。
         # ⚠️ 这里**不钉"某条演示问答还能查到"**：faq 读的是仓库里那份 kb.json，
         #    而 kb.json 是用户会随手改的数据文件 —— 拿它的内容当判据，就是
         #    "用户今天删了条问答，明天全量凭空红一条"（同 test_65 起手自种那条规矩）。
-        #    能钉的是：这条线**没被改成吃分块索引**，且"查不到就说查不到"这条行为还在。
+        #    能钉的是：这条线**没自己伸手去翻切块文件**，且"查不到就说查不到"这条行为还在。
+        #
+        # ⚠️ 口径改过一次（#40 补2，2026-10-18）：原来这条写的是"两条线各走各的、
+        #    faq 里不许出现 chunks 字样"，那是**当时**的设计。真机出现了"文档里明明写着
+        #    图书馆在哪，问答却说知识库没有"（模型只调 `search_kb` 这一个名字），
+        #    于是 `search_kb` 现在**故意**要一路查文档。所以这里改钉"它走的是 files 那层的
+        #    检索入口，分块那点机制仍然只在 files.py 里" —— 合并的是**入口**，不是把索引搬过去。
         from app.modules import faq
         src = open(os.path.join(os.path.dirname(os.path.dirname(__file__)),
                                 "app", "modules", "faq.py"), encoding="utf-8").read()
-        c.check("C13 search_kb 那条线没被改成吃分块索引（两条线各走各的，G7）",
-                "all_chunks" not in src and "chunks" not in src, "")
+        c.check("C13 faq 不自己碰切块机制（没有 all_chunks / 不读 chunks 文件名），"
+                "要查文档只能经 files.doc_hits —— #40 补2 合并的是入口，不是把索引搬进 faq",
+                "all_chunks" not in src and ".chunks.json" not in src
+                and "doc_hits" in src, "")
         kb_miss = faq.search_kb("zzzqqqxxx 这句肯定不在问答条目里")
-        c.check("C14 search_kb 查不到时照实说没找到（本单没把它改成「随便挑一条最像的」）",
+        c.check("C14 条目与文档**两边**都没有这句时照实说没找到（上面刚把三份文档删空），"
+                "本单没把它改成「随便挑一条最像的」",
                 "没有找到" in kb_miss and kb_miss.startswith("知识库里"), kb_miss[:50])
     return c
 
