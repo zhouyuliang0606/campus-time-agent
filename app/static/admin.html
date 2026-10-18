@@ -187,6 +187,7 @@
         <div class="sb-item" data-nav="inbox"><span class="ico">📥</span><span class="lbl">学生消息</span><span class="sb-cnt" id="msgNum"></span></div>
         <div class="sb-item" data-nav="notice"><span class="ico">📢</span><span class="lbl">发布通知</span></div>
         <div class="sb-item" data-nav="kb"><span class="ico">📚</span><span class="lbl">知识库</span></div>
+        <div class="sb-item" data-nav="docs"><span class="ico">📄</span><span class="lbl">文档知识库</span></div>
         <div class="sb-item" data-nav="usage"><span class="ico">📊</span><span class="lbl">用量统计</span></div>
         <div class="sb-item" data-nav="api"><span class="ico">🔑</span><span class="lbl">API 配置</span></div>
         <div class="sb-item" data-nav="persona"><span class="ico">🎭</span><span class="lbl">客服人格</span></div>
@@ -360,6 +361,35 @@
       </div>
           </div>
         </div>
+
+        <!-- ⑧ 文档知识库：上传的那些长文件（#40） -->
+        <div id="view-docs" class="nav-view">
+          <div class="card">
+        <h2>📄 文档知识库（整份文件切块后，AI 才查得到后半本）</h2>
+        <div class="small" style="margin-bottom:10px;">
+          上一档「知识库」是一问一答的条目；这一档是<b>上传进来的整份文件</b>（手册、通知、名单、课表）。
+          文件在上传时就切成带位置的小块存进 <code>uploads/&lt;id&gt;.chunks.json</code>，
+          AI 靠 <b>search_docs</b> 在块里检索相关那几段。
+          状态是<b>未建索引</b>的（切块功能上线前传的老文件）点【重建索引】补上，否则那半本查不到。
+        </div>
+
+        <label>上传一份文档（txt / md / csv / PDF / Word / Excel / PPT）</label>
+        <input type="file" id="docfile" />
+        <div style="margin-top:8px;">
+          <button class="btn ghost" id="refreshDocs">刷新列表</button>
+        </div>
+        <div class="small" id="docStatus" style="margin:6px 0;"></div>
+
+        <div class="utab-wrap" id="docList" style="max-height:420px;margin-top:6px;">
+          <div class="empty">还没有上传过文件</div>
+        </div>
+        <div class="small" style="margin-top:8px;">
+          【删除】是<b>真删</b>：提取的文字、原件、分块索引一起没，找不回来 ——
+          和工单那种「归档」不是一回事。文件还挂在通知上时这里会拒删，并说清挂在哪几条上
+          （要撤通知去「发布通知」那档，一次一次来）。
+        </div>
+          </div>
+        </div>
       </div><!-- /stage -->
     </main>
   </div><!-- /shell -->
@@ -450,6 +480,9 @@
         setTokenStatus(v ? "已用这个口令，正在重新拉取…" : "口令已清空", !v);
         loadNotices(); loadPersona(); loadKB(); loadMessages(); loadWorkOrders();
         loadApiSettings(); loadUsage();
+        // 文档那一档**不在开场预载里**（它是这页最重的一份：每份文件都要读一次索引数块数），
+        // 点开那档时现拉；口令刚改过就得补一次，否则刚才那次 401 留下的错误框会一直挂着。
+        if (document.querySelector('.sb-item[data-nav="docs"].active')) loadDocs();
       });
     }
     initTokenBar();
@@ -704,6 +737,95 @@
       st.textContent = "✅ 第 " + i + " 条已删除";
       loadKB();
     }
+
+    // ---------- 文档知识库（#40：上传的长文件，看得见切块状态、能删能重切） ----------
+    async function loadDocs() {
+      const box = document.getElementById("docList");
+      let data;
+      try {
+        data = await (await adminFetch("/api/admin/docs")).json();
+      } catch (e) {
+        // 读不到就照实说：把上一分钟的表格留在屏幕上，等于拿旧账充"现在还是这些"
+        box.innerHTML = '<div class="empty">文档列表读不到：' + esc(String(e.message || e)) + '（点【刷新列表】重试）</div>';
+        return;
+      }
+      const docs = data.docs || [];
+      if (!docs.length) { box.innerHTML = '<div class="empty">还没有上传过文件</div>'; return; }
+      // 表头是死的，单元格里才是用户上传的文件名 —— 一律 esc()。
+      // 按钮一律 data-* + addEventListener，不写内联 onclick（esc.js 顶上那条禁区）：
+      // id 虽然是系统生成的 hex 也一样按规矩来，不靠"它看起来安全"。
+      box.innerHTML = `<table class="utab"><thead><tr>
+        <th>文件</th><th>字数</th><th>块数</th><th>索引</th><th>上传时间</th><th>操作</th>
+      </tr></thead><tbody>${docs.map(f => `<tr>
+        <td>${esc(String(f.name || "").slice(0, 40))}</td>
+        <td>${Number(f.chars || 0)}</td>
+        <td>${Number(f.chunks || 0)}</td>
+        <td><span class="pill ${f.indexed ? "ok" : "err"}">${f.indexed ? "已建" : "未建"}</span></td>
+        <td>${esc(f.ts || "")}</td>
+        <td><button class="mini" data-reindex="${esc(f.id)}">重建索引</button>
+          <button class="mini danger" data-del-doc="${esc(f.id)}" data-name="${esc(String(f.name || "").slice(0, 40))}">删除</button></td>
+      </tr>`).join("")}</tbody></table>`;
+
+      box.querySelectorAll("button.mini[data-reindex]").forEach(b => b.addEventListener("click", async () => {
+        const st = document.getElementById("docStatus");
+        b.disabled = true;
+        let d = {};
+        try {
+          d = await (await adminFetch("/api/admin/docs/" + encodeURIComponent(b.dataset.reindex) + "/reindex",
+            { method: "POST" })).json();
+        } catch (e) { st.textContent = "❌ 重建索引没成功：" + e.message; b.disabled = false; return; }
+        st.textContent = d.ok
+          ? "✅ 已重建：切成 " + Number(d.chunks || 0) + " 块"
+          : "❌ 重建索引没成功：" + (d.error || "服务端没给出原因");
+        loadDocs();
+      }));
+
+      box.querySelectorAll("button.mini[data-del-doc]").forEach(b => b.addEventListener("click", async () => {
+        const st = document.getElementById("docStatus");
+        if (!await askConfirm({
+          title: "删除这份文档？",
+          body: "《" + (b.dataset.name || "未命名") + "》提取出来的文字、原件、分块索引会一起删掉，"
+              + "挂在通知上的下载也会失效。",
+          warn: "这是**真删**，不像工单/消息的归档能放回，找不回来。"
+              + "它还挂着通知时服务器会拒删并说清挂在哪几条 —— 那种情况下通知一条都不会被动。",
+          okText: "删除文档",
+        })) return;
+        b.disabled = true;
+        let d = {};
+        try {
+          d = await (await adminFetch("/api/admin/docs/" + encodeURIComponent(b.dataset.delDoc),
+            { method: "DELETE" })).json();
+        } catch (e) { st.textContent = "❌ 删除没成功：" + e.message; b.disabled = false; return; }
+        // 非 2xx 在 adminFetch 那一处就变成异常了（#28 收口），所以"挂在通知上被拒"这条路
+        // 走的是上面那个 catch，服务器那句人话原样递到状态行。
+        st.textContent = d.ok
+          ? "✅ 已删除这份文档（连带它的分块索引）"
+          : "❌ 删除没成功：" + (d.error || "服务端没给出原因");
+        loadDocs();
+      }));
+    }
+
+    // 上传复用 /api/upload（发公告附件用的就是它），不在管理端另开一口：
+    // 两条上传路径迟早长出不一样 —— "这边传的文件那边检索不到"就是这么来的。
+    async function handleDocUpload() {
+      const input = document.getElementById("docfile");
+      const st = document.getElementById("docStatus");
+      if (!input.files || !input.files[0]) { st.textContent = ""; return; }
+      const form = new FormData();
+      form.append("file", input.files[0]);
+      st.textContent = "⏳ 上传中（要抽文字、切块，稍等）…";
+      let d = {};
+      try {
+        d = await (await fetch("/api/upload", { method: "POST", body: form })).json();
+      } catch (e) { st.textContent = "❌ 上传异常：" + e.message; return; }
+      if (!d.ok) { st.textContent = "❌ 上传失败：" + (d.error || "未知原因"); return; }
+      // 文件名是用户可控的：拼进 textContent，不经 innerHTML，就不用操心转义
+      st.textContent = "✅ 已存下《" + d.file.name + "》：" + Number(d.file.chars || 0) + " 字，已切块";
+      input.value = "";
+      loadDocs();
+    }
+    document.getElementById("docfile").addEventListener("change", handleDocUpload);
+    document.getElementById("refreshDocs").addEventListener("click", loadDocs);
 
     // ---------- 学生工单（学生确认上报的问题，管理员在这里看并改状态） ----------
     async function loadWorkOrders() {
@@ -1010,6 +1132,7 @@
     // 切走再切回来都还在 —— 这页一半的卡是**表单**，重建一次就是一次数据丢失。
     const NAV_TITLE = {
       wo: "学生工单", inbox: "学生消息收件箱", notice: "发布通知", kb: "知识库管理",
+      docs: "文档知识库",
       usage: "模型用量统计", api: "API 配置", persona: "客服人格配置",
     };
 
@@ -1042,6 +1165,7 @@
       else if (view === "inbox") loadMessages();
       else if (view === "notice") loadNotices();
       else if (view === "kb") loadKB();
+      else if (view === "docs") loadDocs();
       else if (view === "usage") loadUsage();
       else if (view === "persona") loadPersona();
     }

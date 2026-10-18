@@ -49,6 +49,7 @@ from app.store import (
     summarize_llm_usage, clear_llm_usage,
     MAX_UPLOAD_BYTES,
     save_upload, list_uploads, get_upload, get_upload_meta, get_upload_raw_path,
+    list_chunks, reindex_upload, delete_upload, upload_notice_refs,
     get_conversation, append_conversation, clear_conversation,
     get_timetable_data, list_todos, list_todos_in_month,
     add_todo, update_todo, delete_todo, get_todo, save_timetable,
@@ -4611,6 +4612,72 @@ async def admin_kb_delete(index: int):
     ok = delete_kb_entry(index)
     if not ok:
         return JSONResponse({"error": "条目不存在"}, status_code=404)
+    return {"ok": True}
+
+
+# ============ 管理控制台：文档知识库（上传的那些长文件） ============
+# 跟上面那份 kb.json（一问一答的条目）是两条线：这边是管理员/学生**上传的整份文件**，
+# 已经切成块存着（uploads/<fid>.chunks.json），AI 靠 search_docs 在里面检索。
+# 这一档存在的意义就是让管理员看得见"传进来的东西到底被切开没有"，并且能删、能重切。
+
+@app.get("/api/admin/docs", dependencies=[Depends(verify_admin)])
+async def admin_docs_list():
+    """列出上传文档：文件名 / 字数 / 块数 / 索引状态 / 时间。
+
+    块数**现读索引文件**，不是从 uploads.json 抄的（那份表里根本没存这个数，
+    理由写在 store.save_upload）—— 抄来的数字在重建索引之后就会开始说谎。
+    """
+    docs = []
+    for f in list_uploads():
+        n = len(list_chunks(f.get("id") or ""))
+        docs.append({
+            "id": f.get("id"),
+            "name": f.get("name") or "",
+            "chars": f.get("chars") or 0,
+            "chunks": n,
+            "indexed": n > 0,      # 老数据（#40 之前传的）这里是 false，点【重建索引】补上
+            "ts": f.get("ts") or "",
+        })
+    return {"docs": docs}
+
+
+@app.post("/api/admin/docs/{fid}/reindex", dependencies=[Depends(verify_admin)])
+async def admin_doc_reindex(fid: str):
+    """按已经存下来的文字重新切块（改了分块参数、或给老文档补建索引用）。
+
+    "没这份文档"回 **400 不是 404**：404 在管理端那段闸门（adminFetch）里会被翻成
+    「接口不存在 —— 多半是服务在跑旧代码」，而这里接口是存在的，缺的是那份文件。
+    同一个理由见 #39-D 的撤回通知。
+    """
+    n = reindex_upload(fid)
+    if n is None:
+        return JSONResponse({"error": "文档不存在（可能已经删掉了）"}, status_code=400)
+    return {"ok": True, "chunks": n}
+
+
+@app.delete("/api/admin/docs/{fid}", dependencies=[Depends(verify_admin)])
+async def admin_doc_delete(fid: str):
+    """删掉一份上传文档，连带它的分块索引（#40）。
+
+    这是**真删**：文字、原件、索引、表里那条一起没，找不回来。
+    还挂在通知上的那份**不许删**（#39-D 定过的口径）—— 抽走附件之后，
+    学生点开那条通知看见的是个坏链接，而这不在管理员这次点动的预期里。
+    这里只回话，**不动那些通知**（要撤通知去「发布通知」那档，一次一次来）。
+    """
+    refs = upload_notice_refs(fid)
+    if refs:
+        names = "、".join((r["title"] or "（无标题）")[:20] for r in refs[:3])
+        return JSONResponse(
+            {
+                "error": (
+                    f"这份文件还挂在 {len(refs)} 条通知上（{names}"
+                    f"{' 等' if len(refs) > 3 else ''}），请先撤回或改掉那些通知再删文件"
+                )
+            },
+            status_code=400,
+        )
+    if not delete_upload(fid):
+        return JSONResponse({"error": "文档不存在（也可能已经删过一次）"}, status_code=400)
     return {"ok": True}
 
 
