@@ -9,6 +9,9 @@
   2. PDF                        → pypdf 逐页抽
   3. Word / Excel / PPT 新版格式 → python-docx / openpyxl / python-pptx
   4. 老版 Office 二进制格式      → 不支持，给"另存为"的明确指引
+
+变成文字之后还管一件事：把长文档**切成带位置的小块**（chunk_text，见文件下半段）。
+不切块的话，几万字的手册只能读开头那一截，后半本等于没上传。
 """
 import io
 import os
@@ -102,6 +105,86 @@ def extract_text(filename: str, data: bytes) -> str:
         )
         raise UploadError(f"没能从 {filename} 里读到任何文字。{scan}")
     return text
+
+
+# ============ 分块（长文档要能被检索，靠的不是一次读完） ============
+# 为什么要有这一步：一份几十页的手册有几万字，一次性喂给模型既撑爆上下文也白烧 token；
+# 而原先的做法更糟——超过 6000 字直接砍掉后半本，等于后半本**没上传**（#40 修的就是它）。
+# 切成带位置的小块之后，回答问题只需要捞出相关的那几块。
+#
+# 已知限制照实说：PDF / docx 的**表格**抽取本来就弱（见下面几个 _*_text 函数），
+# 表格行常常挤成一长串没有标点的话，这种内容切出来会比正文碎，检索命中也差一些。
+CHUNK_SIZE = 600           # 目标块大小（字）
+CHUNK_OVERLAP = 80         # 相邻块重叠的字数：跨边界的那句话两块都留着，检索才找得着
+_MIN_KEEP = CHUNK_SIZE // 2      # 一块至少留这么多字：段落一密就切出两三百字的碎块没意义
+_TOLERANCE = CHUNK_SIZE // 2     # 允许超出目标多少去够下一个边界
+
+# 句末与次级停顿（中英文标点都认，文档里两种混着用很常见）
+_SENT_END = "。！？!?；;.\n"
+_SOFT_END = "，,、：:）)】」』”’ \t"
+
+
+def _para_end(text: str, i: int) -> bool:
+    """i 是不是「空行段落」的末尾：往前数连续空白里至少有两个换行。
+
+    认 `\n \n` 这种中间夹空格的空行——从 PDF / 网页抽出来的文本经常长这样。
+    """
+    j, lines = i - 1, 0
+    while j >= 0 and text[j] in " \t\n":
+        if text[j] == "\n":
+            lines += 1
+        j -= 1
+    return lines >= 2
+
+
+def _cut_at(text: str, start: int) -> int:
+    """从 start 起该切到哪儿（返回不含的结束位置）。
+
+    优先级：空行段落 → 句末标点 → 次级停顿 → 硬切。
+    三档都是**从后往前**扫，取窗口里最靠后的那个边界：块大小因此贴着 CHUNK_SIZE，
+    不会因为文档段落密就碎成几十个字一块（块太碎 → 检索时每块上下文太少，命中也差）。
+    """
+    n = len(text)
+    if start + CHUNK_SIZE >= n:
+        return n
+    lo = start + _MIN_KEEP
+    hi = min(start + CHUNK_SIZE + _TOLERANCE, n)
+    for i in range(hi, lo, -1):
+        if _para_end(text, i):
+            return i
+    for i in range(hi, lo, -1):
+        if text[i - 1] in _SENT_END:
+            return i
+    for i in range(hi, lo, -1):
+        if text[i - 1] in _SOFT_END:
+            return i
+    return start + CHUNK_SIZE
+
+
+def chunk_text(text: str) -> list[dict]:
+    """把整篇文字切成带位置的小块（人话：手册拆成一页页卡片，每张记住自己在第几页）。
+
+    返回 `[{"i": 0, "start": 0, "text": "…"}]`，三个字段各有用处：
+      - `text` 是原文的**逐字切片**，不改写、不 trim、不压缩空白 —— 拼回去必须还是原文
+      - `start` 是它在原文里的字符偏移，将来要说"出自第几块、原文哪一段"靠它
+      - `i` 是块号，检索结果里给模型当出处引用
+    相邻块重叠 CHUNK_OVERLAP 个字（是故意的，见上面那个常量旁边的注释）。
+    """
+    text = text or ""
+    n = len(text)
+    if n == 0:
+        return []
+    chunks: list[dict] = []
+    start = 0
+    while True:
+        end = _cut_at(text, start)
+        chunks.append({"i": len(chunks), "start": start, "text": text[start:end]})
+        if end >= n:
+            break
+        nxt = end - CHUNK_OVERLAP
+        # 块短到装不下重叠量时（只有末尾那一块会这样）就直接接上，否则会原地打转
+        start = nxt if nxt > start else end
+    return chunks
 
 
 def _plain_text(data: bytes) -> str:

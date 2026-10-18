@@ -10,6 +10,10 @@ import json
 import os
 import uuid
 
+# 怎么把长文字切成小块是 upload.py 的事（它本来就管"把文件变成文字"），store 只负责把块存下来。
+# 顶层导入是安全的：upload.py 自己只用标准库，那几个办公文档库都在函数里才导入。
+from app.upload import CHUNK_SIZE, chunk_text
+
 # ============ 当前请求的学生身份（#32） ============
 # 只放"这次请求是谁"这一件事，而且**唯一写入口是 main.bind_student 那个中间件**。
 # 为什么是 ContextVar 而不是模块级全局变量：全局变量在并发请求下会被后来者盖掉，
@@ -521,6 +525,11 @@ def save_upload(filename: str, content: str, raw: bytes | None = None) -> dict:
     if raw is not None:
         with open(os.path.join(_upload_dir(), fid + ext), "wb") as f:
             f.write(raw)
+    # 3) 分块索引：上传当场建好，免得"传完了还得去后台点一下才查得到"（#40）。
+    #    ⚠️ 块数**不写进 uploads.json**：那份表是台账，写了就变成两个地方各说一份块数
+    #    （重建索引后 uploads.json 里那个旧数字就开始说谎）。列表页要块数，
+    #    现读 `<fid>.chunks.json` 就行 —— 单一来源，也就不会有"状态对不上"那种账。
+    save_chunks(fid, chunk_text(content))
 
     item = {
         "id": fid,
@@ -567,6 +576,122 @@ def get_upload_raw_path(fid: str) -> str | None:
         return None
     p = os.path.join(_upload_dir(), fid + (meta.get("ext") or ""))
     return p if os.path.exists(p) else None
+
+
+# ============ 上传文档的分块索引（#40：让长文档的后半本也查得到） ============
+# 为什么单独存一份 .chunks.json，而不是检索时现切？
+# 现切当然也跑得动，但那样每问一句都要把全部文档重切一遍；上传时切一次、
+# 以后只是读，代价小得多。参数改了想重切，管理端有【重建索引】。
+def _upload_chunks_path(fid: str) -> str:
+    """分块存放位置（跟 extract 出来的 .txt 同目录、同 id，一眼看得出是一对）。"""
+    return os.path.join(_upload_dir(), fid + ".chunks.json")
+
+
+def save_chunks(fid: str, chunks: list[dict]) -> None:
+    """存一份文档的分块（人话：把手册拆成的卡片放回同一个抽屉）。
+
+    不缩进：这份文件是给机器读的，几百块正文带上缩进白多几十 KB。
+    """
+    os.makedirs(_upload_dir(), exist_ok=True)
+    with open(_upload_chunks_path(fid), "w", encoding="utf-8") as f:
+        json.dump({"chunk_size": CHUNK_SIZE, "chunks": chunks}, f, ensure_ascii=False)
+
+
+def list_chunks(fid: str) -> list[dict]:
+    """读某文档的分块；没建过索引（老数据）或文件坏了都回空表。
+
+    坏文件回空表而不是抛异常：检索工具的处境是"这份文档查不到"，
+    管理员看见的状态是"未建索引"，点一下【重建索引】就好了。
+    """
+    try:
+        with open(_upload_chunks_path(fid), encoding="utf-8") as f:
+            data = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return []
+    rows = data.get("chunks") if isinstance(data, dict) else None
+    return rows if isinstance(rows, list) else []
+
+
+def all_chunks():
+    """摊开所有文档的所有块，给检索用。产出 {fid, name, i, text, start}。
+
+    每次现扫（demo 规模几百块，读几个小 JSON 而已）。真嫌慢再加内存缓存，
+    按 uploads.json 的 mtime 失效 —— 那是换函数体，接口不用动。
+    """
+    for f in list_uploads():
+        fid = str(f.get("id") or "")
+        if not fid:
+            continue
+        for c in list_chunks(fid):
+            yield {
+                "fid": fid,
+                "name": f.get("name") or "",
+                "i": c.get("i"),
+                "text": c.get("text") or "",
+                "start": c.get("start") or 0,
+            }
+
+
+def reindex_upload(fid: str) -> int | None:
+    """按已存下来的 .txt 重新分块（改了分块参数、或老文档补建索引时用）。
+
+    返回块数；**找不到这个文件时返回 None** —— 调用方要分得清
+    "没这份文档"和"这份文档切出了 0 块"，两者对管理员说的话完全不同。
+    """
+    text = get_upload(fid)
+    if text is None:
+        return None
+    chunks = chunk_text(text)
+    save_chunks(fid, chunks)
+    return len(chunks)
+
+
+def upload_notice_refs(fid: str) -> list[dict]:
+    """这份上传文件被哪几条通知挂着（删文档前那道闸要用）。
+
+    只认 `attachment.id`：通知里存的就是 {id, name}，别拿文件名去猜（同名文件不止一份）。
+    """
+    fid = str(fid or "")
+    refs = []
+    for n in list_notices():
+        att = n.get("attachment") or {}
+        if att.get("id") == fid:
+            refs.append({"id": n.get("id"), "title": n.get("title") or "（无标题）"})
+    return refs
+
+
+def delete_upload(fid: str) -> bool:
+    """彻底删掉一份上传文档：文字 + 原件 + 分块索引 + uploads.json 里那条。
+
+    两道守门，都故意留在 store 层（放在接口层就等于绕过去只要换个调用方）：
+      ① 还挂在通知上 → **不删**。不许替管理员把一条通知的附件抽走（#39-D 定过的口径），
+         真删了的表现是通知列表里那条点开下载 404，学生看见的是坏链接。
+      ② uploads.json 里没这条 id → False。
+    ⚠️ 这是**真删、不可逆**，跟"归档"那种软删不是一回事，措辞与实现都不许互借。
+    """
+    fid = str(fid or "")
+    if not fid or upload_notice_refs(fid):
+        return False
+    meta = get_upload_meta(fid)
+    if meta is None:
+        return False
+
+    files = _read("uploads.json", {"files": []}).get("files") or []
+    kept = [f for f in files if str(f.get("id")) != fid]
+    if len(kept) == len(files):
+        return False
+    _write("uploads.json", {"files": kept})
+
+    for p in (_upload_body_path(fid), _upload_chunks_path(fid), get_upload_raw_path(fid)):
+        if not p:
+            continue
+        try:
+            os.remove(p)
+        except OSError:
+            # 只有文字、没有原件的老数据本来就没这个文件；表里那条已经删掉了，目标达成。
+            # 别为了这种"文件早就不在"把整次删除报错——管理员会以为没删掉，再点一次还是错。
+            pass
+    return True
 
 
 # ============ 学生个人库：周表（课程）+ 待办 + 会话历史 ============
