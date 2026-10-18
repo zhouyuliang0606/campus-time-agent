@@ -19,8 +19,8 @@
       ⑥ 还不行回 `faq`——**答一句，比替学生办错一件事安全**
 """
 from app.agent.intent import (
-    DEFAULT_MODULE, INTENT_CHAT, INTENT_MODULE, MODULE_KEYS, classify_with_llm,
-    match_sample, module_hint, module_ok,
+    CALENDAR_FACT_WORDS, DEFAULT_MODULE, INTENT_CHAT, INTENT_MODULE, MODULE_KEYS,
+    classify_with_llm, match_sample, module_hint, module_ok,
 )
 from app.llm.client import DeepSeekClient
 
@@ -44,6 +44,11 @@ _QUICK_MAP = {
     "课表": "schedule", "复习": "schedule", "排任务": "schedule", "没课": "schedule", "空闲": "schedule",
     # 学生端·问答
     "图书馆": "faq", "食堂": "faq", "校车": "faq", "校医院": "faq", "宿舍": "faq", "奖学金": "faq", "校园网": "faq", "学生证": "faq",
+    # 校历类（#42-A）：**词表只有一份**（`intent.CALENDAR_FACT_WORDS`），
+    # 这里推导、不另抄一遍 —— 日程栏那道闸（main）用的就是同一张表。
+    # 注意这张表是**兜底**（配了 key 时轮不到它），所以光加它修不好用户那句
+    # 「啥时候放假」：主判据在 planner 的排除 + main 那道校园事实闸上。
+    **{w: "faq" for w in CALENDAR_FACT_WORDS},
     # 驿站商户侧
     "驿站": "station", "商户": "station", "客服": "station", "取件提醒": "station",
     # 拓展
