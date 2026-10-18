@@ -614,6 +614,13 @@ def batch_e_shape():
     panel = admin[admin.index('id="view-docs"'):admin.index("</div><!-- /stage -->")]
     c.check("E22 那句边界话落在**文档知识库这一档**的面板里（不是写在别的档、也不是只在 JS 注释里）",
             "这里只收本页上传的知识文档" in panel and "不会出现在这张表里" in panel)
+    # E23 全站六颗上传按钮里只许有一颗带 purpose=kb：多一颗就把别人的东西又塞进知识库，
+    #     少一颗（比如哪天有人"顺手"把公告附件也标上）同样是在漏 —— 所以钉"只有一颗"。
+    others = [n for n in ("student.html", "plan.html", "station.html", "login.html", "settings.html",
+                          "confirm.html")
+              if "purpose" in open(os.path.join(root, "app", "static", n), encoding="utf-8").read()]
+    c.check("E23 只有管理端那一颗上传按钮带 purpose（其余各页一个都不许出现这个词）",
+            not others and admin.count('form.append("purpose", "kb")') == 1, others)
     return c
 
 
