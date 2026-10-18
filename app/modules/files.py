@@ -120,41 +120,91 @@ def _bm25(query_tokens: list[str], docs: list[list[str]]) -> list[float]:
     return scores
 
 
-def search_docs(query: str) -> str:
-    """工具：在学生上传的文档里检索相关段落（人话：不去翻整本书，只捞出讲这句的那几页）。
+def doc_hits(query: str) -> list[dict]:
+    """检索知识文档，返回命中的块（按相关度排好，每条 = {fid,name,i,text,start,score}）。
 
-    :param query: 学生的问题或其中的关键词
+    这是**给程序用的那一份**。`faq.search_kb` 要合并两路检索，它判断的是"有没有查到"，
+    所以得拿这个结构化结果去判空 —— 不能去嗅 `search_docs` 那段给人看的话：
+    那段一共有三种"没查到"的说法（空查询 / 一份文档都没有 / 有文档但没命中），
+    靠子串匹配迟早漏一支（施工单 §2.1 那版就是漏了"空查询"，会把
+    「这句里没有能用来检索的词」当成命中拼进回答）。
     """
     q = _tokenize(query)
     if not q:
-        return "这句里没有能用来检索的词，请换成具体关键词再试（比如「宿舍 限电」「补办 学生证」）。"
-
+        return []
     chunks = list(all_chunks())
     if not chunks:
-        return (
-            "目前还没有可检索的文档（要么没上传过文件，要么这些文件还没建索引）。"
-            "可以用 list_uploaded_files 看看有哪些文件；确实没有就照实告诉用户没找到，不要编。"
-        )
-
+        return []
     scores = _bm25(q, [_tokenize(c["text"]) for c in chunks])
     hits = [(s, c) for s, c in zip(scores, chunks) if s > 0]
     # 平手时：块越靠前、文档越新优先（稳定排序，靠 list_uploads 本来就是新的在前）
     order = {f["id"]: i for i, f in enumerate(list_uploads())}
     hits.sort(key=lambda x: (-x[0], order.get(x[1]["fid"], 1 << 30), x[1]["i"] or 0))
+    return [{**c, "score": s} for s, c in hits]
+
+
+def _best_window(text: str, query: str, cap: int) -> str:
+    """从一块里挑**最贴这个问题的那一句**做起点，往后取 `cap` 个字。
+
+    为什么不是干脆地砍前 cap 字：一块最多六百多字（`CHUNK_SIZE` 600 + 重叠 80），
+    答案那句常常在中间 —— 砍前 320 字会把答案剪掉，于是"合并检索"又把答案弄丢了
+    （这单要修的正是这类洞）。
+    选句子的依据很笨但可核：哪一句跟查询共有的词多，就从哪一句开始。
+    """
+    if cap <= 0 or len(text) <= cap:
+        return text
+    qt = set(_tokenize(query))
+    sents = [s for s in re.split(r"(?<=[。！？!?；;\n])", text) if s.strip()]
+    best, best_hit = None, 0
+    for s in sents:
+        n = len(qt & set(_tokenize(s)))
+        if n > best_hit:
+            best, best_hit = s, n
+    if not best:                       # 一句都不沾词（查询是英文/数字时可能）→ 退回取开头
+        return text[:cap]
+    start = text.index(best)
+    return text[start:start + cap]
+
+
+def format_doc_hits(hits: list[dict], per_chunk: int = 0, query: str = "") -> str:
+    """把命中的块排成"给人/给模型看"的那段文字（带出处）。
+
+    :param per_chunk: 每块最多留多少字，0 = 不截。
+        直答那一路（日程栏问校园信息 → 不经模型，把这段原样贴进气泡）必须截，
+        不然 `DOC_TOP_K` 四块两千多字原文会整块砸进对话气泡里。
+    """
+    lines = ["在文档里找到以下相关段落（按相关度，出自第几块都已标明）："]
+    for rank, c in enumerate(hits[:DOC_TOP_K], 1):
+        body = _best_window(c["text"], query, per_chunk)
+        cut = len(body) < len(c["text"])
+        lines.append(
+            f"[{rank}]《{c['name']}》第 {int(c['i'] or 0) + 1} 块"
+            f"（原文第 {int(c['start'] or 0) + 1} 字起，相关度 {c['score']:.2f}）："
+            f"\n{body}" + ("\n……（这一段只截了贴问题的那部分，全文用 read_uploaded_file 看这份文件）"
+                            if cut else "")
+        )
+    return "\n\n".join(lines)
+
+
+def search_docs(query: str) -> str:
+    """工具：在学生上传的文档里检索相关段落（人话：不去翻整本书，只捞出讲这句的那几页）。
+
+    :param query: 学生的问题或其中的关键词
+    """
+    if not _tokenize(query):
+        return "这句里没有能用来检索的词，请换成具体关键词再试（比如「宿舍 限电」「补办 学生证」）。"
+    if not list(all_chunks()):
+        return (
+            "目前还没有可检索的文档（要么没上传过文件，要么这些文件还没建索引）。"
+            "可以用 list_uploaded_files 看看有哪些文件；确实没有就照实告诉用户没找到，不要编。"
+        )
+    hits = doc_hits(query)
     if not hits:
         return (
             f"在上传的文档里没检索到「{query}」相关内容。"
             "请照实说没找到，或建议换个关键词/直接看原文，不要凭常识替这份文件编内容。"
         )
-
-    lines = ["在文档里找到以下相关段落（按相关度，出自第几块都已标明）："]
-    for rank, (score, c) in enumerate(hits[:DOC_TOP_K], 1):
-        lines.append(
-            f"[{rank}]《{c['name']}》第 {int(c['i'] or 0) + 1} 块"
-            f"（原文第 {int(c['start'] or 0) + 1} 字起，相关度 {score:.2f}）："
-            f"\n{c['text']}"
-        )
-    return "\n\n".join(lines)
+    return format_doc_hits(hits)
 
 
 def build_tools() -> dict[str, Tool]:
