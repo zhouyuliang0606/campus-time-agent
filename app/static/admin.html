@@ -726,7 +726,7 @@
       const ok = await askConfirm({
         title: "删除这条知识库条目？",
         body: "删除的是知识库里的这一条问答，学生端校园问答立刻不再命中它。",
-        warn: "这条是**真删**，不像工单/消息的归档能放回；要恢复只能重新添加。",
+        warn: "这条是真删，不像工单/消息的归档能放回；要恢复只能重新添加。",
         okText: "删除",
       });
       if (!ok) return;
@@ -786,7 +786,7 @@
           title: "删除这份文档？",
           body: "《" + (b.dataset.name || "未命名") + "》提取出来的文字、原件、分块索引会一起删掉，"
               + "挂在通知上的下载也会失效。",
-          warn: "这是**真删**，不像工单/消息的归档能放回，找不回来。"
+          warn: "这是真删，不像工单/消息的归档能放回，找不回来。"
               + "它还挂着通知时服务器会拒删并说清挂在哪几条 —— 那种情况下通知一条都不会被动。",
           okText: "删除文档",
         })) return;
@@ -938,7 +938,7 @@
         + (showArchMsg ? arch.map(m => msgRow(m, true)).join("") : "");
       bindArchButtons(box, "/api/admin/messages/", loadMessages,
         t => `这条消息来自「${t.kind}」：${t.desc}`,
-        "归档只收这一条。它要是某张工单的双写记录，**不会**反过来把工单也收掉 —— 要一起收请去工单那边按【归档】。",
+        "归档只收这一条。它要是某张工单的双写记录，不会反过来把工单也收掉 —— 要一起收请去工单那边按【归档】。",
         "msgArchStatus", loadWorkOrders);   // 反向同理（虽然消息归档不动工单，两张表始终一起对齐）
       const tg = box.querySelector("[data-toggle-arch]");
       if (tg) tg.addEventListener("click", () => { showArchMsg = !showArchMsg; loadMessages(); });
@@ -1110,7 +1110,7 @@
       const ok = await askConfirm({
         title: "清空全部用量记录？",
         body: "只清统计流水（app/data/llm_usage.jsonl），不动任何待办/课表/会话。",
-        warn: "这一条是**真删**，和工单/消息的「归档」不一样：流水清完就没了。",
+        warn: "这一条是真删，和工单/消息的「归档」不一样：流水清完就没了。",
         okText: "清空流水",
       });
       if (!ok) return;
