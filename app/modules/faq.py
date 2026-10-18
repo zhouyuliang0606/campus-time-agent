@@ -73,22 +73,20 @@ def _kb_fuzzy_hit(q: str, kw: str) -> bool:
 FAQ_DOC_HITS = 2        # 合并进 search_kb 的文档段落最多几块（直答那一路不经模型，砸太长没法看）
 FAQ_DOC_CHARS = 320     # 每块最多留多少字
 
-# ⚠️ 这句 miss 文案是**一份契约**，两个地方在按它的前缀判断"知识库里到底有没有"：
-#    `main._kb_has_answer`（决定「校车在哪坐」这类问句要不要被"查日程"那支接走）
-#    与 `test_15` 的那组断言。要改字眼，连着改那一处判据，别只改这边。
-_MISS = "知识库里没有找到和「"
+# ⚠️ 这句 miss 文案是**一份契约**：`main._kb_has_answer` 要判"知识库里到底有没有"，
+#    `test_15` 的那组断言也按它认。要改字眼，连着改那边（`KB_MISS_PREFIX` 是唯一的这一处）。
+KB_MISS_PREFIX = "知识库里没有找到"
+_MISS = KB_MISS_PREFIX + "和「"
 
 
-def search_kb(query: str) -> str:
-    """工具：在**校园知识库**里检索 —— 问答条目 + 管理员上传的文档，一个入口查全。
+def _kb_parts(query: str) -> tuple[list[dict], list[dict]]:
+    """两路检索的**共同那一步**：返回（问答条目命中, 文档命中）。
 
-    为什么要在这一个函数里合两路（#40 补2）：学生端/日程栏的链路只要求模型调 `search_kb`，
-    它不会想到还有第二个工具。两边各开一口时，模型只会调前者 ——
-    真机复现：《学生手册》里明写「图书馆位于校园中轴北侧」，问答却回"知识库没有图书馆的信息"
-    （那阵子 kb.json 恰好是空的，于是文档那条路根本没人走）。
-    **kb.json 空不空不是关键，入口不合并这个洞就一直在。**
+    渲染留给两个视图各自做（`search_kb` 给模型、`answer_for_student` 给学生，#41-A），
+    判空也只看着这两个列表 —— 不许去嗅任何人话文案（施工单 §2.1 那版嗅 `search_docs`
+    的文案，漏了"空查询"那一支，变异 M5 就是验这颗牙）。
     """
-    from app.modules.files import doc_hits, format_doc_hits
+    from app.modules.files import doc_hits
     # 函数内导入，不是顶层：faq 与 files 顶层互相 import 会套住（planner._lev 同一写法）。
     # 方向是 faq → files 单向，files 只依赖 store，不成环（K5 钉着）。
 
@@ -107,8 +105,25 @@ def search_kb(query: str) -> str:
             if any(kw and _kb_fuzzy_hit(q, kw) for kw in keywords):
                 hits.append(item)
 
-    # 文档那一路：只在**真命中**时才拼进来（空查询/一份文档都没有/没命中都回空表，见 doc_hits）
-    docs = doc_hits(query)[:FAQ_DOC_HITS]
+    # 文档那一路：只在**真命中**时才有内容（空查询/没文档/没命中都回空表）
+    return hits, doc_hits(query)[:FAQ_DOC_HITS]
+
+
+def search_kb(query: str) -> str:
+    """工具：在**校园知识库**里检索 —— 问答条目 + 管理员上传的文档，一个入口查全。
+
+    这是**给模型看的那一份**（带"哪份文件第几块、原文第几字起、相关度"这些定位元数据）。
+    不经模型、直接贴给学生的那一路请走 `answer_for_student`（#41-A）。
+
+    为什么要在这一个函数里合两路（#40 补2）：学生端/日程栏的链路只要求模型调 `search_kb`，
+    它不会想到还有第二个工具。两边各开一口时，模型只会调前者 ——
+    真机复现：《学生手册》里明写「图书馆位于校园中轴北侧」，问答却回"知识库没有图书馆的信息"
+    （那阵子 kb.json 恰好是空的，于是文档那条路根本没人走）。
+    **kb.json 空不空不是关键，入口不合并这个洞就一直在。**
+    """
+    from app.modules.files import format_doc_hits
+
+    hits, docs = _kb_parts(query)
 
     if not hits:
         if not docs:
@@ -127,6 +142,40 @@ def search_kb(query: str) -> str:
                      + format_doc_hits(docs, per_chunk=FAQ_DOC_CHARS, query=query))
     return "\n\n".join(lines)
 
+
+def answer_for_student(query: str) -> str:
+    """日程栏那条「知识库直答」用的**学生视图**（人话：这句话不经模型，屏幕上看到什么就是什么）。
+
+    为什么不能直接复用 `search_kb`（#41-A）：模型视图里那句
+    「[1]《学生手册-测试样本.txt》第 1 块（原文第 1 字起，相关度 3.80）」是给模型定位用的元数据，
+    原样贴进气泡就成了"系统当着学生的面背数据库"。这里只留《文档名》+ 正文片段，
+    出处仍在（学生能顺着文件名去翻），元数据去掉。
+    ⚠️ 两边都没有时回的还是那句 `_MISS` 开头的原文 —— 判据嗅的是它（见 `KB_MISS_PREFIX`），
+       两个视图不许各写一句"没找到"。
+    """
+    from app.modules.files import format_doc_hits_for_student
+
+    hits, docs = _kb_parts(query)
+    if not hits and not docs:
+        return _MISS + query + "」直接相关的内容。"
+
+    parts = [f"问：{h['question']}\n答：{h['answer']}" for h in hits[:3]]
+    if docs:
+        parts.append(format_doc_hits_for_student(docs, per_chunk=FAQ_DOC_CHARS, query=query))
+    return "\n\n".join(parts)
+
+
+
+def kb_has_answer(query: str) -> bool:
+    """知识库里（问答条目 + 上传文档）**到底有没有**这句的答案。
+
+    #41-B 起，`main._kb_has_answer` 用的就是这一句，判据看的是**两个列表空不空**，
+    不再是"回话有没有以那句 miss 开头"。为什么值得单独开一个口子：
+    同一判断抄两处、改一处漏一处是这项目反复吃过的（红线 12 那一族）——
+    以前 faq 改一次措辞，main 那边就**静默**把"都没找到"当成"有答案"。
+    """
+    hits, docs = _kb_parts(query)
+    return bool(hits or docs)
 
 
 def build_tools() -> dict[str, Tool]:

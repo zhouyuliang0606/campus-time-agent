@@ -186,6 +186,24 @@ def format_doc_hits(hits: list[dict], per_chunk: int = 0, query: str = "") -> st
     return "\n\n".join(lines)
 
 
+def format_doc_hits_for_student(hits: list[dict], per_chunk: int, query: str = "") -> str:
+    """把命中的块排成**给学生看**的那段：只有《文档名》+ 正文片段。
+
+    为什么要第二个视图（#41-A）：日程栏那条「知识库直答」不经模型，
+    把 `search_kb` 的返回值**原样贴进气泡**。上面那个模型视图里的
+    「（原文第 X 字起，相关度 Y）」「第 N 块」是**给模型定位用的**元数据 ——
+    学生看见只觉得系统在背数据库（同 `test_38` 那一族：技术底座不许漏到学生端）。
+    文档名要留：学生看得懂，也算出处（他去翻那份文件找得到）。
+    """
+    lines = []
+    for c in hits[:DOC_TOP_K]:
+        body = _best_window(c["text"], query, per_chunk)
+        cut = len(body) < len(c["text"])
+        lines.append(f"《{c['name']}》里是这么写的：{body}"
+                     + ("……（后面还有，这段只取了贴着你问题的那部分）" if cut else ""))
+    return "\n\n".join(lines)
+
+
 def search_docs(query: str) -> str:
     """工具：在学生上传的文档里检索相关段落（人话：不去翻整本书，只捞出讲这句的那几页）。
 
