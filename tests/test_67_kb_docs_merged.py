@@ -71,6 +71,8 @@ def batch_a_shapes():
     title("A. 合并后的四种形状（哪一路有货就回哪一路，来源必须分得清）")
     with sandbox():
         from app import store
+        from app.modules import faq as _faq
+        from app.modules import files as _files
         from app.modules.faq import FAQ_DOC_CHARS, search_kb
 
         _wipe_kb()
@@ -106,8 +108,15 @@ def batch_a_shapes():
                 "（套成同一种，模型会把原文摘录当标准答案逐字复述）",
                 "Q: 图书馆几点关门" in head and DOC_FACT not in head and "《" not in head,
                 f"条目区 {len(head)} 字")
-        c.check("K2-三 文档段最多带 FAQ_DOC_HITS 块（直答那一路不经模型，太长没法看）",
-                out2.count("\n[") <= 2, f"块数={out2.count(chr(10) + '[')}")
+        c.check("K2-三 模型视图的文档段封在 `files.DOC_TOP_K` 块内（#42-B 改口：这句原来写的是"
+                "『最多 FAQ_DOC_HITS 块』，那是把『学生气泡别太长』的限制错按到了模型头上 —— "
+                "两份文档才答得全的问题，模型只看见先挤进来的那一份）",
+                out2.count("\n[") <= _files.DOC_TOP_K,
+                f"块数={out2.count(chr(10) + '[')} / 预算={_files.DOC_TOP_K}")
+        c.check("K2-四 配对：同一句查询，**学生视图**仍然封在 `FAQ_DOC_HITS` 块内"
+                "（不经模型，直答气泡得看得完 —— 那条限制该管的是这一路）",
+                _faq.answer_for_student("图书馆几点关门 天文台参观怎么预约").count("》里是这么写的")
+                <= _faq.FAQ_DOC_HITS, f"预算={_faq.FAQ_DOC_HITS}")
 
         # ── K3 两边都没有 = 那句**一字不变**的旧文案（main._kb_has_answer 按前缀判）
         out3 = search_kb("食堂今晚吃什么")
@@ -123,13 +132,19 @@ def batch_a_shapes():
             c.check(f"K6 {label}查询 → 走『没找到』那句，不把『这句里没有能用来检索的词』当命中拼进来",
                     r == "知识库里没有找到和「" + q + "」直接相关的内容。", repr(r[:40]))
 
-        # 长度上限（直答那一路不经模型，整段原样贴进气泡）
         _seed_doc(name="天文台开放细则.txt",
                   body=_DOC_PAD * 5 + "开放细则：天文台每场三十人，凭学生证入场，逾期名额自动释放。\n" * 8)
+        # 长度上限：**两路两个口径**（#42-B 改口）。原来这两条都按 `FAQ_DOC_HITS` 判 ——
+        # 那是"学生气泡要看得完"的限制，被 `_kb_parts` 那一刀错按到了模型头上；
+        # 现在模型按 `DOC_TOP_K`、学生按 `FAQ_DOC_HITS`，各钉各的（断言钉配对，不钉存在）。
         both = search_kb("天文台参观怎么预约 每场三十人")
-        c.check("K7 两篇文档同时命中时合并结果仍不过分长（块数封顶在 FAQ_DOC_HITS，直答气泡才看得完）",
-                both.count("\n[") == 2 and len(both) < 1500,
-                f"{len(both)} 字 / {both.count(chr(10) + '[')} 块")
+        stu_both = _faq.answer_for_student("天文台参观怎么预约 每场三十人")
+        c.check("K7 两篇文档同时命中时，模型视图的块数封在 `DOC_TOP_K` 内、长度仍受截窗约束",
+                both.count("\n[") <= _files.DOC_TOP_K and len(both) < 2600,
+                f"{len(both)} 字 / {both.count(chr(10) + '[')} 块 / 预算 {_files.DOC_TOP_K}")
+        c.check("K7-学 配对：学生视图同一句查询仍封在 `FAQ_DOC_HITS` 块内（直答气泡要看得完）",
+                stu_both.count("》里是这么写的") <= _faq.FAQ_DOC_HITS and len(stu_both) < 1500,
+                f"{len(stu_both)} 字 / {stu_both.count('》里是这么写的')} 块")
         c.check("K7-bis 那两块的出处各指一份文件（合并后来源仍然分得开）",
                 "《校园天文台须知.txt》" in both and "《天文台开放细则.txt》" in both)
     return c
