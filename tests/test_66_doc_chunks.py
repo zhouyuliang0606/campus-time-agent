@@ -422,6 +422,16 @@ def batch_e_shape():
     c.check("E16 FILE_HINT 里 long 文件那一路指向 search_docs（提示与工具是同一次改动，别只改一半）",
             "search_docs" in main[main.index("FILE_HINT = \"\"\""):main.index("ASSISTANT_RULES")]
             and main.index("FILE_HINT = \"\"\"") < main.index("ASSISTANT_RULES"))
+
+    # E17/E18 文案形状：askConfirm 是 **textContent 渲染**，`**真删**` 那种 markdown 强调
+    #     到屏幕上就是两个星号 —— 这四处（三处是 #40 之前就有的）一起清掉，并钉住不许回来。
+    import re as _re
+    said = _re.findall(r'(?:title|body|warn|okText):\s*"([^"]*)"', admin)
+    c.check(f"E17 确认框四类文案（title/body/warn/okText，实测 {len(said)} 条）里没有 markdown 星号",
+            all("**" not in s for s in said),
+            [s[:24] for s in said if "**" in s])
+    c.check("E18 那句走位置参数传给 bindArchButtons 的话也没带星号（同一族，别只扫带键名的）",
+            "**不会**反过来把工单" not in admin and "不会反过来把工单也收掉" in admin)
     return c
 
 
