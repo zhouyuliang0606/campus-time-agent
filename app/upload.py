@@ -85,16 +85,32 @@ def extract_text(filename: str, data: bytes) -> str:
             f"请用 Word/WPS/Excel 打开后「另存为」{LEGACY_NEW[ext]}，再重新上传。"
         )
 
-    if ext == ".pdf":
-        text = _pdf_text(data)
-    elif ext == ".docx":
-        text = _docx_text(data)
-    elif ext == ".xlsx":
-        text = _xlsx_text(data)
-    elif ext == ".pptx":
-        text = _pptx_text(data)
-    else:
-        text = _plain_text(data)
+    # ⚠️ 这一层 try 是**必需的**，不是防御性装饰（#41-C，2026-10-18 实测）：
+    # 下面四个解析器只兜 `ImportError`，一个改名成 `.docx` 的坏 zip 会让 `zipfile.BadZipFile`、
+    # 截断的 docx 会让 `PackageNotFoundError` 一路冒到路由外 —— 而路由只 `except UploadError`，
+    # 于是学生/管理员拿到的是 **HTTP 500 + 整段 traceback**。实测四种格式全中
+    # （docx / xlsx / pptx / pdf 各回 500，只有"空文件"那一条本来就 400）。
+    # 收在这里而不是各解析器里：一处收，四个格式都齐；写在四个函数里迟早漏一个（红线 12 那一族）。
+    # 不要把异常原文抛给学生 —— 底层报错（"File is not a zip file"）他既看不懂也不知道该干嘛。
+    try:
+        if ext == ".pdf":
+            text = _pdf_text(data)
+        elif ext == ".docx":
+            text = _docx_text(data)
+        elif ext == ".xlsx":
+            text = _xlsx_text(data)
+        elif ext == ".pptx":
+            text = _pptx_text(data)
+        else:
+            text = _plain_text(data)
+    except UploadError:
+        raise                                   # 已经是人话的那些（老版格式等）原样上抛
+    except Exception as e:
+        print(f"[upload] 解析失败 {filename!r}: {type(e).__name__}: {e}")
+        raise UploadError(
+            f"这份文件读不出内容（{filename} 可能已损坏、被加密，或者只是改了个后缀）。"
+            "先在 Word/WPS 里打开确认一下，需要的话另存为 .docx / .xlsx / .pdf 再传。"
+        ) from None
 
     text = text.strip()
     if not text:
