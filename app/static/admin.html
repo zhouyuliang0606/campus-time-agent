@@ -367,10 +367,13 @@
           <div class="card">
         <h2>📄 文档知识库（整份文件切块后，AI 才查得到后半本）</h2>
         <div class="small" style="margin-bottom:10px;">
-          上一档「知识库」是一问一答的条目；这一档是<b>上传进来的整份文件</b>（手册、通知、名单、课表）。
-          文件在上传时就切成带位置的小块存进 <code>uploads/&lt;id&gt;.chunks.json</code>，
+          上一档「知识库」是一问一答的条目；这一档是<b>整份文件</b>（手册、规程、名单说明）。
+          文件在本页上传时就切成带位置的小块存进 <code>uploads/&lt;id&gt;.chunks.json</code>，
           AI 靠 <b>search_docs</b> 在块里检索相关那几段。
-          状态是<b>未建索引</b>的（切块功能上线前传的老文件）点【重建索引】补上，否则那半本查不到。
+          状态是<b>未建索引</b>的（切块功能上线前传的老文件）点【重建索引】补上，否则那半本查不到。<br />
+          <b>这里只收本页上传的知识文档</b>；学生在聊天里传的课表、通知的附件、驿站传的批次清单
+          <b>不会出现在这张表里</b>，也不会被切进检索 —— 不是文件丢了，它们还在各自那一路里
+          （AI 仍能用「读上传的文件」那件工具读到它们）。
         </div>
 
         <label>上传一份文档（txt / md / csv / PDF / Word / Excel / PPT）</label>
@@ -808,18 +811,30 @@
 
     // 上传复用 /api/upload（发公告附件用的就是它），不在管理端另开一口：
     // 两条上传路径迟早长出不一样 —— "这边传的文件那边检索不到"就是这么来的。
+    // 差别只有一个表单字段 purpose=kb：服务端据此决定"要不要切成块、进不进这张表"（#40 补）。
     async function handleDocUpload() {
       const input = document.getElementById("docfile");
       const st = document.getElementById("docStatus");
       if (!input.files || !input.files[0]) { st.textContent = ""; return; }
       const form = new FormData();
       form.append("file", input.files[0]);
+      form.append("purpose", "kb");
       st.textContent = "⏳ 上传中（要抽文字、切块，稍等）…";
       let d = {};
       try {
         d = await (await fetch("/api/upload", { method: "POST", body: form })).json();
       } catch (e) { st.textContent = "❌ 上传异常：" + e.message; return; }
       if (!d.ok) { st.textContent = "❌ 上传失败：" + (d.error || "未知原因"); return; }
+      if (d.file.purpose !== "kb") {
+        // 服务端把 kb 退回成了普通上传（多半是它还在跑旧代码，不认识这个字段）。
+        // 这时候文件确实存下了、但不在知识库里 —— 不能只报"✅ 已存下"糊过去，
+        // 管理员会以为它已经进检索了（学生传的那些就是这么被当成知识文档列出来的）。
+        st.textContent = "⚠️ 已存下，但没进知识库（服务端回 purpose=" + (d.file.purpose || "空")
+          + "）—— 重启服务后再传一次";
+        input.value = "";
+        loadDocs();
+        return;
+      }
       // 文件名是用户可控的：拼进 textContent，不经 innerHTML，就不用操心转义
       st.textContent = "✅ 已存下《" + d.file.name + "》：" + Number(d.file.chars || 0) + " 字，已切块";
       input.value = "";
