@@ -74,6 +74,7 @@ from app.modules.custom import custom_prompt, custom_tools
 # 否则学生说"明天"，AI 根本算不出是哪一天
 from app.modules.planner import (
     DAY_NAMES,
+    asks_campus_fact,
     auto_todo_proposal,
     build_system_prompt as PLANNER_PROMPT,
     build_tools as planner_tools,
@@ -1011,16 +1012,25 @@ _QA_MODULES = frozenset({
 })
 
 
+# 「这句话在说**自己的**日程/待办」的线索词（#41-B 收成一处）。
+# 以前这两条闸门各写一遍同样的元组（报障那条的让路 + 知识库直答），
+# 加一档就得记着改两处 —— 这正是本项目反复吃的"抄两份、漏一份"（红线 12 那一族）。
+_SELF_SCHEDULE_WORDS = ("待办", "代办", "日程", "周表", "月表", "课表", "清单", "列表")
+
+
 def _kb_has_answer(text: str) -> bool:
     """这句话问的是**知识库里有的校园信息**吗（图书馆/校车/宿舍/奖学金…）。
-
     用来给确定性分支让路：学生问「校车在哪坐」，那是问校园信息，不该被
     "查日程"那条路当成"看不见某条待办"接走。查不到就返回 False——
     让原分支照旧处理，别把他的问题甩给知识库冷处理。
+
+    ⚠️ #41-B 起判据走 `faq.kb_has_answer`（**两个列表空不空**），不再嗅回话文案。
+       以前这里是 `startswith("知识库里没有找到")` —— 同一判断抄两处，faq 一改措辞
+       这边就**静默**把"都没找到"当成"有答案"（红线 12 那一族）。
     """
     try:
-        from app.modules.faq import search_kb      # 函数内导入：改动配置/打补丁都传入得去
-        return not (search_kb(text) or "").startswith("知识库里没有找到")
+        from app.modules.faq import kb_has_answer   # 函数内导入：改动配置/打补丁都传入得去
+        return kb_has_answer(text)
     except Exception:
         return False
 
@@ -2748,17 +2758,36 @@ async def _chat_impl(req: Request, meta: dict, emit=None):
         #   实测那一幕：学生问「校车在哪坐」，`_MISSING_RE` 里的「在哪」把它当成报障，
         #   抠出一个根本不存在的待办名"校车坐"，回「查了日程，确实还没有「校车坐」」——
         #   他问的是校车在哪发车、几点发车，系统却在自己的日程里翻。
-        # ⚠️ 判据要**两条同时成立**才让路，宁可漏也不可把真报障让出去：
-        #   ① 话里没有"待办/日程/周表/课表/清单"这类**说自己日程**的词
-        #      （"我的校车待办没显示"仍然是报障，得由这条确定性分支接）；
-        #   ② 知识库里**真的有答案**（查不到就让这条分支照旧查日程，别把话甩冷宫）。
-        if (missing_thing_of(message) is not None
-                and not any(w in message for w in ("待办", "代办", "日程", "周表",
-                                                   "月表", "课表", "清单", "列表"))
-                and _kb_has_answer(message)):
-            missing = None
-        else:
-            missing = missing_thing_of(message)
+        # ⚠️ 让路有两种（#41-B 把第二种补上），两种都先要求"话里没有说自己日程的词"：
+        #   ① 知识库里**真的有答案** → 交给知识库（老行为，「校车在哪坐」）；
+        #   ② 句子问的就是**校园事实**（在哪/几点/怎么…），可两路都查空 ——
+        #      这种**也不能**留在"查日程"那条兜底里：他问的不是他的日程。
+        #      实测那一条：问「外星人驻扎在哪个楼」（问答条目与上传文档都没有），
+        #      屏幕回「👀 查了日程，确实还没有『外星人驻扎个楼』」—— 不编造 ✓，
+        #      但答的是"你的日程里没有"，走错了听众（还把问句剪成残渣，那是红线 21 那一族）。
+        #      现在：日程栏就地老实说一句没查到；问答栏仍走它自己的链路
+        #      （那边模型带 `search_kb`，没配密钥时还要出那句降级提示，别在这儿盖掉）。
+        _missing_now = missing_thing_of(message)
+        missing = _missing_now
+        if _missing_now is not None and not any(w in message for w in _SELF_SCHEDULE_WORDS):
+            _fact_ask = asks_campus_fact(message)
+            _kb_hit = _kb_has_answer(message)
+            if _fact_ask or _kb_hit:
+                missing = None
+                if _fact_ask and not _kb_hit and module_key == "planner":
+                    append_conversation(session_id, "user", message)
+                    append_conversation(session_id, "assistant", "校园问答：知识库里没有这一条")
+                    return {
+                        "module": module_key,
+                        "session_id": session_id,
+                        "answer": ("📚 知识库里没有查到这一条（问答条目和管理员上传的文档都翻了）。\n"
+                                   "这个我暂不清楚，建议问一下对应部门或看学校官网 —— 我不拿猜的答你。"),
+                        "trace": [{"step": 1,
+                                   "phase": "📚 问的是校园信息 → 知识库里没有这一条（老实说没查到）",
+                                   "answer": "知识库未命中"}],
+                        "options": [],
+                        "awaiting_choice": False,
+                    }
         if missing is not None:
             title, day = missing["title"], missing["date"]
             # 他没点名，就拿"最近要加的那件事"当默认答案——十有八九问的就是它
@@ -3701,7 +3730,11 @@ async def _chat_impl(req: Request, meta: dict, emit=None):
         #       ① 手上没有待确认的卡（有卡时他多半在跟卡对话，别把卡弄丢）；
         #       ② 这句话不带"待办/日程/课表"这类词（"我的校车待办显示不出来"是报障）；
         #       ③ 没有任何改数据的意图（加/删/改待办、加/删课、清空课表）；
-        #       ④ 它**像问句**，且知识库**真的**答得出来——答不出就老实交给模型。
+        #       ④ 它**像问句**，且知识库**真的**答得出来——答不出就老实交给模型
+        #          （#41-B 之后，"像校园事实但两路都空"那种在上面报障分支里就地老实说了，不绕到这儿）。
+        #       ⑤ 贴给学生的是 `answer_for_student`（**学生视图**，#41-A）：
+        #          模型视图里那句「第 N 块（原文第 X 字起，相关度 Y）」是给模型定位用的元数据，
+        #          不经模型直接贴进气泡就成了"当学生的面背数据库"。文档名保留，元数据去掉。
         #     ⚠️ 只给**日程栏（planner）**用：校园问答栏本来就有自己的知识库链路，
         #       接管它反而会盖掉那一栏"没配密钥"的降级提示（test_01 就是这么被撞红的）。
         #       这里补的正是**日程栏问校园信息没人管**的这个洞。
@@ -3710,21 +3743,20 @@ async def _chat_impl(req: Request, meta: dict, emit=None):
             _pending_todo_remove_batch, _pending_todo_done_batch, _pending_todo_slots))
         if (module_key == "planner"
                 and not _holding_card
-                and not any(w in message for w in ("待办", "代办", "日程", "周表",
-                                                   "月表", "课表", "清单", "列表"))
+                and not any(w in message for w in _SELF_SCHEDULE_WORDS)
                 and not (wants_add_todo(message) or wants_remove_todo(message)
                          or _done_claim or wants_add_course(message)
                          or wants_remove_course(message)
                          or wants_clear_timetable(message))
                 and looks_like_question(message)
                 and _kb_has_answer(message)):
-            from app.modules.faq import search_kb
+            from app.modules.faq import answer_for_student
             append_conversation(session_id, "user", message)
             append_conversation(session_id, "assistant", "校园问答：知识库直答")
             return {
                 "module": module_key,
                 "session_id": session_id,
-                "answer": "📚 " + search_kb(message),
+                "answer": "📚 " + answer_for_student(message),
                 "trace": [{"step": 1, "phase": "📚 问的是校园信息 → 翻知识库（按台账答，不现编）",
                            "answer": "知识库命中"}],
                 "options": [],
