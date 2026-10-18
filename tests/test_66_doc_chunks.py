@@ -11,6 +11,7 @@
   B 批 —— store 层：上传即建索引、重切、**删干净**（含"挂在通知上就拒删"那道闸）；
   C 批 —— search_docs：G1 深处可检索 + 截断那一路改口 + G7 不改旧行为；
   D 批 —— 管理端三条接口的**鉴权红线**与拒删话术（安全项，反向必须验）；
+  F 批 —— #40 补的 purpose 边界：学生上传**不进这张表、也不被切块检索**（H1~H8）；
   E 批 —— 形状与前端接线：一律钉"哪句落在哪一支"，不钉字符串存在性（红线 29）。
 
 ⚠️ 起手自种：`uploads.json` / `uploads/` 都在 `sandbox.SCRATCH` 里被清空，
@@ -128,7 +129,9 @@ def batch_b_store():
         from app import store
 
         text = _manual()
-        item = store.save_upload("校园服务手册(长).txt", text, raw=text.encode("utf-8"))
+        # purpose="kb" 是 #40 补那道闸：只有知识文档会被切块进检索。
+        # 本文件里所有"要它被切块/要被列出/要能删"的上传都得带上它 —— 否则测的是默认 file 那一档。
+        item = store.save_upload("校园服务手册(长).txt", text, raw=text.encode("utf-8"), purpose="kb")
         fid = item["id"]
         chunks_path = data_path("uploads", fid + ".chunks.json")
 
@@ -158,11 +161,11 @@ def batch_b_store():
                 store.reindex_upload("deadbeefdead") is None)
 
         # 老数据：只有 .txt，没有索引
-        old = store.save_upload("老数据.txt", "这份在切块功能之前传。" * 400)
+        old = store.save_upload("老数据.txt", "这份在切块功能之前传。" * 400, purpose="kb")
         os.remove(data_path("uploads", old["id"] + ".chunks.json"))
         c.check("B9 没建索引的老数据：list_chunks 回空表而不是抛异常",
                 store.list_chunks(old["id"]) == [])
-        bad = store.save_upload("坏索引.txt", "索引文件坏了。" * 400)
+        bad = store.save_upload("坏索引.txt", "索引文件坏了。" * 400, purpose="kb")
         open(data_path("uploads", bad["id"] + ".chunks.json"), "w", encoding="utf-8").write("{不是 JSON")
         c.check("B10 索引文件坏了也回空表（管理员看得见『未建』，点重切就好，全站不该因此炸）",
                 store.list_chunks(bad["id"]) == [])
@@ -205,7 +208,8 @@ def batch_c_search():
         from app.modules.files import READ_LIMIT, read_uploaded_file, search_docs
 
         text = _manual()
-        fid = store.save_upload("校园服务手册(长).txt", text, raw=text.encode("utf-8"))["id"]
+        fid = store.save_upload("校园服务手册(长).txt", text, raw=text.encode("utf-8"),
+                               purpose="kb")["id"]
 
         r = search_docs("游泳馆周四晚上几点以后不让进")
         c.check("C1 问一个只在文档后半段出现的点，能检索到那句（G1，钉死旧 bug）",
@@ -232,14 +236,14 @@ def batch_c_search():
                 "search_docs" in rr and fid in rr, rr[:60].replace("\n", " "))
 
         short_text = "本周五下午两点在行政楼开会，请各班班长准时到场。"
-        sid = store.save_upload("简短通知.txt", short_text)["id"]
+        sid = store.save_upload("简短通知.txt", short_text, purpose="kb")["id"]
         c.check("C9 短文件（≤READ_LIMIT）行为一字不变：原样给全文（G7）",
                 read_uploaded_file(sid) == short_text and len(short_text) < READ_LIMIT)
         c.check("C10 短文件也在检索范围内（不是只有长文件才有料）",
                 "行政楼开会" in search_docs("周五 行政楼 开会"))
 
         # 英文代号 / 数字（课表里 GYM101 这类），分词退化成按词切也得能命中
-        eid = store.save_upload("课程表.txt", "选修课 GYM101 每周三 19:00-20:30 在游泳馆二层。\n" * 40)["id"]
+        eid = store.save_upload("课程表.txt", "选修课 GYM101 每周三 19:00-20:30 在游泳馆二层。\n" * 40, purpose="kb")["id"]
         c.check("C11 英文代号不分词也能命中（大小写还不敏感）",
                 "GYM101" in search_docs("gym101"), search_docs("gym101")[:60])
 
@@ -272,7 +276,7 @@ def batch_d_admin_api():
         text = _manual()
         cli = make_client()
         r = cli.post("/api/upload", files={"file": ("校园服务手册(长).txt", text.encode("utf-8"),
-                                                   "text/plain")})
+                                                   "text/plain")}, data={"purpose": "kb"})
         fid = r.json()["file"]["id"]
 
         docs = cli.get("/api/admin/docs").json()["docs"]
@@ -296,7 +300,7 @@ def batch_d_admin_api():
         #     这条钉的是**谎报**：状态那列要是恒写"已建"，管理员就会以为后半本查得到（其实查不到），
         #     而这份表唯一用途就是让他看出哪份还得点一下【重建索引】。
         stale = cli.post("/api/upload", files={"file": ("老数据.txt", ("补建索引的用料。" * 800).encode("utf-8"),
-                                                       "text/plain")}).json()["file"]["id"]
+                                                       "text/plain")}, data={"purpose": "kb"}).json()["file"]["id"]
         os.remove(data_path("uploads", stale + ".chunks.json"))
         row2 = [x for x in cli.get("/api/admin/docs").json()["docs"] if x["id"] == stale][0]
         c.check("D15a 索引文件没了 → 列表如实回『未建 / 0 块』（台账里那份文件还在，状态却不跟着它说谎）",
@@ -353,6 +357,168 @@ def batch_d_admin_api():
         c.check("D14 带对口令才看得见列表（三条门是同一道门，不是各配一套）",
                 make_client().get("/api/admin/docs").status_code == 200)
         os.environ.pop("CAMPUSTIME_ADMIN_TOKEN", None)
+    return c
+
+
+def batch_f_purpose():
+    """#40 补：文档知识库只收知识文档，学生上传的课表不得进这张表、更不得被切块检索。
+
+    ⚠️ 施工单 §一 说危害是"一旦点了【重建索引】"—— 实测比那句更早一档：
+       #40 的 `save_upload` 是**上传当场就切块**，所以学生课表不用谁点，传上来就已经变成
+       人人可检索的"知识"了。所以这一批每条都同时问两件事：**列表里有没有** 与
+       **磁盘上有没有块 / 检索捞不捞得到** —— 只钉前一条，M4（不 gate 建索引）就会假绿。
+    """
+    c = Checker()
+    title("F. #40 补：purpose 边界（学生上传不进知识库，也不被切块）")
+    with sandbox():
+        from app import store
+        from app.modules.files import search_docs  # noqa: F401
+
+        def found(res, phrase):
+            """检索结果里**是不是真有一段命中**包含这句话。
+
+            ⚠️ 不能直接写 `phrase not in search_docs(phrase)`：查不到时回的那句话会**把查询词复述一遍**
+            （「没检索到「铅球专项训练」」），于是这个断言永远红 —— 我第一次就这么写错，
+            红的是断言自己，不是代码。判"命中"要看带 [n] 的那些块。
+            """
+            return any(phrase in blk for blk in res.split("\n\n") if blk.startswith("["))
+
+        cli = make_client()
+        deep = "本学期铅球专项训练周三十七点在north操场集合，遇雨改到体育馆二层。"
+        stu_body = ("2026秋季课表 软件工程25级3班\n" + "高等数学 周一10:00-11:40 主教301\n" * 30
+                    + deep + "\n")
+        kb_body = _manual()
+
+        # H1 学生那种上传（不传 purpose）：不进列表、不建索引、检索不到
+        stu = cli.post("/api/upload", files={"file": ("2026秋季课表-软件工程25级3班.txt",
+                                                     stu_body.encode("utf-8"), "text/plain")},
+                       data={}).json()["file"]
+        sid = stu["id"]
+        listed = [d["id"] for d in cli.get("/api/admin/docs").json()["docs"]]
+        c.check("H1 学生传的课表**不在** /api/admin/docs 里（这一档不再把全局上传桶抖出来）",
+                sid not in listed and listed == [], f"列表={listed}")
+        c.check("H1-bis 学生那份默认 purpose=file", stu.get("purpose") == "file", stu.get("purpose"))
+        c.check("H1-三 关键的一条：磁盘上根本没给它建索引（不是藏起来不显示，是没切）",
+                not os.path.exists(data_path("uploads", sid + ".chunks.json")), sid)
+        c.check("H1-四 检索也捞不到它（那份课表里独有的那句没被端出来）",
+                not found(search_docs("铅球专项训练 在哪集合"), "铅球专项训练"),
+                search_docs("铅球专项训练 在哪集合")[:60].replace("\n", " "))
+        c.check("H1-五 但学生那侧不受影响：桶里还在（/api/uploads 与 list_uploads 都看得见）",
+                sid in [f["id"] for f in cli.get("/api/uploads").json()["files"]]
+                and sid in [f["id"] for f in store.list_uploads()])
+
+        # H2 管理端在本页传的知识文档
+        kb = cli.post("/api/upload", files={"file": ("校园服务手册(长).txt", kb_body.encode("utf-8"),
+                                                    "text/plain")},
+                      data={"purpose": "kb"}).json()["file"]
+        kid = kb["id"]
+        listed2 = cli.get("/api/admin/docs").json()["docs"]
+        c.check("H2 purpose=kb 的那份出现在列表里，且默认那份没混进来",
+                [d["id"] for d in listed2] == [kid], [d["id"] for d in listed2])
+        c.check("H2-bis kb 那份建了索引（同一份代码，两种归属两种结果 —— 钉的就是这一对）",
+                os.path.exists(data_path("uploads", kid + ".chunks.json"))
+                and listed2[0]["indexed"] is True and listed2[0]["chunks"] > 20)
+        c.check("H2-三 知识文档能被检索到（学生那份查不到、这份查得到 —— 这一对才叫边界）",
+                found(search_docs("游泳馆周四晚上几点以后不让进"), "游泳馆每周四晚间设备维护"))
+        c.check("H2-四 白名单里 timetable 这一档合法（枚举位留着，行为等同不建索引）",
+                store.save_upload("课表.txt", "内容", purpose="timetable")["purpose"] == "timetable"
+                and store.norm_purpose("timetable") == "timetable")
+
+        # H3 越权操作被拒（拿 file 的 fid 打这两条口）
+        for name, call in (("reindex", cli.post(f"/api/admin/docs/{sid}/reindex")),
+                           ("delete", cli.delete(f"/api/admin/docs/{sid}"))):
+            c.check(f"H3 拿学生文件的 fid 调 {name} 被拒（400），话说清是『不是知识文档』",
+                    call.status_code == 400 and "不是知识文档" in call.json().get("error", ""),
+                    f"{call.status_code} {call.text[:70]}")
+        c.check("H3-bis 被拒之后什么都没发生：没建索引、记录还在、文字还在",
+                not os.path.exists(data_path("uploads", sid + ".chunks.json"))
+                and store.get_upload(sid) is not None
+                and sid in [f["id"] for f in store.list_uploads()])
+        ghost = cli.post("/api/admin/docs/deadbeef1234/reindex")
+        c.check("H3-三 两种拒绝的话是分开的（不存在 vs 不是知识文档）—— 混成一句等于没说",
+                ghost.status_code == 400 and "不是知识文档" not in ghost.json()["error"]
+                and "不存在" in ghost.json()["error"], ghost.text[:70])
+
+        # H4 老数据：没有 purpose 键
+        store._write("uploads.json", {"files": [
+            {"id": "oldrow000001", "name": "老数据.docx", "ts": "2026-10-01 00:00:00", "chars": 50},
+        ] + store._read("uploads.json", {"files": []})["files"]})
+        c.check("H4 老记录没 purpose 键 → 按 file 处理（upload_purpose 不抛）",
+                store.upload_purpose("oldrow000001") == "file")
+        c.check("H4-bis 老记录不进列表、不进检索",
+                "oldrow000001" not in [d["id"] for d in cli.get("/api/admin/docs").json()["docs"]]
+                and all(x["fid"] != "oldrow000001" for x in store.all_chunks()))
+        c.check("H4-三 拿老 fid 来删/重切也被拒（不能因为没这个键就当成 kb）",
+                cli.delete("/api/admin/docs/oldrow000001").status_code == 400
+                and cli.post("/api/admin/docs/oldrow000001/reindex").status_code == 400)
+        # ★ 这条才是 #40 补的真身：旧版本已经给学生的文件切过块（磁盘上有残骸）
+        store.save_chunks("oldrow000001", [{"i": 0, "start": 0, "text": "铅球专项训练周三十七点集合"}])
+        c.check("H4-四 **已有块的老数据也不得被检索**（#40 最初版给学生文件建过索引，"
+                "光靠「不新建」清不掉那份残骸）",
+                not found(search_docs("铅球专项训练"), "铅球专项训练"), search_docs("铅球专项训练")[:50])
+
+        # H5 通知附件保护不变 + 两道闸的顺序
+        cli.post("/api/admin/notify", json={"title": "手册见附件", "content": "看附",
+                                            "attachment": {"id": kid, "name": "校园服务手册(长).txt"}})
+        d1 = cli.delete(f"/api/admin/docs/{kid}")
+        c.check("H5 kb 文档挂在通知上仍被拒（#40 那条行为一字没变）",
+                d1.status_code == 400 and "还挂在" in d1.json().get("error", ""), d1.text[:80])
+        d2 = cli.delete(f"/api/admin/docs/{sid}")
+        c.check("H5-bis 两道闸的**顺序**：先认归属再查引用 —— 学生那份（就算被挂上通知）"
+                "收到的话是「不是知识文档」，不是「还挂在通知上」",
+                "不是知识文档" in d2.json().get("error", ""), d2.json().get("error", "")[:60])
+        cli.post("/api/admin/notify", json={"title": "课表附件", "content": "看附",
+                                            "attachment": {"id": sid, "name": "课表.txt"}})
+        d3 = cli.delete(f"/api/admin/docs/{sid}")
+        c.check("H5-三 归属关先过，所以顺序不是靠话术碰运气（上面那条不是蒙的）",
+                "不是知识文档" in d3.json().get("error", "") and "还挂在" not in d3.json().get("error", ""))
+
+        # H6 非法 purpose 落进 file，不进库
+        evil = cli.post("/api/upload", files={"file": ("坏值.txt", "随便一句。".encode("utf-8"), "text/plain")},
+                        data={"purpose": "../../x"}).json()["file"]
+        c.check("H6 非法 purpose 落成 file（任意字符串不许进库，更不许进 kb）",
+                evil["purpose"] == "file"
+                and evil["id"] not in [d["id"] for d in cli.get("/api/admin/docs").json()["docs"]])
+        c.check("H6-bis 它也没被建索引", not os.path.exists(data_path("uploads", evil["id"] + ".chunks.json")))
+
+        # H7 真删要把**原件**删掉（#40 那个顺序 bug：先改表再取原件 ⇒ 原件永远删不掉）
+        #    用 .md 而不是 .docx：要的是"原件后缀 ≠ .txt"这种**两个文件**的情形，
+        #    .md 走纯文本那条路、不需要真 zip 结构，也不用装 python-docx 才测得动。
+        md_raw = "# 校园服务手册\n\n正文一行。\n"
+        docx = cli.post("/api/upload", files={"file": ("手册.md", md_raw.encode("utf-8"), "text/markdown")},
+                        data={"purpose": "kb"})
+        c.check("H7-precondition .md 走通了（原件与提取文字是两个文件，才测得到这条路径）",
+                docx.json()["ok"] and docx.json()["file"]["ext"] == ".md")
+        did = docx.json()["file"]["id"]
+        raw_p = data_path("uploads", did + ".md")
+        c.check("H7-precondition 原件确实在磁盘上（和后缀 .txt 那种「同名一份」不是一回事）",
+                os.path.exists(raw_p), raw_p)
+        cli.delete(f"/api/admin/docs/{did}")
+        c.check("H7 删除之后**原件也没了**（改顺序之前这条必红：表一删 meta 就查不到，原件路径取成 None）",
+                not os.path.exists(raw_p), raw_p)
+        c.check("H7-bis 文字与索引也一起没了",
+                not os.path.exists(data_path("uploads", did + ".txt"))
+                and not os.path.exists(data_path("uploads", did + ".chunks.json")))
+
+        # H8 store 层兜底：绕过接口直接调用也守得住
+        #    ⚠️ 这里**不能用上面那份 sid**：它在 H5-三 那一步已经被挂到通知上了，
+        #    `delete_upload` 会因为"通知引用"那道闸回 False —— 断言就变成自证的，
+        #    把 purpose 那道兜底整档删掉它也照样绿（变异 M7b 第一次就是这么"没咬红"，
+        #    才查出这条断言测的不是它声称的那件事）。所以现造一份干净的 file。
+        clean = store.save_upload("干净的学生文件.txt", "一句课表上的话。" * 60)
+        cid = clean["id"]
+        c.check("H8 store.delete_upload 自己就拒非 kb（接口那道闸不是唯一一道）",
+                store.delete_upload(cid) is False and cid in [f["id"] for f in store.list_uploads()],
+                cid)
+        c.check("H8-bis store.reindex_upload 自己就拒非 kb（兜底之后磁盘上仍不该有块）",
+                store.reindex_upload(sid) is None
+                and not os.path.exists(data_path("uploads", sid + ".chunks.json")))
+        # 对照那半必须留着：兜底不是"谁都删不掉"，是"非 kb 删不掉"。
+        # 只钉拒绝的那一半，把 delete_upload 整个改成 return False 也能全绿（又一处死闸）。
+        ctl = store.save_upload("对照kb.txt", "一段对照内容。" * 40, purpose="kb")
+        c.check("H8-三 对照：一份干净的 kb 文档，store.delete_upload 是直接删得掉的（证明上面那条不是死闸）",
+                store.delete_upload(ctl["id"]) is True
+                and ctl["id"] not in [f["id"] for f in store.list_uploads()])
     return c
 
 
@@ -432,6 +598,22 @@ def batch_e_shape():
             [s[:24] for s in said if "**" in s])
     c.check("E18 那句走位置参数传给 bindArchButtons 的话也没带星号（同一族，别只扫带键名的）",
             "**不会**反过来把工单" not in admin and "不会反过来把工单也收掉" in admin)
+
+    # E19~E22 是 #40 补的形状：purpose 这条边界**在前端落在哪一颗按钮上**，钉配对不钉存在
+    c.check("E19 本页上传带 purpose=kb，而且**在发请求之前**就 append 好（写在 fetch 后面等于没传）",
+            'form.append("purpose", "kb")' in up
+            and up.index('form.append("purpose", "kb")') < up.index('fetch("/api/upload"'), "")
+    c.check("E20 服务端把 kb 退回成 file 时（多半在跑旧代码）不许报「✅ 已存下」，"
+            "要说清没进知识库 —— 而且这句判据必须在 fetch 之后（拿得到返回值才判得了）",
+            'd.file.purpose !== "kb"' in up and "没进知识库" in up
+            and up.index('fetch("/api/upload"') < up.index('d.file.purpose !== "kb"')
+            < up.index("没进知识库"), "")
+    notice_up = admin[admin.index("async function handleNoticeFile"):admin.index("function clearAttachment")]
+    c.check("E21 另一颗上传（发通知的附件）**不许**带 purpose=kb —— 带上了公告附件也进知识库，"
+            "边界又漏一层", "purpose" not in notice_up, notice_up[:50])
+    panel = admin[admin.index('id="view-docs"'):admin.index("</div><!-- /stage -->")]
+    c.check("E22 那句边界话落在**文档知识库这一档**的面板里（不是写在别的档、也不是只在 JS 注释里）",
+            "这里只收本页上传的知识文档" in panel and "不会出现在这张表里" in panel)
     return c
 
 
@@ -444,6 +626,7 @@ def main():
                      (batch_b_store, "B 批（store：建索引/重切/删干净）"),
                      (batch_c_search, "C 批（search_docs + 截断改口）"),
                      (batch_d_admin_api, "D 批（管理端接口 + 鉴权红线）"),
+                     (batch_f_purpose, "F 批（#40 补：purpose 边界，学生上传不进知识库）"),
                      (batch_e_shape, "E 批（形状与前端接线）")):
         code |= fn().summary(name)
     return code
