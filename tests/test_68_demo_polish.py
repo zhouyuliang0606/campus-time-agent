@@ -10,7 +10,8 @@ import io
 import json
 import os
 
-from _harness import PROJ_DIR, Checker, data_path, make_client, sandbox, seed_todos, title
+from _harness import (PROJ_DIR, Checker, data_path, make_client, sandbox, seed_todos,
+                      title, write_timetable)
 
 code = 0
 
@@ -153,6 +154,24 @@ def batch_b_routing():
         c.check("B1-bis 而且看得见它走到的那支（『日程里排着呢』这句是核实分支的实测话术）",
                 "日程里排着呢" in ans2 and "查日程" in ph2, f"{ans2[:50]}｜{ph2[:60]}")
 
+        # ── 对照一·乙：问的其实是**自己的课**，课在周表里 → 那句"知识库里没查到"不许抢
+        #    （这条是全量当场抓出来的回归：让路那道原来抢在日程/周表核实之前，
+        #      「怎么没有周一的高数」被 `在哪/怎么` 的形状判成校园问句，直接吞掉了正当问题。）
+        write_timetable([{"day": 1, "start": "08:00", "end": "09:40",
+                          "course": "高等数学", "location": "教三-201"}])
+        ans2b, ph2b = _chat(cli, "怎么没有周一的高数")
+        c.check("B1-乙 对照：问自己的课、课确实在周表里 → 指到周表，**不许**被那句『知识库里没查到』抢走",
+                "知识库里没有查到这一条" not in ans2b and "高等数学" in ans2b and "周一" in ans2b,
+                ans2b[:80])
+
+        # ── 对照一·丙：报障否决表（`_REPORT_WORDS`）到底挡了什么 ——
+        #    挪到第 ④ 档之后，"日程里查到了"那种句子本来就轮不到抢；
+        #    否决表管的是**查无此事**的那一类：「怎么没看到」说的是"某条不见了"，
+        #    老实的答案是"日程里没有这一条"，不是"知识库里没查到"（少了这条对照，M6 就没牙）。
+        ans2c, ph2c = _chat(cli, "我怎么没看到那条读书")
+        c.check("B1-丙 查无此事的报障：仍回『日程里没有』那族，**不**回知识库那句（否决表的牙）",
+                "知识库里没有查到这一条" not in ans2c and "确实还没有" in ans2c, ans2c[:80])
+
         # ── 对照二：列待办照旧（G5）
         ans3, ph3 = _chat(cli, "我的待办有什么")
         c.check("G5 对照：『我的待办有什么』照旧是列待办，没被知识库这条抢走",
@@ -168,10 +187,18 @@ def batch_b_routing():
         c.check("B4 文档里有答案时**不许**回这句『没有查到』（补2 的口径：文档也算知识库）",
                 "没有查到这一条" not in ans5 and DOC_FACT[:12] in ans5, ans5[:80])
 
-        # ── 问答栏（faq）不许被这条兜底盖掉它自己的链路
+        # ── 问答栏（faq）那一侧：这条老实话两端都适用，但"有答案"那一档绝不能被它盖掉
+        #    （这里改口过一次：第一版把 faq 排除在外，于是问答栏问「校车在哪里坐」被回
+        #     「查了日程，确实还没有『校车坐』」—— 整段确定性分支本就圈在 station 之外，
+        #     端级闸门管住了该管的，再限定 planner 等于把问答栏漏在外面。）
         ans6, ph6 = _chat(cli, NO_DOC_Q, module="faq")
-        c.check("G4-四 问答栏里同一句**不走**这条日程栏兜底（那条栏有自己的知识与降级提示）",
-                "知识库里没有查到这一条" not in ans6, ans6[:80])
+        c.check("G4-四 问答栏问一件知识库里没有的：同样老实说没查到，不许听到日程话术",
+                "知识库里没有查到这一条" in ans6
+                and "查了日程" not in ans6 and "确实还没有" not in ans6, ans6[:80])
+        ans6b, ph6b = _chat(cli, "参观天文台要提前多久", module="faq")
+        c.check("G4-五 配对：问答栏问一件**文档里有**的，绝不许出现这句『没查到』"
+                "（那一档由让路①交给它自己的知识与模型链路，包括没配密钥时那句降级提示）",
+                "没有查到这一条" not in ans6b, ans6b[:80])
 
         # ── 判据不嗅文案（#41-B 去重复的真正牙齿）
         from app.main import _kb_has_answer

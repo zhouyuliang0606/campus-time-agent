@@ -2758,36 +2758,19 @@ async def _chat_impl(req: Request, meta: dict, emit=None):
         #   实测那一幕：学生问「校车在哪坐」，`_MISSING_RE` 里的「在哪」把它当成报障，
         #   抠出一个根本不存在的待办名"校车坐"，回「查了日程，确实还没有「校车坐」」——
         #   他问的是校车在哪发车、几点发车，系统却在自己的日程里翻。
-        # ⚠️ 让路有两种（#41-B 把第二种补上），两种都先要求"话里没有说自己日程的词"：
-        #   ① 知识库里**真的有答案** → 交给知识库（老行为，「校车在哪坐」）；
-        #   ② 句子问的就是**校园事实**（在哪/几点/怎么…），可两路都查空 ——
-        #      这种**也不能**留在"查日程"那条兜底里：他问的不是他的日程。
-        #      实测那一条：问「外星人驻扎在哪个楼」（问答条目与上传文档都没有），
-        #      屏幕回「👀 查了日程，确实还没有『外星人驻扎个楼』」—— 不编造 ✓，
-        #      但答的是"你的日程里没有"，走错了听众（还把问句剪成残渣，那是红线 21 那一族）。
-        #      现在：日程栏就地老实说一句没查到；问答栏仍走它自己的链路
-        #      （那边模型带 `search_kb`，没配密钥时还要出那句降级提示，别在这儿盖掉）。
+        # ⚠️ 让路的判据（两条同时成立才让，宁可漏也不可把真报障让出去）：
+        #   ① 话里没有"待办/日程/周表/课表/清单"这类**说自己日程**的词
+        #      （"我的校车待办没显示"仍然是报障，得由这条确定性分支接）；
+        #      —— 这张词表全站只有 `_SELF_SCHEDULE_WORDS` 一处（以前这里和 3i 各抄一份）。
+        #   ② 知识库里**真的有答案**（查不到就让这条分支照旧查日程，别把话甩冷宫）。
+        # 注意：这句**只负责"让路"**。"两路都查空也别回'你的日程里没有'"那半件事不在这儿做 ——
+        # 那要等这条分支**真的核问过日程与周表、什么都没找到**之后才成立（见下面第 ④ 档），
+        # 在这儿抢答会把「高等数学在哪上」这种"问自己的课"一起吞掉（#41 全量当场抓出来的）。
         _missing_now = missing_thing_of(message)
         missing = _missing_now
-        if _missing_now is not None and not any(w in message for w in _SELF_SCHEDULE_WORDS):
-            _fact_ask = asks_campus_fact(message)
-            _kb_hit = _kb_has_answer(message)
-            if _fact_ask or _kb_hit:
-                missing = None
-                if _fact_ask and not _kb_hit and module_key == "planner":
-                    append_conversation(session_id, "user", message)
-                    append_conversation(session_id, "assistant", "校园问答：知识库里没有这一条")
-                    return {
-                        "module": module_key,
-                        "session_id": session_id,
-                        "answer": ("📚 知识库里没有查到这一条（问答条目和管理员上传的文档都翻了）。\n"
-                                   "这个我暂不清楚，建议问一下对应部门或看学校官网 —— 我不拿猜的答你。"),
-                        "trace": [{"step": 1,
-                                   "phase": "📚 问的是校园信息 → 知识库里没有这一条（老实说没查到）",
-                                   "answer": "知识库未命中"}],
-                        "options": [],
-                        "awaiting_choice": False,
-                    }
+        if (_missing_now is not None and not any(w in message for w in _SELF_SCHEDULE_WORDS)
+                and _kb_has_answer(message)):
+            missing = None
         if missing is not None:
             title, day = missing["title"], missing["date"]
             # 他没点名，就拿"最近要加的那件事"当默认答案——十有八九问的就是它
@@ -2899,6 +2882,33 @@ async def _chat_impl(req: Request, meta: dict, emit=None):
                      f"{prop['start']}-{prop['end']}。\n"
                      "点【确认加入】就写进去，回一句「确认」也一样。"),
                     "👀 他说看不见 → 核实确实没写入 → 补挂确认条")
+
+            # ④ 都没有 —— 先分一件事（#41-B）：这句**本来就不是在说自己的日程**，
+            #    而是拿「在哪 / 几点 / 怎么」在问校园信息，只是知识库里恰好没有。
+            #    那种场合回"你的日程里没有"是走错了听众（实测：问「外星人驻扎在哪个楼」，
+            #    屏幕回「查了日程，确实还没有『外星人驻扎个楼』」），所以就地老实说"没查到"。
+            #    ⚠️ 两条位置讲究，都是踩过才知道的：
+            #    ① 放在**这里**（日程与周表都核问过、确实没有）而不是放在让路那道 ——
+            #       抢在核实前面会把「怎么没有周一的高数」这种"问自己的课"一起吞掉
+            #       （全量当场抓出来的：那条课在周表里，正当问题被回成"知识库里没查到"）。
+            #    ② 不再限定 `module_key == "planner"`：整段确定性分支本来就圈在 station 之外
+            #       （#34 那道端级闸门），问答栏（faq）走进这条分支时同样不该听到日程话术 ——
+            #       它没配密钥时该看到的降级提示，只在"知识库**有**答案"那一档才会走到模型那一路，
+            #       而那一档由上面的让路①接走、根本到不了这里。
+            if asks_campus_fact(message):
+                append_conversation(session_id, "user", message)
+                append_conversation(session_id, "assistant", "校园问答：知识库里没有这一条")
+                return {
+                    "module": module_key,
+                    "session_id": session_id,
+                    "answer": ("📚 知识库里没有查到这一条（问答条目和管理员上传的文档都翻了）。\n"
+                               "这个我暂不清楚，建议问一下对应部门或看学校官网 —— 我不拿猜的答你。"),
+                    "trace": [{"step": 1,
+                               "phase": "📚 问的是校园信息 → 知识库里没有这一条（老实说没查到）",
+                               "answer": "知识库未命中"}],
+                    "options": [],
+                    "awaiting_choice": False,
+                }
 
             append_conversation(session_id, "user", message)
             append_conversation(
