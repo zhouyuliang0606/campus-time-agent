@@ -334,8 +334,14 @@ def allowed(expr):
         return True
     if e.endswith(".length"):
         return True
-    if re.fullmatch(r'\w+ \? "[^"]*" : "[^"]*"', e):
-        return True          # 开关文案：两端都是写死的字符串字面量，插进去的不是任何数据（#29 那两个「看/藏」）
+    # 开关文案：两端都是写死的字符串字面量，插进去的不是任何数据（#29 那两个「看/藏」）。
+    # 2026-10-18 #40 把这条**换个方向动了一刀**：条件那侧从"单个标识符"加宽到"任意表达式"
+    # （`f.indexed ? "已建" : "未建"` 这种点号路径以前落不进白名单，会当成新增未审红掉），
+    # 同时**收紧**分支侧：旧写法 `"[^"]*"` 允许分支里带尖括号 —— 那正是这条闸要拦的东西，
+    # 是 E1-bis 反向验牙时把它撞出来的。分支只许是不含尖括号与引号的字面量。
+    # 判据换了、牙没钝：E1-bis 钉着"数据 / 尖括号 / 模板串进分支仍然要红"。
+    if re.fullmatch(r'.+ \? "[^"<>]*" : "[^"<>]*"', e):
+        return True
     return False
 
 
@@ -352,6 +358,14 @@ def batch_scan(ck):
                 fresh.append(f + ": " + e[:50])
     ck.check("E1 属性/文本位置的裸插值只剩白名单里那些（每条都有理由）",
              not fresh, "｜新增未审：" + "; ".join(fresh[:4]))
+    # E1-bis 是 E1 那条**加宽**（`任意条件 ? 字面量 : 字面量`）的反向验牙：
+    #   放行的必须只是"两个分支都是干净字面量"，把数据或标签塞进分支仍然要红。
+    #   不写这一条，加宽就是一次"没人核对的豁免"（比不加更危险，正是下面 E2 那句原话）。
+    ck.check("E1-bis 加宽只放过『分支是字面量』：分支里出现数据 / 尖括号的仍然算裸插值",
+             allowed('f.indexed ? "已建" : "未建"') and allowed('a.b.c ? "已建" : "未建"')
+             and not allowed('a ? f.name : "未建"') and not allowed('a ? "<b>x</b>" : "y"')
+             and not allowed('a ? `x${y}` : "y"'),
+             "已建/未建 应放行，f.name / <b> / ${} 应拦")
     # 白名单本身也不能烂掉：写一条没人核对的"豁免"比不加更危险
     src_all = "".join(read(f) for f in PAGES)
     dead = [k for k in ALLOWED_RAW if k not in src_all]

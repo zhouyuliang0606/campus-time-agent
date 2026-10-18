@@ -24,9 +24,11 @@ MUST_KEEP_IDS = [
     "akey", "abase", "amodel", "saveApi", "testApi", "apistatus", "apiNow",
     "usageMeta", "usageTiles", "usageModels", "usageRecent", "refreshUsage", "clearUsage", "usageStatus",
     "kq", "ka", "kk", "kbSave", "kbCancel", "kbList",
+    # #40 新增「文档知识库」那一档的四个绑点（两个按钮 + 状态行 + 表格容器）
+    "docfile", "refreshDocs", "docStatus", "docList",
     "woBox", "refresh", "inbox", "woNum", "msgNum",
 ]
-VIEWS = ["wo", "inbox", "notice", "kb", "usage", "api", "persona"]
+VIEWS = ["wo", "inbox", "notice", "kb", "docs", "usage", "api", "persona"]
 
 
 def code_of(text: str) -> str:
@@ -38,7 +40,7 @@ def code_of(text: str) -> str:
 
 def batch_a_shell():
     c = Checker()
-    title("A. 外壳：旧容器连 CSS 删净、七档齐、id 一个不少、配色没抄错")
+    title("A. 外壳：旧容器连 CSS 删净、八档齐、id 一个不少、配色没抄错")
     st = F.read_text(encoding="utf-8")
     c.check("六件套结构在（shell/sidebar/topbar/stage/main + nav-view 那套命名，与驿站端同构）",
             all(('class="' + k + '"') in st or ("." + k + " {") in st
@@ -47,11 +49,12 @@ def batch_a_shell():
             if k in st]
     c.check("header 与 .wrap 连四条 CSS 一起删（HTML 与样式两处都不许留孤儿）", not gone, "、".join(gone))
     missing = [i for i in MUST_KEEP_IDS if ('id="' + i + '"') not in st]
-    c.check("42 个 getElementById 硬绑的 id 一个都不许丢（改 id 等于把那张卡废了）",
+    c.check("MUST_KEEP_IDS 那张表里 getElementById 硬绑的 id 一个都不许丢（改 id 等于把那张卡废了；"
+            "有几条以那张表为准，标签里不数数——数数迟早自己撞自己）",
             not missing, "缺：" + "、".join(missing))
     views = re.findall(r'id="view-([a-z]+)"', st)
     navs = re.findall(r'data-nav="([a-z]+)"', st)
-    c.check("左栏七档与七块视图一一对应（多一档没地方显示、少一档点了没反应）",
+    c.check("左栏八档与八块视图一一对应（多一档没地方显示、少一档点了没反应）",
             sorted(views) == sorted(navs) == sorted(VIEWS), f"views={views} navs={navs}")
     c.check("每块 view 里只装原来那张卡，工单/收件箱这两张**不许有第二份**（搬家最容易漏删旧的那份，"
             "重复 id 会让 JS 只认第一个，另一份成永远刷不新的死表格）",
@@ -83,11 +86,13 @@ def batch_b_switch():
             "loadApiSettings" not in sw_code and 'view === "api"' not in sw_code
             and 'document.getElementById("akey").value =' in st,
             "switchNav 里出现了 loadApiSettings")
-    c.check("其余六档进哪档现拉一次（5 秒轮询照旧，这里只是别让人对着上一分钟的数据看）",
+    c.check("其余七档进哪档现拉一次（5 秒轮询照旧，这里只是别让人对着上一分钟的数据看）；"
+            "「文档知识库」那一档也在里面 —— 它是这页最重的一份，但**点开才拉**，不在开场预载",
             all(s in sw for s in ('view === "wo") loadWorkOrders();', 'view === "inbox") loadMessages();',
                                 'view === "notice") loadNotices();', 'view === "kb") loadKB();',
+                                'view === "docs") loadDocs();',
                                 'view === "usage") loadUsage();', 'view === "persona") loadPersona();')), "")
-    c.check("顶栏标题查表（七档一份 NAV_TITLE，不是七个 if 各写一遍）",
+    c.check("顶栏标题查表（八档一份 NAV_TITLE，不是八个 if 各写一遍）",
             't.textContent = NAV_TITLE[view]' in sw and st.count("const NAV_TITLE") == 1, "")
     c.check("开场默认停在「学生工单」，且那一档的初始加载**只有一处**（switchNav 已经拉过，"
             "再在 init 里补一遍就是同一件事两份）",
@@ -134,7 +139,7 @@ def batch_d_token_bar():
     title("D. 口令条与既有安全语义：常驻顶栏、只落 sessionStorage、封装仍是一份")
     st = F.read_text(encoding="utf-8")
     bar = st[st.index('<div class="topbar">'):st.index('<div class="stage">')]
-    c.check("口令条三段（输入 / 按钮 / 状态）都在顶栏里 —— 七档都吃它，藏进某一档=切个档满屏读取失败",
+    c.check("口令条三段（输入 / 按钮 / 状态）都在顶栏里 —— 八档都吃它，藏进某一档=切个档满屏读取失败",
             'id="adminToken"' in bar and 'id="saveToken"' in bar and 'id="tokenStatus"' in bar, "")
     c.check("口令仍然只进 sessionStorage（关标签就清、不落盘），不许这轮顺手改成 localStorage 存长期",
             'sessionStorage.setItem(TOKEN_KEY, v)' in st and "localStorage" not in code_of(st), "")

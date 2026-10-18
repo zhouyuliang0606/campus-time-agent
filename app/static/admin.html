@@ -482,7 +482,8 @@
         loadApiSettings(); loadUsage();
         // 文档那一档**不在开场预载里**（它是这页最重的一份：每份文件都要读一次索引数块数），
         // 点开那档时现拉；口令刚改过就得补一次，否则刚才那次 401 留下的错误框会一直挂着。
-        if (document.querySelector('.sb-item[data-nav="docs"].active')) loadDocs();
+        // 判据看的是**面板在不在前面**（不是去比侧栏哪一项 active）：这一档点开过才需要补拉。
+        if (document.getElementById("view-docs").classList.contains("active")) loadDocs();
       });
     }
     initTokenBar();
