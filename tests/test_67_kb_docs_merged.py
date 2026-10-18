@@ -182,6 +182,11 @@ def batch_c_router_gate():
     with sandbox():
         from app.main import _kb_has_answer
 
+        # ⚠️ 必须先清条目表（这一批的 C1-一/二/三 判的都是"**空**知识库 + 有没有文档"）。
+        #    本机跑是绿的，因为用户 2026-10-18 把自己那份 kb.json 清成了 0 条；
+        #    **严格克隆里它是仓库里那 11 条** ⇒ C1-一 当场红（这次就是克隆抓出来的）。
+        #    同一个 sandbox()，别的批都清了，只有这批漏 —— 漏的原因是我拿本机数据当过起点。
+        _wipe_kb()
         c.check("C1-一 空知识库 + 没文档 → 仍然 False（问句该被别的分支接走，不该甩给知识库冷处理）",
                 _kb_has_answer("校车在哪里坐") is False)
         _seed_doc()
