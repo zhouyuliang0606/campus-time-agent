@@ -24,8 +24,8 @@ from app.agent.intent import (
     DEFAULT_MODULE, INTENT_ADD_TODO, INTENT_CHAT, INTENT_CLEAR_TIMETABLE,
     INTENT_DONE, INTENT_FIND_CARD, INTENT_LIST_TODO, INTENT_MEANING,
     INTENT_REMOVE_TODO, INTENT_RETIME, SOURCE_MEANING,
-    QUESTION_RE, classify, looks_like_question, physio_state_only, remember,
-    to_canonical,
+    QUESTION_RE, asks_calendar_fact, classify, looks_like_question, physio_state_only,
+    remember, to_canonical,
 )
 from app.agent.pending import (
     clear_pending, is_confirmation, mark_applied, peek_pending, save_pending, take_pending,
@@ -92,6 +92,7 @@ from app.modules.planner import (
     mode_to_card,
     claims_proposal_sent,
     missing_thing_of,
+    is_time_ask,                     # 42-A：「啥时候放假」这一族的时间问句形状
     _name_match as _planner_name_match,
     DAY_NAMES,
     _weekday_name,
@@ -1033,6 +1034,40 @@ def _kb_has_answer(text: str) -> bool:
         return kb_has_answer(text)
     except Exception:
         return False
+
+
+# 「知识库这一路」的响应形状，**只写一份**（#42-A 顺手收的：直答 / 查空老实说 / 校园事实让路
+# 三处原来各拼一遍 dict + append_conversation，字段顺序一样、抄三份迟早不一致）。
+def _kb_say(module_key: str, session_id: str, message: str, *, answer: str,
+            note: str, phase: str, step_answer: str) -> dict:
+    append_conversation(session_id, "user", message)
+    append_conversation(session_id, "assistant", note)
+    return {
+        "module": module_key,
+        "session_id": session_id,
+        "answer": answer,
+        "trace": [{"step": 1, "phase": phase, "answer": step_answer}],
+        "options": [],
+        "awaiting_choice": False,
+    }
+
+
+# 两路都查空时给学生的那句（#41-B 定下来，#42-A 校园事实那一路复用同一句）
+_KB_MISS_LINE = ("📚 知识库里没有查到这一条（问答条目和管理员上传的文档都翻了）。\n"
+                 "这个我暂不清楚，建议问一下对应部门或看学校官网 —— 我不拿猜的答你。")
+
+
+def _campus_fact_ask(text: str) -> bool:
+    """校历类 + 时间问句（#42-A）：**这句该知识库答，不该由日程那几档接手**。
+
+    三个条件同时成立才算，宁可漏不可抢（跟 #41 那道闸同一口径）：
+      · 命中校历词表（`intent.CALENDAR_FACT_WORDS`，与 router 兜底同一份）；
+      · 是问"什么时候发生"那一族（`planner.is_time_ask`）——所以「我报到那天有什么课」
+        这种问自己日程的不算（它不在"什么时候"的形状里，且真报障由别的分支接）；
+      · 句子里没有"说自己日程"的词（「我的待办 / 周表 / 课表」那一族，`_SELF_SCHEDULE_WORDS`）。
+    """
+    return (asks_calendar_fact(text) and is_time_ask(text)
+            and not any(w in text for w in _SELF_SCHEDULE_WORDS))
 
 
 def _rule_intent(message: str) -> str | None:
@@ -2605,6 +2640,29 @@ async def _chat_impl(req: Request, meta: dict, emit=None):
         #   学生看到的是一句「📋 你目前的待办（共 11 条）」——他没在看清单，他在问该做什么。
         #   ⚠️ 也**不走 `_sem_done`**（同下面周期否决那条的理由）：`_sem_done` 里面是
         #   `remember()` 学样本那一步 —— 把一句问话学成模板，下次近似说法照着错。
+        # ★ 校历类问题（#42-A）：「啥时候放假 / 什么时候开学」既不是"我该做什么"、也不是"列日程"，
+        #   它是**知识库**的活 —— 查得到就直答，查不到就老实说没有。
+        #   用户 2026-10-19 真机那句被回成"我不替你决定 + 这几段是空着的"，缺的就是这道闸；
+        #   判据本体在 `_campus_fact_ask`（校历词表 + 时间问句 + 没有说自己日程的词）。
+        #   ⚠️ 必须排在 `_asking_what_to_do` **之前**：那档的判据太宽（`startswith("啥")`），
+        #   排它后面就等于让它先抢走（施工单 §2.3 同一句）。
+        #   手上挂着待确认的卡时不接管（跟 3i 同一条闸）—— 别把学生的卡弄丢（#33 那一族）。
+        _holding_card = any(f(session_id) for f in (
+            _pending_todo, _pending_todo_remove, _pending_todo_done,
+            _pending_todo_remove_batch, _pending_todo_done_batch, _pending_todo_slots))
+        if _campus_fact_ask(message) and not _holding_card:
+            if _kb_has_answer(message):
+                from app.modules.faq import answer_for_student
+                return _kb_say(module_key, session_id, message,
+                               answer="📚 " + answer_for_student(message),
+                               note="校园问答：知识库直答",
+                               phase="📚 问的是校园信息 → 翻知识库（按台账答，不现编）",
+                               step_answer="知识库命中")
+            return _kb_say(module_key, session_id, message, answer=_KB_MISS_LINE,
+                           note="校园问答：知识库里没有这一条",
+                           phase="📚 问的是校园信息 → 知识库里没有这一条（老实说没查到）",
+                           step_answer="知识库未命中")
+
         if _asking_what_to_do(message):
             answer, _free = what_to_do_suggestion(message)
             append_conversation(session_id, "user", message)
@@ -2896,19 +2954,10 @@ async def _chat_impl(req: Request, meta: dict, emit=None):
             #       它没配密钥时该看到的降级提示，只在"知识库**有**答案"那一档才会走到模型那一路，
             #       而那一档由上面的让路①接走、根本到不了这里。
             if asks_campus_fact(message):
-                append_conversation(session_id, "user", message)
-                append_conversation(session_id, "assistant", "校园问答：知识库里没有这一条")
-                return {
-                    "module": module_key,
-                    "session_id": session_id,
-                    "answer": ("📚 知识库里没有查到这一条（问答条目和管理员上传的文档都翻了）。\n"
-                               "这个我暂不清楚，建议问一下对应部门或看学校官网 —— 我不拿猜的答你。"),
-                    "trace": [{"step": 1,
-                               "phase": "📚 问的是校园信息 → 知识库里没有这一条（老实说没查到）",
-                               "answer": "知识库未命中"}],
-                    "options": [],
-                    "awaiting_choice": False,
-                }
+                return _kb_say(module_key, session_id, message, answer=_KB_MISS_LINE,
+                               note="校园问答：知识库里没有这一条",
+                               phase="📚 问的是校园信息 → 知识库里没有这一条（老实说没查到）",
+                               step_answer="知识库未命中")
 
             append_conversation(session_id, "user", message)
             append_conversation(
@@ -3748,9 +3797,7 @@ async def _chat_impl(req: Request, meta: dict, emit=None):
         #     ⚠️ 只给**日程栏（planner）**用：校园问答栏本来就有自己的知识库链路，
         #       接管它反而会盖掉那一栏"没配密钥"的降级提示（test_01 就是这么被撞红的）。
         #       这里补的正是**日程栏问校园信息没人管**的这个洞。
-        _holding_card = any(f(session_id) for f in (
-            _pending_todo, _pending_todo_remove, _pending_todo_done,
-            _pending_todo_remove_batch, _pending_todo_done_batch, _pending_todo_slots))
+        #     （`_holding_card` 在 #42-A 那道闸那里算的，同一份、不抄第二遍）
         if (module_key == "planner"
                 and not _holding_card
                 and not any(w in message for w in _SELF_SCHEDULE_WORDS)
@@ -3761,17 +3808,11 @@ async def _chat_impl(req: Request, meta: dict, emit=None):
                 and looks_like_question(message)
                 and _kb_has_answer(message)):
             from app.modules.faq import answer_for_student
-            append_conversation(session_id, "user", message)
-            append_conversation(session_id, "assistant", "校园问答：知识库直答")
-            return {
-                "module": module_key,
-                "session_id": session_id,
-                "answer": "📚 " + answer_for_student(message),
-                "trace": [{"step": 1, "phase": "📚 问的是校园信息 → 翻知识库（按台账答，不现编）",
-                           "answer": "知识库命中"}],
-                "options": [],
-                "awaiting_choice": False,
-            }
+            return _kb_say(module_key, session_id, message,
+                           answer="📚 " + answer_for_student(message),
+                           note="校园问答：知识库直答",
+                           phase="📚 问的是校园信息 → 翻知识库（按台账答，不现编）",
+                           step_answer="知识库命中")
 
     # 4) 组装引擎并跑 ReAct 循环（会按需调用工具）
     engine = AgentEngine(
