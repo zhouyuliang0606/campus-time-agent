@@ -239,24 +239,84 @@ def batch_d_prompts():
     return c
 
 
+def _tree(rel):
+    import ast
+    return ast.parse(open(os.path.join(PROJ_DIR, *rel.split("/")), encoding="utf-8").read())
+
+
+def _called(tree):
+    """这个模块里被**调用**过的名字（AST 取，不 grep —— 注释里提一句不算调用）。"""
+    import ast
+    out = set()
+    for n in ast.walk(tree):
+        if isinstance(n, ast.Call):
+            f = n.func
+            if isinstance(f, ast.Name):
+                out.add(f.id)
+            elif isinstance(f, ast.Attribute):
+                out.add(f.attr)
+    return out
+
+
+def _imported(tree):
+    """(顶层导入的模块名, 函数体里导入的模块名) —— 分开看才分得清"会不会成环"。"""
+    import ast
+    top, nested = set(), set()
+
+    def collect(body, into):
+        for n in body:
+            if isinstance(n, ast.Import):
+                into.update(a.name for a in n.names)
+            elif isinstance(n, ast.ImportFrom) and n.module:
+                into.add(n.module)
+
+    collect(tree.body, top)
+    for n in ast.walk(tree):
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            collect(n.body, nested)
+    return top, nested
+
+
+def _func_body(tree, name):
+    import ast
+    for n in tree.body:
+        if isinstance(n, ast.FunctionDef) and n.name == name:
+            return n
+    return None
+
+
+def _guards_on(tree, var):
+    """有没有 `if not <var>: <Return>` 这种**控制流**（判空看列表，不是看文案）。"""
+    import ast
+    for n in ast.walk(tree):
+        if isinstance(n, ast.If) and isinstance(n.test, ast.UnaryOp) \
+                and isinstance(n.test.op, ast.Not) and isinstance(n.test.operand, ast.Name) \
+                and n.test.operand.id == var:
+            return True
+    return False
+
+
 def batch_e_shape():
     c = Checker()
-    title("E. 形状（钉配对与代码位置，不钉字符串存在）")
-    root = PROJ_DIR
-    faq_src = open(os.path.join(root, "app", "modules", "faq.py"), encoding="utf-8").read()
-    files_src = open(os.path.join(root, "app", "modules", "files.py"), encoding="utf-8").read()
-    main_src = open(os.path.join(root, "app", "main.py"), encoding="utf-8").read()
+    title("E. 形状（判据一律 AST + 真发，不 grep —— 注释会骗人，本单就栽过一次）")
+    from app.modules import faq as faq_mod
+    faq_tree = _tree("app/modules/faq.py")
+    files_tree = _tree("app/modules/files.py")
+    main_tree = _tree("app/main.py")
+    faq_top, faq_nested = _imported(faq_tree)
+    files_top, files_nested = _imported(files_tree)
 
-    c.check("E1 faq 里那次 import 在**函数体内**（顶层互导就成环：faq→files→store，files 又不认 faq）",
-            "from app.modules.files import doc_hits" in faq_src
-            and any(ln.startswith("    from app.modules.files import") for ln in faq_src.splitlines()))
-    c.check("E2 files 顶层不 import faq（方向单一，只有 faq → files）",
-            "from app.modules.faq" not in files_src and "import faq" not in files_src)
-    c.check("E3 判'有没有'用的是结构化的 doc_hits，不是嗅 `search_docs` 那段人话"
+    c.check("E1 faq 对 files 的 import 在**函数体内**（顶层互导就成环：faq→files→store，files 又不认 faq）",
+            "app.modules.files" in faq_nested and "app.modules.files" not in faq_top,
+            f"顶层={sorted(m for m in faq_top if 'modules' in m)}")
+    c.check("E2 files 不 import faq（不管顶层还是函数体，方向只许 faq → files）",
+            "app.modules.faq" not in files_top | files_nested)
+    c.check("E3 判'有没有'调用的是结构化的 doc_hits / kb_has_answer，**不是** `search_docs` 那段人话"
             "（那段一共有三种'没查到'的说法，子串匹配迟早漏一支 —— 施工单那版就漏了空查询）",
-            "doc_hits(query)" in faq_src and "search_docs" not in faq_src)
-    c.check("E4 文档段落只在真命中时拼进来（判的是 hits 列表空不空，不是文案）",
-            "if not hits:\n        if not docs:" in faq_src or "if not docs:" in faq_src)
+            "doc_hits" in _called(faq_tree) and "search_docs" not in _called(faq_tree),
+            sorted(n for n in _called(faq_tree) if "doc" in n or "search" in n))
+    c.check("E4 文档段落只在真命中时拼进来（AST 看见 `if not docs:` 这条控制流，判的是列表不是文案）",
+            _guards_on(faq_tree, "docs"))
 
     # ── E5 判的是**行为**，不是形状。
     # 原本写成 `"_DATA_PATH =" not in faq_src`，结果被 `_load()` 的 docstring 绊红 ——
@@ -286,9 +346,15 @@ def batch_e_shape():
                 "只有甲沙箱答得出这句" not in moved and moved.startswith("知识库里没有找到"),
                 moved[:46].replace("\n", " "))
 
-    seg = main_src[main_src.index("def _kb_has_answer"):main_src.index("def _rule_intent")]
-    c.check("E6 main 那道路由判据仍按 miss 前缀嗅 —— 那这句文案就是契约，本批 K3 钉着一字不差",
-            'startswith("知识库里没有找到")' in seg, seg[:40].replace("\n", " "))
+    fn = _func_body(main_tree, "_kb_has_answer")
+    called = _called(fn) if fn is not None else set()
+    c.check("E6 main 那道路由判据现在判**结构**（#41-B）：函数体调 `kb_has_answer`、不再 `startswith` 嗅文案"
+            "（以前是嗅那句 miss 的字头 —— 同一个判断抄两处，faq 一改措辞这边就**静默**把'都没找到'当成'有答案'）",
+            fn is not None and "kb_has_answer" in called and "startswith" not in called,
+            sorted(called)[:6])
+    c.check("E6-bis miss 那句的字头在 faq 里只写一处（`KB_MISS_PREFIX`），两个视图共用它",
+            faq_mod.KB_MISS_PREFIX == "知识库里没有找到"
+            and faq_mod._MISS == faq_mod.KB_MISS_PREFIX + "和「")
     return c
 
 
