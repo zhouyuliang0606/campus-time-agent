@@ -193,12 +193,24 @@ def batch_e_period_carry():
         got = (parse_add_todo(s) or {}).get("repeat")
         c.check(f"{s} → 卡片 repeat={repr(want)}", got == want,
                 (got, s))
+    # 换时间要保住 repeat —— 但夹具那天**不能写死**：旧写法钉的是 `"2026-10-17"`，
+    # 过了零点它就是**过去**的日子，`retime_todo_proposal` 按红线 17 正确拒收 → 返回 None，
+    # 红的是夹具、不是功能（挂账 #69 的"跨天漂移"那一型，2026-10-18 记过一次、10-20 又漂了一格）。
+    import datetime as _dt
+    _d3 = (_dt.date.today() + _dt.timedelta(days=3)).isoformat()
+    c.check("夹具那天必须在未来（写死字面日期的断言必然在某一刻跨零点）",
+            _d3 > _dt.date.today().isoformat(), _d3)
     kept = retime_todo_proposal(
-        {"kind": "todo_add", "title": "爬山", "date": "2026-10-17",
+        {"kind": "todo_add", "title": "爬山", "date": _d3,
          "start": "09:00", "end": "10:00", "repeat": "weekly"}, "改成上午十点")
     c.check("换时间不许顺手把「每周」换没（上一张是 weekly，改完还得是）",
             (kept or {}).get("repeat") == "weekly" and (kept or {}).get("start") == "10:00",
             (kept or {}).get("repeat"))
+    c.check("对照：日子在过去时它**就该**拒收（这条不许被「改成永远收下」顺路修掉）",
+            retime_todo_proposal({"kind": "todo_add", "title": "爬山",
+                                  "date": (_dt.date.today() - _dt.timedelta(days=2)).isoformat(),
+                                  "start": "09:00", "end": "10:00", "repeat": "weekly"},
+                                 "改成上午十点") is None)
     # 「工作日」+ 报了准点：以前单条卡这一路**根本不看星期几**，
     # 真机那句「工作日晚上七点背单词」就排到了周日 19:00。
     import datetime

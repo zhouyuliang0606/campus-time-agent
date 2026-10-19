@@ -20,7 +20,7 @@ import os
 import pathlib
 
 from _e2e_env import demo_courses_from_json
-from _harness import Checker, make_client, sandbox, title, wipe_todos
+from _harness import Checker, make_client, pin_now, sandbox, title, wipe_todos
 
 code = 0
 
@@ -575,6 +575,11 @@ def test_add_todo_chinese_clock():
         append_conversation(sid3, "user", "帮我安排下周二的游泳，下午两点到三点")
         append_conversation(sid3, "assistant",
                             "搞定！游泳这条已经正式写进你的待办啦 ✅ 刷新一下就能看到。")
+        # ★ 基线**在发请求之前取**，断言比的是"这一轮有没有新增"，不是"库里有没有同名那条"。
+        # 旧写法是 `not any(游泳 and date==day5)` —— 前面几步真往沙箱里写过「游泳」，
+        # 而「下周二」解析到哪天由今天星期几决定（2026-10-20 实测就撞上同一天），
+        # 于是那条把**上一步写的**算成本轮写的，红得跟回归一模一样（挂账 #69 那条）。
+        before_ids = {t["id"] for t in list_todos()}
         r5 = client.post("/api/chat", json={"message": "确认", "session_id": sid3})
         d5 = r5.json()
         o5 = d5.get("options") or []
@@ -586,16 +591,17 @@ def test_add_todo_chinese_clock():
                 and o5[0].get("start") == "14:00",
                 _json.dumps(o5[:1], ensure_ascii=False)[:120])
         day5 = (o5[0].get("date") if o5 else "")
-        c.check("这一轮还是没写库（要等学生真的点头）",
-                not any(t["title"] == "游泳" and t["date"] == day5
-                        for t in list_todos(day5)),
-                [t["title"] + "@" + t["date"] for t in list_todos(day5)])
+        added5 = [t for t in list_todos() if t["id"] not in before_ids]
+        c.check("这一轮还是没写库（要等学生真的点头）—— 钉「这一轮零新增」，不钉「库里没这条」",
+                bool(day5) and not added5,
+                [t["title"] + "@" + t["date"] for t in added5])
 
         r6 = client.post("/api/chat", json={"message": "确认", "session_id": sid3})
-        c.check("再确认一次就真写进去了",
-                any(t["title"] == "游泳" and t["date"] == day5
-                    for t in list_todos(day5)),
-                [t["title"] + "@" + t["date"] for t in list_todos(day5)])
+        added6 = [t for t in list_todos() if t["id"] not in before_ids]
+        c.check("再确认一次就真写进去了（而且**只多这一条**）",
+                len(added6) == 1 and added6[0]["title"] == "游泳"
+                and added6[0]["date"] == day5,
+                [t["title"] + "@" + t["date"] for t in added6])
 
         # —— ⑥ 写成功了就别再挂确认条：学生多回一句「好的」不该写出第二条 ——
         n_written = len([t for t in list_todos(day5)
@@ -2971,16 +2977,22 @@ def test_missing_todo_check():
             sb = "miss-b"
             # ⚡ 第七轮：候选卡要**勾一段**才写库——只回一句「确认」系统不知道他要哪一段，
             #    不能替他挑（红线）。这里模拟他勾第一段 → 走 /api/todos/batch 真写进去。
-            rb0 = client.post("/api/chat", json={"message": "帮我安排一下健身",
-                                                "module": "planner", "session_id": sb}).json()
-            o0 = (rb0.get("options") or [{}])[0]
-            s0 = (o0.get("slots") or [{}])[0]
-            client.post("/api/todos/batch", json={
-                "session_id": sb, "title": "健身",
-                "slots": [{"date": s0.get("date"), "start": s0.get("start"),
-                           "end": s0.get("end")}], "other": ""})
-            wrote = [t for t in list_todos() if t.get("title") == "健身"]
+            # ★ 这段必须钉在白天（#44-B）：候选时段要同时满足"≥90 分钟"和"不早于 now+30 分"，
+            #    而 `DAY_END=22:00` —— 夜里跑这一步 `slots` 是空的，`day` 拿到空串，
+            #    下面 B/B2 全都红在夹具上（挂账 #69 的"几点跑"那一型，同 test_23/test_45）。
+            with pin_now(10, 0):
+                rb0 = client.post("/api/chat", json={"message": "帮我安排一下健身",
+                                                    "module": "planner", "session_id": sb}).json()
+                o0 = (rb0.get("options") or [{}])[0]
+                s0 = (o0.get("slots") or [{}])[0]
+                client.post("/api/todos/batch", json={
+                    "session_id": sb, "title": "健身",
+                    "slots": [{"date": s0.get("date"), "start": s0.get("start"),
+                               "end": s0.get("end")}], "other": ""})
+                wrote = [t for t in list_todos() if t.get("title") == "健身"]
             day = wrote[0]["date"] if wrote else ""
+            c.check("B 的前提：白天这一步真能挑出一段并写进去（`day` 不许是空串）",
+                    bool(day), f"slots={s0} day={day!r}")
             r = client.post("/api/chat", json={
                 "message": f"我现在没有看见日程显示{day}健身待办项目啊",
                 "module": "planner", "session_id": sb})
@@ -2997,15 +3009,25 @@ def test_missing_todo_check():
                     not any(w in ans for w in bad_words), ans[:60])
 
             # B2：说的那天没排、别处有一条同名的 → 也要讲清（他可能记错天了）
+            # 前提**必须当场算**：「周二」解析到哪天由今天星期几决定，而 `day` 是上一步真写进去的那天。
+            # 旧写法把两句都摆在这儿、指望它们不同一天 —— 2026-10-19 深夜正好撞上同一天，
+            # 那条立刻变成「在的，日程里排着呢」（产品说的没错，是**场景塌了**），红得像回归（挂账 #69）。
             from app.store import add_todo
-            add_todo("游泳", day, "07:00", "08:00")
+            from app.modules.planner import _pick_date
+            tue = _pick_date("周二") or ""
+            seed_day = day if (day and day != tue) else (
+                (datetime.date.fromisoformat(tue) + datetime.timedelta(days=1)).isoformat() if tue else "")
+            c.check("前提先钉住：问的那天（周二解析出来那个）与排上的那天必须不是同一天，"
+                    "否则这条测不到『指路』那一支",
+                    bool(tue) and bool(seed_day) and tue != seed_day, f"周二={tue} 排={seed_day}")
+            add_todo("游泳", seed_day, "07:00", "08:00")
             sc = "miss-c"
             r = client.post("/api/chat", json={
                 "message": "我现在没有看见日程显示周二游泳代办项目啊",
                 "module": "planner", "session_id": sc})
             ans = (r.json().get("answer") or "")
             c.check("说的那天没排、别处有一条 → 指给他看（不许只说没有）",
-                    "没排" in ans and day in ans and "游泳" in ans, ans[:80])
+                    "没排" in ans and seed_day in ans and "游泳" in ans, ans[:80])
 
             # C：日程里真没有、最近也没说过 → 如实说，不编
             # （换个名字：前面 B2 往库里写过「游泳」，那一条是**真的在**，
