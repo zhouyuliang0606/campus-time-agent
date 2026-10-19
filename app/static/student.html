@@ -1354,6 +1354,83 @@ html.gx-glass[data-gx-refine="on"] .composer, html.gx-glass[data-gx-refine="on"]
         return;
       }
 
+      // ---- ①·材料多选卡（#43）：粘进来的一段通知 / 清单，系统提出几条、学生勾哪几条 ----
+      //     跟"一件事 × N 个候选时段"那张**不是一回事**：那张是挑时段，这张是挑"哪几件真是他的事"
+      //     （一份通知常把六个班排在一张表里）。所以走另一个写入口 `/api/todos/items_add`。
+      //     布局沿用 `.slot-row` 那套勾选框（视觉上与候选时段卡一致），但**不套确认条**：
+      //     确认条只有"整条要 / 整条不要"，多选必须逐行给。
+      //     写完要 `_close_card`（后端销卡）—— 不销就是刷新复活、再点写第二遍（#33 那一幕）。
+      const mats = options.filter(o => o.kind === "todo_add_batch");
+      if (mats.length) {
+        const mc = mats[mats.length - 1];
+        const mItems = mc.items || [];
+        const hint = document.createElement("div");
+        hint.className = "opt-hint";
+        hint.textContent = `📋 这段材料里提出 ${mItems.length} 条要排的事——不是你的那几条取消掉，再点【加入日程】：`;
+        wrap.appendChild(hint);
+        const mbox = document.createElement("div");
+        mbox.className = "opt-card";
+        mbox.innerHTML = `<div class="info">` + mItems.map((it, i) =>
+          `<label class="slot-row" data-i="${i}">
+             <input type="checkbox" class="mat-cb" value="${i}"${it.checked === false ? "" : " checked"}>
+             <span><b>${esc(it.title || "待办")}</b> ${esc(it.date || "")} ${esc(it.start || "")}-${esc(it.end || "")}</span>
+           </label>`).join("") + `</div>`;
+        wrap.appendChild(mbox);
+        if ((mc.missing || []).length) {
+          const ms = document.createElement("div");
+          ms.className = "small";
+          ms.textContent = "材料里这几条没写日期或钟点，我没替它编：" + mc.missing.join("、")
+            + "。说一声哪天几点，我就把它列进来。";
+          wrap.appendChild(ms);
+        }
+        const goM = document.createElement("button");
+        goM.className = "confirm-btn";
+        goM.style.marginTop = "6px";
+        goM.textContent = "✅ 加入日程";
+        goM.addEventListener("click", async () => {
+          const picked = [];
+          mbox.querySelectorAll(".mat-cb").forEach(cb => {
+            if (cb.checked) {
+              const it = mItems[Number(cb.value)];
+              if (it) {
+                picked.push({ title: it.title, date: it.date, start: it.start,
+                              end: it.end, note: it.note || "" });
+              }
+            }
+          });
+          if (!picked.length) {
+            addMsg(botName(), "一条都没勾——想排哪几条，先勾上再点。");
+            return;
+          }
+          goM.disabled = true;
+          goM.textContent = "⏳ 正在写入…";
+          try {
+            const r = await fetch("/api/todos/items_add", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ session_id: sessionId(), items: picked, from_card: true }),
+            });
+            const d = await r.json().catch(() => ({}));
+            if (r.ok && d.ok) {
+              wrap.remove();
+              addMsg(botName(), d.message || "✅ 已加入日程，日程已刷新。", "bot", "planner");
+              loadScheduleView();      // 写完当场刷新，学生不用自己去翻面板
+            } else {
+              goM.disabled = false;
+              goM.textContent = "✅ 重试";
+              addMsg(botName(), d.message || d.error || "这批我没写进去，按上面那句改一下再点。");
+            }
+          } catch (e) {
+            goM.disabled = false;
+            goM.textContent = "✅ 重试";
+            addMsg(botName(), "哎呀，网络好像开小差了，请再试一次～");
+          }
+        });
+        wrap.appendChild(goM);
+        container.appendChild(wrap);
+        return;
+      }
+
       // ---- ①-bis 待办确认卡：学生说"把 X 安排到今天 19:00-20:30"时系统算出来的那张 ----
       //     没有它学生就只能干等一句客服嘴上说的"已经加上"——实测复盘，日程里什么都没有。
       //     写入同样不经过 AI：点【确认加入】直接打 /api/todos，写完当场刷新日程面板。
