@@ -190,17 +190,21 @@ def batch_d_shape():
     stu = _strip(open(SRC_STU, encoding="utf-8").read())
     cfm = _strip(open(SRC_CFM, encoding="utf-8").read())
 
-    c.check("幂等判据只有一份：`_card_close_guard` 定义 1 处、调用 3 处（POST/PUT/DELETE 各一次）",
-            mn.count("def _card_close_guard(") == 1 and mn.count("_card_close_guard(sid, body)") == 3,
+    # 计数会随入口增减（每加一个写入口都 +1），所以**同一条断言里配上了"新入口也必须成对"**：
+    # 光改数字是把钉子换成刻度尺，判据是"每个写入口都 guard 在前、close 在后"。
+    c.check("幂等判据只有一份：`_card_close_guard` 定义 1 处、四个写入口各一次"
+            "（加 / 改 / 删 / #43 的批量新增）",
+            mn.count("def _card_close_guard(") == 1 and mn.count("_card_close_guard(sid, body)") == 4,
             f"调用 {mn.count('_card_close_guard(sid, body)')} 处")
-    c.check("销卡只有一份：`_close_card` 定义 1 处、调用 4 处（PUT 有两个成功分支）",
-            mn.count("def _close_card(") == 1 and mn.count("_close_card(sid, body)") == 4,
+    c.check("销卡只有一份：`_close_card` 定义 1 处、调用 5 处（PUT 有两个成功分支、批量新增一处）",
+            mn.count("def _close_card(") == 1 and mn.count("_close_card(sid, body)") == 5,
             f"调用 {mn.count('_close_card(sid, body)')} 处")
     c.check("全仓库真正打 applied 标记的只有 3 处：课表确认、批量加、以及 _close_card 这一处",
             mn.count("mark_applied(") == 3, f"实际 {mn.count('mark_applied(')} 处")
 
     for fn, write in (("todo_add", "add_todo("), ("todo_update", "set_todo_done_on("),
-                      ("todo_delete", "delete_todo(")):
+                      ("todo_delete", "delete_todo("),
+                      ("todo_items_add", "add_todos_batch(")):     # #43 多条目那条也不能漏
         seg = mn[mn.index("def " + fn + "("):]
         seg = seg[:seg.index("\n@app.")] if "\n@app." in seg else seg
         c.check(f"{fn}()：判据问在写之前（{write}）",
@@ -208,8 +212,8 @@ def batch_d_shape():
         c.check(f"{fn}()：销卡在写之后（先销后写 = 写失败了卡也没了，学生点了个寂寞）",
                 seg.index(write) < seg.index("_close_card(sid, body)"), "")
 
-    c.check("学生端三处卡片确认按钮都带 from_card（加 / 完成 / 删除）",
-            stu.count("from_card: true") == 3, f"实际 {stu.count('from_card: true')} 处")
+    c.check("学生端四处卡片确认按钮都带 from_card（加 / 完成 / 删除 / #43 的材料多选卡）",
+            stu.count("from_card: true") == 4, f"实际 {stu.count('from_card: true')} 处")
     c.check("确认页四处单条卡带 from_card，两个批量循环只在**最后一条**带",
             cfm.count("from_card: true") == 4 and cfm.count("from_card: i === items.length - 1") == 2,
             f"单条 {cfm.count('from_card: true')} / 批量 {cfm.count('from_card: i === items.length - 1')}")
