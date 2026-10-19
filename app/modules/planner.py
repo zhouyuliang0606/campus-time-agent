@@ -2324,6 +2324,23 @@ def is_time_ask(text: str) -> bool:
     return bool(_WHEN_ASK_RE.search(text or ""))
 
 
+# 「考试时间是什么」问的是**那件事的内容**，不是"我该做什么"（#43 G7 实测：这句被回成
+# "我不替你决定 + 这几段是空着的" —— #42-A 只挡了"什么时候"，没挡「是什么」）。
+# 反向的口子必须留着：「我该做什么」「要做什么」也是"…做什么"，但那**确实**是问该做什么。
+# 所以这条只认"疑问串前面还挂着一个具体事名"（≥2 个汉字 + 是/为 + 什么/啥，并在句尾）。
+_ASKS_CONTENT_RE = re.compile(r"[\u4e00-\u9fff]{2,}(?:是|为)(?:什么|啥)[吗呢啊]?[？?]?$")
+# 串里出现这些"动词 + 疑问"形状，就是"我该做什么"那一族，不许被上面那条摘走
+_DO_ASK_RE = re.compile(r"[做干办搞整安排][点些]?[什啥]么?")
+
+
+def asks_about_content(text: str) -> bool:
+    """"X 是什么 / X 是啥"：问的是那件事的内容（#43），不是"我该做什么"。"""
+    t = (text or "").strip()
+    if not _ASKS_CONTENT_RE.search(t):
+        return False
+    return not _DO_ASK_RE.search(t)
+
+
 def _asking_what_to_do(text: str) -> bool:
     """这句话是不是在问「该做什么」（人话：他没报出事名，是在让你出主意）。
 
@@ -2337,7 +2354,7 @@ def _asking_what_to_do(text: str) -> bool:
     该走原来的追问档（「要安排的是什么事？」）—— 事名「点事」已经不再放行（见 `_VAGUE_THINGS`）。
     只满足②不算：「你帮我安排」没疑问代词，照旧走追问（test_06 十五批钉着，别一起改掉）。
 
-    三道排除：
+    四道排除：
       · **在删东西**：「把那个啥删了」带疑问代词，可他是在删一条叫不出名字的待办 ——
         被这档截走就等于当着要删东西的人报空档（test_15 那条红咬回来的）。
       · **在查现有清单**：「我现在都有啥安排」问的是"已经有什么"，不是"该做什么"，
@@ -2345,6 +2362,8 @@ def _asking_what_to_do(text: str) -> bool:
       · **在问某件事什么时候发生**（#42-A）：「啥时候放假 / 什么时候开学」——
         `_vague_ask_name` 是 `startswith("啥")`，任何以"啥"开头的短句都吃，
         于是校历问题被回成"我不替你决定 + 这几段是空着的"（用户 2026-10-19 真机截图）。
+      · **在问某件事是什么**（#43）：「考试时间是什么」——同一族的漏（那条只挡"什么时候"），
+        实测这句也被回成"我不替你决定"。反向钉住「我该做什么」照旧算（判据见 `asks_about_content`）。
     """
     t = (text or "").strip()
     if not t or len(t) > 30:             # 长句多半在讲一件事的来龙去脉，不在这族里
@@ -2352,6 +2371,8 @@ def _asking_what_to_do(text: str) -> bool:
     if _has_delete_intent(t) or _HAS_LIST_ASK_RE.search(t):
         return False
     if _WHEN_ASK_RE.search(t):           # #42-A：问"什么时候发生"不是问"我该做什么"
+        return False
+    if asks_about_content(t):            # #43：问"那件事是什么"也不是问"我该做什么"
         return False
     if not any(w in t for w in _WH_ASK_WORDS):
         return False
