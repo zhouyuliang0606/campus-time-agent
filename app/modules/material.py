@@ -30,7 +30,8 @@ _SPLIT_RE = re.compile(r"[\n；;]+")
 def looks_like_material(text: str) -> bool:
     """这段是"材料"（要提取的输入），不是"问题 / 指令"。三条同时成立才算。
 
-    ① 够长（>60 字）**或** 有多行 / 编号 / 项目符号；
+    ① 够长（>60 字）**或** 有多行（**两行起**，"多行"不是"三行起"——实测两行的清单最常见）
+       或带编号 / 项目符号；
     ② 命中至少 **3 个**结构化字段词（1~2 个可能只是碰巧提到"时间""地点"），
        **或者**有 ≥2 行各自带日期（那种"一行一件事"的清单没有字段词，但同样是材料 —— 实测
        「10月21日 19:30-21:30 离散数学考试 / 10月22日 …」三个字段词都不沾）；
@@ -41,7 +42,7 @@ def looks_like_material(text: str) -> bool:
     t = (text or "").strip()
     if not t:
         return False
-    long_or_multi = len(t) > 60 or t.count("\n") >= 2 or bool(_LIST_MARKER_RE.search(t))
+    long_or_multi = len(t) > 60 or t.count("\n") >= 1 or bool(_LIST_MARKER_RE.search(t))
     if not long_or_multi:
         return False
     dated_lines = sum(1 for seg in split_material(t) if planner._pick_date(seg))
