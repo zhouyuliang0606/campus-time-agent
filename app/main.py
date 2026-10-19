@@ -52,7 +52,7 @@ from app.store import (
     list_docs, upload_purpose, list_chunks, reindex_upload, delete_upload, upload_notice_refs,
     get_conversation, append_conversation, clear_conversation,
     get_timetable_data, list_todos, list_todos_in_month,
-    add_todo, update_todo, delete_todo, get_todo, save_timetable,
+    add_todo, add_todos_batch, update_todo, delete_todo, get_todo, save_timetable,
     set_todo_done_on, done_date_for, DAY_LOGGED_REPEATS,
     REPEAT_NONE, REPEAT_WEEKLY, REPEAT_DAILY, is_past_date,
     add_workorder, list_workorders, update_workorder_status,
@@ -150,6 +150,8 @@ from app.modules.planner import (
     _todo_done_proposal,
     update_todo_status,
 )
+# 粘贴材料（通知 / 安排表 / 清单）的识别与提取（#43）。判据要在**语义层之前**跑，所以走顶层导入。
+from app.modules.material import extract_deterministic, looks_like_material
 from app.modules.student_persona import STUDENT_PERSONAS, persona_block, is_valid
 
 # 项目根目录（本文件在 app/ 下，根目录是上一级）
@@ -548,6 +550,22 @@ def _pending_todo_done(session_id: str) -> dict | None:
     entry = peek_pending(session_id) or {}
     for o in entry.get("options") or []:
         if isinstance(o, dict) and o.get("kind") == "todo_done" and not o.get("applied"):
+            return o
+    return None
+
+
+def _pending_todo_add_batch(session_id: str) -> dict | None:
+    """暂存里那张待确认的**批量新增**卡（#43：从粘贴材料里提出的那几条）。
+
+    单独开一个口子有三个用处，都不是"顺手":
+    ① 挂在它身上的那句"要不要先处理那张卡"（`_holding_card` 那份名单）；
+    ② 学生在文本框回"确认"时，这张卡**不许**被当成"全要"（要他在卡上勾）；
+    ③ 刷新后把卡接回来的那条读接口（`/api/pending/{sid}`）本来就按 options 过筛，
+       这里只是让"这张卡还在不在"有一个能问的地方。
+    """
+    entry = peek_pending(session_id) or {}
+    for o in entry.get("options") or []:
+        if isinstance(o, dict) and o.get("kind") == "todo_add_batch" and not o.get("applied"):
             return o
     return None
 
@@ -1058,6 +1076,75 @@ def _kb_say(module_key: str, session_id: str, message: str, *, answer: str,
 # 两路都查空时给学生的那句（#41-B 定下来，#42-A 校园事实那一路复用同一句）
 _KB_MISS_LINE = ("📚 知识库里没有查到这一条（问答条目和管理员上传的文档都翻了）。\n"
                  "这个我暂不清楚，建议问一下对应部门或看学校官网 —— 我不拿猜的答你。")
+
+# ---- 粘贴材料 → 多条待办（#43）：卡片形状、出卡响应、拆不出时怎么说 ----
+
+_MATERIAL_PHASE = "📋 认出一段材料 → 只从这段里提取待办（不结合上文、不编时间）"
+
+
+def _material_card(items: list, missing: list) -> dict:
+    """多选确认卡：一行一件事，各自带勾选框（默认全勾，取消哪条就不写哪条）。
+
+    为什么不复用 `todo_remove_batch` 那条确认条：删除/完成是"他刚看着清单说的全要"，
+    而材料里哪几条真是他的事**系统不知道**（一份通知常把六个班排在一起）——
+    让他在卡上勾，那才是他点头。
+    """
+    return {
+        "kind": "todo_add_batch",
+        "summary": f"从这段材料里提出 {len(items)} 条待办",
+        "items": [{**it, "checked": True} for it in items],
+        "missing": list(missing or []),
+    }
+
+
+def _material_answer(session_id: str, message: str, card: dict, answer: str) -> dict:
+    """挂卡 + 组响应。
+
+    不复用 `_offer_response`：那条漏斗①只按**单条**待办挂（`save_pending([card])` 之后
+    的文案写着"已生成待办确认：{summary}"），②还带"表达不了的周期"那道否决 ——
+    那是给「以后每周晨跑」这类**学生的排期要求**用的，而材料里的"每周/安排"是原文表格词，
+    套过去会把整段材料否掉。
+    """
+    save_pending(session_id, [card])
+    append_conversation(session_id, "user", message)
+    append_conversation(session_id, "assistant", card["summary"])
+    return {"module": "planner", "session_id": session_id, "answer": answer,
+            "trace": [{"step": 1, "phase": _MATERIAL_PHASE, "answer": card["summary"]}],
+            "options": [card], "awaiting_choice": True}
+
+
+def _material_lead(card: dict) -> str:
+    """出卡那句：列出提了几条、哪些没能定下时间，并说清"勾完点按钮才算"。"""
+    lines = [f"📋 这段材料里我提出 **{len(card['items'])} 条**要排的事"
+             "（只按这段材料本身，没结合上文，也没补材料里没有的信息）："]
+    for it in card["items"]:
+        lines.append(f"· {it['title']}｜{it['date']} {it['start']}-{it['end']}")
+    if card.get("missing"):
+        lines.append("另外这几条**没能定下哪天几点**（材料里没写日期或钟点），我也没替它编："
+                     + "、".join(m for m in card["missing"][:5])
+                     + "。补一句时间，我就把它列进来。")
+    if len(card["items"]) >= 20:
+        lines.append("（一次最多列 20 条，多的请分行再发一次。）")
+    lines.append("在下面这条卡上**取消**不想排的，再点【加入日程】——"
+                 "没点之前日程一个字不动。")
+    return "\n".join(lines)
+
+
+def _material_empty_answer(session_id: str, message: str, missing: list) -> dict:
+    """一条带时间的都没拆出来时怎么说：如实说拆不出，**不许**编一个今天上去。"""
+    if missing:
+        answer = ("📋 这段材料我看到了，但里面**没有一条写着日期或钟点**，"
+                  "所以一条也没往日程里写（我不替材料编时间）。\n"
+                  "出现的事有几件：" + "、".join(m for m in missing[:6]) + "。\n"
+                  "补一句哪天几点（比如「周三 19:00-21:00」），我就列成卡让你勾。")
+    else:
+        answer = ("📋 这段材料里我没认出「要安排的事」（既没有日期也没有钟点），所以一条也没写。\n"
+                  "如果它是通知不是待办清单，你就当我读过；要排进去的话，说一句哪天几点做什么。")
+    append_conversation(session_id, "user", message)
+    append_conversation(session_id, "assistant", "材料里没带日期，未提取待办")
+    return {"module": "planner", "session_id": session_id, "answer": answer,
+            "trace": [{"step": 1, "phase": _MATERIAL_PHASE, "answer": "没拆出带日期的条目"}],
+            "options": [], "awaiting_choice": False}
 
 
 def _campus_fact_ask(text: str) -> bool:
@@ -1589,7 +1676,11 @@ async def _chat_impl(req: Request, meta: dict, emit=None):
                 or service_of_module(_explicit_module) is not None)
     _need_review = bool(_rule_hit) and (_asks or _qa_view)
     _sem = None
-    if (_rule_hit is None or _need_review) and not is_confirmation(message):
+    # ★ 粘贴材料（#43）先认出来，**连语义层都不 call**：
+    #   ① 几百字的材料喂给 classify 是一次白花花的调用，结论还不稳（实测判"问事"）；
+    #   ② 更要紧的是 classify 带着上一轮历史 —— 用户那次翻车就是被"上文在问图书馆"带走的。
+    _is_material = looks_like_material(message)
+    if (_rule_hit is None or _need_review) and not is_confirmation(message) and not _is_material:
         try:
             _sem = await classify(message, get_conversation(session_id),
                                   override=model_config)
@@ -1677,6 +1768,13 @@ async def _chat_impl(req: Request, meta: dict, emit=None):
         module_key = await router.route(message, override=model_config, sem=_sem)
     if not _module_handled(module_key):
         module_key = DEFAULT_MODULE
+    # ★ 材料一律归日程这侧（#43）。用户那次是**收起面板后**粘的：前端不带 module
+    #   （`student.html:1954` 只在 `currentModule` 有值时才带，`:2040` 收起面板把它置空），
+    #   于是这句全交给判定层，长文本被判成"问事" → 落到 faq → 模型拿着上文去答。
+    #   放在这里（而不是判定层里面）是因为：这是**形状**判断，不是语义判断，
+    #   它不该跟着模型心情漂。
+    if _is_material:
+        module_key = "planner"
 
     # 1a) 触发词是**硬信号**（红线 5：硬信号得单独提前，光靠判定层判对不够）。
     #     为什么光有 `router` 那一档不够：配了密钥时语义层几乎总会给出一个合法 module
@@ -2643,6 +2741,17 @@ async def _chat_impl(req: Request, meta: dict, emit=None):
         #   学生看到的是一句「📋 你目前的待办（共 11 条）」——他没在看清单，他在问该做什么。
         #   ⚠️ 也**不走 `_sem_done`**（同下面周期否决那条的理由）：`_sem_done` 里面是
         #   `remember()` 学样本那一步 —— 把一句问话学成模板，下次近似说法照着错。
+        # ★ 粘贴材料（#43）：一段通知 / 安排表 / 清单 —— 先认形状，再只从这段里提取，出**多选卡**。
+        #   位置在这两档**之前**：`_asking_what_to_do` 那条判据太宽（材料里常带"安排/时间"这种字样，
+        #   整段被剥成疑问串就会中），而 #42-A 那道闸管的是 40 字以内的问句 —— 两件事，别串。
+        #   写库仍然不在这里：只挂卡，勾完点【加入日程】由 `/api/todos/items_add` 写（红线：模型只出提案）。
+        if _is_material:
+            _mt_items, _mt_missing = extract_deterministic(message)
+            if not _mt_items:
+                return _material_empty_answer(session_id, message, _mt_missing)
+            _mt_card = _material_card(_mt_items, _mt_missing)
+            return _material_answer(session_id, message, _mt_card, _material_lead(_mt_card))
+
         # ★ 校历类问题（#42-A）：「啥时候放假 / 什么时候开学」既不是"我该做什么"、也不是"列日程"，
         #   它是**知识库**的活 —— 查得到就直答，查不到就老实说没有。
         #   用户 2026-10-19 真机那句被回成"我不替你决定 + 这几段是空着的"，缺的就是这道闸；
@@ -2652,7 +2761,8 @@ async def _chat_impl(req: Request, meta: dict, emit=None):
         #   手上挂着待确认的卡时不接管（跟 3i 同一条闸）—— 别把学生的卡弄丢（#33 那一族）。
         _holding_card = any(f(session_id) for f in (
             _pending_todo, _pending_todo_remove, _pending_todo_done,
-            _pending_todo_remove_batch, _pending_todo_done_batch, _pending_todo_slots))
+            _pending_todo_remove_batch, _pending_todo_done_batch, _pending_todo_slots,
+            _pending_todo_add_batch))
         if _campus_fact_ask(message) and not _holding_card:
             if _kb_has_answer(message):
                 from app.modules.faq import answer_for_student
@@ -5388,6 +5498,85 @@ async def todo_add_batch(req: Request):
         "unparsed": unparsed,
         "message": message,
     }
+
+
+_HHMM_RE = re.compile(r"^\d{1,2}:\d{2}$")
+_BATCH_ITEMS_MAX = 20      # 与 `material.extract_deterministic` 的截断同一个数
+
+
+@app.post("/api/todos/items_add")
+async def todo_items_add(req: Request):
+    """学生在那张**多选材料卡**上勾完、点【加入日程】按的就是这儿（#43）。
+
+    和 `/api/todos/batch` 的分工（两条都留着，不合成一条）：
+      · `/api/todos/batch` = **一件事 × N 个候选时段**（他从时段里挑几个方便的）；
+      · 这里 = **N 件不同的事**，各自带日期与时段（材料里一行一件）。
+      合成一条就得在函数体里分两种 payload，而两条的校验规则本来就不同
+      （那边"缺字段的时段"是丢掉那条继续写，这边**任何一条不合法整批拒**）。
+
+    ⚠️ 为什么整批拒而不是"坏一条跳一条"：学生看到的是一张卡。
+      写进去一半比一条都不写更难解释 —— 他会以为全排上了，回头才发现少几条；
+      报错时点名第几条，他改那一条就行。
+    ⚠️ 过去的日子算"不合法"（用户 2026-10-11 那条明令：过去的日子不许排待办），
+      和单条 / 批量两个口用的是同一份判据 `store.is_past_date`。
+    """
+    body = await req.json()
+    sid = (body.get("session_id") or "").strip()
+    already = _card_close_guard(sid, body)      # 写完刷新又点一次？（#33 那一幕）
+    if already:
+        return {"ok": True, "already": True, "message": already}
+
+    rows = body.get("items") if isinstance(body.get("items"), list) else []
+    if not rows:
+        return JSONResponse({"error": "没收到要写的条目——在这张卡上勾几条再点【加入日程】。"},
+                            status_code=400)
+    if len(rows) > _BATCH_ITEMS_MAX:
+        return JSONResponse({"error": f"一次最多写 {_BATCH_ITEMS_MAX} 条"
+                                      "（材料很长就分几次，我也好逐条对）。"},
+                            status_code=400)
+
+    bad: list = []
+    clean: list = []
+    for i, row in enumerate(rows, 1):
+        if not isinstance(row, dict):
+            bad.append(f"第 {i} 条不是一条待办")
+            continue
+        title = str(row.get("title") or "").strip()
+        date = str(row.get("date") or "").strip()
+        start = str(row.get("start") or "").strip()
+        end = str(row.get("end") or "").strip()
+        if not (title and date and start and end):
+            bad.append(f"第 {i} 条缺标题、日期或起止时间")
+            continue
+        try:
+            datetime.date.fromisoformat(date)
+        except ValueError:
+            bad.append(f"第 {i} 条的日期不是一天（{date}）")
+            continue
+        if not (_HHMM_RE.match(start) and _HHMM_RE.match(end)):
+            bad.append(f"第 {i} 条的时间不像钟点（{start}-{end}）")
+            continue
+        if is_past_date(date):
+            bad.append(f"第 {i} 条排在 {date}，那天已经过去了")
+            continue
+        clean.append({"title": title[:40], "date": date, "start": start, "end": end,
+                      "note": str(row.get("note") or "").strip()[:80]})
+    if bad:
+        return JSONResponse({"error": "这批一条也没写进去：" + "；".join(bad)
+                                     + "。改一下再点，我不写半批。"}, status_code=400)
+
+    added, skipped = add_todos_batch(clean)
+    _close_card(sid, body)      # 写完销卡：不销就是"刷新复活 → 再点写第二遍"（#33）
+    parts = [f"{t.get('title')}｜{t.get('date')}（{_weekday_of(t.get('date') or '')}）"
+             f"{t.get('start')}-{t.get('end')}" for t in added]
+    message = ("✅ 已加入日程：" + "；".join(parts) if parts
+               else "这些条日程里本来就有了，没重复写。")
+    if skipped and parts:
+        message += f"\n另外 {len(skipped)} 条已经在了（同标题同一天同时间），跳过了。"
+    if sid:
+        append_conversation(sid, "assistant", message.replace("\n", " "))
+    return {"ok": bool(added), "added": added, "count": len(added),
+            "skipped": skipped, "message": message}
 
 
 @app.put("/api/todos/{tid}")

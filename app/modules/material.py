@@ -116,14 +116,19 @@ def _clean_title(title: str) -> str:
 
 
 def _mk_item(title: str, ts: dict) -> dict | None:
-    """拼一条**有日期**的条目；解析不出日期就返回 None（绝不编一个今天）。"""
+    """拼一条**排得下来**的条目；缺日期或缺起止就返回 None（绝不替材料编一个时间）。
+
+    要求 `date` **且** `start` **且** `end`，是因为这个产品的待办本来就要占一段时间：
+    手动加那一条口（`POST /api/todos`）也是 `if not (date and start and end and title)` 拒的。
+    卡片能勾、点了能写，两边口径得一样 —— 否则卡上摆着一条，学生勾完点按钮换来一句 400。
+    """
     title = _clean_title(title)
     date = (ts or {}).get("date")
-    if not title or not date:
+    start = (ts.get("start") or "").strip()
+    end = (ts.get("end") or "").strip()
+    if not title or not date or not start or not end:
         return None
-    return {"title": title[:40], "date": date,
-            "start": (ts.get("start") or "").strip(),
-            "end": (ts.get("end") or "").strip()}
+    return {"title": title[:40], "date": date, "start": start, "end": end}
 
 
 def extract_deterministic(text: str) -> tuple[list[dict], list[str]]:

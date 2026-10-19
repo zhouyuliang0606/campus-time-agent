@@ -1024,6 +1024,51 @@ def add_todo(title: str, date: str, start: str, end: str,
     return item
 
 
+def add_todos_batch(rows: list) -> tuple:
+    """一次写进学生勾中的**几条不同**待办（#43：从粘贴材料里提取的那一批）。
+
+    为什么不循环调 `add_todo`：那样每条各读各写一次，
+    于是"同一批里刚写进去的那条"对后一条**不可见** —— 学生把同一段材料粘两次、
+    或者一次勾了两行同样的，就会连着落两条。这里读一次现状、整批去重、写一次。
+
+    去重判据 = 同 `title` + 同 `date` + 同 `start`（都算过 `strip`），
+    重复的**不报错也不写**，原样返回给调用方去说"这条日程里已经有了"。
+
+    :return: `(写进去的条目, 被当作重复跳过的条)`
+    """
+    data = _sread("todos.json", {"todos": []})
+    todos = data.setdefault("todos", [])
+    have = {(str(t.get("title") or "").strip(), str(t.get("date") or "").strip(),
+             str(t.get("start") or "").strip()) for t in todos}
+    added, skipped = [], []
+    for row in rows or []:
+        title = str(row.get("title") or "").strip()
+        date = str(row.get("date") or "").strip()
+        start = str(row.get("start") or "").strip()
+        end = str(row.get("end") or "").strip()
+        key = (title, date, start)
+        if key in have:
+            skipped.append({"title": title, "date": date, "start": start, "end": end})
+            continue
+        have.add(key)
+        item = {
+            "id": uuid.uuid4().hex[:8],
+            "title": title,
+            "date": date,
+            "start": start,
+            "end": end,
+            "note": str(row.get("note") or "").strip(),
+            "category": str(row.get("category") or "").strip(),
+            "status": "planned",
+            "created_at": _now(),
+        }
+        todos.append(item)
+        added.append(item)
+    if added:
+        _swrite("todos.json", data)
+    return added, skipped
+
+
 def list_todos(date: str | None = None) -> list:
     """列出待办；给了 date 就只看那一天（**含重复/习惯落到那天的**，见 `todo_occurs_on`），按开始时间排序。
 
