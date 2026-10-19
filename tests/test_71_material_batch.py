@@ -157,24 +157,20 @@ def batch_b_end_to_end():
         c.check("G1-三 轨迹里看得见这条分支（不是掉给模型现编的一句）",
                 "材料" in p1, p1[:100])
 
-        # ── G2 上文污染：先在**同一会话**里留下一轮真答到图书馆的（带 module=planner 才会走
-        #    那条确定性直答 —— 不带的话无密钥时那句降级回答连历史都不写，这条就成空跑了）
-        d0, a0, _ = _say(cli, "图书馆几点闭馆", module="planner", sid="t71-g2")
+        # ── G2 上文污染：先在同一会话里留下一轮**带日期时段**的回话（列待办），再粘材料。
+        #    （第一版拿"图书馆几点闭馆"当上文，变异 M2 把历史拼进提取都测不出红 ——
+        #      那句回话里没有可被当成待办的字段；上文里必须**有可漏的东西**，这条才不是空跑。）
+        seed_todos([{"title": "高数作业", "date": "2026-10-30", "start": "09:00", "end": "10:00"}])
+        d0, a0, _ = _say(cli, "我有哪些待办", module="planner", sid="t71-g2")
         d2, a2, _ = _say(cli, TABLE, sid="t71-g2")
         card2 = _card(d2)
         from app.modules.faq import search_kb
-        kb_now = search_kb("图书馆几点闭馆")
-        c.check("G2-bis 见证：那句闭馆事实**确实在知识库里**（材料卡里没有它才是提取干净，不是没料）",
-                LIB_FACT in kb_now, kb_now[:60])
-        c.check("G2 上文在问图书馆、再粘考试通知 → 提取结果只含考试（一条不多）",
+        c.check("G2-bis 见证：上一轮那条回话里**确实有一件带日期时段的事**（这才是可漏的上文）",
+                "高数作业" in a0 and "2026-10-30" in a0, a0[:80])
+        c.check("G2 上文在列待办、再粘考试通知 → 卡里只有考试（历史那条不许混进来）",
                 _titles(card2) == ["离散数学考试"], str(_titles(card2)))
-        c.check("G2-三 这条气泡里不许漏出图书馆那个答案（材料不是问题，别接着答）",
-                "闭馆" not in a2 and LIB_FACT[:8] not in a2, a2[:90])
-        c.check("G2-四 历史里真留下了上一轮（否则 G2 是空跑：压根没有上文可污染）",
-                any("闭馆" in (m.get("content") or "") or "图书馆" in (m.get("content") or "")
-                    for m in (cli.get("/api/conversation/t71-g2").json().get("messages") or [])),
-                json.dumps(cli.get("/api/conversation/t71-g2").json().get("messages"),
-                           ensure_ascii=False)[:100])
+        c.check("G2-三 文档里那句闭馆事实是真的存在（知识库里查得到），但这条气泡里没有它",
+                LIB_FACT in search_kb("图书馆几点闭馆") and "闭馆" not in a2, a2[:90])
 
         # ── G4 不确认不写库；刷新（GET /api/pending）卡还在
         before = len(store.list_todos())
@@ -340,8 +336,9 @@ def batch_d_content_ask():
             asks_about_content("是什么") is False and asks_about_content("考试是啥") is True)
     c.check("D4 列表档不受影响（「我现在都有啥安排」仍然归列表，不归这族）",
             _asking_what_to_do("我现在都有啥安排") is False)
-    # 「安排」两个字同时是"排日程"的动词和名词，反向那条**锚在句尾**才不误伤它：
-    c.check("D5 「考试安排是什么」算问内容（反向那条锚在句尾；不锚就会把它留在「该做什么」族里）",
+    # 这条钉的是**动词表不许扩到名词**（把"排"放进 `[做干办搞整]` 就会被吃掉）；
+    # 新规则自己的牙在 D1 + 变异 M9（摘掉第四道排除 ⇒ D1 三条全红）。
+    c.check("D5 「考试安排是什么」不算问该做什么（动词表里不许塞进名词性说法）",
             _asking_what_to_do("考试安排是什么") is False, str(_asking_what_to_do("考试安排是什么")))
     c.check("D6 对照：「今晚安排点啥」有「安排 + 疑问」但不是「…是什么」，照旧算问该做什么",
             _asking_what_to_do("今晚安排点啥") is True)
@@ -419,12 +416,15 @@ def _branch_calls(body):
 
 
 def _material_branch_isolated(body):
+    """材料分支体内**不许出现**：知识库、模型、会话历史（"不带上文"这条钉的是结构，
+    不是某次跑出来的文案 —— 无密钥时历史里有没有可漏的东西全看分支写法）。"""
     br = _material_branch_if(body)
     if br is None:
         return False
     got = _calls_in(br)
-    return ({"extract_deterministic", "_material_card", "_material_answer"} <= got
-            and not ({"search_kb", "answer_for_student", "_ask", "ask", "run", "classify"} & got))
+    leak = {"search_kb", "answer_for_student", "_ask", "ask", "run", "classify",
+            "get_conversation", "peek_pending", "take_pending"} & got
+    return ({"extract_deterministic", "_material_card", "_material_answer"} <= got) and not leak
 
 
 def _holding_card_calls(body):
