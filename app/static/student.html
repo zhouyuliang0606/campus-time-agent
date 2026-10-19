@@ -780,7 +780,7 @@ html.gx-glass[data-gx-refine="on"] .composer, html.gx-glass[data-gx-refine="on"]
 
     <!-- 主显示面板：点上面的卡片就切换这里的内容（不跳新页面），底部聊天框始终保留 -->
     <div id="panel">
-      <!-- ① 我的日程：周表 + 月表（精简版，完整版去 /plan） -->
+      <!-- ① 我的日程：周表 + 月表（精简版；完整日程只留顶栏那一个入口，#44-A） -->
       <div class="view" id="view-schedule">
         <div class="view-head"><span><svg class="ic"><use href="#gi-cal"/></svg> 我的日程</span><span class="grow"></span><button class="close">收起面板 ✕</button></div>
         <div class="view-body">
@@ -795,7 +795,6 @@ html.gx-glass[data-gx-refine="on"] .composer, html.gx-glass[data-gx-refine="on"]
             <button class="tab" id="uploadTtPanel" title="上传课表文件，管家读取后给出预览清单，确认后写进周表"><svg class="ic"><use href="#gi-upload"/></svg> 上传课表</button>
             <button class="tab" id="schPrev">←</button>
             <button class="tab" id="schNext">→</button>
-            <a href="/plan" class="small" style="text-decoration:none;color:#4f7cff;">完整版日程 →</a>
           </div>
           <div class="small" id="ttPanelStatus" style="margin:-4px 0 8px;min-height:14px;"></div>
 

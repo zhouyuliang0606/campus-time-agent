@@ -204,7 +204,13 @@ def test_student_page_markup():
         c.check("学生端顶栏不再发「管理端」直达入口", 'href="/admin"' not in html,
                 "学生页里还能一键点开管理台")
         c.check("学生端顶栏不再发「驿站」直达入口", 'href="/station"' not in html)
-        c.check("学生端自己的「完整日程」入口还在", 'href="/plan"' in html)
+        # #44-A：面板里那个「完整版日程 →」删了，顶栏那个留。原来这句只钉 `'href="/plan"' in html`
+        # —— 那是"有没有"，两个都删剩一个也绿、面板那个长回来（变成两个）也绿。
+        # 现在钉的是**唯一 + 位置**：一处，且挂在顶栏 `tb-link` 上；面板那句的文案不许回来。
+        _plan_links = html.count('href="/plan"')
+        c.check("学生端「完整日程」入口只有一处，且挂在顶栏 tb-link 上（#44-A 删的是面板里重复的那个）",
+                _plan_links == 1 and 'class="tb-link" href="/plan"' in html and "完整版日程" not in html,
+                f"入口 {_plan_links} 处")
         login = client.get("/")
         lhtml = login.text or ""
         # 三颗入口是 `<button onclick="location.href='/admin'">` 这种写法，不是 <a href>
