@@ -1678,7 +1678,9 @@ async def _chat_impl(req: Request, meta: dict, emit=None):
     _sem = None
     # ★ 粘贴材料（#43）先认出来，**连语义层都不 call**：
     #   ① 几百字的材料喂给 classify 是一次白花花的调用，结论还不稳（实测判"问事"）；
-    #   ② 更要紧的是 classify 带着上一轮历史 —— 用户那次翻车就是被"上文在问图书馆"带走的。
+    #   ② 更要紧的是 classify 带着上一轮历史 —— 用户那次就是被"上文在问图书馆"带走的。
+    #   ⚠️ 课表粘贴那一路的让路写在判据**里面**（`material.looks_like_material`），不写在这里：
+    #   同一判断只放一处，两处各写一半迟早漏一个。
     _is_material = looks_like_material(message)
     if (_rule_hit is None or _need_review) and not is_confirmation(message) and not _is_material:
         try:

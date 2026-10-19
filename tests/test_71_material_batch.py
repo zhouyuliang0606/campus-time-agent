@@ -30,6 +30,22 @@ LIST3 = ("10月21日 19:30-21:30 离散数学考试\n"
 # 上文里那份文档的事实：材料答错时就会冒出这句（G2 的反面靶子）
 LIB_FACT = "图书馆平时开放至二十二点三十分闭馆"
 DOC_NAME = "43-图书馆开放时间.txt"
+# test_23 里模型"读了课表文件却不出卡"时爱发的那张表（原文形状）：
+# 学生把它复制回来再粘一次，看起来就和裸粘课表一模一样 ⇒ 材料判据必须不接（A11-ter）
+TABLE_ANSWER = (
+    "解析出来了，共 2 门课：\n\n"
+    "| 星期 | 时间 | 课程 | 地点 |\n|---|---|---|---|\n"
+    "| 周一 | 08:00–09:40 | 高等数学 | 教三-301 |\n"
+    "| 周五 | 14:00–15:40 | 体育 | 大操场 |\n\n"
+    "先给你看看，需要导入再说。"
+)
+# 两种"裸粘课表"：一个字没提「上传/导入」，所以 `looks_like_timetable_import` 接不住（A11/B5）
+TT_MD = ("| 星期 | 时间 | 课程 | 地点 |\n|---|---|---|---|\n"
+         "| 周一 | 08:00-09:40 | 高等数学 | 教三-301 |\n"
+         "| 周二 | 10:00-11:40 | 线性代数 | 教三-302 |\n"
+         "| 周五 | 14:00-15:40 | 体育 | 大操场 |\n")
+TT_XLS = ("周一 08:00-09:40 高等数学 教三-301\n周二 10:00-11:40 线性代数 教三-302\n"
+          "周三 14:00-15:40 概率论 教三-303\n周五 14:00-15:40 体育 大操场\n")
 
 
 def _seed_lib_doc():
@@ -73,6 +89,12 @@ def _say(cli, msg, module=None, sid="t71"):
 def _card(d):
     opts = d.get("options") or []
     return opts[0] if opts else {}
+
+
+def _tt_import(t):
+    """课表那句**文字**判据（"上传/读取/解析/导入 + 课表"）—— A11 要证明让路不是靠它。"""
+    from app.modules.planner import looks_like_timetable_import
+    return looks_like_timetable_import(t)
 
 
 def _titles(card):
@@ -123,6 +145,18 @@ def batch_a_extract():
                 str(_titles({"items": it6})))
         c.check("A9-bis 两行但只有一行带日期 → 不算材料（另一行是附带说明时别硬凑成两条）",
                 M.looks_like_material("明天开会\n记得带笔记本") is False)
+        # 浏览器实测（2026-10-19，/student 上真粘了一次）：`input#text` 会把换行**整个吃掉**，
+        # 46 字那份短通知既不够 60 字也没有 \n ⇒ 从前被规则层的"加待办"接走，
+        # 卡上标题是残渣「目内容考试科目离散数学考试日期2026年考试」。前端改把换行换成"；"，
+        # 这里则必须认"分号分隔的短材料"，两头都得有，少一头这条链就断。
+        flat4 = "项目 内容；考试科目 离散数学；考试日期 2026年10月21日；考试时间 19:30-21:30"
+        it7, _ = M.extract_deterministic(flat4)
+        c.check("A10 粘成一行的短材料也认（只数 `\\n` 的话它就不算材料，会掉回加待办那条出残渣）",
+                M.looks_like_material(flat4) is True and len(it7) == 1
+                and it7[0]["title"] == "离散数学考试" and it7[0]["start"] == "19:30",
+                json.dumps(it7, ensure_ascii=False)[:120])
+        c.check("A10-bis 残渣不进卡：整行被当成一个事名时（没有分号也没有换行）不算材料",
+                M.looks_like_material("项目 内容考试科目离散数学考试日期2026年10月21日") is False)
 
         # ── 对照：这几句都不是材料（判据写太宽就会把正常问话吞掉）
         for q in ("考试时间是什么", "今晚安排点啥", "图书馆几点关门", "帮我加个周五的游泳 19:00",
@@ -133,6 +167,46 @@ def batch_a_extract():
                 M.looks_like_material(TABLE + "\n这个安排是从哪里来的？") is False)
         c.check("A8 材料判据**不看模块**：同一段不带 module 也算材料（前端收起面板时压根不带）",
                 M.looks_like_material(TABLE) is True)
+
+        # ── A11：粘进来的是**周课表**时不许接（实测 `probe43_shapes.py` / `probe43_yield.py`）
+        # 裸粘的课表既是多行、又满是"课程/时间/地点"，形状三条一条不落全命中；
+        # 从前只挡 `looks_like_timetable_import`（认的是"上传/导入 + 课表"那串**文字**），
+        #   而下面三种课表那句话都没提 —— 于是卡上写着 `|||高等数学|教三301|`，
+        #   还把每周重复的课钉死到 2026-10-26 这一天，学生点【加入日程】就真写进日程。
+        for nm, tt in (("A11 markdown 课表", TT_MD), ("A11-bis Excel 复制的纯文本课表", TT_XLS)):
+            c.check(f"{nm} 不算材料 —— 且**不是靠** tt_import 让的路（它一个字没提「上传/导入」）",
+                    M.looks_like_material(tt) is False
+                    and _tt_import(tt) is False
+                    and M._looks_like_weekly_grid(tt.strip(), M.split_material(tt.strip())) is True,
+                    str([M.looks_like_material(tt), _tt_import(tt)]))
+        c.check("A11-ter 连**模型自己回的那张课表表格**也不算材料（学生把它复制回来问一句，"
+                "形状和裸粘课表一模一样）",
+                M.looks_like_material(TABLE_ANSWER) is False
+                and M._looks_like_weekly_grid(TABLE_ANSWER.strip(), M.split_material(TABLE_ANSWER.strip())) is True,
+                str(M.looks_like_material(TABLE_ANSWER)))
+        c.check("A11-quater 「1. 周三… 2. 周五…」那种**用星期写的待办清单**仍然算材料"
+                "（行首编号就是「它不是周表」的证据；把编号豁免摘掉这批清单就全退回 faq）",
+                M.looks_like_material(mixed) is True
+                and M._looks_like_weekly_grid(mixed, M.split_material(mixed)) is False,
+                str(M.looks_like_material(mixed)))
+        c.check("A11-quinquies 只要有一行写了**几月几日**就不再是周表（周X + 月日混着粘也得接住，"
+                "那是本单要处理的清单）",
+                M.looks_like_material("周一 08:00-09:40 高等数学\n10月21日 19:30-21:30 离散数学考试 地点 教三") is True
+                and M.looks_like_material(LIST3) is True)
+
+        # ── A12：标题只剩日期/竖线时**不许上卡**
+        # 实测「关于召开本学期第二次班会的通知：时间：2026年10月23日 15:00-16:00 …」经表那条支
+        # 拿到的标题就是那串日期 —— 卡上写着日期、看不出是哪件事，点【加入日程】却真能写进去。
+        MEET = ("关于召开本学期第二次班会的通知：\n时间：2026年10月23日 15:00-16:00\n"
+                "地点：教三-301\n对象：全体同学\n议题：期中安排、评奖评优、宿舍安全。\n")
+        it8, miss8 = M.extract_deterministic(MEET)
+        c.check("A12 残渣标题不进卡（items 空 ⇒ 走「拆不出」那句），原文落进 missing 让学生自己补",
+                it8 == [] and len(miss8) >= 1,
+                json.dumps({"items": it8, "missing": miss8}, ensure_ascii=False)[:160])
+        c.check("A12-bis 闸只认**形状**：同一句里标题写成「班会」就必须能上卡"
+                "（不许写成「标题不认识就一律不收」那种一刀切）",
+                M._mk_item("班会", {"date": "2026-10-23", "start": "15:00", "end": "16:00"}) is not None
+                and M._mk_item("离散数学考试", {"date": "2026-10-21", "start": "19:30", "end": "21:30"}) is not None)
     return c
 
 
@@ -271,6 +345,19 @@ def batch_b_end_to_end():
                 "日期或钟点" in a12 and not (d12.get("options") or []), a12[:100])
         c.check("G8-bis 这条不许掉给模型（无密钥时那句 no_key 降级提示不算答案）",
                 "答不上来" not in a12 and "还没接通" not in a12, a12[:80])
+
+        # ── B5 端到端的抢线：A11 那条形状判据在真实链路上有没有用
+        # 摘掉 `_looks_like_weekly_grid` 这一半（变异 M10），这句话在 `/api/chat` 上就会挂出
+        # 一张标题是 `|||高等数学|教三301|` 的多选卡 —— 只测纯函数是测不到这一层的。
+        d13, a13, _ = _say(cli, TT_MD, sid="t71-b5")
+        kinds13 = [o.get("kind") for o in (d13.get("options") or []) if isinstance(o, dict)]
+        c.check("B5 裸粘 markdown 课表：端到端不许挂出 todo_add_batch 卡（点一下就把每周的课写死成某一天）",
+                "todo_add_batch" not in kinds13, json.dumps(kinds13, ensure_ascii=False))
+        c.check("B5-bis 这条也不许被吞成一张**单条**待办卡（那等于把整张课表当成一件事）",
+                "todo_add" not in kinds13, json.dumps(kinds13, ensure_ascii=False))
+        c.check("B5-ter 见证：没出卡≠链路坏了 —— 同一次会话里再把真材料粘进来，卡照常出",
+                _card(_say(cli, TABLE, sid="t71-b5")[0]).get("kind") == "todo_add_batch",
+                a13[:60])
     return c
 
 

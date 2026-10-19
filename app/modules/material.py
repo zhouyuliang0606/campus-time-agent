@@ -24,14 +24,43 @@ _QUESTION_RE = re.compile(r"[？?]|吗$|呢$|什么|怎么|怎样|几点|多久|
 
 # 编号 / 项目符号 / 分号：清单的三种写法（"1. xxx" "① xxx" "- xxx" "一、xxx"）
 _LIST_MARKER_RE = re.compile(r"^\s*(?:\d+[.、)）]|[①-⑩]|[-•·*]|[一二三四五六七八九十]+[、.)）])")
+# 同一形状，但**逐原始行**判（`split_material` 会把行首编号吃掉，之后就看不见了）
+_NUMBERED_LINE_RE = re.compile(r"^\s*(?:\d+[.、)）]|[①-⑩]|[-•·*]|[一二三四五六七八九十]+[、.)）])", re.M)
 _SPLIT_RE = re.compile(r"[\n；;]+")
+
+# 周课表的两个形状要素：**只有星期**（周X，没有几月几日）+ 一天以上
+_WEEKDAY_RE = re.compile(r"(?:周|星期|礼拜)[一二三四五六日天]")
+# 绝对日期：待办要落在具体某一天，材料里没写具体日子就不是"这几件事"而是"每周都这样"
+_ABS_DATE_RE = re.compile(r"\d{1,2}\s*月\s*\d{1,2}\s*[日号]|\d{4}[-/.]\d{1,2}[-/.]\d{1,2}")
+
+
+def _looks_like_weekly_grid(text: str, segs: list[str]) -> bool:
+    """这段是不是**周课表**（每周重复的课），而不是"某几天要做的几件事"。
+
+    为什么必须单独挡掉（实测 `probe43_shapes.py` / `probe43_tt_e2e.py`，2026-10-19）：
+    裸粘的课表 —— 不管 markdown 还是 Excel 复制的纯文本 —— 既是多行、又满是
+    "课程/时间/地点"，材料判据的形状三条**一条不落全命中**，于是出了一张
+    `todo_add_batch` 卡，上面写着 `|||高等数学|教三301|`、`周高等数学教三301`
+    这种残渣标题，还把每周重复的课**钉死到了 2026-10-26 这一天**。
+    学生想导入课表，换来一张"点一下就污染日程"的卡 —— 这比 #43 之前那句掉进 faq
+    更坏（掉 faq 什么都没写，这张卡点【加入日程】就真写进去）。
+
+    三条同时成立才算课表（宁可漏不可抢）：
+      ① ≥2 段挂着"周X/星期X"；
+      ② 全文**一个绝对日期都没有**（"10月21日"或"2026-10-21"）—— 有日子就是"那天的事"；
+      ③ 没有行首编号 / 项目符号 —— 「1. 周三班会 2. 周五交作业」那种是**待办清单**（test_71 A4）。
+    放弃的那一半：「周三交实验报告\n周五交论文」这种用星期写、不带编号的两行待办会被让出去
+    （回到 faq）。换的原因是**方向上的不对称**：漏了学生再问一句就行，抢了是往他日程里写脏数据。
+    """
+    if _ABS_DATE_RE.search(text) or _NUMBERED_LINE_RE.search(text):
+        return False
+    return sum(1 for seg in segs if _WEEKDAY_RE.search(seg)) >= 2
 
 
 def looks_like_material(text: str) -> bool:
     """这段是"材料"（要提取的输入），不是"问题 / 指令"。三条同时成立才算。
 
-    ① 够长（>60 字）**或** 有多行（**两行起**，"多行"不是"三行起"——实测两行的清单最常见）
-       或带编号 / 项目符号；
+    ① 够长（>60 字）**或** 有多段（换行 / 分号切出来 ≥2 段，两行起）或带编号 / 项目符号；
     ② 命中至少 **3 个**结构化字段词（1~2 个可能只是碰巧提到"时间""地点"），
        **或者**有 ≥2 行各自带日期（那种"一行一件事"的清单没有字段词，但同样是材料 —— 实测
        「10月21日 19:30-21:30 离散数学考试 / 10月22日 …」三个字段词都不沾）；
@@ -42,13 +71,26 @@ def looks_like_material(text: str) -> bool:
     t = (text or "").strip()
     if not t:
         return False
-    long_or_multi = len(t) > 60 or t.count("\n") >= 1 or bool(_LIST_MARKER_RE.search(t))
+    # 分隔符算"多段"要看**切完几段**，不是数 `\n`：聊天输入框是 `input[type=text]`，
+    # 浏览器粘多行会把换行整个吃掉（前端把换行换成"；"再发），所以这里得连"；"一起认。
+    segs = split_material(t)
+    long_or_multi = len(t) > 60 or len(segs) >= 2 or bool(_LIST_MARKER_RE.search(t))
     if not long_or_multi:
         return False
-    dated_lines = sum(1 for seg in split_material(t) if planner._pick_date(seg))
+    dated_lines = sum(1 for seg in segs if planner._pick_date(seg))
     if sum(1 for w in _MATERIAL_FIELDS if w in t) < 3 and dated_lines < 2:
         return False
     if _QUESTION_RE.search(t):
+        return False
+    # ⚠️ 课表粘贴**不是**材料：它也是多行、也满是"课程/时间/地点"，形状判据一样会命中，
+    # 但它有自己那条支（`looks_like_timetable_import` → 出 `timetable_change` 卡，test_23 钉着）。
+    # 让给它一次，比在自己支里猜课程表强（全量第一次跑就是这么抓出来的抢线）。
+    if planner.looks_like_timetable_import(t):
+        return False
+    # ⚠️ 周课表**靠形状**也要让路，不能只靠 `looks_like_timetable_import`：那句认的是
+    # "上传/读取/导入 + 课表"这种**文字**，而裸粘的课表一个字都没提（实测 tt_import=False），
+    # 就会一路被判成材料、把课钉成某一天的待办（`_looks_like_weekly_grid` 的实测记录）。
+    if _looks_like_weekly_grid(t, segs):
         return False
     return True
 
@@ -61,6 +103,26 @@ def split_material(text: str) -> list[str]:
         seg = re.sub(r"\s+", " ", seg)
         if seg:
             out.append(seg)
+    return out
+
+
+def _pairs_from_flat(seg: str) -> list[tuple[str, str]]:
+    """一行到底的写法：`考试科目 离散数学 考试日期 10月21日 …` 从一个 `<input>` 里粘过来。
+
+    为什么必须有这一半（浏览器实测，2026-10-19）：聊天输入框是 `input[type=text]`，
+    浏览器粘多行文本时会**直接吃掉换行**（103 字那份粘进去剩 46 字，`\n` 一个不剩，
+    字段词还被粘在上一句尾巴上："项目 内容考试科目 离散数学考试日期 …"）。
+    只按行切的那一半在这条路上等于没实现 —— 所以还要能在**一行内**按字段词切开。
+    """
+    hits = [(seg.find(w), w) for w in _MATERIAL_FIELDS if w in seg]
+    hits = sorted({(p, w) for p, w in hits})
+    out: list[tuple[str, str]] = []
+    for i, (pos, key) in enumerate(hits):
+        # 键 = 字段词前面那句的尾巴也一起看（"…离散数学" 里的 科目 才是键，值在后面）
+        nxt = hits[i + 1][0] if i + 1 < len(hits) else len(seg)
+        val = seg[pos + len(key):nxt].strip(" \t，,、;；。")
+        if val and not _is_header(key, val):
+            out.append((key, val))
     return out
 
 
@@ -102,6 +164,11 @@ def _title_from_fields(fields: list[tuple[str, str]]) -> str:
 
 
 _EMPTY_BRACKET_RE = re.compile(r"[（(\[【]\s*[)）\]】]")
+# 残渣标题的形状：竖线（表格分隔符没擦干净）或整条标题其实就是个日期/钟点。
+# 实测「关于召开本学期第二次班会的通知：时间：2026年10月23日 15:00-16:00 …」经表那条支
+# 拿到的标题就是 `2026年10月23日 15:00-16:00` —— 卡上写着一串日期，学生看不出这是哪件事，
+# 点【加入日程】却真能写进去。这种宁可不写（落进 missing，让他补一句"这是班会"）。
+_RESIDUE_TITLE_RE = re.compile(r"[|｜]|^\s*(?:20\d\d|\d{1,2}\s*月|\d{1,2}[:：]|\d{1,2}\s*[日号])")
 
 
 def _clean_title(title: str) -> str:
@@ -129,6 +196,8 @@ def _mk_item(title: str, ts: dict) -> dict | None:
     end = (ts.get("end") or "").strip()
     if not title or not date or not start or not end:
         return None
+    if _RESIDUE_TITLE_RE.search(title):
+        return None
     return {"title": title[:40], "date": date, "start": start, "end": end}
 
 
@@ -153,6 +222,10 @@ def extract_deterministic(text: str) -> tuple[list[dict], list[str]]:
         pair = _field_pair(seg)
         if pair and not _is_header(*pair):
             fields.append(pair)
+            continue
+        flat = _pairs_from_flat(seg)
+        if len(flat) >= 2:                 # 一行里写着好几组"字段 值" ⇒ 它还是一张表（浏览器粘法）
+            fields.extend(flat)
         else:
             loose.append(seg)
 

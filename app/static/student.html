@@ -2641,6 +2641,20 @@ html.gx-glass[data-gx-refine="on"] .composer, html.gx-glass[data-gx-refine="on"]
 
     send.addEventListener("click", () => sendMsg(text.value));
     text.addEventListener("keydown", e => { if (e.key === "Enter") sendMsg(text.value); });
+    // 粘贴大段材料时浏览器会把换行**整个吃掉**：实测 103 字那份考试通知粘进 `input#text`
+    // 只剩 46 字、一个 `\n` 都不剩，字段词还粘在上一句尾巴上（"…内容考试科目 离散数学考试日期…"）。
+    // 所以在粘贴那一刻把换行换成"；"——后端 `material._SPLIT_RE` 认这个分隔符，
+    // 材料进来之后还是"一段一段"的形状，不至于整段被当成一行。
+    text.addEventListener("paste", e => {
+      const dt = e.clipboardData;
+      if (!dt) return;
+      const raw = dt.getData("text/plain") || "";
+      if (!/[\r\n]/.test(raw)) return;
+      e.preventDefault();
+      const one = raw.replace(/[\r\n]+/g, "；").replace(/；{2,}/g, "；").trim();
+      text.value = (text.value ? text.value + "；" : "") + one;
+      text.focus();
+    });
 
     // ---------- <svg class="ic"><use href="#gi-compass"/></svg> 意图诊断（只读） ----------
     // 调的是判定层的只读接口 POST /classify：**不写库、不进聊天历史、不替代 /api/chat**。
