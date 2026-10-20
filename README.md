@@ -39,7 +39,7 @@
 | 存储 | **JSON 文件**（`app/data/`） | 演示够用；`store.py` 已按"换数据库不改调用方"分层，替换成本低 |
 | 测试 | **FastAPI TestClient + 自写 Checker** | 不需要 pytest，评委零额外安装即可跑 |
 
-页面共 **7 个**，接口 **64 个**（63 个 `/api/…` + 一个 `/classify`；`@app.get("/plan")` 那种页面路由不算接口）
+页面共 **7 个**，接口 **65 个**（64 个 `/api/…` + 一个 `/classify`；`@app.get("/plan")` 那种页面路由不算接口）
 （口径：`app/main.py` 里唯一的 `@app.<方法>("路径")`，用
 `grep -oE '@app\.(get|post|put|delete|patch)\("[^"]+"' app/main.py | sort -u | wc -l` 核一遍
 （那个数是**路由总数**，含 7 个页面路由）；数字随开发增长，核一遍即知当次真实值）。
