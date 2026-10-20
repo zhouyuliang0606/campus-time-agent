@@ -275,8 +275,8 @@ def batch_b_uploads():
     return c
 
 
-BATCHES = [("A 批（45-A 课表来源）", batch_a_schedule_source)]
-# B 批（45-B/45-D 上传桶）随下一笔代码一起接上 —— 见 batch_b_uploads 上方的说明。
+BATCHES = [("A 批（45-A 课表来源）", batch_a_schedule_source),
+           ("B 批（45-B/45-D 上传桶按人分）", batch_b_uploads)]
 
 
 def main():

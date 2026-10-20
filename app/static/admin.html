@@ -819,6 +819,12 @@
       const form = new FormData();
       form.append("file", input.files[0]);
       form.append("purpose", "kb");
+      // #45-B：这一档传的是**公共知识**，所以再显式带一个 public_kb=1。
+      // 为什么要两个字段：光看 purpose 不够 —— 它是表单字段、谁都能填，
+      // 而管理员也可能是"先在学生端登过、再开管理端"（同一浏览器带着 ct_student cookie），
+      // 那种情况下不带这个标记就会把文档记成某个学号的私有文件，别的学生查不到。
+      // 通知附件那一档（同一个 /api/upload）**故意不带**：附件不是知识库内容。
+      form.append("public_kb", "1");
       st.textContent = "⏳ 上传中（要抽文字、切块，稍等）…";
       let d = {};
       try {

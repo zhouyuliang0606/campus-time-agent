@@ -12,7 +12,8 @@ import math
 import re
 
 from app.agent.tools import Tool
-from app.store import all_chunks, get_upload, list_uploads
+from app.store import (all_chunks, can_read_upload, get_upload, get_upload_meta,
+                       list_uploads, visible_uploads)
 
 MODULE_KEY = "files"
 
@@ -22,11 +23,13 @@ READ_LIMIT = 6000
 
 
 def list_uploaded_files() -> list[dict]:
-    """列出用户上传过的文件（人话：看看手头有哪些资料可以翻）。
+    """列出**这个学生自己**上传过的文件（人话：看看手头有哪些资料可以翻）。
 
     返回每个文件的 id、文件名、字数、上传时间。要读内容就用返回的 id。
+    ⚠️ #45-B：以前这里直接 `list_uploads()` ⇒ 学生 2 说一句「我有哪些文件」
+    就拿到学生 1 的课表原件 id 和文件名，接一句「读一下它」就是整篇内容。
     """
-    files = list_uploads()
+    files = visible_uploads()
     # 只给最新的 20 个，避免一次塞太多占位
     return [
         {"id": f["id"], "name": f["name"], "chars": f["chars"], "ts": f["ts"]}
@@ -38,7 +41,14 @@ def read_uploaded_file(file_id: str) -> str:
     """按 id 读取某个上传文件的全部内容（人话：把这份资料翻开给 AI 看）。
 
     :param file_id: 文件 id，从 list_uploaded_files 的结果里取
+    ⚠️ #45-B：入口第一句就判归属，且**不过的时候回"找不到"而不是"无权访问"** ——
+    后者等于向对方确认"这个 id 背后确实有一份东西"，那本身就是泄露。
     """
+    if not can_read_upload(get_upload_meta(file_id or "")):
+        return (
+            f"找不到 id 为 {file_id} 的文件。请先用 list_uploaded_files 看看"
+            f"当前有哪些文件，确认 id 后再读。"
+        )
     content = get_upload(file_id or "")
     if content is None:
         return (

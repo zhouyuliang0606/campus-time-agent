@@ -524,7 +524,7 @@ def norm_purpose(purpose) -> str:
 
 
 def save_upload(filename: str, content: str, raw: bytes | None = None,
-                purpose: str = "file") -> dict:
+                purpose: str = "file", owner: str | None = None) -> dict:
     """保存一个上传文件（人话：既留原件供下载，也提取文字给 AI 读）。
 
     为什么要存两份？
@@ -533,8 +533,13 @@ def save_upload(filename: str, content: str, raw: bytes | None = None,
 
     :param raw: 文件原始字节；不传就只有文字、没有原件可下载
     :param purpose: 见 PURPOSES —— **只有 "kb" 会被切块进检索**，别的一概不建索引
+    :param owner: 这份文件**属于谁**（#45-B）。不传 = 取当前请求方的学号；
+        管理员那条上传口**显式传 `owner=""`**（那是公共知识，不属于任何学生）。
+        ⚠️ 不接受"前端爱填谁就填谁"——理由与 `add_workorder` 的 owner 一样：
+        body 里谁都能改，能填就等于能冒充。身份只有 `current_student()` 这一个来源。
     """
     purpose = norm_purpose(purpose)
+    owner = current_student() if owner is None else str(owner or "").strip()
     os.makedirs(_upload_dir(), exist_ok=True)
     fid = uuid.uuid4().hex[:12]
     # 1) 提取出的文字
@@ -564,6 +569,7 @@ def save_upload(filename: str, content: str, raw: bytes | None = None,
         "chars": len(content),
         "preview": content[:200],  # 列表页给个预览，不用真的再读一遍文件
         "purpose": purpose,
+        "owner": owner,             # #45-B：空串 = 公共知识文档（管理员传的）或无主老数据
     }
     data = _read("uploads.json", {"files": []})
     data.setdefault("files", []).append(item)
@@ -572,8 +578,49 @@ def save_upload(filename: str, content: str, raw: bytes | None = None,
 
 
 def list_uploads() -> list:
-    """列出所有上传文件，倒序（最新在前）。"""
+    """列出所有上传文件，倒序（最新在前）。
+
+    ⚠️ 这是**"上传桶里有啥"**，不过滤归属 —— 给管理端与内部重建索引用。
+    学生面前那一屏/那句工具话术要用 `visible_uploads()`，别拿这份直接回。
+    """
     return list(reversed(_read("uploads.json", {"files": []}).get("files", [])))
+
+
+def can_read_upload(meta) -> bool:
+    """当前请求方能不能读这份上传文件（#45-B，**判据只有这一处**）。
+
+    一句话口径：**管理员传的公共知识人人可读；学生传的只有本人可读。**
+
+    实测逼出来的两条，施工单 §二 里都没有：
+    ① **被通知引用的那份要放行**。`notices.json` 里唯一那份附件
+      （`数据结构实验报告样例.docx`）是 `purpose=None / owner=None` ——
+      只按"无归属 ⇒ 必须 kb"判，学生点通知附件会直接变 404，
+      等于把"附件能下载"这个已上线功能当 collateral damage 删掉。
+      引用关系本来就存在（`upload_notice_refs`，删文档那道闸在用），
+      所以判"管理员已发布给全体学生"不需要新字段、也不引入第二份真相。
+    ② **无归属的老数据按 `demo` 口径放行**，不是全盘拒。
+      `current_owner()` 的既有约定就是"没身份（测试 / 演示脚本 / 没登录）= demo"，
+      `visible_rows` 也是这么处理无 owner 老行的。照单子里那句"一律不放行"改，
+      未登录演示那一路（#35 的空状态引导、`test_59` B 批钉着）和一批测试会一起红 ——
+      那不等于把隔离做严了，只是把"没登录的人"关在自己刚传的文件外面。
+    ⚠️ 两条都不放宽**学生之间**：有 owner 的行只认本人，无 owner 的非 kb 行只认 demo 口径，
+    所以 admin1 传的那份 admin2 读不到，反之亦然（`test_72` B 批逐条钉）。
+    """
+    if not meta:
+        return False
+    who = str(meta.get("owner") or "")
+    if who:
+        return who == current_owner()
+    if upload_purpose(meta) == "kb":
+        return True
+    if upload_notice_refs(str(meta.get("id") or "")):
+        return True
+    return current_owner() == DEMO_OWNER
+
+
+def visible_uploads() -> list:
+    """学生口径的上传列表（工具「我有哪些文件」与 `/api/uploads` 都用这一份）。"""
+    return [f for f in list_uploads() if can_read_upload(f)]
 
 
 def list_docs() -> list:
@@ -662,9 +709,11 @@ def all_chunks():
     ⚠️ 只吐知识文档（purpose=="kb"）：这是"检索面"的那道闸，和 `save_upload` 里"不给非 kb 建索引"
     是同一件事的两头 —— 一头保证磁盘上不会有学生课表的块，这一头保证**就算有**（#40 最初版留下的旧块、
     或手改文件）也进不了模型的检索结果。少一头都不算修完。
+    ⚠️ #45-B 再叠一道 `can_read_upload`：kb 也可能带着归属（管理员在已登录学生的浏览器里
+    从管理端传的文档，`current_student()` 不是空的），那种按"本人私有"处理，不进公共检索。
     """
     for f in list_uploads():
-        if upload_purpose(f) != "kb":
+        if upload_purpose(f) != "kb" or not can_read_upload(f):
             continue
         fid = str(f.get("id") or "")
         if not fid:

@@ -48,7 +48,7 @@ from app.store import (
     get_settings, set_settings,
     summarize_llm_usage, clear_llm_usage,
     MAX_UPLOAD_BYTES,
-    save_upload, list_uploads, get_upload, get_upload_meta, get_upload_raw_path,
+    save_upload, list_uploads, visible_uploads, can_read_upload, get_upload, get_upload_meta, get_upload_raw_path,
     list_docs, upload_purpose, list_chunks, reindex_upload, delete_upload, upload_notice_refs,
     get_conversation, append_conversation, clear_conversation,
     get_timetable_data, list_todos, list_todos_in_month,
@@ -882,7 +882,10 @@ def _tt_file_courses(message: str, session_id: str = "") -> list | None:
     if not name:
         return None
     fid = None
-    for f in (list_uploads() or []):
+    # 45-D：按**文件名**在全局桶里找是第二条绕过归属的路 —— 同一份课表被传过 14 次
+    # （实测 `2026秋季课表-纯文本.txt` 在表里有 14 条），同名取"最新那条"，
+    # 而 list_uploads() 是倒序 ⇒ 拿到的很可能是**别人**那份。换成学生口径的可见集。
+    for f in (visible_uploads() or []):
         if (f.get("name") or "").strip() == name:
             fid = f.get("id")
             break
@@ -4941,7 +4944,8 @@ async def student_personas_get():
 # ============ 文件上传（给 AI 助手读资料 / 给通知挂附件） ============
 
 @app.post("/api/upload")
-async def upload_file(file: UploadFile = File(...), purpose: str = Form("file")):
+async def upload_file(file: UploadFile = File(...), purpose: str = Form("file"),
+                      public_kb: str = Form("")):
     """接收一个上传文件，提取成文字存档（人话：让用户把资料交给 AI 读）。
 
     同时保留原件，这样通知的附件还能让学生下载回去。
@@ -4975,19 +4979,35 @@ async def upload_file(file: UploadFile = File(...), purpose: str = Form("file"))
     except UploadError as e:
         return JSONResponse({"error": str(e)}, status_code=400)
 
-    item = save_upload(file.filename, text, raw=data, purpose=purpose)
+    # #45-B：这份文件**属于谁**。判"公共"要同时满足两条（purpose=kb **且** 来自管理端那一档的
+    # `public_kb=1`）—— 只认 purpose 是不够的：它是客户端带来的表单字段（上面那段已知边界写着），
+    # 而"把某个人的私有文件挂到公共检索里"这件事不该由传的人自己点头。
+    # 不传 public_kb 又标了 kb 的那些（含未登录演示）落到 `current_student()`，
+    # 管理员在已登录学生的浏览器里开管理端也算学生 ⇒ 那份不会变成公共知识（护栏 B8 钉着）。
+    owner = "" if (purpose == "kb" and str(public_kb or "") == "1") else None
+    item = save_upload(file.filename, text, raw=data, purpose=purpose, owner=owner)
     return {"ok": True, "file": item}
 
 
 @app.get("/api/uploads")
 async def uploads_list():
-    """列出上传到过的文件（倒序）。"""
-    return {"files": list_uploads()}
+    """列出上传到过的文件（倒序）。
+
+    ⚠️ #45-B：这里返回的是**当前这个人的**可见集（`visible_uploads()`），不是整个上传桶。
+    以前这一句是 `list_uploads()` 全量倒出 —— 那条口**免口令、不认 cookie**，
+    也就是说评委不用说话、直接把浏览器地址栏敲成 `/api/uploads`，
+    就能拿到全站 35 份文件的 id + 文件名（一半是别人的课表原件名），
+    再顺 `/api/uploads/{id}` 或 `/download` 读全文。这是本单里最直接的一条泄露路。
+    """
+    return {"files": visible_uploads()}
 
 
 @app.get("/api/uploads/{fid}")
 async def uploads_content(fid: str):
     """查看某个文件提取出的文字（人话：AI 眼里的这份资料长什么样）。"""
+    if not can_read_upload(get_upload_meta(fid)):
+        # 说"找不到"而不是"无权访问"：后者等于把"这里确实有一份"告诉他了。
+        return JSONResponse({"error": "文件不存在"}, status_code=404)
     content = get_upload(fid)
     if content is None:
         return JSONResponse({"error": "文件不存在"}, status_code=404)
@@ -4998,10 +5018,12 @@ async def uploads_content(fid: str):
 @app.get("/api/uploads/{fid}/download")
 async def uploads_download(fid: str):
     """下载文件原件（人话：通知附件要能原样下载回去）。"""
+    meta = get_upload_meta(fid) or {}
+    if not can_read_upload(meta):
+        return JSONResponse({"error": "文件不存在，或当时没有保留原件"}, status_code=404)
     path = get_upload_raw_path(fid)
     if not path:
         return JSONResponse({"error": "文件不存在，或当时没有保留原件"}, status_code=404)
-    meta = get_upload_meta(fid) or {}
     return FileResponse(path, filename=meta.get("name") or "file")
 
 
