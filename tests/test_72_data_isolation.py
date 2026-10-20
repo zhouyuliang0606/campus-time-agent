@@ -355,10 +355,16 @@ def batch_c_pending():
 
         disk = json.load(open(data_path("pending.json"), encoding="utf-8"))
         keys = list(disk)
-        c.check("C6 落盘形状跟着变：卡存在盘上的键带身份前缀，裸 session_id 一个都不许有"
+        # ⚠️ 判据钉的是"前缀 == store 的口径本身"，**不是**"键里含 |"：
+        # 变异 M18（`_key` 用 `current_student()` 而非 `current_owner()`）落出来的键是 `|sess-c-2`，
+        # 一样带分隔符、一样把两个人分得开，只写"含 |"它当场溜过去（2026-10-20 实测：C 批 8 条全绿、
+        # 退出码 0）。而它实际是坏的 —— 没身份时前缀成了空串，与 `visible_rows` / `_spath`
+        # 那套 `demo` 口径不是同一个东西，两处口径迟早打架。
+        c.check("C6 落盘形状跟着变：键 = `<store 口径>|<sid>`（裸 sid 一个都不许有，前缀必须是口径本身）"
                 "（只改内存、盘上仍旧共享 = 重启后照样串）",
-                any(k.endswith("|" + SID) for k in keys) and SID not in keys and SID2 not in keys,
-                "键=%s / 当前口径=%r" % (keys, store.current_owner()))
+                f"{A1}|{SID}" in keys and f"{store.DEMO_OWNER}|{SID2}" in keys
+                and SID not in keys and SID2 not in keys,
+                "键=%s / DEMO_OWNER=%r / 当前口径=%r" % (keys, store.DEMO_OWNER, store.current_owner()))
     return c
 
 
