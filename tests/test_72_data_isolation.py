@@ -272,6 +272,21 @@ def batch_b_uploads():
         c.check("B14 通知附件那份：学生能下载（这一条是实测逼出来的偏离，施工单的判据会误伤它）",
                 cli2.get(f"/api/uploads/{ATT}/download").status_code == 200
                 and cli1.get(f"/api/uploads/{ATT}/download").status_code == 200)
+
+        # 路由层那半边（变异 N2 实测从 B 批溜过去了：B 批前面全用 `_seed_upload` **直接摆台账**，
+        # 于是"上传这一刻 owner 由 store 兜底取当前学号"这条**一条行为断言都没有** ——
+        # 把 store 里那行兜底拆掉，只有 `test_63` 的形状点名会红，整条链路测试全绿）。
+        up1 = cli1.post("/api/upload", files={"file": ("本轮自种-该归他.txt",
+                                                      "只有传它的人看得到".encode("utf-8"),
+                                                      "text/plain")}).json()
+        got, hid = up1.get("file") or {}, (up1.get("file") or {}).get("id")
+        c.check("B15 真打 `/api/upload` 那一份：台账记的 owner 就是**当前 cookie 那个人**（不是空串、不是别人），"
+                "而且别人拿他的 fid 直接 404",
+                got.get("owner") == A1 and cli1.get(f"/api/uploads/{hid}").status_code == 200
+                and cli2.get(f"/api/uploads/{hid}").status_code == 404,
+                "owner=%r 本人=%s 别人=%s" % (got.get("owner"),
+                                             cli1.get(f"/api/uploads/{hid}").status_code,
+                                             cli2.get(f"/api/uploads/{hid}").status_code))
     return c
 
 

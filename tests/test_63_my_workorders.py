@@ -173,6 +173,26 @@ def batch_c_student_progress():
     return c
 
 
+_OWNER_TAKE = "current_student() if owner is None else"
+
+
+def _owner_takers(src: str) -> list:
+    """`store.py` 里「owner 由 store 自己兜底取值」分别落在**哪几个函数**里。
+
+    判据从"数它出现几次"换成"点名是哪几个函数"：#43 那条老账（计数式护栏随写入口增减必然漂）
+    在 #45-B 又应了一次验 —— 给 `save_upload` 加归属之后 2→3，D2 当场红，而那笔是对的。
+    点名版本红了会直接把集合打出来，一眼分得清是"多了一个写入口"还是"取值被挪到调用方去了"。
+    """
+    names, cur = [], ""
+    for ln in src.splitlines():
+        s = ln.strip()
+        if s.startswith("def ") or s.startswith("async def "):
+            cur = s.split("(")[0].replace("async def", "").replace("def", "").strip()
+        if _OWNER_TAKE in ln and cur and cur not in names:
+            names.append(cur)
+    return sorted(names)
+
+
 def batch_d_shape():
     """D 批 · 形状：口令边界不动、判据不抄第二遍、两张表都显示归属、那句承诺还在。"""
     c = Checker()
@@ -190,9 +210,14 @@ def batch_d_shape():
     c.check("D1-bis 学生那条不收学号参数、不挂口令：身份只来自 current_student()（cookie）",
             "include_archived: bool = True" in seg[:200] and "who = current_student()" in seg
             and "verify_admin" not in seg[:400] and 'body.get("student")' not in seg[:1200], "")
-    c.check("D2 owner 的取值只在 store 两处（两个写入口各一次默认取值），调用方一律不传",
-            st.count("current_student() if owner is None else") == 2,
-            f"{st.count('current_student() if owner is None else')} 处")
+    takers = _owner_takers(st)
+    c.check("D2 owner 的兜底取值只在 store 的**写入口**里（点名，不数个数）：工单 / 学生消息 / 上传台账（#45-B）",
+            takers == ["add_message", "add_workorder", "save_upload"], f"实际落在：{takers}")
+    w_calls = [ln.strip() for ln in mn.splitlines()
+               if any(k in ln for k in ("save_upload(", "add_workorder(", "add_message(")) and "owner=" in ln]
+    c.check("D2-ter 调用方**只许**把 store 自己算出来的那个 `owner=owner` 递过去（公共文档那档 = 空串）；"
+            "递学号、递 body 里的字段就是「前端说什么算什么」",
+            not [x for x in w_calls if "owner=owner" not in x], f"这些调用点递了别的：{w_calls}")
     c.check("D2-bis 两条写入口都不许自己塞 owner（塞了就是「前端说什么算什么」）",
             "owner" not in mn[mn.index("add_workorder(kind=kind"):mn.index("add_workorder(kind=kind") + 200]
             and "owner" not in ex[ex.index("add_workorder(kind=kind"):ex.index("add_workorder(kind=kind") + 200],
