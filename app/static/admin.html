@@ -342,6 +342,12 @@
         <div id="view-kb" class="nav-view">
           <div class="card">
       <h2>📚 知识库管理（零代码维护，学生端问答直接吃这份数据）</h2>
+      <div class="small" style="margin-bottom:10px;">
+        这一档是<b>一问一答条目</b>，<b>不需要切块</b> —— 整条按关键词比对，<b>加了立刻生效、不用重启</b>。
+        切块的是隔壁「📄 文档知识库」那一档（整份文件切成小块再检索，能答得更细）。
+        学生问一句话时<b>两路一起查</b>，他只看到一段答案，不需要知道后面有两条路。
+        关键词那栏<b>留空也行</b>：会从问题里自动提取（#46），所以"加了条目却问不到"这一条已经修掉了。
+      </div>
       <div class="grid2">
         <div>
           <label>问题</label>
@@ -697,6 +703,9 @@
         return;
       }
       const entries = data.entries || [];
+      // 读成功就把上一回那句「读不到」擦掉：留着它，屏幕上就是"现在也是坏的"，
+      // 而实际上这一屏已经是新数据了（拿旧错误当当前状态，是同一族病的第三种长相）。
+      if (st) st.textContent = "";
       // ⚠️ 「还是空的」这句**只许在"读成功、表里真没条目"这一支**出现（配对判据 #46 B2/B3）：
       // 以前它同时充当"加载失败"的默认屏，等于拿旧账充"现在还是这些"。
       if (!entries.length) { box.innerHTML = '<div class="empty">知识库还是空的</div>'; return; }
@@ -723,12 +732,16 @@
         })).json();
         const rows = (d.entries || []).map(e =>
           (e.index >= 0 ? e.index + ". " : "（这条不在列表里？）") + e.question);
-        const docs = (d.docs || []).map(x =>
-          "《" + x.name + "》第 " + x.i + " 块（相关度 " + x.score + "）");
+        const all = d.docs || [];
+        // 只列前 4 块并说清总数：实测问一句能刷出十几块（`doc_hits` 的门槛是 score>0，见指南 §六 那条缺口），
+        // 全贴上来管理员反而看不出"到底哪几块是被采用的"—— 学生那一路实际只取 4 块（`files.pick_diverse`）。
+        const docs = all.slice(0, 4).map(x =>
+          "《" + x.name + "》第 " + x.i + " 块（相关度 " + Number(x.score || 0).toFixed(2) + "）");
+        const tail = all.length > 4 ? "…共 " + all.length + " 块沾边（学生那一路只取前 4 块）" : "";
         // 一律 textContent：条目与文档名都是用户可控的，不拼进 innerHTML（红线 24 那一族）
         out.textContent = (d.hit ? "✅ 查到了" : "⚠️ 这一句两路都没查到，学生会走模型")
           + "\n问答条目：" + (rows.join("；") || "没命中")
-          + "\n文档块：" + (docs.join("；") || "没命中")
+          + "\n文档块：" + (docs.join("；") || "没命中") + tail
           + "\n\n学生在气泡里会看到：" + (d.student_view || "");
       } catch (e) {
         out.textContent = "❌ 试查没成功：" + String(e.message || e);

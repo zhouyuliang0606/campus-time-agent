@@ -231,6 +231,12 @@ def batch_b_panel():
         c.check("B8-bis 对照：真读通时回的是 {entries: []} —— 「空表」与「读不到」两种回包形状不同，"
                 "前端才有得分两件事说", list(body) == ["entries"] and body["entries"] == [],
                 str(body)[:70])
+    c.check("B3-bis 读成功那一支把上一句「读不到」擦掉了（留着就等于拿旧错误充当现在的状态）",
+            'st.textContent = "";' in kb and kb.index('st.textContent = "";') > kb.index("catch (e)"),
+            kb[kb.index("const entries"):][:80])
+    c.check("B9 面板开头那段把两档的分界写清了：这一档不切块、留空也能提词"
+            "（用户最初那句「切块是我手动切的」就是被两个面板长得像骗的）",
+            "不需要切块" in html and "留空也行" in html and "文档知识库" in html)
     return c
 
 
