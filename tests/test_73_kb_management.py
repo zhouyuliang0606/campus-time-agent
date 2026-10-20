@@ -229,8 +229,83 @@ def batch_b_panel():
     return c
 
 
+def _tree_fp(root: str) -> str:
+    """整目录递归指纹（验"只读"只能这么验：逐文件比字节，不是"看着没写"）。"""
+    import hashlib
+    items = []
+    for dirpath, _dirs, files in os.walk(root):
+        for fn in sorted(files):
+            p = os.path.join(dirpath, fn)
+            with open(p, "rb") as f:
+                items.append((os.path.relpath(p, root), hashlib.md5(f.read()).hexdigest()))
+    return hashlib.md5(repr(sorted(items)).encode()).hexdigest()
+
+
+def batch_c_probe():
+    c = Checker()
+    title("C. 46-C：管理员能自己试一句（探针走的是学生那同一个函数，且只读）")
+    from app import store
+
+    mn = _src("app/main.py")
+    i = mn.index("async def admin_kb_probe")
+    body = mn[i:mn.index("@app", i + 10)]
+    c.check("C1 探针没另写一套检索：调的就是学生端那个 `_kb_parts`，函数体里没有第二个匹配循环",
+            "_kb_parts(q)" in body and "for item in" not in body and "in q for kw" not in body,
+            body[:70])
+    c.check("C2 探针不碰模型、不写库（函数体里既没有 llm/ask，也没有 _write/add_/save_）",
+            not any(w in body for w in ("llm", "ask_", "chat(", "_write(", "add_kb_entry",
+                                        "save_pending", "update_kb_entry")),
+            [w for w in ("llm", "ask_", "_write(", "add_kb_entry") if w in body])
+    probe = _js_fn(_src("app/static/admin.html"), "probeKB")
+    c.check("C3 前端那一格走 textContent、不拼 innerHTML（条目与文档名都是用户可控的，红线 24 那一族）"
+            "（判据看的是 `.innerHTML` 这个**写法**，不是单词 —— 我自己那句注释里正好写着这个单词）",
+            "out.textContent" in probe and ".innerHTML" not in probe, probe[:70])
+    c.check("C3-bis 前端有 catch（读不到就照实说，别再犯 46-B 那条病）"
+            "且结果区含「学生会看到」那一行（探针的价值就在「学生真看到什么」这一行）",
+            "catch (e)" in probe and "student_view" in probe, probe[:70])
+    c.check("C3-ter 输入框、按钮、结果区、绑定四样都在",
+            all(x in _src("app/static/admin.html") for x in
+                ('id="kbProbeQ"', 'id="kbProbeBtn"', 'id="kbProbeOut"',
+                 'getElementById("kbProbeBtn").addEventListener("click", probeKB)')))
+
+    with sandbox():
+        _seed_kb([{"question": "游泳馆怎么预约", "answer": "公众号上预约，每人每天两个时段。",
+                   "keywords": ["游泳馆"]}])
+        store.add_kb_entry("图书馆几点开门", "平时到二十二点三十分。", [])
+        cli = make_client()
+        r = cli.post("/api/admin/kb/probe", json={"query": "图书馆几点关门"})
+        d = r.json()
+        c.check("C4 命中形状：条目那条要报得出**序号**（管理员得知道去编辑哪一条），question 也对得上",
+                r.status_code == 200 and len(d["entries"]) == 1
+                and d["entries"][0]["index"] == 1 and d["entries"][0]["question"] == "图书馆几点开门",
+                str(d)[:120])
+        c.check("C5 hit 是真的从两个列表算出来的（不是嗅文案）：这一句命中 ⇒ true",
+                d["hit"] is True, d.get("hit"))
+        sv = d["student_view"] or ""
+        c.check("C6 `student_view` 是学生气泡里那份：带答案与出处，**不许**带「相关度 / 原文第几字起」这类给模型的元数据",
+                "二十二点三十分" in sv and "相关度" not in sv and "原文第" not in sv, sv[:110])
+        empty = cli.post("/api/admin/kb/probe", json={"query": "   "})
+        c.check("C7 空话回 400（不许「成功地查到 0 条」—— 那与真查不到长得一样，#41 那一族的老形状）",
+                empty.status_code == 400 and "error" in empty.json(),
+                f"{empty.status_code} {empty.text[:60]}")
+        nohit = cli.post("/api/admin/kb/probe", json={"query": "外星人驻扎在哪个楼"})
+        c.check("C7-bis 对照：两路都查不到时 hit=false、条目与文档都是空表（前端才说得出「没查到」）",
+                nohit.json()["hit"] is False and nohit.json()["entries"] == []
+                and nohit.json()["docs"] == [], str(nohit.json())[:110])
+        bad = make_client(headers={"X-Admin-Token": "000000-not-real"})
+        c.check("C8 探针挂口令（它是「管理员自检」，不是第二条学生入口）",
+                bad.post("/api/admin/kb/probe", json={"query": "图书馆"}).status_code == 401)
+        before = _tree_fp(data_path(""))
+        cli.post("/api/admin/kb/probe", json={"query": "图书馆几点关门"})
+        cli.post("/api/admin/kb/probe", json={"query": "游泳馆怎么预约"})
+        c.check("C9 **只读**：连打两次探针之后，沙箱数据目录整树指纹一字未动",
+                _tree_fp(data_path("")) == before, "指纹变了")
+    return c
+
+
 BATCHES = [("A 批（46-A 关键词派生）", batch_a_derive),
-           ("B 批（46-B 面板不静默）", batch_b_panel)]
+           ("B 批（46-B 面板不静默）", batch_b_panel),
+           ("C 批（46-C 试检索探针）", batch_c_probe)]
 
 
 def main():

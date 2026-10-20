@@ -4816,6 +4816,52 @@ async def admin_kb_delete(index: int):
     return {"ok": True}
 
 
+@app.post("/api/admin/kb/probe", dependencies=[Depends(verify_admin)])
+async def admin_kb_probe(req: Request):
+    """试检索探针（人话：管理员自己验一下"这句话学生问得到答案吗"，#46-C）。
+
+    为什么要有它：以前唯一的验法是切到学生端问一句 —— 又慢，又把"查不到"变成一件**要靠猜**的事
+    （是这条条目没命中？是被文档那一路盖掉了？还是这条根本没进检索面？）。
+
+    ⚠️ 三条要紧的：
+    ① **不另写一套检索**：直接调学生端那同一个 `faq._kb_parts()`。探针自己算一遍，
+       就等于亲手造出"探针说命中、学生说没有"那种自相矛盾（本项目反复吃过的亏）；
+    ② **只读**：不写 `kb.json`、不进聊天历史、不计模型流水（护栏 C3 拿整目录指纹钉住这件事）；
+    ③ `student_view` 是 `answer_for_student()` 的原样输出 —— 也就是**学生气泡里真会出现的那段话**
+       （#41-A 之后那份不带"相关度 3.80 / 原文第几字起"这些给模型定位的元数据），
+       不是给模型看的那一份。
+    """
+    from app.modules.faq import _kb_parts, answer_for_student
+
+    body = await req.json()
+    q = str(body.get("query") or "").strip()
+    if not q:
+        # 空话不许"成功地查到 0 条"：那与真查不到长得一模一样（#41 那一族的老形状）
+        return JSONResponse({"error": "先写一句要试查的话"}, status_code=400)
+
+    entries, docs = _kb_parts(q)
+    # 命中的条目要报**序号**（管理员得知道去编辑哪一条）。`_kb_parts` 读的是刚解析出来的字典，
+    # 不是 `list_kb()` 里那批 ⇒ 只能按内容回查位置；内容完全相同的两条可互换，报第一条。
+    def _key(r):
+        return (str(r.get("question")), str(r.get("answer")),
+                tuple(str(k) for k in (r.get("keywords") or [])))
+
+    pos = {}
+    rows = list_kb()
+    for i, r in enumerate(rows):
+        pos.setdefault(_key(r), i)
+    out_entries = [{"index": pos.get(_key(e), -1),
+                    "question": e.get("question"),
+                    "keywords": e.get("keywords") or []} for e in entries]
+    return {
+        "query": q,
+        "entries": out_entries,
+        "docs": [{"name": d.get("name"), "i": d.get("i"), "score": d.get("score")} for d in docs],
+        "hit": bool(out_entries or docs),
+        "student_view": answer_for_student(q),
+    }
+
+
 # ============ 管理控制台：文档知识库（**只收管理员在这一档传的知识文档**） ============
 # 跟上面那份 kb.json（一问一答的条目）是两条线：这边是**整份文件**，切成块存着
 # （uploads/<fid>.chunks.json），AI 靠 search_docs 在里面检索。

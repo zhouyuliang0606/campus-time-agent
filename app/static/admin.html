@@ -355,6 +355,12 @@
           <div class="small" id="kbStatus" style="margin-top:8px;"></div>
         </div>
         <div>
+          <div class="small" style="margin-bottom:6px;">
+            试一句学生可能会说的话
+            <input id="kbProbeQ" placeholder="如：图书馆几点关门" style="width:52%;margin:0 6px;" />
+            <button class="btn ghost" id="kbProbeBtn">试查</button>
+          </div>
+          <div class="small" id="kbProbeOut" style="margin-bottom:8px;white-space:pre-wrap;"></div>
           <div class="small" style="margin-bottom:6px;">已有条目（编辑/删除即时生效）
             <button class="btn ghost" id="refreshKb" style="margin-left:8px;">刷新列表</button>
           </div>
@@ -704,9 +710,32 @@
           </div>
         </div>`).join("");
     }
+    // ---------- 46-C：试检索探针（管理员自己验"这句话学生问得到答案吗"） ----------
+    async function probeKB() {
+      const q = document.getElementById("kbProbeQ").value.trim();
+      const out = document.getElementById("kbProbeOut");
+      if (!q) { out.textContent = "先写一句要试查的话"; return; }
+      try {
+        const d = await (await adminFetch("/api/admin/kb/probe", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ query: q }),
+        })).json();
+        const rows = (d.entries || []).map(e =>
+          (e.index >= 0 ? e.index + ". " : "（这条不在列表里？）") + e.question);
+        const docs = (d.docs || []).map(x =>
+          "《" + x.name + "》第 " + x.i + " 块（相关度 " + x.score + "）");
+        // 一律 textContent：条目与文档名都是用户可控的，不拼进 innerHTML（红线 24 那一族）
+        out.textContent = (d.hit ? "✅ 查到了" : "⚠️ 这一句两路都没查到，学生会走模型")
+          + "\n问答条目：" + (rows.join("；") || "没命中")
+          + "\n文档块：" + (docs.join("；") || "没命中")
+          + "\n\n学生在气泡里会看到：" + (d.student_view || "");
+      } catch (e) {
+        out.textContent = "❌ 试查没成功：" + String(e.message || e);
+      }
+    }
+
     function editKB(i) {
-      editingKb = i;
-      adminFetch("/api/admin/kb").then(r => r.json()).then(d => {
+      editingKb = i;      adminFetch("/api/admin/kb").then(r => r.json()).then(d => {
         const e = (d.entries || [])[i];
         if (!e) {
           // 列表已经变了（另一边删过/加过）⇒ 别拿 undefined 去填表：那会把表单清成空，
@@ -879,6 +908,7 @@
     document.getElementById("refreshDocs").addEventListener("click", loadDocs);
     // #46-B：读失败时用户手上得有个能重试的东西（「知识库」这一档以前没有，文档那档有）
     document.getElementById("refreshKb").addEventListener("click", loadKB);
+    document.getElementById("kbProbeBtn").addEventListener("click", probeKB);
 
     // ---------- 学生工单（学生确认上报的问题，管理员在这里看并改状态） ----------
     async function loadWorkOrders() {
