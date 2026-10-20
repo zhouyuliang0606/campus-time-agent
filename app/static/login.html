@@ -124,6 +124,10 @@
       return;
     }
     localStorage.setItem("campustime_student", d.student);   // 只是显示用；后端认 cookie
+    // ⚠️ #45-C：对话 id 是**浏览器级**的，留着就是把上一位没点确认的卡递给下一位。
+    //    与 doLogout（student.html 退出登录）同一条理由，两边都要有。
+    //    只清这一个键：ct_bg / ct_profile_name / ct_model_cfg 那些是**偏好**，换账号不该被弄丢。
+    localStorage.removeItem("campustime_session");
     location.href = "/student";                              // 整页跳转：下一位不该看见上一位的 DOM
   }
 </script>

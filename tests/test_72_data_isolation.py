@@ -275,8 +275,96 @@ def batch_b_uploads():
     return c
 
 
+def batch_c_pending():
+    c = Checker()
+    title("C. 45-C：暂存卡的键 = 身份 + session_id（换账号不再串卡）")
+    from app import store
+    from app.agent import pending
+
+    A1, A2 = "admin1", "admin2"
+    SID, SID2 = "sess-c-1", "sess-c-2"
+    CARD = [{"kind": "todo_add", "title": "交实验报告", "due": "2026-10-21 20:00",
+             "text": "周三 20:00 交实验报告", "applied": False}]
+
+    # ---- 静态那两条先跑（不进沙箱：它们判的是源码与前端文件，跟数据目录无关）----
+    html = _src("app/static/login.html")
+    c.check("C5 登录页换人时清掉浏览器级 session（与退出登录同一条理由，两边都得有）",
+            'localStorage.removeItem("campustime_session")' in html,
+            "campustime_session 在该文件出现 %d 次" % html.count("campustime_session"))
+    c.check("C5-bis 只清那一个键：整片清空会把外观/昵称/模型配置这些**偏好**一起弄丢",
+            "localStorage.clear()" not in html,
+            "出现 localStorage.clear() ⇒ 换账号会连带丢掉 ct_bg / ct_profile_name / ct_model_cfg")
+
+    bare = _strip(_src("app/agent/pending.py"))
+    leftovers = [b for b in ("_PENDING[session_id]", "_PENDING.get(session_id",
+                             "_PENDING.pop(session_id", "_pending_entry(session_id)")
+                if b in bare]
+    c.check("C7 pending.py 里对 `_PENDING` 的每一次读写都过 `_key`（漏一处就是「只改了一半」，"
+            "而 C1 那种单向断言正好抓不到漏的那一半）",
+            not leftovers and bare.count("_key(session_id)") >= 5,
+            f"仍收裸 id：{leftovers} / _key(session_id) 出现 {bare.count('_key(session_id)')} 次（出口应有 5 个）")
+
+    with sandbox():
+        with _as_student(A1):
+            pending.save_pending(SID, CARD)
+
+        with _as_student(A2):
+            other = pending.peek_pending(SID)
+        with _as_student(A1):
+            mine = pending.peek_pending(SID)
+        # ⚠️ 配对断言（不是单向）：施工单把 C1 写成"别人拿不到"，可"只改了一半"的实现
+        # 同样能通过它 —— 只有把"本人还得拿得到"放进**同一条**里，改一半才会当场红。
+        c.check("C1 学生 1 存的卡：他自己在同一 session_id 上仍拿得到，学生 2 一个字都看不到",
+                mine is not None and other is None,
+                "本人=%r 别人=%r" % (None if mine is None else mine.get("options"), other))
+
+        with _as_student(A2):
+            stolen = pending.take_pending(SID)
+        with _as_student(A1):
+            still = pending.peek_pending(SID)
+        c.check("C2 别人来『取』（确认后落库那条路）也拿不走，而且不许顺手把本人那张擦掉",
+                stolen is None and still is not None,
+                "admin2 take=%r / admin1 之后还在=%s" % (stolen, still is not None))
+
+        with _as_student(""):
+            pending.save_pending(SID2, CARD)
+        with _as_student(A1):
+            student_view = pending.peek_pending(SID2)
+        with _as_student(""):
+            demo_view = pending.peek_pending(SID2)
+        c.check("C3 未登录（demo 口径）出的卡：登录后看不到（他换了身份），demo 自己仍然接得回来",
+                student_view is None and demo_view is not None,
+                "学生=%r demo=%r" % (student_view, demo_view is not None))
+
+        # 接口层真验（内存对了不代表 HTTP 出口对）：cookie **走 /api/login 拿**。
+        # ⚠️ 别手写 `Cookie: ct_student=admin1`：一旦配了 CAMPUSTIME_COOKIE_SECRET，
+        #    手写值会被 `_clean_student` 判非法 ⇒ 两边都走 demo 口径 ⇒ 两条都一样 = **假绿**。
+        cli1, cli2 = make_client(), make_client()
+        r1 = cli1.post("/api/login", json={"student": A1})
+        r2 = cli2.post("/api/login", json={"student": A2})
+        p1 = cli1.get(f"/api/pending/{SID}").json()
+        p2 = cli2.get(f"/api/pending/{SID}").json()
+        c.check("C4 GET /api/pending/{sid} 在两个真 cookie 下分化：一个发回那张卡，一个回 null 且不泄漏标题",
+                r1.status_code == 200 and r2.status_code == 200
+                and (p1.get("pending") or {}).get("title") == "交实验报告"
+                and p2.get("pending") is None
+                and "交实验报告" not in json.dumps(p2, ensure_ascii=False),
+                "登录=%s/%s cookie=%s/%s admin1→%s admin2→%s"
+                % (r1.status_code, r2.status_code, bool(dict(cli1.cookies)), bool(dict(cli2.cookies)),
+                   json.dumps(p1, ensure_ascii=False)[:80], json.dumps(p2, ensure_ascii=False)[:60]))
+
+        disk = json.load(open(data_path("pending.json"), encoding="utf-8"))
+        keys = list(disk)
+        c.check("C6 落盘形状跟着变：卡存在盘上的键带身份前缀，裸 session_id 一个都不许有"
+                "（只改内存、盘上仍旧共享 = 重启后照样串）",
+                any(k.endswith("|" + SID) for k in keys) and SID not in keys and SID2 not in keys,
+                "键=%s / 当前口径=%r" % (keys, store.current_owner()))
+    return c
+
+
 BATCHES = [("A 批（45-A 课表来源）", batch_a_schedule_source),
-           ("B 批（45-B/45-D 上传桶按人分）", batch_b_uploads)]
+           ("B 批（45-B/45-D 上传桶按人分）", batch_b_uploads),
+           ("C 批（45-C 暂存卡按身份分键）", batch_c_pending)]
 
 
 def main():

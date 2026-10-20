@@ -7,7 +7,8 @@
 
 怎么修？
     把"出提案"和"执行"都变成**系统行为**，不依赖模型：
-      1. AI 出确认卡时，提案顺手存进这里（按 session_id 分开，学生之间互不干扰）；
+      1. AI 出确认卡时，提案顺手存进这里（键是 `<当前身份>|<session_id>`，见 `_key`，
+         换账号登录不会把上一位没点确认的卡递给他）；
       2. 学生回一句"确认"时，/api/chat 先做确定性判断——
          如果这句话是个"确认"，而且暂存里确实有课表提案，就**由系统直接写入**；
       3. 学生说别的（新需求），暂存立刻清空，不会出现"隔了十分钟才确认"的误改。
@@ -100,12 +101,30 @@ def _save() -> None:
         pass
 
 
+def _key(session_id: str) -> str:
+    """暂存的真正键：`<当前口径>|<session_id>`（#45-C）。
+
+    ⚠️ 为什么必须拼身份：session_id 是**浏览器级**的，换账号不清它（除了点退出）。
+    学生 1 没点确认就换人，那张卡会原样发给学生 2 —— 而学生 2 一点确认，
+    写进去的是**他的**库。看到的和写进去的两头都错。
+
+    ⚠️ 口径只取 `store.current_owner()`（没身份 = demo），**不在这里另读 cookie**：
+    身份只有一个来源（`main.bind_student` 那个中间件设的 ContextVar），
+    两处来源就会打架，打架的结果永远是"谁读都算数"。
+    """
+    if not session_id:
+        return ""
+    from app.store import current_owner      # 函数内导入：pending 有可能比 store 先被加载
+    return f"{current_owner()}|{session_id}"
+
+
 def save_pending(session_id: str, options: list) -> None:
     """把本轮生成的提案存进暂存（每轮换新的，旧的不要）。"""
-    if not session_id or not options:
+    k = _key(session_id)
+    if not k or not options:
         return
     _ensure_loaded()
-    _PENDING[session_id] = {
+    _PENDING[k] = {
         "options": list(options),
         "at": time.time(),
         "applied": False,
@@ -116,15 +135,16 @@ def save_pending(session_id: str, options: list) -> None:
 def peek_pending(session_id: str) -> dict | None:
     """只看一眼暂存里有什么，**不取走**（确认卡渲染时用）。"""
     _ensure_loaded()
-    return _pending_entry(session_id)
+    return _pending_entry(_key(session_id))
 
 
 def take_pending(session_id: str) -> dict | None:
     """取出并清空某个会话的暂存（确认后落库时用，保证只执行一次）。"""
     _ensure_loaded()
-    entry = _pending_entry(session_id)
+    k = _key(session_id)
+    entry = _pending_entry(k)
     if entry is not None:
-        _PENDING.pop(session_id, None)
+        _PENDING.pop(k, None)
         _save()
     return entry
 
@@ -136,7 +156,7 @@ def mark_applied(session_id: str) -> None:
     只标会话的话同一批卡还会被再写一遍。
     """
     _ensure_loaded()
-    entry = _PENDING.get(session_id)
+    entry = _PENDING.get(_key(session_id))
     if not isinstance(entry, dict):
         return
     entry["applied"] = True
@@ -151,19 +171,24 @@ def mark_applied(session_id: str) -> None:
 def clear_pending(session_id: str) -> None:
     """清空暂存（学生聊了别的，旧的提案就作废）。"""
     _ensure_loaded()
-    if _PENDING.pop(session_id, None) is not None:
+    if _PENDING.pop(_key(session_id), None) is not None:
         _save()
 
 
-def _pending_entry(session_id: str) -> dict | None:
-    """内部：取暂存，顺手清理过期项。"""
-    if not session_id:
+def _pending_entry(key: str) -> dict | None:
+    """内部：按**已拼好的键**（`_key` 的产物）取暂存，顺手清理过期项。
+
+    ⚠️ 这里收的已经不是裸 session_id：拼身份只在上面那几个出口各调一次，
+    本函数不再自己拼。它自己那次清理用的 `pop` 也必须同一个键 —— 这里是
+    最容易被漏的一处（外面五个出口都改了、这里漏改，就是"只改了一半"）。
+    """
+    if not key:
         return None
-    entry = _PENDING.get(session_id)
+    entry = _PENDING.get(key)
     if not isinstance(entry, dict):
         return None
     if time.time() - float(entry.get("at") or 0) > _TTL:
-        _PENDING.pop(session_id, None)
+        _PENDING.pop(key, None)
         _save()
         return None
     return entry
