@@ -8,6 +8,7 @@ import contextvars
 import datetime
 import json
 import os
+import re
 import uuid
 
 # 怎么把长文字切成小块是 upload.py 的事（它本来就管"把文件变成文字"），store 只负责把块存下来。
@@ -395,16 +396,123 @@ def delete_notice(nid: str) -> bool:
 
 # ============ 知识库管理（管理员零代码维护，faq 模块直接吃这份数据） ============
 
+# 检索时不该当关键词的虚词/疑问词（只列真正会出现在校园问句里的那些，别抄一整本停用词表）
+_KB_STOP = ("什么", "怎么", "怎样", "多少", "几点", "哪里", "在哪", "哪个", "哪些",
+            "如何", "可以", "能不能", "是否", "请问", "一下", "的话",
+            "的", "了", "吗", "呢", "啊", "呀", "吧", "我", "你", "要")
+
+# 两字的通用动宾/泛词：它们几乎能粘上任何问句（「食堂几点开门」也被「开门」粘上），
+# 自动派生时丢掉；⚠️ **管理员手写的关键词不受这张表影响**（那是他的判断，不该被代码覆盖）。
+# 「今天/明天/星期几」是本轮实测补进来的：派生词里留着「今天」的话，
+# 任何带"今天"的问句都会把那条「今天星期几」拽进学生气泡 —— 这三字在任何问句里都不带话题。
+_KB_GENERIC = {"开门", "关门", "时间", "电话", "地点", "位置", "预约", "收费", "费用",
+               "价格", "流程", "条件", "要求", "办理", "申请", "发车", "断电", "熄灯",
+               "网址", "密码", "东西", "今天", "明天", "星期几"}
+
+_STOP_RE = "|".join(map(re.escape, sorted(_KB_STOP, key=len, reverse=True)))
+_EDGE_RE = re.compile(r"^[在里与和或及等]+|[在里与和或及等]+$")
+
+
+def _kb_windows(p: str) -> list:
+    """一个词片补上 3 字、2 字的滑窗片段（短于 3 字的没什么可补）。"""
+    if len(p) < 3:
+        return [p]
+    return [p] + [p[i:i + 3] for i in range(len(p) - 2)] + [p[i:i + 2] for i in range(len(p) - 1)]
+
+
+def _kb_clean(words, limit: int) -> list:
+    """去重 + 去虚词/泛词 + 长的在前，最后按 `limit` 截。"""
+    seen, uniq = set(), []
+    for w in sorted(words, key=len, reverse=True):
+        if w and w not in seen and w not in _KB_STOP and w not in _KB_GENERIC:
+            seen.add(w)
+            uniq.append(w)
+    return uniq[:limit]
+
+
+def _kb_split(question: str) -> list:
+    """按虚词把一句问题劈成**词片** —— 这套"分词"的全部实现就这一处，别在别处再写第二遍。"""
+    q = re.sub(r"[^\w一-鿿]+", " ", str(question or "")).strip()
+    out: list = []
+    for w in (x for x in re.split(r"\s+", q) if x):
+        if w in _KB_STOP:
+            continue
+        parts = [_EDGE_RE.sub("", p) for p in re.split(_STOP_RE, w)]
+        parts = [p for p in parts if len(p) >= 2]
+        out.extend(parts or ([w] if len(w) >= 2 else []))
+    return _kb_clean(out, len(out) or 1)
+
+
+def derive_kb_keywords(question: str, limit: int = 12, pieces: bool = False) -> list:
+    """从问题原文里抽检索关键词（人话：没填关键词的条目，也能用学生说的原句查到）。
+
+    病根（#46-A，用户原话「我添加进去……即使学生问的原句也识别不到」）：
+    `faq` 那条判据只看 `keywords`，`question` 一个字符都不参与匹配，而管理端那一栏**可以留空**
+    （`admin.html` 只校验问题/答案）⇒ 留空 = 这条永远不可达，面板却回一句「✅ 已存」。
+
+    **不引分词库**（与 `files._tokenize` 同一取舍：零额外依赖也能跑起来）。
+    三步：按虚词劈成词片 → 每个词片再补 3 字、2 字滑窗片段 → 去重去泛词、长的在前。
+    为什么要滑窗：「考试周图书馆开到几点」劈出来是整片，学生却只会说「考试周图书馆几点关」
+    —— 补了 3 字片段才含「图书馆」这种真正的实体词。
+
+    ⚠️ `pieces=True`：**只要词片本身、不补滑窗片段**，因为「打错字」那一圈不许吃片段。
+    这不是理论风险，是实测撞出来的（#46-A 第一版两圈都用全量派生）：
+    条目「今天星期几」派生出「今天星」，而学生问「今天有什么课」里有个窗口「今天有」——
+    差一个字 ⇒ `_kb_fuzzy_hit` 判命中 ⇒ 一句日程问话被知识库直答成「看日历」。
+    这正是 `_kb_fuzzy_hit` 注释里那条「校车 vs 校长」真踩过的坑的**新来源**：
+    手写的关键词是管理员挑过的实词，滑窗碎片是 n-gram 噪声，噪声不该享受编辑距离容错。
+
+    实测（2026-10-20，本机跑的，不是设计稿）：
+      「图书馆几点开门」→ 图书馆, 图书, 书馆      （pieces=True 只剩：图书馆）
+      「校车在哪里坐、几点发车？」→ 校车
+      「补办学生证多少钱」→ 补办学生证, 补办学, 办学生, 学生证, 补办, 办学, 学生, 生证
+      「考试周图书馆开到几点」→ 考试周图书馆开到, 考试周, 试周图, 周图书, 图书馆, 书馆开,
+        馆开到, 考试, 试周, 周图, 图书, 书馆   ← 十二项，第 13 项「馆开」被 `limit` 截掉
+    ⚠️ 抄这几行进断言前**先跑一遍**：施工单里那一行就把 `书馆开` 写成了 `馆开`。
+    """
+    ps = _kb_split(question)
+    return ps[:limit] if pieces else _kb_clean(ps + [x for p in ps for x in _kb_windows(p)], limit)
+
+
+def kb_head_words(question: str, limit: int = 6) -> list:
+    """一条问答条目**存进去的那几个词** = 词片本身（不存滑窗碎片）。
+
+    三个理由，都不是审美：
+    ① 管理端那一屏不会被十几个碎片刷满（施工单 §一.4 担心的那件事，这样连"显示前 6 个 + 后缀"都不用写）；
+    ② 「打错字」那一圈只该吃**实词** —— 滑窗碎片是 n-gram 噪声，给它编辑距离容错就是把
+       `derive_kb_keywords` 那条 ⚠️（「今天星」接走「今天有什么课」）重新放出来；
+    ③ 存的那份与查的那份同源（`faq._entry_kws` 拿它去 `kb_expand`），管理员看得出这条靠什么命中。
+    """
+    return _kb_split(question)[:limit]
+
+
+def kb_expand(words, limit: int = 12) -> list:
+    """把一组词片补上滑窗片段 —— **精确匹配那一圈**用它（手写的与派生的走同一条路）。"""
+    ws = [str(w).strip().lower() for w in (words or []) if str(w).strip()]
+    return _kb_clean(ws + [x for w in ws for x in _kb_windows(w)], limit)
+
+
 def list_kb() -> list:
     """列出知识库全部条目。"""
     return _read("kb.json", {"entries": []}).get("entries", [])
+
+
+def _kb_row(question: str, answer: str, keywords: list) -> dict:
+    """一条问答条目的落盘形状 —— **存的时候兜底**在这里（#46-A 两处接上的第一处）。
+
+    为什么 add/update 合成一个：这条兜底是"存"那一半，"查"那一半在 `faq._entry_kws`。
+    同一判断抄两处就会漏一处，而漏掉的后果不是报错，是那条**永远查不到**（静默死条目）。
+    ⚠️ 只兜**空**的：管理员手写的关键词一个字都不动（含 `_KB_GENERIC` 里那些泛词 —— 那是他的判断）。
+    """
+    kws = [str(k).strip() for k in (keywords or []) if str(k).strip()]
+    return {"question": question, "answer": answer, "keywords": kws or kb_head_words(question)}
 
 
 def add_kb_entry(question: str, answer: str, keywords: list) -> dict:
     """新增一条知识库条目（人话：管理员在后台加一条问答）。"""
     data = _read("kb.json", {"entries": []})
     entries = data.setdefault("entries", [])
-    item = {"question": question, "answer": answer, "keywords": keywords or []}
+    item = _kb_row(question, answer, keywords)
     entries.append(item)
     _write("kb.json", data)
     return item
@@ -416,7 +524,7 @@ def update_kb_entry(index: int, question: str, answer: str, keywords: list) -> d
     entries = data.setdefault("entries", [])
     if index < 0 or index >= len(entries):
         raise IndexError("知识库条目不存在")
-    entries[index] = {"question": question, "answer": answer, "keywords": keywords or []}
+    entries[index] = _kb_row(question, answer, keywords)
     _write("kb.json", data)
     return entries[index]
 

@@ -1,0 +1,168 @@
+# -*- coding: utf-8 -*-
+"""#46 的护栏：知识库「加了却查不到」这条链要闭环（条目匹配原文 + 面板不静默 + 能自己试查）。
+
+用户 2026-10-20 的原话：「知识库管理的模块……走不通」「我添加进去，切块是我手动切的，会读不到，
+即使学生问的原句也识别不到」。复算之后病根是三件不同的事，本文件按批钉：
+
+A（46-A）**匹配判据只看 `keywords`，`question` 一个字符都不参与**，而管理端那一栏可以留空
+  （只校验问题/答案）⇒ 留空 = 这条永远不可达，面板还回一句「✅ 已存」。
+  修法是"存的时候兜底 + 查的时候兜底"两处都接（只接一处：救不了老数据 / 或列表里看不出靠什么命中）。
+B（46-B）**「知识库」面板读失败是静默的**：`loadKB` 没 catch，而 `adminFetch` 非 2xx 会抛 ⇒
+  页面停在上一次的样子；首次加载失败时屏幕上一直挂着「知识库还是空的」——
+  口令没设 / 口令不对 / 接口 500 看起来全都像"库里没有东西"。同页 `loadDocs` 是有 catch 的。
+C（46-C）**管理员没有"验一下能不能查到"的入口**：只能切到学生端问一句，"查不到"变成一件靠猜的事。
+
+⚠️ 全程不依赖大模型：A 批打的是 `store` / `faq._kb_parts` 这两层，C 批打的是 `/api/admin/kb/probe`。
+"""
+import json
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from _harness import PROJ_DIR, Checker, data_path, make_client, sandbox, title  # noqa: E402
+
+code = 0
+
+
+def _src(rel: str) -> str:
+    return open(os.path.join(PROJ_DIR, rel), encoding="utf-8").read()
+
+
+def _strip(src: str) -> str:
+    """剥掉 `#` 注释再判"有没有这段代码"——我自己写的注释里正好在解释旧写法（红线 4c 那一族）。"""
+    out = []
+    for ln in src.splitlines():
+        s = ln.strip()
+        if s.startswith("#"):
+            continue
+        out.append(ln.split("#")[0])
+    return "\n".join(out)
+
+
+def _seed_kb(entries):
+    with open(data_path("kb.json"), "w", encoding="utf-8") as f:
+        json.dump({"entries": entries}, f, ensure_ascii=False)
+
+
+def _hits(query):
+    from app.modules import faq
+    return faq._kb_parts(query)[0]
+
+
+# 派生结果**全部是 2026-10-20 本机跑出来的原样**（施工单 §一 那张表里
+# 「考试周图书馆开到几点」那一行把 `书馆开` 写成了 `馆开`，照抄就是一条永远对不上的断言）。
+DERIVE_CASES = [
+    ("图书馆几点开门", ["图书馆", "图书", "书馆"]),
+    ("宿舍晚上几点断电？", ["宿舍晚上", "宿舍晚", "舍晚上", "宿舍", "舍晚", "晚上"]),
+    ("校车在哪里坐、几点发车？", ["校车"]),
+    ("游泳馆怎么预约", ["游泳馆", "游泳", "泳馆"]),
+    ("补办学生证多少钱", ["补办学生证", "补办学", "办学生", "学生证", "补办", "办学", "学生", "生证"]),
+    ("考试周图书馆开到几点", ["考试周图书馆开到", "考试周", "试周图", "周图书", "图书馆", "书馆开",
+                              "馆开到", "考试", "试周", "周图", "图书", "书馆"]),
+]
+
+
+def batch_a_derive():
+    c = Checker()
+    title("A. 46-A：关键词留空也能用原句查到（存的一兜 + 查的一兜）")
+    from app import store
+    from app.modules import faq
+
+    for q, want in DERIVE_CASES:
+        got = store.derive_kb_keywords(q)
+        c.check(f"A1 派生输出实测钉住：{q}", got == want, f"实际={got}")
+
+    c.check("A1-bis 词片口径（`pieces=True`，打错字那一圈用的）只剩整片",
+            store.derive_kb_keywords("图书馆几点开门", pieces=True) == ["图书馆"]
+            and store.derive_kb_keywords("考试周图书馆开到几点", pieces=True) == ["考试周图书馆开到"],
+            store.derive_kb_keywords("考试周图书馆开到几点", pieces=True))
+
+    with sandbox():
+        # 顺序是有讲究的：**先跑检索那三条**（表里只有游泳馆那一条），再往里加别的条目。
+        # 反过来的话 A7 会被自己加的那条污染过 —— 我第一版就是这么红的：
+        # A4 故意存了一条手写关键词含「开门」的，于是「食堂几点开门」被它接走，
+        # 看着像泛词表失效，实际是我的料放错了位置。
+        _seed_kb([])
+        a1 = store.add_kb_entry("游泳馆怎么预约", "游泳馆在体育馆西侧，公众号上预约。", [])
+        c.check("A2 存的时候兜底：留空存进去的是**词片**（不是十几个碎片，管理端那一屏才读得完）",
+                a1["keywords"] == ["游泳馆"], a1["keywords"])
+        c.check("A5 原句能查到（用户最初那句投诉）", len(_hits("游泳馆怎么预约")) == 1, _hits("游泳馆怎么预约"))
+        c.check("A6 换个说法也查到（靠派生补的片段，不是靠运气）",
+                len(_hits("游泳馆预约")) == 1 and len(_hits("体育馆里的游泳馆几点开")) == 1,
+                len(_hits("游泳馆预约")))
+        c.check("A7 对照：不相关的问题不许命中（这条靠的是 `_KB_GENERIC` 丢掉「开门/时间」那类泛词）",
+                len(_hits("食堂几点开门")) == 0, _hits("食堂几点开门"))
+
+        store.add_kb_entry("宿舍晚上几点断电", "十一点半熄灯。", [])
+        u1 = store.update_kb_entry(1, "宿舍晚上几点断电", "十一点半熄灯。", [])
+        c.check("A3 修改那条也兜底（只接 add 不接 update = 改了一半，编辑一次就把词弄回空的）",
+                u1["keywords"] == ["宿舍晚上"], u1["keywords"])
+        h1 = store.add_kb_entry("校园网密码怎么改", "在自助平台改。", ["校园网", "开门"])
+        c.check("A4 手写的关键词一个字都不动（泛词表只管自动派生，不覆盖管理员的判断）",
+                h1["keywords"] == ["校园网", "开门"], h1["keywords"])
+
+        # 打错字那一圈（施工单只点了精确那一处，实测第二圈同样只看 keywords）
+        _seed_kb([{"question": "图书馆几点开门", "answer": "七点半至二十二点半。", "keywords": []}])
+        c.check("A8 存量那种空关键词的老条目**不用迁移**，当场活过来（查的那一兜才是救老数据的）",
+                len(_hits("图书馆几点开门")) == 1 and len(_hits("图书馆在哪里")) == 1,
+                len(_hits("图书馆在哪里")))
+        c.check("A9 打错字那一圈同样接住了（「图收馆」不含任何派生词 ⇒ 只有第二圈能命中）",
+                len(_hits("图收馆几点关门")) == 1, _hits("图收馆几点关门"))
+        c.check("A9-bis 但那一圈只吃**词片**：片段不许享受编辑距离容错"
+                "（否则「今天星期几」的片段「今天星」会把「今天有什么课」接走）",
+                faq._entry_kws({"question": "今天星期几", "keywords": []}, typo=True) == ["今天星期几"]
+                and "今天星" in faq._entry_kws({"question": "今天星期几", "keywords": []}),
+                faq._entry_kws({"question": "今天星期几", "keywords": []}, typo=True))
+
+        _seed_kb([{"question": "今天星期几", "answer": "看日历。", "keywords": []}])
+        c.check("A10 「今天有什么课」不许被『今天星期几』那条接走（时间泛词实测补进表里的那一颗牙）",
+                len(_hits("今天有什么课")) == 0, _hits("今天有什么课"))
+        c.check("A10-bis 对照：这条没被判死，问『这周星期几』照样查到",
+                len(_hits("这周星期几")) == 1, _hits("这周星期几"))
+
+        hand = {"question": "校园网密码怎么改", "answer": "B", "keywords": ["校园网密码"]}
+        c.check("A11 手写的关键词**不被补成片段**（给他补片段等于代码悄悄把范围撑大，那是覆盖他的判断）",
+                faq._entry_kws(hand) == ["校园网密码"], faq._entry_kws(hand))
+
+    bare = _strip(_src("app/modules/faq.py"))
+    c.check("A12 整族扫：`faq` 里读 `keywords` 的那两圈都改走 `_entry_kws`，没有第三处各写一版",
+            bare.count("item.get(\"keywords\"") == 1 and bare.count("_entry_kws(item") >= 2,
+            "get(keywords) %d 处 / _entry_kws %d 处"
+            % (bare.count("item.get(\"keywords\""), bare.count("_entry_kws(item")))
+    c.check("A13 派生只有一份实现（在 `store`）：`faq` 里没有第二套滑窗/停用词",
+            "_KB_STOP" not in bare and "i:i + 3" not in bare and "derive_kb_keywords" not in bare,
+            "faq 里出现 _KB_STOP=%s 滑窗=%s" % ("_KB_STOP" in bare, "i:i + 3" in bare))
+    st = _strip(_src("app/store.py"))
+    c.check("A14 兜底两处都接上了（`_kb_row` 存 + `_entry_kws` 查），且 `_kb_row` 是 add/update 共用的那一个",
+            st.count("def _kb_row") == 1 and st.count("_kb_row(question, answer, keywords)") == 2,
+            "_kb_row 定义 %d 处、调用 %d 处" % (st.count("def _kb_row"),
+                                               st.count("_kb_row(question, answer, keywords)")))
+    html = _src("app/static/admin.html")
+    c.check("A15 管理端那一栏写清了「留空会自动提取」（不写清，下一个人还会以为留空最省事）",
+            "留空则自动从问题里提取" in html, "标签里没这句话")
+    c.check("A16 畸形输入不许炸（空串 / 只有标点 / None）；数字那种照旧当词片（不断言它长什么样，只断不抛）",
+            store.derive_kb_keywords("") == [] and store.derive_kb_keywords("？？？") == []
+            and store.derive_kb_keywords(None) == [] and store.kb_head_words("2026年社团报名") != []
+            and store.derive_kb_keywords(12345) != [],
+            [store.derive_kb_keywords(x) for x in ("", "？？？", None)]
+            + [store.kb_head_words("2026年社团报名")])
+    return c
+
+
+BATCHES = [("A 批（46-A 关键词派生）", batch_a_derive)]
+
+
+def main():
+    global code
+    print("test_73_kb_management：#46 知识库管理闭环（派生 / 面板不静默 / 能试查）")
+    print("=" * 60)
+    for name, fn in BATCHES:
+        rc = fn().summary(name)
+        code = code or rc
+    print("\n退出码：", code)
+    raise SystemExit(code)
+
+
+if __name__ == "__main__":
+    main()

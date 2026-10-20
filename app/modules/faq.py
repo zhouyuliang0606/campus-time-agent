@@ -10,7 +10,7 @@ Agent 拿到学生问题 → 调 search_kb 找相关条目 → 用自然语言�
 于是"文档里明明写着图书馆在哪，问答却说知识库没有"（真机复现过）。
 """
 from app.agent.tools import Tool
-from app.store import read_data_file
+from app.store import read_data_file, kb_head_words, kb_expand
 
 MODULE_KEY = "faq"
 
@@ -88,6 +88,31 @@ KB_MISS_PREFIX = "知识库里没有找到"
 _MISS = KB_MISS_PREFIX + "和「"
 
 
+def _entry_kws(item: dict, typo: bool = False) -> list:
+    """这条问答条目**实际拿来匹配的词**（#46-A 两处接上的第二处：查的时候也兜底）。
+
+    ⚠️ 为什么不只接 `store._kb_row` 那一处：老数据里那批"关键词留空"的死条目**不用迁移**，
+    当场就能活过来 —— 存量条目表里 question 有内容、keywords 是空数组的那些，
+    管理员不会去重存一遍，只接"存"那半等于只救以后加的。
+    ⚠️ **精确与"打错字"那两圈都要走这里**：施工单只点了精确那一处（`:107`），
+    可 `:113` 那圈同样只看 `keywords` —— 空关键词的条目在两圈里都是死的，
+    改一处等于没改（"图收馆几点关门"那种就落在第二圈）。
+
+    三档各是什么：
+    - **管理员手写的关键词**：两圈都按他写的样子原样用。⚠️ 不补片段 —— 给他补上 3 字片段
+      等于代码悄悄把「校园网密码」这条放宽到任何带「校园网」的问句，那是覆盖他的判断（施工单 §一 明令不许）。
+    - **派生出来的词片**（关键词为空、或存的就是 `kb_head_words` 那几个）：精确那圈补片段（`kb_expand`）——
+      换说法也要能命中（「考试周图书馆几点关」里没有整片「考试周图书馆开到」，靠的就是补出的「图书馆」）；
+      打错字那圈**只用词片本身**：滑窗碎片是 n-gram 噪声，给它编辑距离容错实测会把「今天有什么课」
+      按「今天星」接走，一句日程问话被直答成「看日历」（`_kb_fuzzy_hit` 那条「校车 vs 校长」老坑的新来源）。
+    """
+    hand = [str(k).strip().lower() for k in (item.get("keywords") or []) if str(k).strip()]
+    if hand:
+        return hand
+    heads = [str(k).lower() for k in kb_head_words(str(item.get("question") or ""))]
+    return heads if typo else kb_expand(heads)
+
+
 def _kb_parts(query: str) -> tuple[list[dict], list[dict]]:
     """两路检索的**共同那一步**：返回（问答条目命中, 文档命中）。
 
@@ -104,13 +129,14 @@ def _kb_parts(query: str) -> tuple[list[dict], list[dict]]:
     hits = []
     for item in data["entries"]:
         # 中文没有空格，最稳的办法是：知识库条目的"关键词"里，有没有出现在用户问题里
-        keywords = [k.lower() for k in item.get("keywords", [])]
+        # （关键词为空时 `_entry_kws` 会退回从问题原文派生 —— 见 #46-A）
+        keywords = _entry_kws(item)
         if any(kw and kw in q for kw in keywords):
             hits.append(item)
     # ★ 精确匹配落空 → 再按"打错字"找一遍（"图收馆几点关门" 也要能翻到图书馆那条）
     if not hits:
         for item in data["entries"]:
-            keywords = [k.lower() for k in item.get("keywords", [])]
+            keywords = _entry_kws(item, typo=True)
             if any(kw and _kb_fuzzy_hit(q, kw) for kw in keywords):
                 hits.append(item)
 
