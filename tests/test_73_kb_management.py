@@ -150,7 +150,87 @@ def batch_a_derive():
     return c
 
 
-BATCHES = [("A 批（46-A 关键词派生）", batch_a_derive)]
+def _js_fn(src: str, name: str) -> str:
+    """按大括号配对抠出一个 JS 函数体（判"哪一句落在哪一个分支"得先看准分支）。"""
+    i = src.index("function " + name)
+    j = src.index("{", i)
+    depth, k = 0, j
+    while k < len(src):
+        if src[k] == "{":
+            depth += 1
+        elif src[k] == "}":
+            depth -= 1
+            if depth == 0:
+                return src[j:k + 1]
+        k += 1
+    raise AssertionError("没找到函数体：" + name)
+
+
+def _catch_branch(body: str) -> str:
+    """抠出 `catch (e) { ... }` 那一支（配对断言要判的是**这一支**里写了什么）。"""
+    i = body.index("catch")
+    j = body.index("{", i)
+    depth, k = 0, j
+    while k < len(body):
+        if body[k] == "{":
+            depth += 1
+        elif body[k] == "}":
+            depth -= 1
+            if depth == 0:
+                return body[j:k + 1]
+        k += 1
+    return ""
+
+
+def batch_b_panel():
+    c = Checker()
+    title("B. 46-B：「知识库」面板读失败不许静默（同页文档那档早就有 catch，这一档没有）")
+    html = _src("app/static/admin.html")
+    kb = _js_fn(html, "loadKB")
+    cb = _catch_branch(kb)
+    c.check("B1 `loadKB` 有 try/catch（`adminFetch` 非 2xx 是**会抛**的，没人接就是停在上一次的样子）",
+            "try {" in kb and "catch (e)" in kb, "函数体里没有 catch")
+    # ↓ 三条是**配对**：光看"两个字符串都在文件里"护不住"哪一句落在哪一支"（#35 那一课）
+    c.check("B2 失败那一支说的是「读不到」，并且**不许**说「还是空的」",
+            "读不到" in cb and "还是空的" not in cb, cb[:120])
+    c.check("B2-bis 空表那一支才说「还是空的」（两支互换 = 把 401 报成「库里没东西」）",
+            "还是空的" in kb and "还是空的" not in cb)
+    c.check("B3 失败时状态条也说话（屏幕上只有一张空卡片，用户不会想到去查口令）",
+            'st.textContent = "❌ 读知识库失败：' in cb, cb[-90:])
+    c.check("B4 上面写清了这句只在「读成功、表里真没条目」时才出现（注释与判据同一条）",
+            "只许在" in kb and "配对判据" in kb)
+    ed = _js_fn(html, "editKB")
+    c.check("B5 `editKB` 也补了 catch（裸 .then() 读失败时表单**一字不动**，看着像「点了没反应」）",
+            ".catch(e =>" in ed, ed[:80])
+    c.check("B5-bis 而且它不许拿 undefined 去填表单（那会把表单清成空，一保存就写进库）",
+            "已经不在了" in ed and "loadKB();" in ed, ed[:100])
+    c.check("B6 「刷新列表」这颗按钮存在、且绑的就是 loadKB（读失败时手上得有个重试的东西）",
+            'id="refreshKb"' in html
+            and 'getElementById("refreshKb").addEventListener("click", loadKB)' in html,
+            "按钮或绑定缺一个")
+    doc = _js_fn(html, "loadDocs")
+    c.check("B7 对照：这一档现在与文档那档**同一种待遇**（两边都有 catch，别再长歪）",
+            "catch (e)" in doc and "catch (e)" in kb)
+
+    with sandbox():
+        _seed_kb([])
+        # 头上带错口令、环境里那把是对的 ⇒ 服务端逐请求比 header，才会 401。
+        # （⚠️ 别写成 `admin_token="错的"`：那个参数是**同时**改 env 与 header 的，
+        #  两边一起改掉就等于把口令换了，永远 200 —— 我第一版就在这条上假红了一次。）
+        bad = make_client(headers={"X-Admin-Token": "000000-not-real"})
+        r = bad.get("/api/admin/kb")
+        c.check("B8 触发条件是真的：口令不对时这一口回 401（`adminFetch` 就是在这儿抛的）",
+                r.status_code == 401, f"{r.status_code} {r.text[:60]}")
+        ok = make_client()                                  # 默认带测试口令（`_harness.ADMIN_TOKEN`）
+        body = ok.get("/api/admin/kb").json()
+        c.check("B8-bis 对照：真读通时回的是 {entries: []} —— 「空表」与「读不到」两种回包形状不同，"
+                "前端才有得分两件事说", list(body) == ["entries"] and body["entries"] == [],
+                str(body)[:70])
+    return c
+
+
+BATCHES = [("A 批（46-A 关键词派生）", batch_a_derive),
+           ("B 批（46-B 面板不静默）", batch_b_panel)]
 
 
 def main():

@@ -355,7 +355,9 @@
           <div class="small" id="kbStatus" style="margin-top:8px;"></div>
         </div>
         <div>
-          <div class="small" style="margin-bottom:6px;">已有条目（编辑/删除即时生效）</div>
+          <div class="small" style="margin-bottom:6px;">已有条目（编辑/删除即时生效）
+            <button class="btn ghost" id="refreshKb" style="margin-left:8px;">刷新列表</button>
+          </div>
           <div id="kbList"><div class="empty">知识库还是空的</div></div>
         </div>
       </div>
@@ -672,10 +674,26 @@
 
     // ---------- 知识库管理 ----------
     async function loadKB() {
-      const data = await (await adminFetch("/api/admin/kb")).json();
       const box = document.getElementById("kbList");
-      if (!data.entries.length) { box.innerHTML = '<div class="empty">知识库还是空的</div>'; return; }
-      box.innerHTML = data.entries.map((e, i) => `
+      const st = document.getElementById("kbStatus");
+      let data;
+      try {
+        data = await (await adminFetch("/api/admin/kb")).json();
+      } catch (e) {
+        // ⚠️ #46-B：这一档以前**没有 catch** —— `adminFetch` 在非 2xx 时是**会抛异常**的（:439 那一处），
+        // 抛出来就成了未处理的 rejection ⇒ 页面停在上一次的样子。最要命的是首次加载那一屏：
+        // 口令没设 / 口令不对 / 接口 500，看起来**全都像"库里没有东西"** —— 同页 `loadDocs` 是有 catch 的，
+        // 两个面板对同一种失败给两种待遇，那就是用户那句「知识库那个模块走不通」的直接体验。
+        box.innerHTML = '<div class="empty">知识库列表读不到：' + esc(String(e.message || e))
+                      + '（点【刷新列表】重试，或检查管理口令）</div>';
+        if (st) st.textContent = "❌ 读知识库失败：" + String(e.message || e);
+        return;
+      }
+      const entries = data.entries || [];
+      // ⚠️ 「还是空的」这句**只许在"读成功、表里真没条目"这一支**出现（配对判据 #46 B2/B3）：
+      // 以前它同时充当"加载失败"的默认屏，等于拿旧账充"现在还是这些"。
+      if (!entries.length) { box.innerHTML = '<div class="empty">知识库还是空的</div>'; return; }
+      box.innerHTML = entries.map((e, i) => `
         <div class="kb">
           <div class="kb-q">${i}. ${esc(e.question)}</div>
           <div class="kb-a">${esc(e.answer)}</div>
@@ -689,12 +707,23 @@
     function editKB(i) {
       editingKb = i;
       adminFetch("/api/admin/kb").then(r => r.json()).then(d => {
-        const e = d.entries[i];
+        const e = (d.entries || [])[i];
+        if (!e) {
+          // 列表已经变了（另一边删过/加过）⇒ 别拿 undefined 去填表：那会把表单清成空，
+          // 管理员一点保存就把空问题写进库（#46 同族的"静默写坏"形状）。
+          document.getElementById("kbStatus").textContent = "❌ 这条已经不在了，列表刷新一下再点";
+          loadKB();
+          return;
+        }
         document.getElementById("kq").value = e.question;
         document.getElementById("ka").value = e.answer;
         document.getElementById("kk").value = (e.keywords || []).join(", ");
         document.getElementById("kbSave").textContent = "保存修改";
         document.getElementById("kbCancel").style.display = "inline-block";
+      }).catch(e => {
+        // 同 #46-B 那条病：裸 .then() 没 catch ⇒ 读失败时表单**一字不动**，
+        // 管理员以为"点编辑没反应"，其实数据根本没拿到。
+        document.getElementById("kbStatus").textContent = "❌ 这条读不出来：" + String(e.message || e);
       });
     }
     function cancelKB() {
@@ -848,6 +877,8 @@
     }
     document.getElementById("docfile").addEventListener("change", handleDocUpload);
     document.getElementById("refreshDocs").addEventListener("click", loadDocs);
+    // #46-B：读失败时用户手上得有个能重试的东西（「知识库」这一档以前没有，文档那档有）
+    document.getElementById("refreshKb").addEventListener("click", loadKB);
 
     // ---------- 学生工单（学生确认上报的问题，管理员在这里看并改状态） ----------
     async function loadWorkOrders() {
