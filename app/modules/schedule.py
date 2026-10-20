@@ -1,12 +1,15 @@
 """旗舰模块：课表时间规划（人话：这是项目的"门面"功能，专门展示 Agent 是怎么一步步推理的）。
 
-它给 Agent 六个工具：
-  1) get_day_courses  —— 查某天上了哪些课
-  2) find_free_slots  —— 算某天哪里有空
-  3) plan_task        —— 根据空闲，自动排出一个学习计划
-  4) propose_todo_mode_tool  —— 先问「时间你自己定 / 我帮你挑」那张二选一卡（只读，不写库）
-  5) propose_todo_slots_tool —— 学生选了"我自己定"之后，把几段候选空档摊成一张**能打勾**的卡片
-  6) propose_todo_tool —— 已经定了准点时，出一张**单条**确认条（只读，不写库）
+它给 Agent 五个工具：
+  1) get_day_courses  —— 查某天上了哪些课（**只查本人周表**，见文件里 45-A 那段）
+  2) plan_task        —— 根据空闲，自动排出一个学习计划
+  3) propose_todo_mode_tool  —— 先问「时间你自己定 / 我帮你挑」那张二选一卡（只读，不写库）
+  4) propose_todo_slots_tool —— 学生选了"我自己定"之后，把几段候选空档摊成一张**能打勾**的卡片
+  5) propose_todo_tool —— 已经定了准点时，出一张**单条**确认条（只读，不写库）
+
+（以前这里还写着第 6 个 `find_free_slots` —— 它和 planner 那个同名工具入参不一样却注册在
+ 同一张表上，赢的是 planner 那份，于是提示教模型传"周三"、执行要的是"2026-10-20"。
+ 45-A② 把本模块这份**下了架**，查空档只留 planner 那一份真数据。）
 
 Agent 拿到用户的问题（比如"我这周哪天有空复习高数？"），会自己决定调哪个工具、看结果、再组织回答。
 最后这一步是踩过坑才补上的：早先没有出提案的工具，Agent 找完空档就在**文字里**写一句
@@ -21,18 +24,13 @@ Agent 拿到用户的问题（比如"我这周哪天有空复习高数？"），
 他让你挑走 6（时间由系统规划好，并在卡片上写清为什么排在这儿）。
 ⛔ 别跳过 4 直接问"你想几点"——那是把活儿退回给他。
 """
-import json
-import os
-
 from app.agent.tools import Tool
 from app.modules.planner import (
     propose_todo_mode_tool, propose_todo_mode_tool_tool,
     propose_todo_slots_tool, propose_todo_slots_tool_tool,
     propose_todo_tool, propose_todo_tool_tool,
 )
-
-# 示例课表文件路径：app/data/courses.json（__file__ 是当前文件，往上两级到 app，再进 data）
-_DATA_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "courses.json")
+from app.store import get_timetable
 
 MODULE_KEY = "schedule"
 
@@ -59,7 +57,8 @@ SYSTEM_PROMPT = """你是校园时间管家学生端的「课表时间规划」�
 - **学生要加一件事、还没定时间时，直接替他敲定一段，不要再问"你自己定还是我帮你挑"**
   （学生原话：「**不需要先问，直接去安排，重复的确认太麻烦，直接敲定结果，主打效率**」）。
   「周四加个健身」「帮我加个游泳」这类话（说了哪天就只看那天；没说就从今天往后找
-  第一个排得下的）：先用 find_free_slots 查空档，然后**立刻调用 propose_todo_tool
+  第一个排得下的）：先用 find_free_slots 查空档（⚠️ 它的入参是**日期**，如 `2026-10-20`，
+  **不是星期** —— 说"周三"要先换算成这一周的哪一天），然后**立刻调用 propose_todo_tool
   出一张单条确认条**（时长按他说的来，「大概一个小时」就是 60 分钟，别一律排 90），
   卡片上写清为什么排在这儿，然后停下来等他点【确认加入】。
   ⛔ 不要再出二选一卡问"怎么定"，也不要反问"几点到几点"——他嫌点不合适会自己报。
@@ -90,12 +89,6 @@ SYSTEM_PROMPT = """你是校园时间管家学生端的「课表时间规划」�
 ⛔ 不要让他"二选一：再刷新一次 / 反馈管理端"，也不要建议退出重进、下拉刷新。"""
 
 
-def _load() -> dict:
-    """读取示例课表（人话：把 JSON 文件变成 Python 字典好操作）。"""
-    with open(_DATA_PATH, encoding="utf-8") as f:
-        return json.load(f)
-
-
 def _to_min(t: str) -> int:
     """把 '08:00' 变成分钟数 480（人话：方便做时间加减和比较）。"""
     h, m = t.split(":")
@@ -108,50 +101,82 @@ def _fmt(minute: int) -> str:
 
 
 DAYS = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
+# 个人周表里 `day` 存的是 1~7（1=周一），这里把话里的"周三"翻译成那个数。
+_DAY_INDEX = {d: i + 1 for i, d in enumerate(DAYS)}
+
+# ★ 45-A（2026-10-20，P0）：这个模块**以前**读的是 `app/data/courses.json` ——
+# 一份写死 `"student": "示例同学（演示数据）" / "2026 春季学期"` 的**公共演示课表**，
+# 跟"谁在问"完全无关。实测 `admin2` 的周表是空的，问「今天有什么课」却被答
+# 「08:00~09:40 线性代数 · 孙教授 · 教三-202 / 10:00~11:40 体育 · 周老师 · 体育馆」——
+# 逐字就是那份文件的周二两行，而这条回答现在还存在 `student/admin2/sessions.json` 里。
+# 现在**只有一个课表来源**：`store.get_timetable()`（按 cookie 分人的那份）。
+# `courses.json` 从此只是**测试种子**（`tests/_e2e_env.py:demo_courses_from_json` 还读它），
+# 不再在任何一条产品路径上被打开。
+# ⚠️ 个人周表的字段是 {day, start, end, course, location}，**没有 teacher** ——
+# 所以输出一律不带老师名。别为了"保持原来的格式"去给 `timetable.json` 加字段，
+# 那是改数据结构，不在这一单。
+
+
+def _courses_on(day: str) -> list[dict]:
+    """某一天属于**当前这名学生**的课（人话：只问本人周表，不去翻演示文件）。"""
+    wd = _DAY_INDEX.get((day or "").strip())
+    if not wd:
+        return []
+    out = [c for c in get_timetable() if int(c.get("day") or 0) == wd]
+    out.sort(key=lambda c: _to_min(c.get("start") or "00:00"))
+    return out
+
+
+def _empty_day(day: str) -> str:
+    """空课表要**分两种话说**。
+    旧那句「{day} 没有排课，整天都是空闲的」把"你还没导入课表"说成"你这天很闲"，
+    对空库的新账号（#35 撤了登录播种之后这是常态）是彻底的误导。
+    """
+    if not get_timetable():
+        return (f"你的周表还是空的（没导入过课表），所以{day}有没有课上我看不出来。"
+                "在日程面板点【上传课表】导一份，我再帮你排。")
+    return f"{day}没排课。"
+
+
+def _free_blocks(day: str) -> list[tuple[int, int]]:
+    """某天 08:00~22:00 里的空档（本地算法，**不跨模块调 planner**）。
+
+    为什么本地还留一份：`plan_task` 要"哪天有多少空、能塞下几小时"，
+    而 planner 那份 `find_free_slots(date)` 要的是**日期**、还算进待办占用 —— 两件事。
+    ⚠️ 这不是"第二套课表"：两边的数据源都是 `get_timetable()`，只是算法不同。
+    """
+    cursor, free = _to_min("08:00"), []
+    for c in _courses_on(day):
+        s, e = _to_min(c.get("start") or "00:00"), _to_min(c.get("end") or "00:00")
+        if s > cursor:
+            free.append((cursor, s))
+        cursor = max(cursor, e)
+    if cursor < _to_min("22:00"):
+        free.append((cursor, _to_min("22:00")))
+    return free
 
 
 def get_day_courses(day: str) -> str:
-    """工具①：查某一天的全部课程。"""
-    data = _load()
-    courses = [c for c in data["courses"] if c["day"] == day]
-    courses.sort(key=lambda c: _to_min(c["start"]))
+    """工具①：查某一天**这个学生**的全部课程。"""
+    courses = _courses_on(day)
     if not courses:
-        return f"{day} 没有排课，整天都是空闲的。"
+        return _empty_day(day)
     lines = [f"{day} 共 {len(courses)} 门课："]
     for c in courses:
-        lines.append(f"- {c['start']}~{c['end']} {c['name']}（{c['teacher']} / {c['location']}）")
+        loc = str(c.get("location") or "").strip()
+        lines.append(f"- {c.get('start')}~{c.get('end')} {c.get('course') or '（没写课名）'}"
+                     + (f"（{loc}）" if loc else ""))
     return "\n".join(lines)
 
 
-def find_free_slots(day: str) -> str:
-    """工具②：算某天 08:00~22:00 之间的空闲时间段。"""
-    data = _load()
-    courses = sorted(
-        [c for c in data["courses"] if c["day"] == day],
-        key=lambda c: _to_min(c["start"]),
-    )
-    day_start, day_end = _to_min("08:00"), _to_min("22:00")
-    free = []
-    cursor = day_start
-    for c in courses:
-        s, e = _to_min(c["start"]), _to_min(c["end"])
-        if s > cursor:  # 课与课之间有空档
-            free.append((cursor, s))
-        cursor = max(cursor, e)
-    if cursor < day_end:
-        free.append((cursor, day_end))
-
-    if not free:
-        return f"{day} 从早到晚都排满了，几乎没有整块空闲。"
-    parts = [f"{day} 的空闲时间段（08:00-22:00 范围内）："]
-    for s, e in free:
-        parts.append(f"- {_fmt(s)}~{_fmt(e)}（约 {(e - s) / 60:.1f} 小时）")
-    return "\n".join(parts)
-
-
 def plan_task(task_name: str, need_hours: float, prefer_day: str = "") -> str:
-    """工具③：根据课表空闲，为某个任务排出学习计划。"""
-    data = _load()
+    """工具②：根据**本人**周表的空闲，为某个任务排出学习计划。"""
+    if not get_timetable():
+        # 空周表 ≠ 一周全是空档。以前这里会兴高采烈排出「周一 08:00~11:00 做《复习》」，
+        # 而那个"空"其实来自一份**没导入过的**周表 —— 跟 `_empty_day` 是同一个误导。
+        return ("你的周表还是空的（没导入过课表），所以我没法按课表找空档。"
+                "先在日程面板点【上传课表】导一份；"
+                "或者直接说「周一下午两点到四点复习高数」，我按这句话给你出确认条。")
     # 优先按指定星期排；没指定就从周一到周五找空
     days = [prefer_day] if prefer_day in DAYS else DAYS[:5]
 
@@ -160,22 +185,7 @@ def plan_task(task_name: str, need_hours: float, prefer_day: str = "") -> str:
     for day in days:
         if remaining <= 0:
             break
-        courses = sorted(
-            [c for c in data["courses"] if c["day"] == day],
-            key=lambda c: _to_min(c["start"]),
-        )
-        # 复用"找空闲"的算法，得到当天的空档
-        free = []
-        cursor = _to_min("08:00")
-        for c in courses:
-            s, e = _to_min(c["start"]), _to_min(c["end"])
-            if s > cursor:
-                free.append((cursor, s))
-            cursor = max(cursor, e)
-        if cursor < _to_min("22:00"):
-            free.append((cursor, _to_min("22:00")))
-
-        for s, e in free:
+        for s, e in _free_blocks(day):
             if remaining <= 0:
                 break
             block = (e - s) / 60
@@ -196,7 +206,7 @@ def build_tools() -> dict[str, Tool]:
     return {
         "get_day_courses": Tool(
             name="get_day_courses",
-            description="查询某一天的全部课程（含时间/老师/地点）。入参 day 如 '周一'。",
+            description="查询某一天**这个学生自己**的课（时间/课程/地点）。入参 day 如 '周一'。",
             parameters={
                 "type": "object",
                 "properties": {"day": {"type": "string", "description": "星期，如 周一"}},
@@ -204,19 +214,17 @@ def build_tools() -> dict[str, Tool]:
             },
             func=get_day_courses,
         ),
-        "find_free_slots": Tool(
-            name="find_free_slots",
-            description="计算某一天 08:00-22:00 之间的空闲时间段，用于安排自习。入参 day 如 '周三'。",
-            parameters={
-                "type": "object",
-                "properties": {"day": {"type": "string", "description": "星期，如 周三"}},
-                "required": ["day"],
-            },
-            func=find_free_slots,
-        ),
+        # ⛔ 这里**故意不放** `find_free_slots`（45-A②）：
+        # 以前 schedule 与 planner 各注册了一个同名工具，入参还不一样
+        # （schedule 版收 `day="周三"`、planner 版收 `date="2026-10-20"`），
+        # `main.py` 里 `tools.update(scheduling_tools())` 在后 ⇒ **planner 那份赢了**，
+        # 而本模块的提示词教模型传 `day` ⇒ 学生问「我这周什么时候有空」实打实拿到过
+        # 「周三 不是合法日期，请用 2026-09-25 这种格式」，模型只能道歉。
+        # 现在查空档只有 planner 那一份（真数据、按日期），它的说明书由 planner 维护；
+        # 要恢复"两份同名、各写一半"就是把这个坑再挖回来 —— 护栏 `test_72` F 批钉着"两边没有同名工具"。
         "plan_task": Tool(
             name="plan_task",
-            description="根据课表空闲，为某个任务排出学习计划。task_name 任务名，need_hours 需要小时数，prefer_day 可指定优先星期（可选）。",
+            description="根据**本人周表**的空闲，为某个任务排出学习计划。task_name 任务名，need_hours 需要小时数，prefer_day 可指定优先星期（可选）。",
             parameters={
                 "type": "object",
                 "properties": {
