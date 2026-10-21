@@ -67,6 +67,20 @@ def run():
             idx_loading != -1 and (idx_sync == -1 or idx_loading < idx_sync),
             "疑似 inFrame 分支仍在同步发 empty（race 复发）")
 
+    # ④ 报错**不许**把学生的输入区抹掉（2026-10-21 真机：登记卡被 400 拒之后
+    #    `input[data-f]` 从 3 变 0，卡上还写着「可以再试一次」，可格子已经没了 ——
+    #    再点一次仍是空字段，出不去。根因就是 showError 整块换了 bodyEl.innerHTML）。
+    i = src.find("function showError")
+    se = src[i:src.find("\nfunction ", i + 1)]
+    c.check("showError 不许整块替换 bodyEl（登记卡的输入框、候选时段的勾选项都住在里面）",
+            "bodyEl.innerHTML" not in se, "showError 里又出现 bodyEl.innerHTML =")
+    c.check("改成「只往正文上面插一条」：先清旧的 .cfErr，再 insertBefore",
+            ".cfErr" in se and "insertBefore" in se, se[:120].replace("\n", " "))
+    j = src.find("function showDone")
+    sd = src[j:src.find("\nfunction ", j + 1)]
+    c.check("配对：成功那条（showDone）**该**整块换成回执 —— 只有失败这条要留格子",
+            "bodyEl.innerHTML" in sd, "showDone 不再替换 body，回执会叠在旧卡上")
+
     return c
 
 

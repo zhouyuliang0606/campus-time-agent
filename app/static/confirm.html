@@ -56,6 +56,9 @@
   .dlg-btn.danger:hover { background: #c93030; }
   .dlg-btn:disabled { opacity: .55; cursor: not-allowed; }
   .empty { text-align: center; color: #7b86a3; padding: 10px 0 4px; }
+  /* 失败提示条：插在正文上面，颜色沿用 .dlg-head.danger 那一档，不新造一套红 */
+  .cfErr { background: #fff6f6; border: 1px solid #f0e2e2; color: #c0392b;
+           border-radius: 8px; padding: 8px 10px; margin-bottom: 8px; font-size: 13px; }
   .done { text-align: center; padding: 8px 0 2px; }
   .done .big { font-size: 28px; }
   .back { margin-top: 12px; text-align: center; font-size: 12px; color: #7b86a3; }
@@ -656,8 +659,17 @@ function showDone(html) {
 }
 
 function showError(msg) {
-  bodyEl.innerHTML = `<div class="empty">⚠️ ${esc(msg)}<br>
-    <span style="font-size:12px;">数据没有改动，可以再试一次。</span></div>`;
+  // 报错**不许**把整块 body 换掉：登记卡的输入框、候选时段的勾选项都住在 bodyEl 里，
+  // 换掉之后学生看到的是一句「可以再试一次」+ 一颗还能点的按钮，可格子里已经没东西可填了
+  // —— 再点一次仍是空字段，永远出不去（2026-10-21 真机：登记卡报「这些信息还没填」后
+  // `input[data-f]` 的数量从 3 变 0）。所以只往上面**插一条**，下面那排格子原样留着。
+  const old = bodyEl.querySelector(".cfErr");
+  if (old) old.remove();
+  const strip = document.createElement("div");
+  strip.className = "cfErr";
+  strip.innerHTML = `⚠️ ${esc(msg)}<br>
+    <span style="font-size:12px;">数据没有改动，把上面那几格补一下再点一次就行。</span>`;
+  bodyEl.insertBefore(strip, bodyEl.firstChild);
   okBtn.disabled = false;
   // 按钮上的字要还原：刚才被改成"⏳ 执行中…"了，不还原学生看到的是一颗
   // 写着"执行中"的死按钮，不知道该不该再点（明明已经可以重试了）。
