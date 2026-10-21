@@ -1084,6 +1084,19 @@ _KB_MISS_LINE = ("📚 知识库里没有查到这一条（问答条目和管理
 
 _MATERIAL_PHASE = "📋 认出一段材料 → 只从这段里提取待办（不结合上文、不编时间）"
 
+# 材料分支**自己**把这句听成了什么 —— 轨迹里那句"我把这句听成 X"必须与实走的分支一致。
+# 为什么单列一个常量、且在两个出口前各设一次：`_read_step` 那一步在 1757 行就跑了，
+# 而材料分支在两千行之后才 return，中间没人覆写 → 语义层当初判的「问事」会一路带到屏幕上，
+# 于是"诊断说 A、实际走 B"（2026-10-21 真机：粘了一份带日期的材料，回话是材料分支的固定文案，
+# 折叠的轨迹却写着「我把这句听成 问事（三档都没给出结论）」）。
+# 两个出口共用这一份：一道判断两处文案，迟早漂移。
+_MATERIAL_READ_STEP = {
+    "step": 0,
+    "phase": "📋 我把这句听成 **一段材料**｜依据：规则层（字段行/编号行形状，"
+             "材料判据挂在语义层之前）",
+    "answer": "",
+}
+
 
 def _material_card(items: list, missing: list) -> dict:
     """多选确认卡：一行一件事，各自带勾选框（默认全勾，取消哪条就不写哪条）。
@@ -1136,7 +1149,10 @@ def _material_lead(card: dict) -> str:
 def _material_empty_answer(session_id: str, message: str, missing: list) -> dict:
     """一条带时间的都没拆出来时怎么说：如实说拆不出，**不许**编一个今天上去。"""
     if missing:
-        answer = ("📋 这段材料我看到了，但里面**没有一条写着日期或钟点**，"
+        # 「没有一条写着日期或钟点」以前**在说假话**：材料里常常明明白白写着日期，
+        # 缺的只是钟点（2026-10-21 真机那份就是「2026年10月21日」+ 全角「19：30」）。
+        # 改成「没有一条**同时**写着日期和钟点」—— 两种情况（缺日期 / 缺钟点）下这句都是真的。
+        answer = ("📋 这段材料我看到了，但里面**没有一条同时写着日期和钟点**，"
                   "所以一条也没往日程里写（我不替材料编时间）。\n"
                   "出现的事有几件：" + "、".join(m for m in missing[:6]) + "。\n"
                   "补一句哪天几点（比如「周三 19:00-21:00」），我就列成卡让你勾。")
@@ -2751,6 +2767,8 @@ async def _chat_impl(req: Request, meta: dict, emit=None):
         #   整段被剥成疑问串就会中），而 #42-A 那道闸管的是 40 字以内的问句 —— 两件事，别串。
         #   写库仍然不在这里：只挂卡，勾完点【加入日程】由 `/api/todos/items_add` 写（红线：模型只出提案）。
         if _is_material:
+            # 轨迹要说实话：这一路是**材料分支**接走的，不是语义层那句"问事"。
+            meta["read"] = dict(_MATERIAL_READ_STEP)
             _mt_items, _mt_missing = extract_deterministic(message)
             if not _mt_items:
                 return _material_empty_answer(session_id, message, _mt_missing)
