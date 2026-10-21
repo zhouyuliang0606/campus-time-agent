@@ -28,7 +28,7 @@ MUST_KEEP_IDS = [
     "docfile", "refreshDocs", "docStatus", "docList",
     "woBox", "refresh", "inbox", "woNum", "msgNum",
 ]
-VIEWS = ["wo", "inbox", "notice", "kb", "docs", "usage", "api", "persona"]
+VIEWS = ["wo", "repair", "inbox", "notice", "kb", "docs", "usage", "api", "persona"]
 
 
 def code_of(text: str) -> str:
@@ -54,7 +54,7 @@ def batch_a_shell():
             not missing, "缺：" + "、".join(missing))
     views = re.findall(r'id="view-([a-z]+)"', st)
     navs = re.findall(r'data-nav="([a-z]+)"', st)
-    c.check("左栏八档与八块视图一一对应（多一档没地方显示、少一档点了没反应）",
+    c.check("左栏九档与九块视图一一对应（多一档没地方显示、少一档点了没反应；#54 加了「后勤报修」）",
             sorted(views) == sorted(navs) == sorted(VIEWS), f"views={views} navs={navs}")
     c.check("每块 view 里只装原来那张卡，工单/收件箱这两张**不许有第二份**（搬家最容易漏删旧的那份，"
             "重复 id 会让 JS 只认第一个，另一份成永远刷不新的死表格）",
@@ -86,13 +86,16 @@ def batch_b_switch():
             "loadApiSettings" not in sw_code and 'view === "api"' not in sw_code
             and 'document.getElementById("akey").value =' in st,
             "switchNav 里出现了 loadApiSettings")
-    c.check("其余七档进哪档现拉一次（5 秒轮询照旧，这里只是别让人对着上一分钟的数据看）；"
-            "「文档知识库」那一档也在里面 —— 它是这页最重的一份，但**点开才拉**，不在开场预载",
-            all(s in sw for s in ('view === "wo") loadWorkOrders();', 'view === "inbox") loadMessages();',
+    c.check("其余八档进哪档现拉一次（5 秒轮询照旧，这里只是别让人对着上一分钟的数据看）；"
+            "「文档知识库」那一档也在里面 —— 它是这页最重的一份，但**点开才拉**，不在开场预载；"
+            "#54 的「后勤报修」也在里面（点开就拉，改完状态还立刻再拉一次）",
+            all(s in sw for s in ('view === "wo") loadWorkOrders();',
+                                'view === "repair") loadRepair();',
+                                'view === "inbox") loadMessages();',
                                 'view === "notice") loadNotices();', 'view === "kb") loadKB();',
                                 'view === "docs") loadDocs();',
                                 'view === "usage") loadUsage();', 'view === "persona") loadPersona();')), "")
-    c.check("顶栏标题查表（八档一份 NAV_TITLE，不是八个 if 各写一遍）",
+    c.check("顶栏标题查表（九档一份 NAV_TITLE，不是九个 if 各写一遍）",
             't.textContent = NAV_TITLE[view]' in sw and st.count("const NAV_TITLE") == 1, "")
     c.check("开场默认停在「学生工单」，且那一档的初始加载**只有一处**（switchNav 已经拉过，"
             "再在 init 里补一遍就是同一件事两份）",

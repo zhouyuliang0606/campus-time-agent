@@ -5004,6 +5004,32 @@ async def admin_service_record_status(sid: str, rid: str, req: Request):
     return _custom_record_status_response(sid, rid, body)
 
 
+@app.post("/api/admin/service-records/{sid}", dependencies=[Depends(verify_admin)])
+async def admin_service_record_create(sid: str, req: Request):
+    """后勤自己登记一条（电话打进来的报修、巡楼看到的坏点 —— 没有学生参与）。
+
+    ⚠️ 这条是施工单没列、但界面那一栏**必须要**的口：#54 §四.3 让管理端每组挂一个
+       「登记一条」表单，而驿站那个写口如今按部门拦 —— 后勤的服务从驿站口进直接 403，
+       表单填完点【登记】就是"没反应"。所以管理端得有自己的写口，字段判据与驿站共用
+       `_custom_field_errors`（同一份"这条登记能不能落库"，不许两份）。
+    ⚠️ `owner=""` 显式递：后勤现场录的没有学生身份，不递就会取到 `current_student()`
+       （管理台那个会话是登录着的），变成"管理员替某个学生报了一条修"。
+    """
+    svc = get_service(sid)
+    if not svc:
+        return JSONResponse({"error": "没有这项服务"}, status_code=404)
+    if is_builtin_service(svc):
+        # 内置那项的账是工单（workorders.json），不走这份台账 —— 与驿站端同一句理由
+        return JSONResponse({"error": "这一项是内置的工单链路，请走「学生工单」那一档"}, status_code=400)
+    body = await req.json()
+    why = _custom_field_errors(svc, body.get("fields") if isinstance(body, dict) else None)
+    if why:
+        return JSONResponse({"error": why}, status_code=400)
+    item = add_custom_record(sid, body["fields"], svc=svc, owner="")
+    return {"ok": True, "record": _record_view(item),
+            "reply": str(svc.get("reply_template") or "已登记。")}
+
+
 @app.post("/api/admin/services", dependencies=[Depends(verify_admin)])
 async def admin_service_create(req: Request):
     """管理端建服务：**一律归后勤**（#54 分流的下半场 —— 后勤要能自己建报修服务）。

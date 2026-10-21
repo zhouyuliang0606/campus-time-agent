@@ -46,8 +46,9 @@ ADMIN_ENDPOINTS = [
     ("GET", "/api/admin/docs", None),
     ("DELETE", "/api/admin/docs/nosuchdoc", None),
     ("POST", "/api/admin/docs/nosuchdoc/reindex", None),
-    # 2026-10-22 #54：后勤那一档三条（台账 / 改状态 / 建服务）。
+    # 2026-10-22 #54：后勤那一档四条（台账 / 现场登记 / 改状态 / 建服务）。
     ("GET", "/api/admin/service-records", None),
+    ("POST", "/api/admin/service-records/nosvc", {"fields": {"楼栋": "3"}}),
     ("POST", "/api/admin/service-records/nosuch/norec/status", {"status": "已解决"}),
     ("POST", "/api/admin/services", {"description": "门测：加一项服务"}),
 ]
@@ -224,13 +225,15 @@ def batch_wiring(c):
         # 但只读不等于免口令 —— 它回的是"这句学生问得到什么答案"，等于把知识库内容往外递一份，
         # 所以照样挂门。20 → 21 是**承认过的**涨项。
         "POST /api/admin/kb/probe",
-        # 2026-10-22 #54：后勤那一档三条（台账 / 改状态 / 建服务）⇒ 21 涨到 24，同样承认过。
-        # 其中【建服务】与【改状态】都是写口；【台账】虽然只读，但它把**全校**的登记内容往外递，
-        # 与 kb/probe 同一条理由：只读不等于免口令。
-        # ⚠️ 这三条必须落在 `/api/admin/*` 而不是驿站侧接口那一段：test_58 D 批钉着
+        # 2026-10-22 #54：后勤那一档四条（台账 / 现场登记 / 改状态 / 建服务）⇒ 21 涨到 25，同样承认过。
+        # 其中【现场登记】是施工单没列、但管理端界面那张登记表单**必须**有的写口
+        # （驿站那个写口现在按部门拦，后勤的服务从那儿进直接 403）。
+        # 【台账】虽然只读，但它把**全校**的登记内容往外递，与 kb/probe 同一条理由：只读不等于免口令。
+        # ⚠️ 这四条必须落在 `/api/admin/*` 而不是驿站侧接口那一段：test_58 D 批钉着
         #    "驿站那一段（免口令面）里不许出现 `dependencies=[Depends(verify_admin)]`"，
         #    插错位置就是**把这道门的边界自己挪松了**。
         "GET /api/admin/service-records",
+        "POST /api/admin/service-records/{sid}",
         "POST /api/admin/service-records/{sid}/{rid}/status",
         "POST /api/admin/services",
     }

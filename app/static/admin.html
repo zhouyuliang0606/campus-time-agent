@@ -79,6 +79,17 @@
     }
     .archLine button:hover { background: #f4f6fb; }
 
+    /* 后勤报修那一档（#54）：配色跟着管理端自己的橙红，不引驿站的青绿 */
+    .rpNew { display: flex; gap: 8px; margin-bottom: 6px; }
+    .rpNew input { flex: 1; padding: 7px 10px; border: 1px solid #d8def0; border-radius: 8px; font-size: 13px; }
+    .rpSvc { border: 1px solid #eaeef8; border-radius: 10px; padding: 10px 12px; margin: 10px 0; background: #fbfcff; }
+    .rpSvc h3 { margin: 0 0 4px; font-size: 15px; }
+    .rpDept { font-size: 11px; color: #b4530f; background: #fff1e8; border: 1px solid #f6d9c6; border-radius: 999px; padding: 1px 8px; margin-left: 6px; }
+    .rpPill { display: inline-block; font-size: 11px; color: #66708a; background: #eef1f9; border-radius: 999px; padding: 1px 8px; margin: 2px 4px 2px 0; }
+    .rpForm { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+    .rpForm input { padding: 6px 8px; border: 1px solid #d8def0; border-radius: 7px; font-size: 12px; min-width: 120px; }
+    .rpTrail { font-size: 12px; color: #66708a; margin-top: 2px; }
+
     /* 确认框（自绘）：本页原先用原生 confirm()，连点几次会被浏览器拦「阻止此页面创建更多对话框」；
        归档是要想一下的动作，不能被那个拦截吞掉，所以这里只留这一份实现。 */
     .mask { display: none; position: fixed; inset: 0; background: rgba(20,26,45,.45); z-index: 200; align-items: center; justify-content: center; }
@@ -184,6 +195,8 @@
       </div>
       <nav class="sb-nav" id="sbNav">
         <div class="sb-item" data-nav="wo"><span class="ico">🛠️</span><span class="lbl">学生工单</span><span class="sb-num" id="woNum"></span></div>
+        <!-- #54：后勤与驿站是并列的两条承接线 —— 学生工单（驿站那类）在前、后勤报修在后，读起来就是分工 -->
+        <div class="sb-item" data-nav="repair"><span class="ico">🧰</span><span class="lbl">后勤报修</span><span class="sb-num" id="repairNum"></span></div>
         <div class="sb-item" data-nav="inbox"><span class="ico">📥</span><span class="lbl">学生消息</span><span class="sb-cnt" id="msgNum"></span></div>
         <div class="sb-item" data-nav="notice"><span class="ico">📢</span><span class="lbl">发布通知</span></div>
         <div class="sb-item" data-nav="kb"><span class="ico">📚</span><span class="lbl">知识库</span></div>
@@ -223,6 +236,26 @@
                 <span class="small" id="woArchStatus"></span></span>
             </div>
             <div id="woBox"><div class="empty">暂无工单</div></div>
+          </div>
+        </div>
+
+        <!-- ①-bis 后勤报修（#54）：自建服务的登记台账。为什么单开一档而不是并进「学生工单」：
+             工单的账在 workorders.json、承接方是驿站；自建登记的账在 custom/<服务id>.json、按 dept 分档。
+             两张表的归属判据不同，合成一张就得在界面里再造一套"这条归谁"的判断 —— 那正是本单要消掉的东西。 -->
+        <div id="view-repair" class="nav-view">
+          <div class="card">
+            <div class="toolbar">
+              <h2 style="margin:0;">🧰 后勤报修</h2>
+              <span class="small" id="repairSummary">还没读</span>
+            </div>
+            <div class="rpNew">
+              <input id="rpIdea" placeholder="说一句话描述这项服务，例如：宿舍网络断了要报修" />
+              <button class="btn" id="rpCreate">建成一项后勤服务</button>
+            </div>
+            <div class="small">这里建出来的固定归<b>后勤</b>、驿站端建的固定归驿站 —— 部门由系统定，
+              请求里传了也不算（能传就等于谁能给自己开别的部门的台账）。
+              <span class="small" id="repairStatus"></span></div>
+            <div id="repairBox"><div class="empty">点开这一档时读一次</div></div>
           </div>
         </div>
 
@@ -1226,11 +1259,192 @@
     document.getElementById("refreshUsage").addEventListener("click", loadUsage);
     document.getElementById("clearUsage").addEventListener("click", clearUsage);
 
+    // ---------- 后勤报修（#54：自建服务的登记台账，按部门分档） ----------
+    // 数据源是 `/api/admin/service-records?dept=后勤`，与驿站读的是**同一份文件**
+    // （`custom/<服务id>.json`）—— 一份数据两个投影，不需要同步接口，也不需要谁去对账。
+    let showRpDone = false;    // 「已处理 N 条」那一块开没开（与工单的 showArchWo 同一个形状）
+
+    function paintRepairBadge(open) {
+      const num = document.getElementById("repairNum");
+      if (!num) return;
+      // 读不到就摘红点：拿着上一分钟的数喊"还有几条"，比不喊更坏（同 paintWoBadge）
+      if (open === null) { num.classList.remove("show"); return; }
+      num.textContent = open;
+      num.classList.toggle("show", open > 0);
+    }
+
+    function rpFields(f) {
+      const keys = Object.keys(f || {});
+      return keys.length ? keys.map(k => k + "：" + f[k]).join("、") : "（没填内容）";
+    }
+
+    // 进度那一行只念**真发生过**的变更（`progressed` 是后端给的旗标，前端不自己猜）。
+    // 没有 trail 的老记录老实写一句"还没动过状态" —— 画一条全是灰点、一格时间都没有的
+    // 假进度条，比不画更坏（那也是"轨迹说假话"那一族）。
+    function rpTrail(r) {
+      const tr = r.progressed ? (r.trail || []) : [];
+      if (!tr.length) return '<div class="rpTrail">进度：还没动过状态（只有登记那一下）</div>';
+      return '<div class="rpTrail">进度：' + tr.map(t => esc(t.status) + " "
+        + esc(String(t.ts || "").slice(5, 16))).join(" → ") + "</div>";
+    }
+
+    function rpRow(g, r) {
+      const done = r.status === "已解决";
+      const btn = (st, label) => '<button class="mini" data-rp-svc="' + esc(String(g.id))
+        + '" data-rp-rec="' + esc(String(r.id)) + '" data-st="' + st + '">' + label + "</button>";
+      return '<div class="msg' + (done ? " arch" : "") + '">'
+        + '<div class="top"><span class="tag">' + esc(g.name) + "</span>"
+        // owner 有值就念学号（后勤要能回拨找人），空就是"现场录入"——不是"未登记"那种含糊话
+        + '<span class="who">👤 ' + esc(r.owner || "现场录入") + "</span>"
+        + "<span>" + esc(r.ts) + "</span></div>"
+        + '<div class="q">' + esc(rpFields(r.fields)) + "</div>"
+        + '<div class="a">状态：<b>' + esc(r.status) + "</b> "
+        + (done ? btn("处理中", "改回处理中") : btn("处理中", "标为处理中") + btn("已解决", "标为已解决"))
+        + "</div>" + rpTrail(r) + "</div>";
+    }
+
+    async function loadRepair() {
+      const box = document.getElementById("repairBox");
+      const head = document.getElementById("repairSummary");
+      let data;
+      try {
+        data = await (await adminFetch("/api/admin/service-records?dept=后勤")).json();
+      } catch (e) {
+        // 非 2xx 在 adminFetch 那一处就抛（#28 收的口）。不接住就是"这一档一片空白 +
+        // 控制台一条未处理拒绝"—— loadKB 吃过一模一样的亏，新载荷必须 catch 进面板。
+        paintRepairBadge(null);
+        box.innerHTML = '<div class="empty">后勤台账读不到：' + esc(String(e.message || e))
+          + "（稍后自动重试）</div>";
+        return;
+      }
+      const groups = data.groups || [];
+      const sum = (key) => groups.reduce((n, g) => n + (g[key] || 0), 0);
+      paintRepairBadge(sum("open"));
+      if (head) head.textContent = "共 " + groups.length + " 项服务 · 未结 " + sum("open")
+        + " 条 · 累计 " + sum("total") + " 条";
+      if (!groups.length) {
+        box.innerHTML = '<div class="empty">还没有归后勤的服务。上面那句话建一项，'
+          + "或让驿站那边把报修那项改成后勤的。</div>";
+        return;
+      }
+      box.innerHTML = groups.map(g => {
+        const recs = g.records || [];
+        // 只列最新 5 条（与驿站端同一既有上限）：第 6 条往外**点不到按钮**，
+        // 真要看全的就去台账文件，别在这里堆成刷屏。
+        const live = recs.filter(r => r.status !== "已解决").slice(0, 5);
+        const done = recs.filter(r => r.status === "已解决");
+        const pills = (g.triggers || []).map(t => '<span class="rpPill">' + esc(t) + "</span>").join("");
+        const inputs = (g.collect_fields || []).map(f => '<input data-rp-f="' + esc(f)
+          + '" placeholder="' + esc(f) + '" />').join("");
+        return '<div class="rpSvc" data-svc="' + esc(String(g.id)) + '">'
+          + "<h3>" + esc(g.name) + '<span class="rpDept">归' + esc(g.dept) + "</span>"
+          + '<span class="small">未结 ' + (g.open || 0) + " / 累计 " + (g.total || 0) + "</span></h3>"
+          + "<div>" + pills + "</div>"
+          + '<div class="rpForm">' + inputs
+          + '<button class="btn" data-rp-add="' + esc(String(g.id)) + '">登记一条</button></div>'
+          + (live.length ? live.map(r => rpRow(g, r)).join("")
+            : '<div class="empty">这一项没有未结的登记。</div>')
+          + (done.length ? '<div class="archLine">🗄 已处理 ' + done.length + " 条"
+            + '<button data-rp-toggle="1">' + (showRpDone ? "藏起来" : "看一看") + "</button>"
+            + '<span class="small">登记记录没有归档那一档，这几条是「状态=已解决」</span></div>'
+            + (showRpDone ? done.map(r => rpRow(g, r)).join("") : "") : "")
+          + "</div>";
+      }).join("");
+      bindRepair(box);
+    }
+
+    function rpSay(text, bad) {
+      const st = document.getElementById("repairStatus");
+      if (st) { st.textContent = text; st.style.color = bad ? "#d94b68" : "#8a93a6"; }
+    }
+
+    function bindRepair(box) {
+      // 【登记一条】：按这项服务的 collect_fields 收，空字段不递（后端那条判据会点名缺哪一项）
+      box.querySelectorAll("[data-rp-add]").forEach(b => b.addEventListener("click", async () => {
+        const sid = b.dataset.rpAdd;
+        const wrap = b.closest(".rpSvc");
+        const fields = {};
+        wrap.querySelectorAll("[data-rp-f]").forEach(i => {
+          if (i.value.trim()) fields[i.dataset.rpF] = i.value.trim();
+        });
+        b.disabled = true;
+        let d = {};
+        try {
+          const resp = await adminFetch("/api/admin/service-records/" + encodeURIComponent(sid), {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ fields: fields }),
+          });
+          d = await resp.json();
+          if (!resp.ok) { rpSay("❌ 没登记成：" + (d.error || resp.status), true); return; }
+          rpSay("已登记（记录号 " + ((d.record && d.record.id) || "?") + "），现场录入没有学生身份。");
+          wrap.querySelectorAll("[data-rp-f]").forEach(i => { i.value = ""; });
+        } catch (e) {
+          rpSay("❌ 没登记成：" + e.message, true);
+          return;
+        } finally {
+          b.disabled = false;
+        }
+        loadRepair();     // 改完立即重画，不等下一轮 5 秒（见下面那句注释）
+      }));
+
+      box.querySelectorAll(".mini[data-rp-rec]").forEach(b => b.addEventListener("click", async () => {
+        let d = {};
+        try {
+          const resp = await adminFetch("/api/admin/service-records/"
+            + encodeURIComponent(b.dataset.rpSvc) + "/" + encodeURIComponent(b.dataset.rpRec)
+            + "/status", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ status: b.dataset.st }),
+          });
+          d = await resp.json();
+          if (!resp.ok) { rpSay("❌ 状态没改成「" + b.dataset.st + "」：" + (d.error || resp.status), true); return; }
+          rpSay("已标为「" + b.dataset.st + "」，进度那一行多了一次带时刻的变更。");
+        } catch (e) {
+          rpSay("❌ 状态没改成「" + b.dataset.st + "」：" + e.message, true);
+          return;
+        }
+        // ⚠️ 立刻重画，**不等那 5 秒**：后勤连着处理三条时，第 1 条改完到第 2 条之间那 5 秒里
+        //    界面还是旧状态，人就会以为没点到、再点一下 —— 后端幂等，但界面看着就是"卡了"。
+        loadRepair();
+      }));
+
+      box.querySelectorAll("[data-rp-toggle]").forEach(b => b.addEventListener("click", () => {
+        showRpDone = !showRpDone;
+        loadRepair();
+      }));
+    }
+
+    // 【建成一项后勤服务】：与驿站端共用 `_draft_service`（那句话→定义→白名单只有一份）
+    document.getElementById("rpCreate").addEventListener("click", async () => {
+      const idea = (document.getElementById("rpIdea").value || "").trim();
+      const btn = document.getElementById("rpCreate");
+      if (!idea) { rpSay("先说一句你想加什么服务。", true); return; }
+      btn.disabled = true;
+      rpSay("正在按这句话生成服务定义…（要走一次大模型）");
+      try {
+        const resp = await adminFetch("/api/admin/services", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ description: idea }),
+        });
+        const d = await resp.json();
+        if (!resp.ok) { rpSay("❌ 没建成：" + ((d && d.error) || resp.status), true); return; }
+        const s = d.service || {};
+        rpSay("已建成「" + (s.name || "?") + "」，归后勤（触发词 "
+          + ((s.triggers || []).length) + " 条）。学生在对话里说到那些词就会出登记卡。");
+        document.getElementById("rpIdea").value = "";
+        loadRepair();
+      } catch (e) {
+        rpSay("❌ 没建成：" + e.message, true);
+      } finally {
+        btn.disabled = false;
+      }
+    });
+
     // ---------- 三栏外壳：左栏点开哪档，中间就只显示哪档（只动 display，DOM 全程不重建） ----------
     // 因为不重建：正在填的通知、编辑到一半的知识库条目（editingKb）、刚选的附件，
     // 切走再切回来都还在 —— 这页一半的卡是**表单**，重建一次就是一次数据丢失。
     const NAV_TITLE = {
-      wo: "学生工单", inbox: "学生消息收件箱", notice: "发布通知", kb: "知识库管理",
+      wo: "学生工单", repair: "后勤报修", inbox: "学生消息收件箱", notice: "发布通知", kb: "知识库管理",
       docs: "文档知识库",
       usage: "模型用量统计", api: "API 配置", persona: "客服人格配置",
     };
@@ -1261,6 +1475,7 @@
       // 进哪档现拉一次，别让人对着上一分钟的数据看 —— **但 API 那档除外**：
       // loadApiSettings 是把值**写回输入框**的（akey/abase/amodel），一进就拉会把管理员刚敲的一半抹掉。
       if (view === "wo") loadWorkOrders();
+      else if (view === "repair") loadRepair();
       else if (view === "inbox") loadMessages();
       else if (view === "notice") loadNotices();
       else if (view === "kb") loadKB();
@@ -1278,12 +1493,19 @@
     switchNav("wo");
     loadNotices(); loadPersona(); loadKB(); loadMessages(); loadApiSettings();
     loadUsage();
+    // 后勤那一档也开场拉一次：左栏那颗红点在没点开那一档之前就该是真的
+    //（只等 5 秒轮询的话，进页面头几秒"有活"是看不见的 —— 与工单那颗点的时机对齐）。
+    loadRepair();
     // 口令没过时 adminFetch 会抛：这里吞掉，锁着的页面不该每 5 秒喷一次异常。
     // 该说的都在口令条里说了（adminLocked 也会让下一次轮询直接跳过）。
     const _poll = (fn) => () => { if (!adminLocked) fn().catch(() => {}); };
+    // ⚠️ 后勤这一档**多判一条 `document.hidden`**（既有那三档没判，标签页切走照打）：
+    //    本单不把那个毛病复制一份 —— 后台每 5 秒打一次管理接口，用量流水和日志都会被灌水。
+    const _pollVisible = (fn) => () => { if (!adminLocked && !document.hidden) fn().catch(() => {}); };
     setInterval(_poll(loadMessages), 5000);
     setInterval(_poll(loadWorkOrders), 5000);
     setInterval(_poll(loadUsage), 5000);
+    setInterval(_pollVisible(loadRepair), 5000);
   </script>
 </body>
 </html>
