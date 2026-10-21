@@ -431,10 +431,35 @@
   /* 代办入口的红角标 = 今天还没勾掉的条数（用户 2026-10-13 点名要红数字）。
      侧栏那颗靠 margin-left:auto 顶到行尾；窄屏（下面那条 media）会把 span 全隐藏，
      所以补一条**写在隐藏规则之后**的例外，不然手机上正好看不见最该看的东西。 */
-  .todo-badge { background: #ff3b30; color: #fff; border-radius: 9px; padding: 0 6px; min-width: 16px;
-                height: 16px; line-height: 16px; font-size: 11px; font-weight: 700; text-align: center;
-                display: none; flex: none; }
   .sb-item .todo-badge { margin-left: auto; }
+  /* 「我的上报」那颗角标（#54）长相与代办那颗一样，但**类名必须分开**：
+     `updateTodoBadge()` 是按 `.todo-badge` 整批写的（一起清空 textContent/display），
+     共用类名就等于代办每刷一次，上报那颗的数被它抹掉一次 —— 两处各画一半，
+     正好是"角标变了列表没变"那一族的另一半。共用的是**样式**，不是**归属**。 */
+  .todo-badge, .report-badge { background: #ff3b30; color: #fff; border-radius: 9px; padding: 0 6px;
+                min-width: 16px; height: 16px; line-height: 16px; font-size: 11px; font-weight: 700;
+                text-align: center; display: none; flex: none; }
+  .sb-item .report-badge { margin-left: auto; }
+  /* 我的上报（#54）：三步进度条。灰色 = 还没走到（不给时间），
+     点亮 = 真有过那一次变更，时刻一律用后端给的，前端不做任何时间运算。 */
+  #reportList { display: flex; flex-direction: column; gap: 10px; }
+  .rpItem { border: 1px solid #eaeef8; border-radius: 12px; padding: 10px 12px; background: #fbfcff; }
+  .rpHead { display: flex; align-items: center; gap: 8px; font-size: 14px; }
+  .rpDeptTag { font-size: 11px; color: #b4530f; background: #fff1e8; border: 1px solid #f6d9c6;
+               border-radius: 999px; padding: 1px 8px; }
+  .rpSrc { font-size: 11px; color: #7b86a3; margin-left: auto; }
+  .rpDetail { font-size: 12px; color: #55606d; margin-top: 4px; word-break: break-all; }
+  .rpSteps { display: flex; align-items: stretch; gap: 4px; margin-top: 8px; }
+  .rpStep { flex: 1; text-align: center; font-size: 11px; color: #a9b1c2; border-top: 2px solid #e6eaf4;
+            padding-top: 5px; }
+  .rpStep b { display: block; font-weight: 600; }
+  .rpStep i { font-style: normal; font-size: 10px; color: #b9c0cf; }
+  .rpStep.hit { color: #1f7a4d; border-top-color: #1f7a4d; }
+  .rpStep.hit i { color: #1f7a4d; }
+  .rpStep.now { color: #d94b68; border-top-color: #d94b68; font-weight: 700; }
+  .rpArrow { align-self: center; color: #d5dae7; font-size: 11px; }
+  .rpFlat { font-size: 12px; color: #7b86a3; margin-top: 8px; }
+  .rpAge { font-size: 11px; color: #8a93a6; margin-top: 4px; }
   .todo-group { font-size: 12px; color: #8a93a6; letter-spacing: .04em; margin: 4px 2px -2px; }
   /* 「今天要做」单独一个框（用户 2026-10-13：当天的任务置顶、框出来）。
      底色刻意和下面的分组行不一样：进这一栏第一眼要落到这个框上，不是先读一遍标题。
@@ -696,7 +721,7 @@ html.gx-glass[data-gx-refine="on"] .composer, html.gx-glass[data-gx-refine="on"]
   @media (max-width: 720px) {
     .sidebar { width: 64px; padding: 10px 8px; }
     .sb-name, .sb-sub, .sb-item span:not(.ico), .sb-more-toggle span:not(.ico), .sb-foot { display: none; }
-    .sb-item span.todo-badge { display: block; position: absolute; top: 3px; right: 2px; margin-left: 0; }
+    .sb-item span.todo-badge, .sb-item span.report-badge { display: block; position: absolute; top: 3px; right: 2px; margin-left: 0; }
     .sb-item { justify-content: center; position: relative; }
   }
 </style>
@@ -748,6 +773,9 @@ html.gx-glass[data-gx-refine="on"] .composer, html.gx-glass[data-gx-refine="on"]
         <div class="sb-item active" data-nav="schedule"><span class="ico"><svg class="ic"><use href="#gi-cal"/></svg></span>日程</div>
         <div class="sb-item" data-nav="notices" id="sbNotices"><span class="ico"><svg class="ic"><use href="#gi-bell"/></svg></span>校园通知<span class="sb-dot" id="sbNoticeDot"></span></div>
         <div class="sb-item" data-nav="todos"><span class="ico"><svg class="ic"><use href="#gi-check"/></svg></span>代办事项<span class="todo-badge" id="todoBadge"></span></div>
+        <!-- #54：与「代办事项」同属"我的事"，所以要挨着放，而且要带角标 ——
+             报了东西却没人理，那颗点就是他唯一能看见的"这事还在"。 -->
+        <div class="sb-item" data-nav="reports"><span class="ico"><svg class="ic"><use href="#gi-doc"/></svg></span>我的上报<span class="report-badge" id="reportBadge"></span></div>
         <div class="sb-item" data-nav="settings"><span class="ico"><svg class="ic"><use href="#gi-sliders"/></svg></span>设置</div>
       </nav>
       <div class="sb-more" id="sbMore">
@@ -878,6 +906,13 @@ html.gx-glass[data-gx-refine="on"] .composer, html.gx-glass[data-gx-refine="on"]
         </div><!-- /chatStage -->
         <div id="navTodos" class="nav-view">
           <div class="card"><h2>代办事项 <span class="todo-badge" id="todoBadgeCard"></span></h2><div class="desc">勾选标记完成，或删除。<b>习惯（每天/每周）只列在这里，不画进日程格子</b>；单次任务改动即时同步到日程。</div><div id="todoList" class="todo-list"></div></div>
+        </div>
+        <div id="navReports" class="nav-view">
+          <div class="card"><h2>我的上报 <span class="report-badge" id="reportBadgeCard"></span></h2>
+            <div class="desc">这里是你的<b>报过的所有事</b>：快递/外卖的工单、其他服务的登记，合成一张表，
+              每条写着<b>归谁处理</b>（驿站 / 后勤）和走到哪一步。不用去两个栏目分开找。<br>
+              这一栏只读：<b>要撤销只能去找接的那一头</b> —— 自己删掉，人家已经派出去的单就抽没了。</div>
+            <div id="reportList"><div class="empty">点开这一栏时读一次。</div></div></div>
         </div>
         <div id="navNotices" class="nav-view">
           <div class="card"><h2>校园通知 <span class="badge" id="noticeCount">0</span></h2>
@@ -1130,13 +1165,16 @@ html.gx-glass[data-gx-refine="on"] .composer, html.gx-glass[data-gx-refine="on"]
           // 用的是**这项服务自己写的那句话**（管理员在驿站端定的回执），不是通用一句"已提交"
           addMsg(botName(), "✅ " + (d.reply || "已登记。")
             + (d.record_id ? "（记录号 " + d.record_id + "）" : ""), "bot", "custom");
+          // #54：报完**当场**多出一条「待处理」，比等轮询直接 —— 学生刚点完就看得见"这事立案了"
+          loadReportsView();
         } else if (d.kind === "work_order_report") {
-          addMsg(botName(), "✅ 已上报驿站：工单已生成，进度可以在快递面板的"
-            + "「我提交过的工单」里看到。", "bot", "express");
+          addMsg(botName(), "✅ 已上报驿站：工单已生成，进度在左栏「我的上报」里看得见"
+            + "（快递面板那块「我提交过的工单」也还在）。", "bot", "express");
           // 报完立刻刷一次那块列表 —— 不刷就是"刚报的单子在这台机器上不存在"，
           // 而这句话在 #37 之前**确实是真话**（那块读的是 localStorage，聊天这路根本不写）。
           // 用 void + catch：这是异步回调，未处理的拒绝会把这段回执带崩（#28 那条教训）。
           void renderWorkOrders().catch(() => {});
+          loadReportsView();
         } else {
           addMsg(botName(), "✅ 已经按你的确认改好了，日程已刷新。", "bot", "planner");
           // ④ 入库成功后自动刷新课表/待办面板——只有真的动了课表/待办才刷
@@ -2536,10 +2574,105 @@ html.gx-glass[data-gx-refine="on"] .composer, html.gx-glass[data-gx-refine="on"]
         if (st) st.textContent = "已提交，工单号 " + (d.workorder && d.workorder.id ? d.workorder.id : "")
           + "。驿站处理后会在这里显示进度。";
         await renderWorkOrders();
+        // 「我的上报」也当场跟上（不等轮询）：刚报完那条就该看得见，
+        // 否则学生第一反应是"报没报上？"—— 那正是 #37 那本 localStorage 假账想解决的事。
+        loadReportsView();
       } catch (e) {
         // 失败只说实话，不改列表：这时候刷出来的是服务端真有那几条，一条不多
         if (st) st.textContent = "❌ 没提交成功：" + e.message + "（服务端没有立案，请重试）";
       }
+    });
+
+    // ---- 「我的上报」（#54）：工单 + 自建服务登记合成的一张表，进度画成三步条 ----
+    // 数据源 `/api/my/reports` 与「我提交过的工单」读的是**同一份服务端数据**，
+    // 这里不再留任何本地副本（#37 那一刀：localStorage 那本假账 = 换个人登录看见上一个人的单）。
+    // ⚠️ 这一栏的列表与角标**只有一个刷新来源**（下面的 `syncReportPolling`），
+    //    两处各挂一个 setInterval 迟早出现"角标变了、列表没变"。
+    // 词的顺序照后端 `_WO_STATUSES`，这里只是**画的顺序**；
+    // 不许在这边映射别名（"进行中"那种一改就对不上后端的值）。
+    const RP_STEPS = ["待处理", "处理中", "已解决"];
+
+    function updateReportBadge(items) {
+      document.querySelectorAll(".report-badge").forEach(el => {
+        if (items === null) { el.textContent = ""; el.style.display = "none"; return; }
+        const n = items.filter(r => r.status !== "已解决").length;
+        el.textContent = n ? String(n) : "";
+        el.style.display = n ? "inline-block" : "none";
+      });
+    }
+
+    // 三步条。规则只有两条，都为"不撒谎"服务：
+    //   ① 一格只有在**真发生过**那次变更时才亮起来并带时刻（后端 `trail`，没有就空着）；
+    //   ② 整条 trail 都没有的老记录（#54 之前立的案）不画格子 —— 退化成"一行状态 + 创建时间"，
+    //      画出一条全是灰点、一格时间都没有的假进度，比不画更坏。
+    // 第一步的时刻用登记那条 `ts`：那是**真的创建时刻**，不是算出来的；
+    // 其余各步只在 trail 里真有过那条时才显示，其余一律不猜。
+    function rpSteps(r) {
+      const tr = r.progressed ? (r.trail || []) : [];
+      if (!tr.length) {
+        return '<div class="rpFlat"><b>' + esc(r.status) + "</b> · " + esc(r.ts) + "</div>";
+      }
+      const at = {};
+      tr.forEach(t => { if (t && t.status && !at[t.status]) at[t.status] = String(t.ts || ""); });
+      if (!at[RP_STEPS[0]]) at[RP_STEPS[0]] = String(r.ts || "");
+      const cur = RP_STEPS.indexOf(r.status);
+      return '<div class="rpSteps">' + RP_STEPS.map((s, i) => {
+        const hit = !!at[s];
+        const cls = "rpStep" + (hit ? " hit" : "") + (i === cur ? " now" : "");
+        return '<span class="' + cls + '"><b>' + esc(s) + "</b><i>"
+          + (hit ? esc(at[s].slice(5, 16)) : "") + "</i></span>";
+      }).join('<span class="rpArrow">→</span>') + "</div>";
+    }
+
+    async function loadReportsView() {
+      const box = document.getElementById("reportList");
+      if (!box) return;
+      let items;
+      try {
+        const resp = await fetch("/api/my/reports");
+        const d = await resp.json().catch(() => ({}));
+        // 判成功看 HTTP 层（#28 那一族）：非 2xx 时正文里可能根本没有 items 字段，
+        // 把它当"你没有上报过"就是谎报空状态。
+        if (!resp.ok) throw new Error("HTTP " + resp.status + (d.error ? "：" + d.error : ""));
+        items = d.items || [];
+      } catch (e) {
+        updateReportBadge(null);   // 读不到就把角标摘掉：拿着上一分钟的数喊"还有几条"比不喊更坏
+        box.innerHTML = '<div class="empty">上报记录没能加载：' + esc(e.message)
+          + '（这不是"你没有上报过"，刷新或重新登录再试）</div>';
+        return;
+      }
+      updateReportBadge(items);
+      if (!items.length) {
+        box.innerHTML = '<div class="empty">还没有上报过。快递丢了、电梯坏了，直接在对话里说一句就行。</div>';
+        return;
+      }
+      box.innerHTML = items.map(r => '<div class="rpItem">'
+        + '<div class="rpHead"><b>' + esc(r.title) + "</b>"
+        + '<span class="rpDeptTag">归' + esc(r.dept) + "</span>"
+        + '<span class="rpSrc">' + (r.source === "workorder" ? "工单" : "登记") + "</span></div>"
+        + (r.detail ? '<div class="rpDetail">' + esc(r.detail) + "</div>" : "")
+        + rpSteps(r)
+        // 「等了多久」是后端算好的字符串（前端不做时间运算：换时区/跨天就会算成负数）
+        + (r.age_text ? '<div class="rpAge">已经等了 ' + esc(r.age_text) + "</div>" : "")
+        + "</div>").join("");
+    }
+
+    // 刷新节奏只有一个来源（#54）：学生**正看着这一栏**时 5 秒，其余时候 30 秒。
+    // 为什么分两档：演示当天是"后勤点一下、学生那屏跟着变"，30 秒观众等不了；
+    // 但常驻 5 秒会让三端加起来每 5 秒打满一轮接口，用量流水和日志都被灌水。
+    let reportTimer = null;
+    function syncReportPolling(view) {
+      const ms = view === "reports" ? 5000 : 30000;
+      if (reportTimer && reportTimer.ms === ms) return;   // 节奏没变就别重开（重开=清掉再建，会漏一拍）
+      if (reportTimer) clearInterval(reportTimer.id);
+      reportTimer = { ms: ms, id: setInterval(() => {
+        if (document.hidden) return;      // 标签页在后台就别打，回来由 visibilitychange 补一次
+        loadReportsView();
+      }, ms) };
+    }
+    document.addEventListener("visibilitychange", () => {
+      // 手机锁屏回来，定时器可能已被节流 —— 不补这一次就是"打开一看还是昨天的"
+      if (!document.hidden) loadReportsView();
     });
 
     // ---- ③ 外卖：订单列表 ----
@@ -2893,7 +3026,7 @@ html.gx-glass[data-gx-refine="on"] .composer, html.gx-glass[data-gx-refine="on"]
 
   // ================= 三栏外壳交互（新增） =================
   (function(){
-    var NAV_TITLE = {chat:"校园问答", schedule:"日程", notices:"校园通知", todos:"代办事项", settings:"设置", express:"快递", takeout:"外卖"};
+    var NAV_TITLE = {chat:"校园问答", schedule:"日程", notices:"校园通知", todos:"代办事项", reports:"我的上报", settings:"设置", express:"快递", takeout:"外卖"};
     function cap(x){ return x.charAt(0).toUpperCase()+x.slice(1); }
     function switchNav(view){
       currentView = view;
@@ -2917,8 +3050,13 @@ html.gx-glass[data-gx-refine="on"] .composer, html.gx-glass[data-gx-refine="on"]
       else if(view==="takeout") showView("view-takeout");
       else if(view==="chat") showView("view-faq");
       else if(view==="todos") loadTodosView();
+      else if(view==="reports") loadReportsView();   // 切进来**立刻**拉一次，不等第一个 5 秒
       else if(view==="notices") loadNotices();   // 进来就拉一次（顺带把红点清掉）
       else if(view==="settings") loadSettingsView();
+      // 这一栏的刷新节奏跟着"学生正看着哪一栏"走（上面那三档的切换处只换面板、不碰定时器）。
+      // ⚠️ 这是这一栏**唯一**的定时器来源：别的地方再挂一个 setInterval，
+      //    就又是"角标变了、列表没变"那一族（两处各刷一半，查起来要同时看两个地方）。
+      syncReportPolling(view);
       // 切模块**不再重画聊天区**：既然全站一条对话流，"换个栏就把历史擦一遍再拉回来"
       // 只会让流跳一下、并把刚接回来的待确认卡又冲掉一次。模块切换只换右侧面板。
     }
@@ -3392,6 +3530,9 @@ html.gx-glass[data-gx-refine="on"] .composer, html.gx-glass[data-gx-refine="on"]
     currentView = "schedule";
     resetLogForModule("schedule"); // 应用日程开场白 + 拉回那条唯一的对话流
     switchNav("schedule");         // 面板模式：日程面板在上，聊天流在下方常驻
+    // 「我的上报」那颗角标开场就读实，别等第一个 30 秒 —— 与工单/待办那颗点的时机对齐。
+    // （这一栏的**周期**刷新仍然只有 syncReportPolling 一个来源，这里不是第二个定时器。）
+    loadReportsView();
   })();
 
   </script>

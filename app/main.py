@@ -4408,6 +4408,21 @@ def _age_hours(ts: str) -> float | None:
     return round(h, 1) if h >= 0 else None
 
 
+def _age_text(h) -> str:
+    """把"等了多久"翻成一句人话（#54 纪律 4：连这句话都在后端翻，前端不许自己除 24）。
+
+    算不出来就回空串，前端那句「已经等了…」整条不出现 —— 宁可不显示，
+    也不显示一个猜出来的数。
+    """
+    if h is None:
+        return ""
+    if h < 1:
+        return "不到 1 小时"
+    if h < 48:
+        return f"{int(h)} 小时"
+    return f"约 {int(round(h / 24.0))} 天"
+
+
 @app.get("/api/my/reports")
 async def my_reports(include_archived: bool = True):
     """学生自己的上报（#54）：**工单 + 自建服务登记**合成一张表，附进度。
@@ -4435,13 +4450,15 @@ async def my_reports(include_archived: bool = True):
     for w in list_workorders(include_archived=include_archived, owner=who):
         tr = trail_of(w)
         st = str(w.get("status") or "")
+        # 已结的不算"等了多久"（它不再等人了）：回 None ⇒ age_text 空串 ⇒ 那句不出现
+        _h = _age_hours(w.get("ts")) if st != "已解决" else None
         items.append({"source": "workorder", "id": str(w.get("id") or ""), "sid": "",
                       "title": str(w.get("kind") or "其他问题"),
                       "detail": str(w.get("desc") or ""),
                       "status": st, "ts": str(w.get("ts") or ""),
                       "dept": "驿站",
                       "trail": tr, "progressed": bool(tr),
-                      "age_hours": _age_hours(w.get("ts")) if st != "已解决" else None})
+                      "age_hours": _h, "age_text": _age_text(_h)})
     for svc in list_services():
         if is_builtin_service(svc):
             continue
@@ -4450,13 +4467,14 @@ async def my_reports(include_archived: bool = True):
             v = _record_view(r)
             if v["owner"] != who:
                 continue
+            _h = _age_hours(v.get("ts")) if v.get("status") != "已解决" else None
             items.append({"source": "service", "id": v.get("id") or "", "sid": sid,
                           "title": str(r.get("name") or svc.get("name") or "登记"),
                           "detail": "、".join(f"{k}：{x}" for k, x in (v.get("fields") or {}).items()
                                               if str(x or "").strip()),
                           "status": v.get("status") or "", "ts": v.get("ts") or "",
                           "dept": v["dept"], "trail": v["trail"], "progressed": v["progressed"],
-                          "age_hours": _age_hours(v.get("ts")) if v.get("status") != "已解决" else None})
+                          "age_hours": _h, "age_text": _age_text(_h)})
     items.sort(key=lambda x: x["ts"], reverse=True)
     return {"items": items}
 
