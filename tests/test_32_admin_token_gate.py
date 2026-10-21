@@ -46,10 +46,16 @@ ADMIN_ENDPOINTS = [
     ("GET", "/api/admin/docs", None),
     ("DELETE", "/api/admin/docs/nosuchdoc", None),
     ("POST", "/api/admin/docs/nosuchdoc/reindex", None),
+    # 2026-10-22 #54：后勤那一档三条（台账 / 改状态 / 建服务）。
+    ("GET", "/api/admin/service-records", None),
+    ("POST", "/api/admin/service-records/nosuch/norec/status", {"status": "已解决"}),
+    ("POST", "/api/admin/services", {"description": "门测：加一项服务"}),
 ]
 # 其中这几个「带对口令后」不去实跑：/settings/test 真会往大模型发一次请求，
 # 用一个假 key 打真网络既慢又不稳定，门该验的只是「没口令进不去」。
-SKIP_WITH_TOKEN = {"/api/admin/settings/test"}
+# #54 的【建服务】同性质 —— 它内部就走 `_draft_service` → 真打一次模型（而且开发机上
+# .env 里是有真密钥的，实跑就会往沙箱里建出一项服务，那不是这道门要问的事）。
+SKIP_WITH_TOKEN = {"/api/admin/settings/test", "/api/admin/services"}
 
 # 学生侧：这些**不许**被口令挡住
 STUDENT_OPEN = [
@@ -218,6 +224,15 @@ def batch_wiring(c):
         # 但只读不等于免口令 —— 它回的是"这句学生问得到什么答案"，等于把知识库内容往外递一份，
         # 所以照样挂门。20 → 21 是**承认过的**涨项。
         "POST /api/admin/kb/probe",
+        # 2026-10-22 #54：后勤那一档三条（台账 / 改状态 / 建服务）⇒ 21 涨到 24，同样承认过。
+        # 其中【建服务】与【改状态】都是写口；【台账】虽然只读，但它把**全校**的登记内容往外递，
+        # 与 kb/probe 同一条理由：只读不等于免口令。
+        # ⚠️ 这三条必须落在 `/api/admin/*` 而不是驿站侧接口那一段：test_58 D 批钉着
+        #    "驿站那一段（免口令面）里不许出现 `dependencies=[Depends(verify_admin)]`"，
+        #    插错位置就是**把这道门的边界自己挪松了**。
+        "GET /api/admin/service-records",
+        "POST /api/admin/service-records/{sid}/{rid}/status",
+        "POST /api/admin/services",
     }
     got = _guarded_routes()
     # 名字里的数字改成从清单自己算：以前写死"这 20 个"，加一条就得改两处（计数式判据自己咬自己那一族）

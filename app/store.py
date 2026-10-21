@@ -284,12 +284,49 @@ def list_archived_workorders() -> list:
     return [w for w in list_workorders(include_archived=True) if w.get("archived")]
 
 
-def update_workorder_status(wo_id: str, status: str) -> dict | None:
+def _append_trail(row: dict, status: str, by: str = "") -> None:
+    """给一条记录追加一次状态变更（**原地改**）。全库唯一写"进度"的地方。
+
+    为什么是数组、不是 `created_at/updated_at/resolved_at` 三个散字段：
+      · 三个字段只能表达"最后一次"，学生问「什么时候开始处理的」就没有答案；
+      · 每加一档状态就得再加一个字段（处理中 ⇒ processing_at），正是"加一档改两处"那族病；
+      · 处理时效（平均几小时解决）直接从这个数组算，不用再动结构。
+
+    :param by: 谁改的。**目前一律传 `""`** —— 管理端只有口令、驿站端免口令，
+        都没有"哪个人"这个身份。宁可留空显示「管理员」，也不许编一个名字。
+        将来真加了账号再往这里填，**不动结构**。
+    ⚠️ 老记录不回填：没有 trail 的，由读取端兜底成"只有创建那一条"
+        （见 `my_reports` / 驿站与后勤的台账渲染）—— **不编造中间过程**，
+        与 `status` / `archived` 那几单的一贯做法相同（回填=编造历史）。
+    """
+    row.setdefault("trail", []).append({"status": str(status), "ts": _now(), "by": str(by or "")})
+    # `updated_at` 与 trail 末条同时写：只 append 不写这一行，"最后动过"就永远是空的，
+    # 而前端读到空是**静默显示空白**（比报错难发现，#54 变异 M7 钉的就是这一行）。
+    row["updated_at"] = row["trail"][-1]["ts"]
+
+
+def trail_of(row: dict) -> list:
+    """这条记录**真发生过**的状态变更（读取端**唯一**取法）。
+
+    老记录没有 `trail` ⇒ 回**空表**，绝不在这里合成一条"看起来像历史"的假记录：
+    编造历史比没有历史更坏（#54 变异 M8 撞的就是这一处），要不要退化成
+    "一行状态 + 创建时间"由**视图**决定，判据（有没有真发生过变更）只写在这儿。
+    三张脸（管理端后勤、驿站台账、学生「我的上报」）都读它，各写一遍就会出现
+    "这一栏有进度、那一栏没有"。
+    """
+    tr = (row or {}).get("trail")
+    if not isinstance(tr, list):
+        return []
+    return [t for t in tr if isinstance(t, dict)]
+
+
+def update_workorder_status(wo_id: str, status: str, by: str = "") -> dict | None:
     """管理员处理工单后改状态（待处理 / 处理中 / 已解决）。"""
     items = _read("workorders.json", [])
     for it in items:
         if it.get("id") == wo_id:
             it["status"] = status
+            _append_trail(it, status, by)
             _write("workorders.json", items)
             return it
     return None
@@ -1541,6 +1578,9 @@ _SEED_SERVICES = [
         "collect_fields": ["单号或取件码", "大概时间", "丢失地点"],
         "reply_template": "已登记，驿站会按你留的信息去找，找到后放驿站等你取。",
         "table": "workorders",
+        # #54：内置那项本来就是驿站的账（工单由驿站处理），显式写死而不是靠 dept_of 兜底 ——
+        # 兜底只该管"老数据没这个键"，不该管"新定义也懒得写"。
+        "dept": "驿站",
         "created_at": "内置",
     },
 ]
@@ -1554,7 +1594,43 @@ SERVICE_FIELDS = {
     "table": (1, 20),
 }
 SERVICE_ITEM_MAX = 24          # 列表里每一项的字符上限
+TRIGGER_MIN_LEN = 4            # 一条触发词至少几个字（#54 §六.2，理由在 validate_service_def）
 CUSTOM_VALUE_MAX = 60          # 一条登记里每个字段值的上限
+
+# ── 服务的承接部门（2026-10-22 #54：用户拍板"写分流 + 给驿站限制权限"）────────
+# 只有两档：驿站管快递/外卖，后勤管设施报修。
+# 为什么不做成自由文本：`dept` 是**权限判据**（/api/station/* 那七个口的 403 全靠它），
+# 自由文本等于给"越权"留了一个错字的口子 ——「后勤处」「后勤保障处」都能绕过相等判断。
+# ⚠️ 这段放在 `add_service` **之前**是硬的：那里的默认值 `dept=DEPT_DEFAULT` 在 def 时就要能取到。
+#    （施工单说放在 `is_builtin_service` 附近，那个位置在它下游，照抄会 NameError。）
+DEPTS = ("驿站", "后勤")
+DEPT_DEFAULT = "驿站"
+
+
+def dept_of(svc: dict | None) -> str:
+    """这项服务归谁处理。**唯一判据**，不许在别处再写一次比较（红线：同一判据抄两遍必漏一处）。
+
+    兜底给"驿站"的理由（历史事实，不是偏好）：#54 之前所有服务都是在驿站端建的，
+    没有 dept 键的老定义归驿站，符合它们**实际发生过的归属**。
+    ⚠️ 兜底只服务老数据。新建服务**必须在创建时定 dept**（`add_service` 的 dept 参数），
+       不要再靠兜底去猜 —— 猜错的表现不是报错，是"后勤的单子安静地进了驿站台账"。
+    ⚠️ 判据写成 `svc.get("dept") == "后勤"` 是错的：老定义没有这个键，会静默判成"不是后勤"。
+    """
+    d = str((svc or {}).get("dept") or "").strip()
+    return d if d in DEPTS else DEPT_DEFAULT
+
+
+def dept_of_record(row: dict) -> str:
+    """一条**登记记录**归谁处理：优先读记录里的 dept 快照，没有才回查服务定义。
+
+    为什么要先看快照（#54）：服务定义是可以删的（`delete_service` 只删定义、不动台账），
+    定义没了 `get_service(sid)` 就是 None，那时按定义算会把整批历史记录静默判成驿站。
+    回查只服务"快照之前写进去的老记录"，**不回填**（回填=编造历史归属）。
+    """
+    d = str((row or {}).get("dept") or "").strip()
+    if d in DEPTS:
+        return d
+    return dept_of(get_service(str((row or {}).get("service") or "")))
 
 
 def list_services() -> list:
@@ -1617,20 +1693,46 @@ def validate_service_def(obj: dict) -> tuple:
         if why:
             return None, why
         clean[key] = val
-    taken = {str(s.get("name") or "") for s in list_services()}
+    rows = list_services()
+    taken = {str(s.get("name") or "") for s in rows}
     if clean["name"] in taken:
         return None, f"已经有一个叫「{clean['name']}」的服务了，换个名字或先删掉它"
+    # 触发词的两道闸（#54 §六.2）。为什么以前只拦重名不够：
+    #   `match_service_by_trigger` 是**子串**匹配（谁的触发词出现在这句里、且最长，谁接走这句），
+    #   于是一个两三个字的宽词能吸走一整族句子 —— 实测触发词「快递」把「我有个快递」
+    #   「快递破了」都抢进自建服务，还顺手把内置那条"快递丢了→出工单上报卡"的链路劫持了。
+    #   撞车不是"不好看"，是**这句话归谁**当场变了，而且不报错、静默变。
+    existing = list_services()
+    short = [t for t in clean["triggers"] if len(t) < TRIGGER_MIN_LEN]
+    if short:
+        return None, (f"触发词「{short[0]}」太短了（不到 {TRIGGER_MIN_LEN} 个字）："
+                      f"短词会吸走一大批不相干的句子。说得更具体一点，比如「{short[0]}丢了」这种带得上事的说法。")
+    for other in existing:
+        oname = str(other.get("name") or "")
+        for oth in [str(x) for x in (other.get("triggers") or [])]:
+            for t in clean["triggers"]:
+                if t and oth and (t in oth or oth in t):
+                    return None, (f"触发词「{t}」和已有服务「{oname}」的「{oth}」撞了"
+                                  f"（两个互为子串，命中哪一边要看长度，等于把同一句话交给两个窗口）。"
+                                  f"改个更长的说法，比如「{t}登记」「{t}怎么查」。")
     clean["id"] = (str(obj.get("id") or "").strip() or uuid.uuid4().hex[:8])
     clean["created_at"] = _now()
     return clean, ""
 
 
-def add_service(defn: dict) -> dict:
-    """存一份**已经过校验**的服务定义（校验只在 validate_service_def 一处，别写第二份规则）。"""
+def add_service(defn: dict, dept: str = DEPT_DEFAULT) -> dict:
+    """存一份**已经过校验**的服务定义（校验只在 validate_service_def 一处，别写第二份规则）。
+
+    :param dept: 归哪个部门。**由调用它的路由决定，不由请求体决定** ——
+        驿站端建的一律「驿站」、管理端建的一律「后勤」。
+        为什么不进 `SERVICE_FIELDS`（那是模型的输出白名单）：模型不知道这学校有几个部门，
+        让它填 dept 只会产出「后勤保障处」这种脏值，然后被相等判断静默放行或误拒；
+        而 `validate_service_def` 把 dept 当"不认识的字段"剔掉**是对的行为**，不是 bug。
+    """
     rows = list_services()
-    rows.append(defn)
+    rows.append({**defn, "dept": dept if dept in DEPTS else DEPT_DEFAULT})
     _write(SERVICES_FILE, rows)
-    return defn
+    return rows[-1]
 
 
 def is_builtin_service(svc) -> bool:
@@ -1718,7 +1820,7 @@ def list_custom_records(sid: str) -> list:
 
 
 def add_custom_record(sid: str, fields: dict, svc: dict | None = None,
-                      status: str = "") -> dict:
+                      status: str = "", owner: str | None = None) -> dict:
     """登记一条到 `custom/<service_id>.json`。
 
     ⚠️ 这条路径**只允许确定性接口调用**（驿站管理员点【登记】这个明确动作）。
@@ -1726,6 +1828,16 @@ def add_custom_record(sid: str, fields: dict, svc: dict | None = None,
 
     `status` 是**流程状态**、不是学生填的内容：默认由系统给「待处理」，
     它绝不出现在 `collect_fields` 里（进了会被 `_custom_field_errors` 判成 stray 字段直接 400）。
+
+    :param owner: 这条登记**是谁报的**（#54）。不传 = 取 `current_student()`；
+        驿站/后勤在自己界面现场录的，调用方显式传 `""`（无归属，与 `save_upload` 的
+        `owner=""` 同一表达）。
+        ⚠️ 不接受调用方传任意学号 —— 理由同 `add_workorder`：body 谁都能改，
+           能传就等于能冒充。身份只有 `current_student()` 一个来源。
+    :param dept 快照（写进 item，不是每次读时现算）：`delete_service` 只删定义、
+        不动 `custom/<sid>.json`（既有设计），于是"服务没了、台账还在"是**合法状态**；
+        没有快照，那些记录的部门就再也算不出来（`dept_of(None)` 会一律判成驿站）。
+        与 #48「上报带 pkg 快照」同一手法。
     """
     svc = svc or get_service(sid) or {}
     want = [str(x) for x in (svc.get("collect_fields") or [])]
@@ -1735,7 +1847,9 @@ def add_custom_record(sid: str, fields: dict, svc: dict | None = None,
         clean[k] = v[:CUSTOM_VALUE_MAX]
     item = {"id": uuid.uuid4().hex[:8], "ts": _now(), "service": sid,
             "name": svc.get("name") or "", "fields": clean,
-            "status": str(status or CUSTOM_STATUS_NEW)}
+            "status": str(status or CUSTOM_STATUS_NEW),
+            "owner": current_student() if owner is None else str(owner or ""),
+            "dept": dept_of(svc)}
     rows = _read(os.path.join(CUSTOM_DIR, f"{sid}.json"), [])
     if not isinstance(rows, list):
         rows = []
@@ -1768,7 +1882,7 @@ def delete_custom_record(sid: str, rid: str) -> bool:
     return True
 
 
-def update_custom_record_status(sid: str, rid: str, status: str) -> dict | None:
+def update_custom_record_status(sid: str, rid: str, status: str, by: str = "") -> dict | None:
     """改一条登记记录的处理状态；找不到那条记录返回 None。
 
     形状与 `update_workorder_status` 一致（读全量 → 改一条 → 整份写回），
@@ -1782,6 +1896,7 @@ def update_custom_record_status(sid: str, rid: str, status: str) -> dict | None:
     for it in rows:
         if str(it.get("id") or "") == str(rid):
             it["status"] = status
+            _append_trail(it, status, by)      # ★ #54：进度要有时间，两处 update 各加这一行
             _write(path, rows)
             return it
     return None

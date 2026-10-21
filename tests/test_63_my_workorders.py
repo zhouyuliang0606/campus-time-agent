@@ -211,13 +211,23 @@ def batch_d_shape():
             "include_archived: bool = True" in seg[:200] and "who = current_student()" in seg
             and "verify_admin" not in seg[:400] and 'body.get("student")' not in seg[:1200], "")
     takers = _owner_takers(st)
-    c.check("D2 owner 的兜底取值只在 store 的**写入口**里（点名，不数个数）：工单 / 学生消息 / 上传台账（#45-B）",
-            takers == ["add_message", "add_workorder", "save_upload"], f"实际落在：{takers}")
+    # #54 承认：自建服务的登记记录也认人了（`add_custom_record`）—— 学生「我的上报」要按 owner 过滤，
+    # 不认人就等于把驿站/后勤现场录的条目摊给每个学生看。清单从 3 涨到 4 是**承认过的**，
+    # 这条清单存在的意义就是"新增一个会写 owner 的口子必须在这儿留名"（同 test_32 E2 的理由）。
+    c.check("D2 owner 的兜底取值只在 store 的**写入口**里（点名，不数个数）：工单 / 学生消息 / 上传台账（#45-B）"
+            "/ 自建服务登记（#54）",
+            takers == ["add_custom_record", "add_message", "add_workorder", "save_upload"],
+            f"实际落在：{takers}")
     w_calls = [ln.strip() for ln in mn.splitlines()
-               if any(k in ln for k in ("save_upload(", "add_workorder(", "add_message(")) and "owner=" in ln]
-    c.check("D2-ter 调用方**只许**把 store 自己算出来的那个 `owner=owner` 递过去（公共文档那档 = 空串）；"
+               if any(k in ln for k in ("save_upload(", "add_workorder(", "add_message(",
+                                        "add_custom_record(")) and "owner=" in ln]
+    # 递空串是同一件事的另一半：驿站/后勤自己现场录的**没有学生身份**，
+    # 不显式递 `owner=""` 就会取到 `current_student()`（驿站那台机器是固定会话 #30），
+    # 结果是"店员每录一条都算在某个学生头上"。
+    c.check("D2-ter 调用方**只许**把 store 自己算出来的那个 `owner=owner` 递过去（公共/现场录入那档 = 空串）；"
             "递学号、递 body 里的字段就是「前端说什么算什么」",
-            not [x for x in w_calls if "owner=owner" not in x], f"这些调用点递了别的：{w_calls}")
+            not [x for x in w_calls if "owner=owner" not in x and 'owner=""' not in x],
+            f"这些调用点递了别的：{w_calls}")
     c.check("D2-bis 两条写入口都不许自己塞 owner（塞了就是「前端说什么算什么」）",
             "owner" not in mn[mn.index("add_workorder(kind=kind"):mn.index("add_workorder(kind=kind") + 200]
             and "owner" not in ex[ex.index("add_workorder(kind=kind"):ex.index("add_workorder(kind=kind") + 200],

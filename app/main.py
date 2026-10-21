@@ -40,6 +40,7 @@ from app.modules.schedule import SYSTEM_PROMPT as SCHEDULE_PROMPT, build_tools a
 from app.store import (
     add_message, list_messages, add_notice, list_notices,
     list_services, get_service, validate_service_def, add_service,
+    dept_of, dept_of_record, is_builtin_service, trail_of,
     list_custom_records, add_custom_record, service_of_module,
     update_custom_record_status,
     is_custom_module, match_service_by_trigger, custom_module,
@@ -4391,6 +4392,75 @@ async def my_workorders(include_archived: bool = True):
 _WO_STATUSES = ("待处理", "处理中", "已解决")
 
 
+def _age_hours(ts: str) -> float | None:
+    """从"报的那会儿"到现在过了多少小时 —— **后端算这一次**（#54 纪律 4）。
+
+    为什么不在前端 `new Date() - ts`：跨天/时区/夏令时都会算错，演示当天换台机器就显示成
+    负天数；而且后端哪天换了存储格式，前端那一堆减法全废。
+    算不出来（没有时刻 / 格式不对 / 时间在将来）一律回 **None**，前端拿 None 就不显示这句 ——
+    宁可不显示，也不许显示一个猜出来的数。
+    """
+    try:
+        t = datetime.datetime.strptime(str(ts), "%Y-%m-%d %H:%M:%S")
+    except Exception:
+        return None
+    h = (datetime.datetime.now() - t).total_seconds() / 3600.0
+    return round(h, 1) if h >= 0 else None
+
+
+@app.get("/api/my/reports")
+async def my_reports(include_archived: bool = True):
+    """学生自己的上报（#54）：**工单 + 自建服务登记**合成一张表，附进度。
+
+    为什么要合并：学生眼里"我报过的事"就一件，不该让他先去快递栏、再去别的栏找第二本账。
+    两个源形状不同（工单 = kind/desc，登记 = fields 字典），所以这里**归一成一个固定形状**，
+    前端只写一套渲染：`{source, id, sid, title, detail, status, ts, dept,
+                      trail, progressed, age_hours}`。
+
+    ⚠️ 三条红线与 `GET /api/my/workorders` **逐条一致**（那张口是刚付过学费的形状）：
+       ① 认人只靠 cookie（`current_student()`），不读任何"学号"参数；
+       ② 无身份 → 直接回空表（**不许**落成 demo 口径，回落一次就是把全校报障摊给路人）；
+       ③ 默认带归档（对管理端"归档"是收起，对学生那是"这事结了"）。
+    ⚠️ `owner` 为空的记录**一律不出现在这里**：那是驿站/后勤现场录的条目，
+       不排掉就成了"每个学生都看到同一批别人的单子"。
+    ⚠️ `dept` 是给学生的**去向**（该去问驿站还是后勤），不是内部排障用的表名；
+       工单这一路的承接方就是驿站（内置那项 `table=workorders` 就是它的台账），
+       所以这里如实写驿站 ——「帮我报修电梯」这类被 `报修` 硬信号接走的句子目前**确实**在工单里，
+       分流改的是品类措辞、不是它的去向（#54 §六 的边界，见本轮证据单）。
+    """
+    who = current_student()
+    if not who:
+        return {"items": []}
+    items = []
+    for w in list_workorders(include_archived=include_archived, owner=who):
+        tr = trail_of(w)
+        st = str(w.get("status") or "")
+        items.append({"source": "workorder", "id": str(w.get("id") or ""), "sid": "",
+                      "title": str(w.get("kind") or "其他问题"),
+                      "detail": str(w.get("desc") or ""),
+                      "status": st, "ts": str(w.get("ts") or ""),
+                      "dept": "驿站",
+                      "trail": tr, "progressed": bool(tr),
+                      "age_hours": _age_hours(w.get("ts")) if st != "已解决" else None})
+    for svc in list_services():
+        if is_builtin_service(svc):
+            continue
+        sid = str(svc.get("id") or "")
+        for r in list_custom_records(sid):
+            v = _record_view(r)
+            if v["owner"] != who:
+                continue
+            items.append({"source": "service", "id": v.get("id") or "", "sid": sid,
+                          "title": str(r.get("name") or svc.get("name") or "登记"),
+                          "detail": "、".join(f"{k}：{x}" for k, x in (v.get("fields") or {}).items()
+                                              if str(x or "").strip()),
+                          "status": v.get("status") or "", "ts": v.get("ts") or "",
+                          "dept": v["dept"], "trail": v["trail"], "progressed": v["progressed"],
+                          "age_hours": _age_hours(v.get("ts")) if v.get("status") != "已解决" else None})
+    items.sort(key=lambda x: x["ts"], reverse=True)
+    return {"items": items}
+
+
 def _workorder_status_response(wo_id: str, body: dict):
     """改工单状态这件事的**唯一实现**，管理端与驿站两个入口共用。
 
@@ -4562,25 +4632,20 @@ def _extract_json_obj(raw: str) -> dict | None:
     return obj if isinstance(obj, dict) else None
 
 
-@app.get("/api/station/services")
-async def station_services_list():
-    """驿站端服务列表（内置那项 + 低代码新增的）。"""
-    return {"services": list_services()}
+async def _draft_service(idea: str):
+    """那 20 行"一句话 → 一份过白名单的服务定义"，驿站端与管理端**共用一份**（#54）。
 
-
-@app.post("/api/station/services")
-async def station_service_create(req: Request):
-    """管理员一句话 → 生成一份服务定义 → 过白名单 → 落库成为可用服务。
-
-    失败一律**不落库**：没有密钥 / 模型没回出 JSON / 字段不合法，都回一句人话，
-    不许出现"存了半份定义、界面上看得见但登记必炸"。
+    返回 `(clean, 错误响应)`：错误时 clean 是 None，错误响应已经是 JSONResponse，调用方直接 return。
+    为什么抽出来：不抽就得在管理端再抄一份 —— 抄一份等于下一版改 `_SERVICE_PROMPT` 时
+    只改一处，另一处静默停在旧 prompt 上（这项目"抄两份漏一份"那族病最贵的一次）。
+    ⚠️ 失败一律**不落库**：没有密钥 / 模型没回出 JSON / 字段不合法，都回一句人话，
+       不许出现"存了半份定义、界面上看得见但登记必炸"。
     """
-    body = await req.json()
-    idea = (body.get("description") or "").strip()
+    idea = (idea or "").strip()
     if not idea:
-        return JSONResponse({"error": "先说一句你想加什么服务"}, status_code=400)
+        return None, JSONResponse({"error": "先说一句你想加什么服务"}, status_code=400)
     if len(idea) > 200:
-        return JSONResponse({"error": "这句话太长了（限 200 字），说短一点更准"}, status_code=400)
+        return None, JSONResponse({"error": "这句话太长了（限 200 字），说短一点更准"}, status_code=400)
     try:
         gateway = ModelGateway(user="内部:低代码建服务")
         # max_tokens 上限：定义就那么点大，模型开始写散文就该硬截（同判定层那一手的用法）
@@ -4591,15 +4656,67 @@ async def station_service_create(req: Request):
         )
     except LLMError as e:
         print(f"[低代码] 生成服务定义失败（kind={getattr(e, 'kind', '?')}）：{e}")
-        return JSONResponse({"error": _say_llm_error(e)}, status_code=502)
+        return None, JSONResponse({"error": _say_llm_error(e)}, status_code=502)
     draft = _extract_json_obj((reply or {}).get("content") or "")
     if not draft:
-        return JSONResponse({"error": "管家这次没给出规规矩矩的服务定义，请换个说法再试一次。"},
-                            status_code=502)
+        return None, JSONResponse({"error": "管家这次没给出规规矩矩的服务定义，请换个说法再试一次。"},
+                                  status_code=502)
     clean, why = validate_service_def(draft)
     if not clean:
-        return JSONResponse({"error": f"生成的定义不合规矩：{why}"}, status_code=400)
-    return {"ok": True, "service": add_service(clean)}
+        return None, JSONResponse({"error": f"生成的定义不合规矩：{why}"}, status_code=400)
+    return clean, None
+
+
+def _dept_guard(svc: dict):
+    """归不归驿站管的那道判据（403），`_station_only` 与删服务那口共用（判据只写一处）。"""
+    if dept_of(svc) != "驿站":
+        return JSONResponse(
+            {"error": f"「{svc.get('name')}」归{dept_of(svc)}处理，驿站这边不能改。"},
+            status_code=403)
+    return None
+
+
+def _station_only(sid: str):
+    """驿站端管辖判据：这项服务归驿站吗。返回 `(svc, 错误响应)`，错误时 svc 是 None（#54）。
+
+    用它的五个口都是**要碰那份台账文件**的（读记录 / 登记 / 改状态 / 删记录）：
+    服务不在表里就绝不该去动文件系统（`sid` 会拼进 `custom/<sid>.json` 这个路径），
+    所以这里 404 拦在前面。
+    ⚠️ 403 而不是 404：服务**确实存在**，只是不归你管。
+       回 404 会让驿站管理员以为自己建的服务消失了，然后去重建一份（真的会重建，实测过）。
+    ⚠️ 为什么必须在后端拦：`/api/station/*` 全部**免口令**（既有设计，理由在那段注释里，
+       本单不动鉴权模型）。前端隐藏只挡得住手滑，挡不住任何知道 sid 的请求 ——
+       而 sid 就印在驿站端界面上。所以：**免口令可以接受，跨部门不行**。
+    """
+    svc = get_service(sid)
+    if not svc:
+        return None, JSONResponse({"error": "没有这项服务"}, status_code=404)
+    return svc, _dept_guard(svc)
+
+
+@app.get("/api/station/services")
+async def station_services_list():
+    """驿站端服务列表 —— **只列归驿站的**（#54：后勤的报修服务不进驿站台账，反之亦然）。
+
+    判据用 `store.dept_of`，不在这里再写一遍 `svc.get("dept") == ...`：
+    老定义没有那个键，直接取值的比较会把它们静默判成"不是驿站"，驿站当场少一项服务。
+    """
+    return {"services": [s for s in list_services() if dept_of(s) == "驿站"]}
+
+
+@app.post("/api/station/services")
+async def station_service_create(req: Request):
+    """管理员一句话 → 生成一份服务定义 → 过白名单 → 落库成为可用服务。
+
+    ⚠️ 驿站端建出来的**一律归驿站**，而且**不读请求体里的 dept**（`dept` 由路由注入，
+       见 `store.add_service`）。这一条是权限的根：驿站能建后勤的服务
+       ⇒ 驿站能给自己开后勤的台账，§三 那七个口的 403 就白拦了。
+    """
+    body = await req.json()
+    clean, err = await _draft_service((body.get("description") or "") if isinstance(body, dict) else "")
+    if err:
+        return err
+    return {"ok": True, "service": add_service(clean, dept="驿站")}
 
 
 @app.delete("/api/station/services/{sid}")
@@ -4608,11 +4725,22 @@ async def station_service_delete(sid: str):
 
     只删定义、不动 `custom/<sid>.json` 的历史台账（判据与理由都在 `store.delete_service` 那一处）。
     内置那项（`table=workorders`）后端硬拒 —— 前端不给按钮只是让人不必点，这道才是真的。
+    #54 再加一道：**不归驿站的服务也硬拒**（403，判据 `_dept_guard`，与同族那五个口同一份）。
+
+    ⚠️ 这里**不用** `_station_only`：那个口的"服务不在表里"回 404（因为那几个口紧接着就要去碰
+       那份台账文件），而删定义这一口对"不存在"的既有口径是 400 + 一句"内置不许删或不存在"
+       （#39-A 定的，test_65 A3 钉着）—— 建错了再点一次删除，用户看到的该是"它已经没了"，
+       不是"从来没存在过"。
 
     ⚠️ 与同族三个口一样**不挂管理口令**（驿站页没有口令输入框，这是 #18 就定下的演示级口子，
        限制与代价写在 `#18 单子 2` 那段注释里）。本单没扩大它：这里删的是可重建的定义，
        不是台账数据；真要上线时给驿站补自己的账号，那一手归 #38 之后那件待办。
     """
+    svc = get_service(sid)
+    if svc:
+        err = _dept_guard(svc)
+        if err:
+            return err
     if not delete_service(sid):
         return JSONResponse({"error": "删不掉：内置服务不许删，或者这项服务不存在"}, status_code=400)
     return {"ok": True}
@@ -4620,9 +4748,14 @@ async def station_service_delete(sid: str):
 
 @app.get("/api/station/services/{sid}/records")
 async def station_service_records(sid: str):
-    """某项服务已登记的记录（服务不存在 → 404，不返回空列表装"什么都没发生"）。"""
-    if not get_service(sid):
-        return JSONResponse({"error": "没有这项服务"}, status_code=404)
+    """某项服务已登记的记录（服务不存在 → 404，不返回空列表装"什么都没发生"）。
+
+    #54：不归驿站的服务 → 403（`_station_only`），别以为读接口无害：
+    读得到别人的台账就是"跨部门看得见"，而 sid 就印在界面上。
+    """
+    svc, err = _station_only(sid)
+    if err:
+        return err
     return {"records": list_custom_records(sid)}
 
 
@@ -4650,16 +4783,20 @@ async def station_service_record(sid: str, req: Request):
     """登记一条（人话：管理员在驿站端点【登记】，系统按服务定义把字段存进台账）。
 
     这是**确定性写库**：调用方是点了按钮的人，不是模型 —— 所以它不进确认漏斗，
-    但也因此字段要在这里判干净：服务不存在 404、必填字段一个不许少、值过长就地截断。
+    但也因此字段要在这里判干净：服务不存在 404、不归驿站 403、必填字段一个不许少、值过长就地截断。
+
+    ⚠️ `owner=""` 是**显式**传的（#54）：驿站是店员的机器，现场录入没有学生身份，
+       不传就会去取 `current_student()` —— 而驿站那个会话是固定的（#30），
+       结果是"驿站每录一条，都算在某个学生头上"，那是冒充，不是缺数据。
     """
-    svc = get_service(sid)
-    if not svc:
-        return JSONResponse({"error": "没有这项服务"}, status_code=404)
+    svc, err = _station_only(sid)
+    if err:
+        return err
     body = await req.json()
     why = _custom_field_errors(svc, body.get("fields") if isinstance(body, dict) else None)
     if why:
         return JSONResponse({"error": why}, status_code=400)
-    item = add_custom_record(sid, body["fields"], svc=svc)
+    item = add_custom_record(sid, body["fields"], svc=svc, owner="")
     return {"ok": True, "record": item,
             "reply": str(svc.get("reply_template") or "已登记。")}
 
@@ -4670,34 +4807,27 @@ async def station_service_record_status(sid: str, rid: str, req: Request):
 
     三态与工单**共用同一份词表** `_WO_STATUSES`（不新开第二张状态表）——
     加一档"已关闭"只需要改那一处，驿站端两块表跟着一起变。
-    ⚠️ 校验顺序是**先 400（状态非法）后 404（服务/记录不存在）**，照 `_workorder_status_response` 来的：
+    ⚠️ 校验顺序是**先 400（状态非法）后 403/404（服务/记录不存在）**，照 `_workorder_status_response` 来的：
     同族两个口顺序不一致，将来只改一处就会出现"同一个坏请求一个回 400、一个回 404"。
     免鉴权与既有的 `/api/station/*` 同一档（演示级，理由与限制写在那段注释里）。
     """
     body = await req.json()
-    status = (body.get("status") or "").strip()
-    if status not in _WO_STATUSES:
-        return JSONResponse({"error": "status 只能是 " + "/".join(_WO_STATUSES)},
-                            status_code=400)
-    if not get_service(sid):
-        return JSONResponse({"error": "没有这项服务"}, status_code=404)
-    item = update_custom_record_status(sid, rid, status)
-    if not item:
-        return JSONResponse({"error": "这条登记记录不存在"}, status_code=404)
-    return {"ok": True, "record": item}
+    _svc, err = _station_only(sid)
+    return _custom_record_status_response(sid, rid, body, err)
 
 
 @app.delete("/api/station/services/{sid}/records/{rid}")
 async def station_record_delete(sid: str, rid: str):
     """删一条登记记录（#39-B）。**真删** —— 台账里那条就没了，找不回来。
 
-    ⚠️ 顺序照同族那几个口来，但这里有个必须守住的理由：**先 `get_service` 认服务，再碰文件**。
+    ⚠️ 顺序照同族那几个口来，但这里有个必须守住的理由：**先认服务（存在 + 归驿站），再碰文件**。
        `sid` 会被拼进 `custom/<sid>.json` 这个路径，服务表里没有这个 id 就根本不该去动文件系统
        （`list_custom_records` / `add_custom_record` 也是同一分工：路由认服务，store 只管那份文件）。
        少这一道，`sid=../../x` 这类值就成了"往数据目录外面找文件"的入口。
     """
-    if not get_service(sid):
-        return JSONResponse({"error": "没有这项服务"}, status_code=404)
+    _svc, err = _station_only(sid)
+    if err:
+        return err
     if not delete_custom_record(sid, rid):
         return JSONResponse({"error": "这条登记记录不存在（也可能已经被删了）"}, status_code=400)
     return {"ok": True}
@@ -4788,6 +4918,105 @@ async def admin_notice_delete(nid: str):
     if not delete_notice(nid):
         return JSONResponse({"error": "通知不存在（也可能已经撤回过）"}, status_code=400)
     return {"ok": True}
+
+
+# ── #54：管理端接后勤（自建服务的台账 / 改状态 / 建服务）───────────────────────
+# 为什么要单独三个带口令的口，而不是让管理端复用驿站那几个免口令的：
+#   ① #54 之后驿站口按**部门**拦，后勤的服务从那儿进直接 403 —— 界面表现就是"点了没反应"；
+#   ② 管理端是监督位，读的是全量（`?dept=` 空 = 全部），把它接到只给驿站看的口上，
+#      等于把"监督"降级成"另一个部门的窗口"。
+def _record_view(row: dict) -> dict:
+    """一条登记记录给管理端/学生端看的归一层（#54）。**只读，不改文件**。
+
+    三件事在这里算好，视图不许各算一遍（红线：进度类展示一律读后端算好的值）：
+      · `dept` —— 按 `store.dept_of_record`（有快照用快照，没有才回查定义）；
+      · `trail` —— 只给**真发生过**的变更，老记录就是空表（不合成假历史）；
+      · `progressed` —— 有没有真 trail。前端拿它决定"画三步条"还是"一行状态 + 创建时间"，
+        缺这个旗标就会给老记录画出一条全是灰点、一格时间都没有的假进度条。
+    """
+    out = dict(row or {})
+    tr = trail_of(row)
+    out["dept"] = dept_of_record(row)
+    out["owner"] = str((row or {}).get("owner") or "")
+    out["trail"] = tr
+    out["progressed"] = bool(tr)
+    out["updated_at"] = str((row or {}).get("updated_at") or (tr[-1].get("ts") if tr else ""))
+    return out
+
+
+def _custom_record_status_response(sid: str, rid: str, body: dict, jurisdiction_err=None):
+    """改一条登记记录的状态 —— 驿站与管理端两个入口**共用这一份**。
+
+    与工单那侧的 `_workorder_status_response` 同一个理由：两处各写一遍校验就是两本账，
+    加一档状态只改一处，另一处会把合法值悄悄判成 400。
+    :param jurisdiction_err: 调用方（驿站口）算好的管辖错误响应，原样透传；管理端没有
+        跨部门限制，不传。⚠️ 顺序必须是 **400（状态非法）先于 403/404** ——
+        同族两个口顺序不一致，就会出现"同一个坏请求一个回 400、一个回 404"。
+    """
+    status = ((body or {}).get("status") or "").strip()
+    if status not in _WO_STATUSES:
+        return JSONResponse({"error": "status 只能是 " + "/".join(_WO_STATUSES)},
+                            status_code=400)
+    if jurisdiction_err is not None:
+        return jurisdiction_err
+    if not get_service(sid):
+        return JSONResponse({"error": "没有这项服务"}, status_code=404)
+    item = update_custom_record_status(sid, rid, status)
+    if not item:
+        return JSONResponse({"error": "这条登记记录不存在"}, status_code=404)
+    return {"ok": True, "record": _record_view(item)}
+
+
+@app.get("/api/admin/service-records", dependencies=[Depends(verify_admin)])
+async def admin_service_records(dept: str = ""):
+    """自建服务的登记台账（管理端「后勤报修」那一档的数据源）。
+
+    :param dept: 空 = 全部（默认值，给"排查"用）；传 `后勤` / `驿站` 就只那一档。
+    ⚠️ **不含内置项**：内置那项（`table=workorders`）的账在 `workorders.json`，
+       已经由「学生工单」那一档管 —— 判据用 `store.is_builtin_service`，
+       别在这儿再写一次 `table == "workorders"`（那字面量全库只许有一处读它）。
+    顺带把 `triggers` / `collect_fields` 一起给：管理端要照着定义画登记表单，
+    少了这两样就得再打一次服务列表口（两份数据两次读，中间那份定义变了就是错位）。
+    """
+    want = (dept or "").strip()
+    groups = []
+    for svc in list_services():
+        if is_builtin_service(svc):
+            continue
+        if want and dept_of(svc) != want:
+            continue
+        rows = [_record_view(r) for r in list_custom_records(str(svc.get("id") or ""))]
+        live = [r for r in rows if str(r.get("status") or "") != "已解决"]
+        groups.append({"id": svc.get("id"), "name": svc.get("name") or "",
+                       "dept": dept_of(svc), "table": svc.get("table") or "",
+                       "triggers": svc.get("triggers") or [],
+                       "collect_fields": svc.get("collect_fields") or [],
+                       "open": len(live), "total": len(rows), "records": rows})
+    return {"groups": groups}
+
+
+@app.post("/api/admin/service-records/{sid}/{rid}/status", dependencies=[Depends(verify_admin)])
+async def admin_service_record_status(sid: str, rid: str, req: Request):
+    """后勤改状态。与驿站那个口同一份实现（`_custom_record_status_response`）：
+    同一张状态词表、同一个"先 400 后 404"的顺序，只是不带部门判据。
+    """
+    body = await req.json()
+    return _custom_record_status_response(sid, rid, body)
+
+
+@app.post("/api/admin/services", dependencies=[Depends(verify_admin)])
+async def admin_service_create(req: Request):
+    """管理端建服务：**一律归后勤**（#54 分流的下半场 —— 后勤要能自己建报修服务）。
+
+    与驿站端共用 `_draft_service`（那句话 → 定义 → 白名单那 20 行只有一份）。
+    ⚠️ `dept` 由**路由**注入，请求体里传了也不读：能读就等于任何人都能给自己开别的部门的台账。
+    """
+    body = await req.json()
+    clean, err = await _draft_service(
+        (body.get("description") or "") if isinstance(body, dict) else "")
+    if err:
+        return err
+    return {"ok": True, "service": add_service(clean, dept="后勤")}
 
 
 # ============ 管理控制台：知识库零代码维护 ============

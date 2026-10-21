@@ -76,7 +76,10 @@ def batch_a_define_only_data():
 
         # 模型爱在 JSON 外面套一段话，做法与判定层一致：抠出那个对象，抠不到才算失败
         # （名字换一个，否则会撞上第一条的"重名就拒"，那是另一条断言要管的事）
-        GOOD2 = dict(GOOD, name="宿舍报修", table="repair")
+        # ⚠️ 触发词也必须换一组**互不为子串**的：#54 起撞车要拒（同一句话两个窗口抢，
+        #    照抄上面那组就会被新规则拦掉，红的就是这条"客套话也要能用"）
+        GOOD2 = dict(GOOD, name="宿舍报修", table="repair",
+                     triggers=["宿舍水管漏水", "空调不制冷了", "门锁坏了打不开"])
         r = _patch_model("好的，我给您生成了一个：\n" + json.dumps(GOOD2, ensure_ascii=False)
                          + "\n您看合适吗？")
         try:
@@ -226,8 +229,21 @@ def batch_c_redlines():
     seg_code = "\n".join(ln.split("#")[0] for ln in seg.splitlines())
     c.check("这条路上没有 eval / exec / 动态导入（生成物只能是数据）",
             not any(t in seg_code for t in ("eval(", "exec(", "importlib", "__import__")), "")
-    c.check("写库前必过白名单（station_service_create 里没有 validate_service_def 就是漏闸）",
-            "validate_service_def(draft)" in seg and "add_service(clean)" in seg, "")
+    # #54 改口（这条原来钉的是 `"add_service(clean)" in seg`，加了 dept 参数就不匹配了）。
+    # 原来那句防的是"建服务没走白名单"，现在要防的是同一件事 + 两件事：
+    #   ① 那句话→定义的实现**只有一份**（`_draft_service`），两个口都调它；
+    #   ② `dept` 由**路由**注入且一一对应（驿站↔驿站、管理↔后勤），**没有一处**读请求体里的 dept。
+    # 判据钉成配对而不是钉成"两个字符串都在"，否则把两个口对调它照样绿。
+    c.check("写库前必过白名单，且「一句话 → 定义」只有一份实现（两个建服务口都调 `_draft_service`；"
+            "抄第二份 = 下一版改 prompt 只改一处，另一处静默停在旧 prompt 上）",
+            "validate_service_def(draft)" in seg and "def _draft_service(idea: str)" in seg
+            and seg.count("clean, err = await _draft_service(") == 1
+            and src.count("clean, err = await _draft_service(") == 2, "")
+    c.check("dept 由路由注入、两端一一对应，且全文件不读请求体里的 dept"
+            "（能读 = 驿站给自己开后勤的台账，那七个口的 403 就白拦了）",
+            'add_service(clean, dept="驿站")' in seg
+            and 'add_service(clean, dept="后勤")' in src
+            and 'body.get("dept")' not in src, "")
 
     st = open("app/static/station.html", encoding="utf-8").read()
     c.check("驿站页把服务名/触发词/登记结果一律 esc() 后再进 DOM",
@@ -385,10 +401,16 @@ def batch_d_record_status():
                   if '"待处理"' in ln and '"处理中"' in ln and '"已解决"' in ln]
         c.check("三态这张表在 main.py 里只许存在一份（**按内容数，不按变量名数**）",
                 len(tables) == 1, f"{len(tables)} 份：{tables}")
-        seg = src[src.index('@app.post("/api/station/services/{sid}/records/{rid}/status")'):]
-        seg = seg[:seg.index('@app.post("/api/custom/records"')]
-        c.check("登记状态口引用的是那一份 _WO_STATUSES（自带字面量就是第二张表的开始）",
-                "not in _WO_STATUSES" in seg and '"已解决"' not in seg and '"处理中"' not in seg, "")
+        # #54 改口：状态校验从驿站那条口挪进了两端口共用的 `_custom_record_status_response`，
+        # 所以窗口也从"驿站那条口那一段"换成"**那份共用实现那一段**"——这条真正要防的是
+        # "登记表记录的状态这件事长出第二份词表 / 第二套校验"，不是"字面量出现在哪一行"。
+        h = src[src.index("def _custom_record_status_response"):]
+        h = h[:h.index("\n@app.")]
+        c.check("登记状态这件事只有一份实现：用那一份 _WO_STATUSES、自带字面量就是第二张表的开始，"
+                "而驿站与后勤两个口都走它（各写一遍校验 = 两本账，加一档状态只改到一边）",
+                "not in _WO_STATUSES" in h and '"已解决"' not in h and '"处理中"' not in h
+                and src.count("return _custom_record_status_response(") == 2
+                and src.count("= update_custom_record_status(") == 1, "")
 
         # 免鉴权面：这条新口与 /api/station/* 同档（演示级），但**管理端那道口令不许因此松动**。
         # ⚠️ 这里必须 `admin_token=None`（不是笔误）：`make_client()` 的默认值自带口令，
