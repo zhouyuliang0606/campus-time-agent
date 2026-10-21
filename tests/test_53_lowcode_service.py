@@ -11,6 +11,7 @@
 """
 import json
 import os
+import re
 
 from _harness import Checker, data_path, make_client, sandbox, title
 
@@ -414,6 +415,18 @@ def batch_d_record_status():
             "svcTick();    // 改完立刻重读" in lr and 'addMsg("系统", "改状态没成功：' in lr, "")
     c.check("⑩ 已知边界写在注释里：只列最新 5 条，第 6 条往外点不到按钮（本单不翻页）",
             "rows.slice(0, 5)" in lr and "点不到" in lr, "")
+
+    # ⑪ 用户 2026-10-21 真机原话「太小了」：登记条目是店员要照着办的活，
+    #    原来 CSS 里明写"比表单小一档"（12px + 灰），录屏/打印都看不清。
+    #    钉的是**相对关系**（条目区不小于表单输入框），不是某个好看的数 ——
+    #    只钉"13px"的话，哪天把表单也调小一档就悄悄又回去了。
+    def _fs(rule):
+        m = re.search(re.escape(rule) + r"\s*\{[^}]*?font-size:\s*(\d+)px", st)
+        return int(m.group(1)) if m else 0
+
+    recs_fs, form_fs = _fs(".svc .recs"), _fs(".svcAdd input")
+    c.check("⑪ 登记条目区的字号不小于表单输入框（「太小了」那条不许回退）",
+            recs_fs >= form_fs and recs_fs >= 13, f"recs={recs_fs}px 表单={form_fs}px")
     return c
 
 

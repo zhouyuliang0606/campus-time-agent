@@ -104,12 +104,14 @@
     .svc .nm { font-weight: 600; }
     .svc .pill { display: inline-block; font-size: 11px; background: #e8f8f6; color: #17b8a6; border-radius: 6px; padding: 1px 6px; margin: 0 4px 3px 0; }
     .svc .tb { font-size: 11px; color: #8a93a5; }
-    /* 学生登记条目（只读台账）：字号比表单小一档，颜色压一档，别跟表单抢注意力 */
-    .svc .recs { margin-top: 8px; font-size: 12px; color: #55606d; }
-    .svc .recHead { color: #8a93a5; margin-bottom: 2px; }
+    /* 学生登记条目：这是店员要照着办的活，不是这块卡的附属说明 ——
+       原来比表单还小一档（12px + 灰），录屏和打印都看不清（2026-10-21 用户真机：「太小了」）。
+       改成与表单同档 13px，只把**计数那一行**留在灰一档，正文行颜色压到近黑。 */
+    .svc .recs { margin-top: 8px; font-size: 13px; color: #2f3846; }
+    .svc .recHead { color: #8a93a5; margin-bottom: 2px; font-size: 12px; }
     .svc .recRow {
       background: #fafbff; border: 1px dashed #e6ebf5; border-radius: 7px;
-      padding: 4px 8px; margin-bottom: 3px; line-height: 1.5;
+      padding: 6px 9px; margin-bottom: 4px; line-height: 1.55;
       white-space: pre-wrap; word-break: break-all;
     }
     .svc form { margin-top: 6px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
