@@ -26,16 +26,11 @@ MAIN_FILE = "app/main.py"
 def _seed_kb(rows):
     """往**沙箱**的 `kb.json` 里摆问答条目（H 批自种用）。
 
-    ⚠️ 整份覆盖写 ⇒ 只许在沙箱里跑：先过 `_require_sandbox()`，否则一句误调用
-    就把用户真实那份条目表清了（他原话「每次修改都给我设置搞没了」是这条闸的来历）。
+    实现挪进了 `_harness.seed_kb()`（2026-10-22）：`test_07` 也要同一把闸 ——
+    它是整份覆盖写，误在沙箱外调一次就把用户真在用的条目表清了，这种闸不该有两份。
     """
-    import json
-
-    from _harness import _require_sandbox
-    _require_sandbox("_seed_kb()")
-    with open(data_path("kb.json"), "w", encoding="utf-8") as f:
-        json.dump({"entries": [{"question": q, "answer": a, "keywords": k} for q, a, k in rows]},
-                  f, ensure_ascii=False)
+    from _harness import seed_kb
+    seed_kb(rows)
 
 
 def _seed_three_pairs():

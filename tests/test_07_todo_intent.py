@@ -10,7 +10,7 @@
 """
 import datetime
 
-from _harness import Checker, make_client, sandbox, title
+from _harness import Checker, make_client, sandbox, seed_kb, title
 
 code = 0
 
@@ -45,6 +45,12 @@ def test_todo_intent_gaps():
     with sandbox():
         client = make_client()
         seed_todos(today)
+        # KB 也得摆成已知状态（2026-10-22 实测）：沙箱是整树拷贝真实 `app/data`，
+        # 用户在管理端把「健身房价格」的关键词收窄成「健身」之后，本文件那句
+        # 「健身显示不出来」就被知识库接走，报障核实分支再也走不到 —— 一条断言在量谁的数据，
+        # 这次轮到 KB。清空条目表 = 这一批测的确实是"看不见 X"那条分支，而不是碰巧没人抢。
+        # （"带待办字样的报障不许被 KB 抢"本身由 test_15 的 H/I 批钉着，那条是刻意拿真形状测的。）
+        seed_kb([])
 
         # ① 「我要加代办」：接住，追问要加什么事，不谎称已加、不弹卡
         r = client.post("/api/chat", json={

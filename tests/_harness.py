@@ -254,6 +254,26 @@ def wipe_todos() -> list:
     return seed_todos([])
 
 
+def seed_kb(rows) -> int:
+    """把**当前沙箱**的问答条目表 `kb.json` 覆盖成这一份已知条目。
+
+    `rows` 是 `[(问题, 答案, [关键词]), ...]`；`seed_kb([])` = 清空。
+
+    为什么要有它（2026-10-22 实测）：`sandbox()` 是整树拷贝真实 `app/data`，
+    所以**用户在管理端加过什么，每个沙箱就带着什么**。他那次把「健身房价格」的关键词
+    收窄成「健身」，`test_07` 那句「健身显示不出来」立刻被知识库接走、不再走报障核实分支
+    —— 一条断言在量谁的数据，这次轮到 KB。
+    ⚠️ 整份覆盖写 ⇒ 只许在沙箱里跑：先过 `_require_sandbox()`，否则一句误调用
+    就把用户真实那份条目表清了（他原话「每次修改都给我设置搞没了」是这条闸的来历）。
+    """
+    _require_sandbox("seed_kb()")
+    import json
+    with open(data_path("kb.json"), "w", encoding="utf-8") as f:
+        json.dump({"entries": [{"question": q, "answer": a, "keywords": list(k)}
+                               for q, a, k in rows]}, f, ensure_ascii=False)
+    return len(rows)
+
+
 # 一份"两种断言都喂得到"的已知周表：只有周六晚 19:00-21:00 一节《晚课·社团》。
 # 为什么长成这样：有的断言要"至少有一节课能撞"（撞课、被占的晚上、从模型回话里抠课），
 # 有的要"我点的钟点那天是空的"（15:00 / 07:00 必须真给出来）—— 一门晚课 + 其余全空，
