@@ -433,7 +433,7 @@
      所以补一条**写在隐藏规则之后**的例外，不然手机上正好看不见最该看的东西。 */
   .sb-item .todo-badge { margin-left: auto; }
   /* 「我的上报」那颗角标（#54）长相与代办那颗一样，但**类名必须分开**：
-     `updateTodoBadge()` 是按 `.todo-badge` 整批写的（一起清空 textContent/display），
+     代办那颗的刷新函数是按 `.todo-badge` 这个类整批写的（一起清空 textContent/display），
      共用类名就等于代办每刷一次，上报那颗的数被它抹掉一次 —— 两处各画一半，
      正好是"角标变了列表没变"那一族的另一半。共用的是**样式**，不是**归属**。 */
   .todo-badge, .report-badge { background: #ff3b30; color: #fff; border-radius: 9px; padding: 0 6px;

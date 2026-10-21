@@ -561,9 +561,16 @@ def batch_b3_shape():
             f"裸判据 {code_only.count('module_key in REGISTRY')} 处")
     c.check("低代码的提示与工具箱都按那份定义现算（不是 REGISTRY 里写死一个）",
             "custom_prompt(s)" in code_only and "custom_tools(s)" in code_only, "")
-    c.check("字段判据只有一份实现、两个入口都调它",
+    # 2026-10-22 #54 承认：写台账的入口从两个变成三个 —— 多出来的是**管理端现场登记**
+    # （`POST /api/admin/service-records/{sid}`）。为什么必须多这一个：#54 §四.3 要管理端
+    # 每组挂一个「登记一条」表单，而驿站那个写口从本轮起**按部门拦**（后勤的服务从驿站口
+    # 进直接 403），不补这一条就是"填完点【登记】没反应"。
+    # 这条钉子真正防的是"入口没人认领"，所以把三个口点名写死，并把两半口径一起钉住：
+    #   · 现场录入那两个（驿站/后勤）必须显式 `owner=""`，学生那个必须不递 owner（由 cookie 取）；
+    #   · 三个入口共用同一份字段判据，且模型那一路（modules/custom.py）依然碰不到写入。
+    c.check("字段判据只有一份实现、三个入口都调它（驿站登记 / 学生确认 / 后勤现场登记）",
             code_only.count("def _custom_field_errors(") == 1
-            and code_only.count("_custom_field_errors(svc,") == 2,
+            and code_only.count("_custom_field_errors(svc,") == 3,
             f"调用 {code_only.count('_custom_field_errors(svc,')} 处")
 
     # custom.py 里**不许出现写入函数**：那是这段代码的边界声明
@@ -573,8 +580,18 @@ def batch_b3_shape():
                    "_write(", "open("):
         c.check(f"模型那一路（modules/custom.py）碰不到写入：没有 {banned}",
                 banned not in cs_code, "")
-    c.check("全项目写 custom 台账只有两个入口：驿站端【登记】与学生端【确认】，不许长出第三个",
-            code_only.count("add_custom_record(") == 2, f"{code_only.count('add_custom_record(')} 处")
+    # ★ 只数**写调用那一行自己**长什么样，不数窗口里出现过什么：
+    #   第一版我写成"那一支的切片里有 `owner=\"\"`"——变异（把管理端的 owner=\"\" 摘掉）跑过去
+    #   还是全绿，因为我在**同一段的 docstring** 里正好写着 `owner=""` 那五个字。
+    #   剔注释救不了这种：docstring 是字符串，不是注释（本仓第十次同族，这次换了个载体）。
+    写行 = [ln.strip() for ln in code_only.splitlines() if "add_custom_record(" in ln]
+    c.check("写 custom 台账的入口只有这三行、且每行自己就认得出是谁：驿站【登记】与后勤【现场登记】"
+            "各自带 `owner=\"\"`，学生【确认】那行**不带** owner（由 cookie 取）—— "
+            "多一个入口、或现场那行漏了空串，都在这儿红",
+            len(写行) == 3
+            and sum(1 for ln in 写行 if 'owner=""' in ln) == 2
+            and sum(1 for ln in 写行 if "owner=" not in ln) == 1,
+            " | ".join(x[:60] for x in 写行))
     # 引擎的通用机制才把 __proposal__ 变成卡：低代码不自己塞 options
     c.check("出卡走引擎那套『结果即提案』（返回值里带 __proposal__），没有另接一条 options 通道",
             '"__proposal__"' in cs, "")
