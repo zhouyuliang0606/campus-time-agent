@@ -285,9 +285,16 @@ def batch_e_shape():
             break
         blocks.append(sta[k:sta.index("\n          }", k)])
         pos = k + 1
-    c.check("E5 「删除服务」那颗按钮的渲染**落在 table 判据那一支里面**（两处同判据的块，只有一处该有它）",
-            len(blocks) == 2 and sum(1 for b in blocks if "删除服务" in b) == 1
-            and sum(1 for b in blocks if "recs" in b) == 1, f"判据块 {len(blocks)} 处")
+    # 2026-10-22 #54 承认：同判据的块从两处涨到三处 —— 第三处是「内置那项不给登记表单」
+    # （原 52-C，与部门过滤同一批做，否则驿站台账里永远挂着一块谁都解释不清的数据）。
+    # 判据顺手从"数一数一共几块"改成"**每块各管一件事、一件只在一块**"：
+    # 数个数只能发现多/少，发现不了"删除按钮串进表单那一支"这种真事故。
+    c.check("E5 三个 table 判据块各管一件事：删除按钮只在它那一支、登记条目块只在它那一支、"
+            "「内置不给表单」只在它那一支（一处一块，串了就是两份账）",
+            len(blocks) == 3 and sum(1 for b in blocks if "删除服务" in b) == 1
+            and sum(1 for b in blocks if "recs" in b) == 1
+            and sum(1 for b in blocks if "el.appendChild(form)" in b) == 1,
+            f"判据块 {len(blocks)} 处")
 
     c.check("E6 「🗄 已处理 N 条」那句话只有一份实现（两块表共用 archShell，不各写一遍措辞）",
             sta.count("已处理 ${") == 1 and sta.count("function archShell(") == 1

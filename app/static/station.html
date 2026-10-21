@@ -665,7 +665,11 @@
       const cnt = document.getElementById("svcCount");
       try {
         const d = await (await fetch("/api/station/services")).json();
-        const list = d.services || [];
+        // #54：只画归驿站的那一档。真正的闸在**后端**（`_station_only` / `_dept_guard`），
+        // 这里这一道只是"不必让店员看见不归他的服务"，不是权限判据 ——
+        // 拿 sid 直接打接口才是这条路的正门，那道 403 才是真的。
+        // 兜底写法和 `store.dept_of` 一致：没有 dept 键的老定义归驿站。
+        const list = (d.services || []).filter(s => String(s.dept || "驿站") === "驿站");
         const sig = JSON.stringify(list);
         // 5 秒一次的轮询不许把管理员刚敲进登记表单的字抹掉：清单没变就不重建 DOM；
         // 变了但有人在填（有焦点或有内容）也先跳过，svcSig 不更新 → 填完下一轮自动补渲染。
@@ -683,7 +687,7 @@
           const trig = (s.triggers || []).map(t => `<span class="pill">${esc(t)}</span>`).join("");
           const fields = (s.collect_fields || []).map(f => String(f));
           el.innerHTML = `<div><span class="nm">${esc(s.name || "未命名")}</span>
-              <span class="tb">台账 ${esc(s.table || "-")} · id ${esc(String(s.id || ""))}</span></div>
+              <span class="tb">台账 ${esc(s.table || "-")} · id ${esc(String(s.id || ""))} · 归${esc(String(s.dept || "驿站"))}</span></div>
             <div>${trig}</div>`;
           const form = document.createElement("form");
           const inputs = fields.map(f => {
@@ -761,7 +765,18 @@
             });
             el.appendChild(del);
           }
-          el.appendChild(form);
+          // ★ #54（原 52-C，必须与本单的部门过滤**同一批**做）：内置那项**不给登记表单**。
+          //   它名下那个表单通向 `add_custom_record("pkgloss")` ⇒ 写的是 `custom/pkgloss.json`：
+          //   工单里没有、学生看不到、也不按服务分组展示 —— 那是第三本账，谁都无法解释。
+          //   只加部门过滤而留着这张表单，驿站台账里就永远挂着这么一块。
+          //   ⚠️ `form` 照旧**构造**（只是不挂进 DOM）：这段里的文案有多条护栏是按位置取的
+          //      （test_53/test_58），把整段挪进 if 里会让那些钉子指向别处 —— 挪不动的不是代码，是账。
+          if (String(s.table || "") !== "workorders") {
+            el.appendChild(form);
+          } else {
+            last.textContent = "这一项是内置的那条链路：学生在对话里说一句就出确认卡，"
+              + "单子进上面的「待处理问题」，这里不登记。";
+          }
           el.appendChild(last);
           // 「📋 登记条目」（#24 决策①）：驿站是运营台，学生递进来的东西看不见就没法处理。
           // 先占个位，内容由 loadRecords() 单独填（台账会变，服务定义却不一定变）。
