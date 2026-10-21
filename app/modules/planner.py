@@ -2428,6 +2428,24 @@ def weekly_times(text: str) -> int | None:
     return n
 
 
+# 全角 → 半角，**只转跟时间沾的这几个字符**。
+# 为什么不用 `unicodedata.normalize("NFKC", …)` 整句归一：那会把书名号/括号/顿号一起换掉，
+# 而 `_fix_typo_time_words` 与标题残渣那几处判据全是按中文标点写的 —— 一次全变，
+# 连带改掉标题抽取的结果（那是另一族 bug 的入口）。
+# 这张表**只许有一份**：别在任何调用点再抄一张。
+_FW2HW = str.maketrans("０１２３４５６７８９：－—–～　", "0123456789:---~ ")
+
+
+def normalize_fullwidth(t: str) -> str:
+    """把上面那张表应用一次（人话：全角的数字/冒号/破折号先变成半角）。
+
+    为什么单独露一个入口：材料那条路要**先洗整段再拆行** —— 全角日期（「１０月２５日」）
+    走的是 `_pick_date`，它不经过 `_normalize_clock`。表还是那一张，只是多一个入口；
+    在调用点再抄一张就是第二份真相。
+    """
+    return (t or "").translate(_FW2HW)
+
+
 def _normalize_clock(t: str) -> str:
     """把中文报时换成数字钟（人话：'两点'→2:00、'两点半'→2:30）。
 
@@ -2441,7 +2459,13 @@ def _normalize_clock(t: str) -> str:
       · 抠标题那条 —— 不纠的话「中文」不是时间词、擦不掉，会整串留在标题里；
       · 抠时段那条 —— 「下物三点」纠成「下午三点」才会算出 15:00 而不是 03:00。
     判据（三道闸门）见 `_fix_typo_time_words`。
+
+    2026-10-21 起它**还负责全角→半角**（`_FW2HW`，就在最前面一刀）：
+    中文输入法下「19：30-21：30」是默认打法，全角冒号让整条钟点读不出来，
+    于是粘进来的考试安排被回一句「里面没有一条写着日期或钟点」（真机）。
     """
+    t = normalize_fullwidth(t)
+
     def rep(m):
         h = _cn_num(m.group(1))
         if h is None or h > 23:
@@ -3648,7 +3672,10 @@ _CLAIM_PROPOSAL_RE = re.compile(
 
 # 一句里带**具体时段**（08:00~09:00 这种）。用来判断"它这段话是在讲一件排好的事"，
 # 而不是在解释流程（"你点确认后系统才会入库"这种就没时段）。
-_CONCRETE_SPAN_RE = re.compile(r"\d{1,2}:\d{2}\s*(?:到|至|-|~|～)\s*\d{1,2}:\d{2}")
+# ⚠️ 这一条**不在 `_normalize_clock` 下游**（它两个消费者：`_clean_prose_title` 洗模型回话里的
+# 引号串、`has_concrete_span` 判模型有没有念出排好的时间 —— 都不过学生那句话那条路），
+# 所以全角标点得在**这里**就认：冒号两种、分隔符四种。别在调用点再抄一张全角表。
+_CONCRETE_SPAN_RE = re.compile(r"\d{1,2}\s*[:：]\s*\d{2}\s*(?:到|至|[-~～－—–])\s*\d{1,2}\s*[:：]\s*\d{2}")
 
 
 def claims_proposal_sent(text: str) -> bool:

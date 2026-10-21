@@ -211,7 +211,12 @@ def extract_deterministic(text: str) -> tuple[list[dict], list[str]]:
     B) **一份清单**（一行一件事）⇒ 每行走一遍 `planner.parse_add_todo`。
     ⚠️ 表里的标题**不取 `_pick_title`**：实测它对整段材料给出 `'目内容'`
        （把"项目"的"项"当噪音剥了，红线 21 那族残渣），卡上就会写着"目内容"。
+
+    开头先 `normalize_fullwidth` 洗一遍整段（2026-10-21 真机）：从 Word / 微信粘过来的料，
+    标点与数字常常是全角的 —— 钟点那条路有 `_normalize_clock` 兜着，
+    但**日期**走 `_pick_date`、不过那道闸，于是「１０月２５日」整条被丢。
     """
+    text = planner.normalize_fullwidth(text)
     segs = split_material(text)
     if not segs:
         return [], []
