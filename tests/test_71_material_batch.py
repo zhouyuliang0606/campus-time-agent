@@ -12,6 +12,7 @@ C 判据形状（AST：位置、一份定义、不许带上文）、D #43 顺手
 而材料这一路本来就该是确定性分支 —— 提取靠 `material`，写库靠"学生点了那条按钮"。
 """
 import ast
+import datetime
 import json
 import os
 import re
@@ -21,12 +22,36 @@ from _harness import PROJ_DIR, Checker, data_path, make_client, sandbox, seed_to
 
 code = 0
 
-TABLE = ("项目 内容\n考试科目 离散数学\n考试日期 2026年10月21日\n"
+
+# ⚠️ 材料里的日期一律**从"明天"往后推**，不写死（2026-10-22 全量实测：本文件原来钉着
+#    「10月21日」，跨过午夜它就成了**过去**的日子 —— 提取那一步整条丢掉、写库那一步整批 400，
+#    一次红 8 条，而且以后每天更红。挂账 #69 那一族的第四个实例，同 #44-B 的修法。）
+_BASE = datetime.date.today() + datetime.timedelta(days=1)
+
+
+def _md(off=0):
+    """「10月25日」这种材料里常见的写法。"""
+    d = _BASE + datetime.timedelta(days=off)
+    return f"{d.month}月{d.day}日"
+
+
+def _cn(off=0):
+    """「2026年10月25日」。"""
+    d = _BASE + datetime.timedelta(days=off)
+    return f"{d.year}年{d.month}月{d.day}日"
+
+
+def _iso(off=0):
+    d = _BASE + datetime.timedelta(days=off)
+    return d.strftime("%Y-%m-%d")
+
+
+TABLE = ("项目 内容\n考试科目 离散数学\n考试日期 " + _cn(0) + "\n"
          "考试时间 19:30-21:30\n考试地点 松山湖校区 6F-403\n"
          "监考老师 李老师\n注意事项 请携带学生证与身份证，提前三十分钟到场。\n")
-LIST3 = ("10月21日 19:30-21:30 离散数学考试\n"
-         "10月22日 14:00-15:40 数据结构补考\n"
-         "10月23日 09:00-10:30 概率论答疑\n")
+LIST3 = (_md(0) + " 19:30-21:30 离散数学考试\n"
+         + _md(1) + " 14:00-15:40 数据结构补考\n"
+         + _md(2) + " 09:00-10:30 概率论答疑\n")
 # 上文里那份文档的事实：材料答错时就会冒出这句（G2 的反面靶子）
 LIB_FACT = "图书馆平时开放至二十二点三十分闭馆"
 DOC_NAME = "43-图书馆开放时间.txt"
@@ -110,8 +135,8 @@ def batch_a_extract():
         _env()
 
         items, missing = M.extract_deterministic(TABLE)
-        c.check("A1 用户那段考试通知 → **一条**：离散数学考试｜2026-10-21 19:30-21:30（施工单 G1 的期望）",
-                items == [{"title": "离散数学考试", "date": "2026-10-21",
+        c.check("A1 用户那段考试通知 → **一条**：离散数学考试｜明天 19:30-21:30（施工单 G1 的期望）",
+                items == [{"title": "离散数学考试", "date": _iso(0),
                            "start": "19:30", "end": "21:30"}], str(items))
         c.check("A2 表里的「监考老师/注意事项」不再被拆成两件事（一张表 = 一件事）",
                 len(items) == 1 and not any("李老师" in t for t in _titles({"items": items})),
@@ -121,7 +146,7 @@ def batch_a_extract():
         c.check("A3 三行清单 → 三条（施工单 G3）", len(it3) == 3,
                 json.dumps([i["title"] for i in it3], ensure_ascii=False))
         c.check("A3-bis 三条各自带自己的日期与时段（不是把第一条复制到三行）",
-                {i["date"] for i in it3} == {"2026-10-21", "2026-10-22", "2026-10-23"}
+                {i["date"] for i in it3} == {_iso(0), _iso(1), _iso(2)}
                 and all(i["start"] and i["end"] for i in it3), json.dumps(it3, ensure_ascii=False))
 
         mixed = ("1. 周三下午两点班会（14:00-15:30）\n2. 周五交离散数学作业\n3. 下周一体测 08:00-09:00\n")
@@ -265,13 +290,13 @@ def batch_b_end_to_end():
                 str(_titles(card5)))
         r5 = cli.post("/api/todos/items_add", json={
             "session_id": "t71-g5", "from_card": True,
-            "items": [{"title": "离散数学考试", "date": "2026-10-21", "start": "19:30", "end": "21:30"},
-                      {"title": "数据结构补考", "date": "2026-10-22", "start": "14:00", "end": "15:40"}]})
+            "items": [{"title": "离散数学考试", "date": _iso(0), "start": "19:30", "end": "21:30"},
+                      {"title": "数据结构补考", "date": _iso(1), "start": "14:00", "end": "15:40"}]})
         j5 = r5.json()
         c.check("G5 勾两条点【加入日程】→ 只写这两条", r5.status_code == 200 and j5.get("count") == 2,
                 json.dumps(j5, ensure_ascii=False)[:130])
         c.check("G5-bis 回执一句里带着标题与日期（学生能看到写进去的是哪几条）",
-                "离散数学考试" in (j5.get("message") or "") and "2026-10-21" in (j5.get("message") or ""),
+                "离散数学考试" in (j5.get("message") or "") and _iso(0) in (j5.get("message") or ""),
                 (j5.get("message") or "")[:90])
         n0 = len(store.list_todos())
         r6 = cli.post("/api/todos/items_add", json={"session_id": "t71-g6", "items": []})
@@ -280,9 +305,10 @@ def batch_b_end_to_end():
                 r6.json().get("error", "")[:70])
 
         # ── G6 重复粘贴 / 已存在：跳过而不是再写一条
+        #    日期必须与 G5 写进去的那两条**同一把算出来的**（写死日期 = 跨过午夜整批 400）
         r7 = cli.post("/api/todos/items_add", json={
             "session_id": "t71-g7",
-            "items": [{"title": "离散数学考试", "date": "2026-10-21", "start": "19:30", "end": "21:30"}]})
+            "items": [{"title": "离散数学考试", "date": _iso(0), "start": "19:30", "end": "21:30"}]})
         j7 = r7.json()
         c.check("G6 同一条再写一次 → 算重复跳过，库里不出现第二条",
                 j7.get("count") == 0 and len(j7.get("skipped") or []) == 1,
@@ -291,8 +317,8 @@ def batch_b_end_to_end():
                 sum(1 for t in store.list_todos() if t["title"] == "离散数学考试") == 1)
         r8 = cli.post("/api/todos/items_add", json={
             "session_id": "t71-g8",
-            "items": [{"title": "离散数学考试", "date": "2026-10-21", "start": "19:30", "end": "21:30"},
-                      {"title": "概率论答疑", "date": "2026-10-23", "start": "09:00", "end": "10:30"}]})
+            "items": [{"title": "离散数学考试", "date": _iso(0), "start": "19:30", "end": "21:30"},
+                      {"title": "概率论答疑", "date": _iso(2), "start": "09:00", "end": "10:30"}]})
         j8 = r8.json()
         c.check("G6-三 一批里混着已有与新的：已有的跳过、新的写进去（回执两数都说清）",
                 j8.get("count") == 1 and len(j8.get("skipped") or []) == 1,
@@ -341,8 +367,11 @@ def batch_b_end_to_end():
 
         # ── G8 无密钥 + 拆不出：老实说，不编日期
         d12, a12, _ = _say(cli, "项目 内容\n考试科目 离散数学\n监考老师 李老师\n", sid="t71-g12")
-        c.check("G8 没日期又没密钥 → 一句『没有一条写着日期或钟点』，不出卡、不写库",
-                "日期或钟点" in a12 and not (d12.get("options") or []), a12[:100])
+        # 改口（#50，2026-10-21）：原来钉的是「没有一条写着日期或钟点」，而那句**在说假话** ——
+        # 真机那份材料日期读到了、缺的只是钟点。新文案「没有一条**同时**写着日期和钟点」在两种
+        # 情况下都成立。**放宽的只是字面，判据两半都还在**：仍然不许出卡、不许写库（下面照旧）。
+        c.check("G8 没日期又没密钥 → 一句「没有一条同时写着日期和钟点」，不出卡、不写库",
+                "同时写着日期和钟点" in a12 and not (d12.get("options") or []), a12[:100])
         c.check("G8-bis 这条不许掉给模型（无密钥时那句 no_key 降级提示不算答案）",
                 "答不上来" not in a12 and "还没接通" not in a12, a12[:80])
 
