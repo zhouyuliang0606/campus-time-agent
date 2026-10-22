@@ -16,7 +16,7 @@ import datetime
 import io
 import json
 
-from _harness import Checker, make_client, sandbox, title
+from _harness import Checker, make_client, sandbox, seed_todos, title, wipe_todos
 from app.store import set_settings   # ⚠️ 在 app.store，不在 _harness（踩过：那里没有这个名字）
 
 STUDENT = "app/static/student.html"
@@ -101,6 +101,20 @@ def batch_c_store_model():
     from app import store as S
 
     with sandbox():
+        # #56-D：起始态由这两行钉住。`sandbox()` 是**把真实 app/data 复制一份**，不是空库
+        # （红线 18：依赖起始状态的断言必须自己摆桌子）。
+        # 实测这批今天并不敏感：把待办清空、或往里塞 4 条（含一条落在这周日、一条 weekly），
+        # 两种起点都是 191 项全绿 —— 所以这不是修 bug。但"不依赖"这句话得有断言守着，
+        # 否则以后谁在这儿加一条"库里该有几条"的断言，就**静默变成看运气**。
+        # ⚠️ 先种再清、两头都验：只写 `wipe_todos()` 然后断言"空"，在**本来就没有匿名待办**的机器上
+        #    是白过的（删掉 wipe_todos() 也不会红 —— 那是拿没数据当验到了）。
+        seed_todos([{"title": "起点探针", "date": _sun(0), "start": "07:00", "end": "07:30"}])
+        c.check("沙箱里写的与读的是同一本账（先确认这条探针看得见，否则下面那句「清干净」证明不了任何事）",
+                [t["title"] for t in S.list_todos()] == ["起点探针"],
+                [t.get("title") for t in S.list_todos()][:4])
+        wipe_todos()
+        c.check("起始态钉死：这一批从**空库**开始（不是从用户真实那份带进来的）",
+                S.list_todos() == [], [t.get("title") for t in S.list_todos()][:4])
         one = S.add_todo("交作业", _sun(0), "14:00", "15:00")
         wk = S.add_todo("写作业", _sun(0), "09:00", "10:30", repeat="weekly")
         c.check("一次性待办不带新字段（老形状一字不变）",
