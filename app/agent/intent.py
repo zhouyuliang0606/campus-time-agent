@@ -33,11 +33,12 @@
 from __future__ import annotations
 
 import asyncio
-import datetime
 import json
 import os
 import re
 import time
+
+from app import clock      # #56-A：取现在只有一个出口（`import datetime` 在这轮之后没人用了，删）
 
 # ── 意图白名单 ────────────────────────────────────────────────────────────
 # 语义层只许从这几项里挑一个。它吐出别的（或者吐了个新词）一律当 chat，
@@ -479,7 +480,7 @@ def _intent_system() -> str:
     编出来的日子会一路进到提案里。聊天那边"今天几号"答错至少还只是难看，
     这一路错了是**把事排到错的日子**。
     """
-    now = datetime.datetime.now()
+    now = clock.now()
     today = now.date()
     # 星期几那份表只在 planner 里定义一份（红线 11b）。这里**函数内导入**：
     # planner 自己也在函数里 import 本模块（`looks_like_question`），

@@ -14,6 +14,7 @@ import json
 import os
 
 from app import store
+from app import clock      # #56-A
 from app.agent.tools import Tool
 
 MODULE_KEY = "express"
@@ -59,7 +60,7 @@ def _days_since(date_str: str) -> int:
     """算某件快递到件到现在过了几天（人话：用来判断是不是滞留了）。"""
     try:
         arrived = datetime.date.fromisoformat(date_str)
-        return (datetime.date.today() - arrived).days
+        return (clock.today() - arrived).days
     except Exception:
         return 0
 

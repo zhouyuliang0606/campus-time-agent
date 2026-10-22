@@ -18,6 +18,7 @@ from fastapi import Depends, FastAPI, File, Form, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
+from app import clock      # #56-A
 from app.admin_guard import verify_admin
 from app.agent.engine import AgentEngine
 from app.agent.intent import (
@@ -350,7 +351,7 @@ def _module_handled(module: str | None) -> bool:
 # ⚠️ 必须是**函数**、每次请求现算：写成模块级常量就在 import 那一刻定死了，
 #   服务跨夜不停机，第二天还在拿昨天当"今天"（相对时间只许在用的那一刻算一次，红线 10 那一家族）。
 def _now_block() -> str:
-    now = datetime.datetime.now()
+    now = clock.now()
     today = now.date()
     return (
         "\n\n【现在的真实时间】" + today.isoformat() + " "
@@ -4404,7 +4405,7 @@ def _age_hours(ts: str) -> float | None:
         t = datetime.datetime.strptime(str(ts), "%Y-%m-%d %H:%M:%S")
     except Exception:
         return None
-    h = (datetime.datetime.now() - t).total_seconds() / 3600.0
+    h = (clock.now() - t).total_seconds() / 3600.0
     return round(h, 1) if h >= 0 else None
 
 
@@ -5649,7 +5650,7 @@ async def todos_list(date: str | None = None):
 async def todos_month(month: str = ""):
     """按日期聚合某个月的待办（人话：月视图要给每天标"有几项待办"）。"""
     if not month:  # 没传月份就默认当月
-        month = datetime.date.today().strftime("%Y-%m")
+        month = clock.today().strftime("%Y-%m")
     return {"month": month, "days": list_todos_in_month(month)}
 
 

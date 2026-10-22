@@ -16,6 +16,7 @@ import datetime
 import json
 import re
 
+from app import clock      # #56-A
 from app.agent.tools import Tool
 from app.agent.pending import is_confirmation
 from app.store import (
@@ -243,7 +244,7 @@ def pick_free_slot(date: str, prefer: str = "",
 
 def _now_minutes() -> int:
     """现在几点（换成分钟数，人话：判断"今天这段是不是已经过去了"）。"""
-    now = datetime.datetime.now()
+    now = clock.now()
     return now.hour * 60 + now.minute
 
 
@@ -389,7 +390,7 @@ def _day_slots(date: str, prefer: str = "", limit: int = 3,
         仍旧退回三档候选，不硬塞，也不偷偷换日子。
     """
     not_before = (_now_minutes() + 30
-                  if date == datetime.date.today().isoformat() else None)
+                  if date == clock.today().isoformat() else None)
     min_needed = length
     free = [s for s in find_free_slots(date, min_minutes=min_needed)
             if s.get("start")]
@@ -465,7 +466,7 @@ def candidate_slots(text: str = "", max_slots: int = 3, days_ahead: int = 5) -> 
     """
     t = (text or "").strip()
     prefer = t
-    today = datetime.date.today()
+    today = clock.today()
     # 「平时 / 工作日」= 周一到周五哪天都行 → 不锁死单日，跨工作日摊开列。
     # 实测「我要平时去吃火锅」若照常 _pick_date，抠不出日期就按"从今天起逐天"，
     # 学生观感是"怎么给我排周六"；他说的是"平时"，周末就不该出现在候选里。
@@ -591,15 +592,15 @@ def span_only_proposal(text: str, title: str = "", fallback_date: str = "") -> d
     sp = parse_time_spec(text or "")
     if sp.get("clock") and not sp.get("clock_ok"):
         return None
-    day = (fallback_date or datetime.date.today().isoformat()).strip()
+    day = (fallback_date or clock.today().isoformat()).strip()
     if _iso_weekday(day) == 0:
         return None
     if not finish:
         finish = to_hhmm(to_minutes(begin) + 60)
     if to_minutes(finish) <= to_minutes(begin):
         return None
-    if day == datetime.date.today().isoformat() and to_minutes(begin) <= _now_minutes():
-        day = (datetime.date.today() + datetime.timedelta(days=1)).isoformat()
+    if day == clock.today().isoformat() and to_minutes(begin) <= _now_minutes():
+        day = (clock.today() + datetime.timedelta(days=1)).isoformat()
     # 说了「平时/工作日」却没报哪天：兜底那天落在周末就得往后挪到工作日。
     # （`candidate_slots` 的 workday_mode 早就这么做，但**单条卡这一路以前不看星期几** ——
     #  真机「工作日晚上七点背单词」就排到了周日 19:00。）
@@ -714,10 +715,10 @@ def what_to_do_suggestion(text: str = "", days_ahead: int = 3,
         try:
             base = datetime.date.fromisoformat(day)
         except ValueError:
-            base = datetime.date.today()
+            base = clock.today()
         offsets = (0,)
     else:
-        base = datetime.date.today()
+        base = clock.today()
         offsets = range(days_ahead)
 
     picks = []
@@ -994,9 +995,9 @@ def todo_slots_proposal(text: str, max_slots: int = 3) -> dict | None:
         #   "他点名了某一天"→ 只列那一天的空档（实测：候选只剩 1 段，还全在今天下午）。
         #   习惯天天都做，所以这里把起手式连同那个日子一起摘掉去摊候选，
         #   再用 anchor 把"比锚点早的那几天"滤掉 —— 摘和滤缺一半都不对。
-        anchor = start_anchor(t) or datetime.date.today().isoformat()
+        anchor = start_anchor(t) or clock.today().isoformat()
         lead = max(0, (datetime.date.fromisoformat(anchor)
-                       - datetime.date.today()).days)
+                       - clock.today()).days)
         slots = [s for s in candidate_slots(_START_FORM_RE.sub(" ",
                                             _REPEAT_PHRASE_RE.sub(" ", plain)),
                                             max_slots=max_slots + 6,
@@ -1149,7 +1150,7 @@ def plan_todo_slot(title: str, text: str = "",
         return None
     want = minutes or wanted_minutes(t) or AUTO_SLOT_LENGTH
     want = max(5, min(int(want), 8 * 60))
-    today = datetime.date.today()
+    today = clock.today()
     day = _pick_date(t)
     # 「平时 / 工作日」→ 单条兜底那条路同样只在工作日里找（跟候选卡同一条规矩）。
     _workday_mode = any(w in (t or "") for w in ("平时", "工作日"))
@@ -1468,7 +1469,7 @@ def mock_planner(message: str, history: list | None = None, persona_key: str = N
         }
 
     # 5) 学生提出一件要做的事 → 查近三天空档，给最多 3 个候选
-    base = datetime.date.today()
+    base = clock.today()
     days = [(base + datetime.timedelta(days=off)).isoformat() for off in (0, 1, 2)]
     opts = []
     for d in days:
@@ -2607,9 +2608,9 @@ def _pick_date(text: str):
         # 月/日两头都可能是中文数字（"10月三号"/"十月三日"），统一用 _num 转。
         mo, da = _num(m.group(1)), _num(m.group(2))
         if mo and da:
-            return (f"{datetime.date.today().year}-"
+            return (f"{clock.today().year}-"
                     f"{mo:02d}-{da:02d}")
-    today = datetime.date.today()
+    today = clock.today()
     for word, off in (("大后天", 3), ("后天", 2), ("明天", 1), ("今晚", 0), ("今夜", 0), ("今天", 0),
                       # 「明晚/明早」以前靠笔误闸门把它改成「明天」才碰上日期 —— 那一步顺带把
                       # "晚"字里的**晚上**信息擦了（明晚八点 → 早上 08:00）。现在两头都认：
@@ -2626,7 +2627,7 @@ def _pick_date(text: str):
         want = _WEEKDAY_NUM.get(m.group(1))
         if want is None:
             return None
-        base = datetime.date.today()
+        base = clock.today()
         # 今天说的"周一"，指下一个周一（今天就是周一的话也算，往后推满一周更符合直觉）
         return (base + datetime.timedelta(days=(want - base.isoweekday()) % 7 or 7)).isoformat()
     return None

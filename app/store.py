@@ -13,6 +13,7 @@ import uuid
 
 # 怎么把长文字切成小块是 upload.py 的事（它本来就管"把文件变成文字"），store 只负责把块存下来。
 # 顶层导入是安全的：upload.py 自己只用标准库，那几个办公文档库都在函数里才导入。
+from app import clock      # #56-A：全项目唯一取时间的入口（stdlib-only，不会成环）
 from app.upload import CHUNK_SIZE, chunk_text
 
 # ============ 当前请求的学生身份（#32） ============
@@ -173,7 +174,7 @@ def _write(name: str, data) -> None:
 
 
 def _now() -> str:
-    return datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    return clock.now_str()
 
 
 def add_message(module: str, message: str, answer: str, kind: str = "chat",
@@ -1150,7 +1151,7 @@ def is_past_date(date: str) -> bool:
     交给调用方自己的必填校验，免得这道闸顺手把别的错误也吞掉。
     """
     try:
-        return datetime.date.fromisoformat((date or "").strip()) < datetime.date.today()
+        return datetime.date.fromisoformat((date or "").strip()) < clock.today()
     except ValueError:
         return False
 
@@ -1179,7 +1180,7 @@ def weekly_horizon(anchor: str = "") -> str:
     ⚠️ 只管**每周重复的推断展开**。一次性待办的 `date` 是学生明确写下的日子，
       再远也照原样出现 —— 上限收的是"系统替他推出来的将来"，不是他写的数。
     """
-    base = datetime.date.today()
+    base = clock.today()
     try:
         a = datetime.date.fromisoformat((anchor or "").strip())
         if a > base:
@@ -1403,7 +1404,7 @@ def done_date_for(t: dict, on: str = "") -> str:
     """
     if on:
         return str(on)
-    today = datetime.date.today().isoformat()
+    today = clock.today().isoformat()
     return today if todo_occurs_on(t, today) else str((t or {}).get("date") or "")
 
 
