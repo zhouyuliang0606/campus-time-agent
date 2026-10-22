@@ -159,8 +159,19 @@ def batch_a_derive():
             "_kb_row 定义 %d 处、调用 %d 处" % (st.count("def _kb_row"),
                                                st.count("_kb_row(question, answer, keywords)")))
     html = _src("app/static/admin.html")
-    c.check("A15 管理端那一栏写清了「留空会自动提取」（不写清，下一个人还会以为留空最省事）",
-            "留空则自动从问题里提取" in html, "标签里没这句话")
+    # A15 从"钉那句话"改成"钉这一行说了哪两件事"（#55 §3.4）。
+    # 原来那句「留空则自动从问题里提取」在承诺一件规则层对**短语**做不到的事：
+    # 实测「游泳馆价格」没有虚词可劈，提取结果就是原句整串 —— 管理员照它留空，
+    # 条目存进去关键词=原句，学生换个说法（「游泳多少钱」）就查不到。
+    # ⚠️ 取的是**带「关键词」+「留空」的那一行 <label>**，不是整页也不是第一处「留空」：
+    #    这页有三处「留空」（API Key 那栏、关键词 label、输入框 placeholder），
+    #    按整页判存在 or 按"第一处带留空的 label"取都会量错地方 —— 我第一版就取到了 API Key 那行。
+    label = next((ln for ln in html.splitlines()
+                  if "<label>" in ln and "关键词" in ln and "留空" in ln), "")
+    c.check("A15 关键词那一栏的说明写清了两件事：留空只**按问题原文**提取，想要实体词建议先点「自动拆词」"
+            "（不写清，下一个人还会以为留空最省事）",
+            "问题原文" in label and "拆词" in label and "自动从问题里提取" not in label,
+            "那一行是：" + (label.strip() or "(整页没有带「留空」的 <label>)"))
     c.check("A16 畸形输入不许炸（空串 / 只有标点 / None）；数字那种照旧当词片（不断言它长什么样，只断不抛）",
             store.derive_kb_keywords("") == [] and store.derive_kb_keywords("？？？") == []
             and store.derive_kb_keywords(None) == [] and store.kb_head_words("2026年社团报名") != []

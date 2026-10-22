@@ -82,6 +82,11 @@
     /* 后勤报修那一档（#54）：配色跟着管理端自己的橙红，不引驿站的青绿 */
     .rpNew { display: flex; gap: 8px; margin-bottom: 6px; }
     .rpNew input { flex: 1; padding: 7px 10px; border: 1px solid #d8def0; border-radius: 8px; font-size: 13px; }
+    /* 知识库那栏的关键词行（#55-B）：输入框占满、按钮跟在右边，
+       不然「自动拆词」那颗浮到下一行，人会以为是两个独立的动作 */
+    .kk-row { display: flex; gap: 8px; align-items: center; }
+    .kk-row input { flex: 1; }
+    .kk-row button { flex: none; }
     .rpSvc { border: 1px solid #eaeef8; border-radius: 10px; padding: 10px 12px; margin: 10px 0; background: #fbfcff; }
     .rpSvc h3 { margin: 0 0 4px; font-size: 15px; }
     .rpDept { font-size: 11px; color: #b4530f; background: #fff1e8; border: 1px solid #f6d9c6; border-radius: 999px; padding: 1px 8px; margin-left: 6px; }
@@ -389,8 +394,11 @@
           <input id="kq" placeholder="如：游泳馆怎么预约？" />
           <label>答案</label>
           <textarea id="ka" placeholder="标准回答…"></textarea>
-          <label>关键词（逗号分隔，<b>留空则自动从问题里提取</b>）</label>
-          <input id="kk" placeholder="如：游泳馆, 预约, 场馆（留空也行）" />
+          <label>关键词（逗号分隔，<b>留空按问题原文提取，建议先点自动拆词</b>）</label>
+          <div class="kk-row">
+            <input id="kk" placeholder="如：游泳馆, 游泳, 泳池（留空也行）" />
+            <button class="btn ghost" id="kbSplit" type="button">✨ 自动拆词</button>
+          </div>
           <button class="btn" id="kbSave">添加条目</button>
           <button class="btn ghost" id="kbCancel" style="display:none;" onclick="cancelKB()">取消编辑</button>
           <div class="small" id="kbStatus" style="margin-top:8px;"></div>
@@ -830,6 +838,35 @@
       cancelKB();
       loadKB();
     }
+    async function splitKB() {
+      // ✨ 自动拆词（#55-B）：模型按句意给建议，**结果落回可编辑的框里**，改完点【添加条目】才生效。
+      // 为什么按钮不叫"智能拆词"：管理员得能判断该不该改，"智能"是把判断替他做了。
+      const q = document.getElementById("kq").value.trim();
+      const st = document.getElementById("kbStatus");
+      const btn = document.getElementById("kbSplit");
+      const box = document.getElementById("kk");
+      if (!q) { st.textContent = "先写问题，我再拆词（拆的是这一句，不是关键词框里的字）。"; return; }
+      btn.disabled = true;                       // 一次调用几秒，不禁用会被连点
+      st.textContent = "✨ 正在按句意拆…（要走一次大模型）";
+      try {
+        // ⚠️ `adminFetch` 回的是 **Response**（不是解析好的 JSON，施工单那半截代码是旧形态）：
+        //     非 2xx 它自己抛，所以下面不需要再 `if (r.error)` —— 那道判据在别处会漏，
+        //     在这里恰好是"不接住就是谎报成功"的反面教材形状。
+        const r = await (await adminFetch("/api/admin/kb/split", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ question: q }),
+        })).json();
+        if (!r.keywords || !r.keywords.length) throw new Error("没拆出词");
+        box.value = r.keywords.join(", ");
+        st.textContent = "✨ 拆出 " + r.keywords.length + " 个词，可以改，改完点「添加条目」才生效。";
+      } catch (e) {
+        // 失败**不许**偷偷用规则拆的结果顶上（那是另一种"静默换个东西给你"）：
+        // 管理员要能确定自己拿到的是句意结果，还是根本没拿到。
+        st.textContent = "❌ 拆词没成功：" + e.message + "（可以手动填关键词）";
+      } finally {
+        btn.disabled = false;
+      }
+    }
     async function deleteKB(i) {
       // 这页第三处原生 confirm（前一处是 clearUsage）：一并并到 askConfirm，
       // 不然"一页里两种确认框"就是字面成立——而且措辞得说清这是**真删**，
@@ -1170,6 +1207,7 @@
     document.getElementById("nfile").addEventListener("change", handleNoticeFile);
     document.getElementById("savePersona").addEventListener("click", savePersona);
     document.getElementById("kbSave").addEventListener("click", saveKB);
+    document.getElementById("kbSplit").addEventListener("click", splitKB);
     document.getElementById("refresh").addEventListener("click", loadMessages);
     document.getElementById("saveApi").addEventListener("click", saveApi);
     document.getElementById("testApi").addEventListener("click", testApi);
