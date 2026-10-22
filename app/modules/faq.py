@@ -107,9 +107,20 @@ def _entry_kws(item: dict, typo: bool = False) -> list:
       按「今天星」接走，一句日程问话被直答成「看日历」（`_kb_fuzzy_hit` 那条「校车 vs 校长」老坑的新来源）。
     """
     hand = [str(k).strip().lower() for k in (item.get("keywords") or []) if str(k).strip()]
-    if hand:
+    q = str(item.get("question") or "")
+    heads = [str(k).lower() for k in kb_head_words(q)]
+    # 「派生词」有两种样子（#46-I 那件没落地的账，本轮补上）：关键词为空，
+    # 或者**存进去的就是 `kb_head_words` 那几个** —— 后者是 `_kb_row` 兜底的必然结果：
+    # 「游泳馆价格」这种没有虚词可劈的短语，兜底出来就是**原句整串**。
+    # 不认这一支，这条就被当成"管理员手写"，享受不到 `kb_expand` 的 3 字/2 字滑窗，
+    # 实测「游泳多少钱」「游泳多少钱一次」直接查不到（改前查不到的正是这两句）。
+    # ⚠️ 两边都必须 `lower()` 后再比：`hand` 已经小写过，右边不小写就永远不相等 ——
+    #    那不会报错，只会让这一支**静默失效**，表现与没改一模一样（变异 n2 钉的就是它）。
+    # ⚠️ 判据是整表 `==`，不是"派生词是手写的子集"：管理员手写 `["游泳馆","价格"]` 时
+    #    他的判断优先，一个字都不许代码替他扩。
+    auto = (not hand) or hand == heads
+    if hand and not auto:
         return hand
-    heads = [str(k).lower() for k in kb_head_words(str(item.get("question") or ""))]
     return heads if typo else kb_expand(heads)
 
 

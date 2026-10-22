@@ -126,9 +126,24 @@ def batch_a_derive():
         c.check("A10-bis 对照：这条没被判死，问『这周星期几』照样查到",
                 len(_hits("这周星期几")) == 1, _hits("这周星期几"))
 
-        hand = {"question": "校园网密码怎么改", "answer": "B", "keywords": ["校园网密码"]}
-        c.check("A11 手写的关键词**不被补成片段**（给他补片段等于代码悄悄把范围撑大，那是覆盖他的判断）",
-                faq._entry_kws(hand) == ["校园网密码"], faq._entry_kws(hand))
+        # #55-A 改口（这条原来是 `keywords=["校园网密码"]`，而那一串**恰好等于**
+        # `kb_head_words("校园网密码怎么改")` ⇒ 按 #55 的规则它就是"派生词"，会被补片段。
+        # 数据里没有"这词是谁写的"这个信息，二者不可兼得 —— 所以把"真手写"的夹具换成一份
+        # 派生结果里不会出现的清单（两个词，其中一个是代码拆不出来的说法），
+        # 另加一条把这个边界**钉住**（A11-bis），别让下一位当新 bug 去"修"。
+        hand = {"question": "校园网密码怎么改", "answer": "B", "keywords": ["校园网", "自助平台"]}
+        c.check("A11 手写的关键词**不被补成片段**（给他补片段等于代码悄悄把范围撑大，那是覆盖他的判断），"
+                "也不被泛词表删掉（「密码」在 `_KB_GENERIC` 里，手写就用）",
+                faq._entry_kws(hand) == ["校园网", "自助平台"], faq._entry_kws(hand))
+        one = {"question": "校园网密码怎么改", "answer": "B", "keywords": ["校园网密码"]}
+        c.check("A11-bis 边界（#55-A 的代价，如实钉住）：手写那一个词**正好等于**整片派生结果时，"
+                "数据里没有任何东西能区分这两种来源 ⇒ 它按派生处理、享受补片段。这不是回归，"
+                "是「整表相等」这条判据的另一面（要区分只能给条目加一个「词是谁写的」字段）",
+                faq._entry_kws(one) == store.kb_expand(["校园网密码"])
+                and "校园网" in faq._entry_kws(one) and len(faq._entry_kws(one)) > 1,
+                faq._entry_kws(one))
+        c.check("A11-ter 同一份词在「打错字」那一圈**只用整片本身**（滑窗碎片不许吃编辑距离容错）",
+                faq._entry_kws(one, typo=True) == ["校园网密码"], faq._entry_kws(one, typo=True))
 
     bare = _strip(_src("app/modules/faq.py"))
     c.check("A12 整族扫：`faq` 里读 `keywords` 的那两圈都改走 `_entry_kws`，没有第三处各写一版",
