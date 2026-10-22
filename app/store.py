@@ -544,6 +544,56 @@ def kb_expand(words, limit: int = 12) -> list:
     return _kb_clean(ws + [x for w in ws for x in _kb_windows(w)], limit)
 
 
+def clean_split_words(question: str, obj) -> tuple:
+    """模型给的拆词结果过一遍闸（#55-B）。返回 `(可用词表, 不可用时的人话原因)`。
+
+    为什么这个函数在 store、不在路由：判断要用的 `_KB_STOP` / `_KB_GENERIC` 是这里的词表，
+    跟着词表走才不会出现"路由直接 import 别人的私有名"那种越界（红线：判据跟着数据走）。
+
+    这里每一道都是**实测过会出错**的形状，不是防御性编程的仪式：
+      · 模型偷懒时把原句还回来 —— 现在 `kb.json` 里那条 `["游泳馆价格"]` 就是这个 bug 的样子，
+        所以"词 == 原句"必须丢；全丢就**报错**，不许存进去（存进去下一圈还是查不到）。
+      · 泛词（`_KB_GENERIC`）会让这条放宽到所有含该词的问句（「食堂价格」也命中「游泳馆价格」），扔掉；
+        但扔完一个不剩时报错，**不许存空关键词** —— 空的会走 `_kb_row` 兜底，又变回整句，绕一圈回原点。
+      · 长度 2~8、尖括号：前端 `esc()` 之外再拦一道（同 `_bad_service_field` 的分工）。
+    ⚠️ 比较前先 `norm()` 把标点吃掉：模型很爱在词后面带个问号（「游泳馆价格？」），
+       而原句里也带一个 —— 不去掉就判不出"这就是原句"，而它一旦存进去，A 那一层**也不会再救它**
+       （那时 `hand != kb_head_words` ⇒ 按手写处理），等于这个 bug 原地复活。
+    ⚠️ 不要拿 `_kb_clean` 顶替这个函数：它会按长度排序并截断、还把 2 字词拿去和泛词比 ——
+       那是给**自动派生**用的口径，与"审核模型给的建议词"不是一件事。
+    """
+    raw = obj.get("keywords") if isinstance(obj, dict) else None
+    if not isinstance(raw, list) or not raw:
+        return [], "模型没给出关键词，请手动填写。"
+
+    def norm(s):
+        return re.sub(r"[^\w一-鿿]+", "", str(s or "")).lower()
+
+    q = norm(question)
+    out, seen = [], set()
+    for w in raw:
+        w0 = str(w or "").strip()
+        # 尖括号在**去标点之前**看：norm() 会把 `<b>x</b>` 洗成「bx b」，
+        # 那样这条判据永远不咬（施工单那一版就是这个顺序），而"带标签的建议"
+        # 该被丢掉、不该被洗白成另一个能存的词。
+        if "<" in w0 or ">" in w0:
+            continue
+        w = norm(w0)
+        if not (2 <= len(w) <= 8):
+            continue
+        if q and w == q:                              # 原句整串（含标点差异）
+            continue
+        if w in _KB_STOP or w in _KB_GENERIC:         # 虚词 / 泛词
+            continue
+        if w in seen:
+            continue
+        seen.add(w)
+        out.append(w)
+    if not out:
+        return [], "模型这次只拆出了原句或泛词，换个说法再试一次，或者手动填关键词。"
+    return out[:6], ""
+
+
 def list_kb() -> list:
     """列出知识库全部条目。"""
     return _read("kb.json", {"entries": []}).get("entries", [])

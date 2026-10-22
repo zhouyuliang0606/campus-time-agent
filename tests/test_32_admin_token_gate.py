@@ -51,12 +51,17 @@ ADMIN_ENDPOINTS = [
     ("POST", "/api/admin/service-records/nosvc", {"fields": {"楼栋": "3"}}),
     ("POST", "/api/admin/service-records/nosuch/norec/status", {"status": "已解决"}),
     ("POST", "/api/admin/services", {"description": "门测：加一项服务"}),
+    # 2026-10-22 #55-B：知识库拆词（只产建议、不写库，但它吃口令 ⇒ 也得挂门）
+    ("POST", "/api/admin/kb/split", {"question": "门测：游泳馆价格"}),
 ]
 # 其中这几个「带对口令后」不去实跑：/settings/test 真会往大模型发一次请求，
 # 用一个假 key 打真网络既慢又不稳定，门该验的只是「没口令进不去」。
 # #54 的【建服务】同性质 —— 它内部就走 `_draft_service` → 真打一次模型（而且开发机上
 # .env 里是有真密钥的，实跑就会往沙箱里建出一项服务，那不是这道门要问的事）。
-SKIP_WITH_TOKEN = {"/api/admin/settings/test", "/api/admin/services"}
+# #55-B 的【拆词】同性质：带对口令真会打一次大模型（开发机 .env 里有 Key），
+# 这道门只问"没口令进不进得去"，模型回什么都不归它管。
+SKIP_WITH_TOKEN = {"/api/admin/settings/test", "/api/admin/services",
+                   "/api/admin/kb/split"}
 
 # 学生侧：这些**不许**被口令挡住
 STUDENT_OPEN = [
@@ -225,7 +230,8 @@ def batch_wiring(c):
         # 但只读不等于免口令 —— 它回的是"这句学生问得到什么答案"，等于把知识库内容往外递一份，
         # 所以照样挂门。20 → 21 是**承认过的**涨项。
         "POST /api/admin/kb/probe",
-        # 2026-10-22 #54：后勤那一档四条（台账 / 现场登记 / 改状态 / 建服务）⇒ 21 涨到 25，同样承认过。
+        # 2026-10-22 #54：后勤那一档四条（台账 / 现场登记 / 改状态 / 建服务）⇒ 21 涨到 25，同样承认过；
+        # 同日 #55-B 再加一条【知识库拆词】⇒ 26。
         # 其中【现场登记】是施工单没列、但管理端界面那张登记表单**必须**有的写口
         # （驿站那个写口现在按部门拦，后勤的服务从那儿进直接 403）。
         # 【台账】虽然只读，但它把**全校**的登记内容往外递，与 kb/probe 同一条理由：只读不等于免口令。
@@ -236,6 +242,7 @@ def batch_wiring(c):
         "POST /api/admin/service-records/{sid}",
         "POST /api/admin/service-records/{sid}/{rid}/status",
         "POST /api/admin/services",
+        "POST /api/admin/kb/split",   # 21→26（#55-B）
     }
     got = _guarded_routes()
     # 名字里的数字改成从清单自己算：以前写死"这 20 个"，加一条就得改两处（计数式判据自己咬自己那一族）

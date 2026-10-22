@@ -44,7 +44,7 @@ from app.store import (
     list_custom_records, add_custom_record, service_of_module,
     update_custom_record_status,
     is_custom_module, match_service_by_trigger, custom_module,
-    list_kb, add_kb_entry, update_kb_entry, delete_kb_entry,
+    list_kb, add_kb_entry, update_kb_entry, delete_kb_entry, clean_split_words,
     get_persona, set_persona,
     get_settings, set_settings,
     summarize_llm_usage, clear_llm_usage,
@@ -5151,6 +5151,79 @@ async def admin_kb_probe(req: Request):
         "hit": bool(out_entries or docs),
         "student_view": answer_for_student(q),
     }
+
+
+# ============ 知识库拆词：一句话 → 模型按句意给检索关键词（#55-B，只产草稿） ============
+# 为什么必须让模型来拆、规则拆不了（实测，不是偏好）：
+#   `kb_head_words("游泳馆价格")` 只能吐出**整句** ['游泳馆价格']（没有虚词可劈、也没有滑窗可用），
+#   而「考试周图书馆开到几点」派生出 12 个碎片（含「试周图」「馆开到」这种非词）。
+#   管理员要的是"这条该用什么词才搜得到学生那句话"——这件事只有按句意判断才做得对。
+# ⚠️ 这是**全项目唯一允许模型碰关键词**的地方，而且它仍然只产草稿：模型不知道学校有几栋楼，
+#    也不知道学生管游泳馆叫「泳池」还是「游泳池」，所以结果必须回给管理员看、让他改，不许直接落库。
+_KB_SPLIT_PROMPT = """你是校园助手的知识库整理员。管理员会给你一条「学生可能问的问题」，你只负责拆出**用来检索的关键词**。
+
+一、判断顺序
+1. 先判这句问的是**哪个对象**：游泳馆 / 图书馆 / 校车 / 补办学生证 / 宿舍报修…
+2. 再判问的是这个对象的**哪个方面**：价格、开放时间、地点、流程、电话…
+
+二、关键词怎么给
+- 对象词必须有，而且要给**学生可能用的别的说法**：全称 + 常用简称 + 口语叫法
+  （游泳馆 → 游泳、泳池；补办学生证 → 学生证、补办）
+- 方面词**只在它能区分同类条目时**才给：同一条目多半只有一条，通常不需要。
+- 每个词 2~8 个字，一共 2~6 个。
+- **禁止**把问题原句整串当关键词（这是最常见也最没用的错）。
+- **禁止**给任何问题都会有的泛词：多少钱、怎么、如何、几点、时间、电话、流程、价格、收费、能不能、可以。
+
+三、输出
+只输出一个 JSON，不要解释、不要 markdown 代码块：
+{"keywords": ["…", "…"]}
+
+示例 1
+问题：游泳馆价格
+{"keywords": ["游泳馆", "游泳", "泳池"]}
+
+示例 2
+问题：考试周图书馆开到几点
+{"keywords": ["图书馆", "考试周", "开放时间"]}
+
+示例 3
+问题：补办学生证要多久
+{"keywords": ["学生证", "补办学生证", "补办"]}
+"""
+
+
+@app.post("/api/admin/kb/split", dependencies=[Depends(verify_admin)])
+async def admin_kb_split(req: Request):
+    """一句话 → 模型按句意拆出的**检索关键词**（#55-B）。只产建议，**不写库**。
+
+    ⚠️ 失败一律 502 + 一句人话，**不许回退到 `derive_kb_keywords`/`kb_head_words`**：
+       那等于"模型挂了就悄悄换成固定格式拆"，管理员看不出区别，却再也得不到句意结果
+       （而规则那一路对「游泳馆价格」只会还回整句 —— 正是这条链路要治的那个 bug）。
+    ⚠️ 也不许"成功但拆出一堆泛词"就当结果用：`store.clean_split_words` 那一道闸负责把
+       原句整串与泛词丢掉，丢光就报错（判据跟着词表走，所以它在 store 不在这里）。
+    :param question: 一句话，≤100 字（长到超出的不是"一个学生问题"，是段落，该进文档知识库）
+    """
+    body = await req.json()
+    q = str((body or {}).get("question") or "").strip() if isinstance(body, dict) else ""
+    if not q:
+        return JSONResponse({"error": "先把问题写进去，我按它拆词"}, status_code=400)
+    if len(q) > 100:
+        return JSONResponse({"error": "这句话太长了（限 100 字），问题写成一句话更准"}, status_code=400)
+    try:
+        gateway = ModelGateway(user="内部:知识库拆词")     # 「用量统计」里单列一行
+        # max_tokens 上限：拆词就那么点大，给大了模型开始解释"为什么这么拆"（同判定层那一手）
+        reply = await gateway.chat(
+            [{"role": "system", "content": _KB_SPLIT_PROMPT},
+             {"role": "user", "content": f"问题：{q}"}],
+            max_tokens=120,
+        )
+    except LLMError as e:
+        print(f"[拆词] 失败（kind={getattr(e, 'kind', '?')}）：{e}")
+        return JSONResponse({"error": _say_llm_error(e)}, status_code=502)
+    words, why = clean_split_words(q, _extract_json_obj((reply or {}).get("content") or ""))
+    if not words:
+        return JSONResponse({"error": why}, status_code=502)
+    return {"ok": True, "keywords": words}
 
 
 # ============ 管理控制台：文档知识库（**只收管理员在这一档传的知识文档**） ============
