@@ -581,6 +581,10 @@ def clean_split_words(question: str, obj) -> tuple:
         w = norm(w0)
         if not (2 <= len(w) <= 8):
             continue
+        # 纯数字（含下划线那种）不是"检索关键词"：模型偶尔会回 `["12"]` 这种，
+        # 而它会把任何带 12 的问句（「12点」「2026年」）都接走 —— 与泛词同一种放宽。
+        if w.isdigit():
+            continue
         if q and w == q:                              # 原句整串（含标点差异）
             continue
         if w in _KB_STOP or w in _KB_GENERIC:         # 虚词 / 泛词
