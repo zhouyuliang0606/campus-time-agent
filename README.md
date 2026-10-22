@@ -287,9 +287,10 @@ CampusTime/
 │   │   └── station.html        驿站商户端
 │   └── data/                   种子数据（courses / kb / express / takeout 入库演示；runtime 数据已在 .gitignore）
 ├── tests/                      分主题测试 + 一键总账（批数与项数不写死，跑一次即知）
-│   ├── run_all.py              一键跑全部：每批单独开子进程，末尾给总账，有失败退出码为 1
+│   ├── run_all.py              一键跑全部：先过 JS 语法闸，再每批单独开子进程，末尾给总账，有失败退出码为 1
+│   ├── _check_static_js.js   JS 语法闸：扫 `app/static` 全部页面的内联 script 与外链 `.js`
 │   ├── _harness.py             测试工具箱：Checker 打分员 + sandbox 数据沙箱 + make_client 假浏览器
-│   └── test_01..test_29_*.py   分主题各一批（含 test_intent_classify；最新一批见 `ls tests/test_*.py | tail`）
+│   └── test_*_*.py           分主题各一批（文件数随开发增长，`ls tests/test_*.py | wc -l` 即知；最新几批见 `ls tests/test_*.py | tail`）
 ├── ai-prompts/                 ★ AI 协同开发 Prompt 快照（份数随会话增长，`ls ai-prompts/*.md` 即知）
 ├── ai-logs/                    开发日记（早期迭代）
 ├── docs/                       技术文档 PDF + 生成脚本 + 演示视频分镜
@@ -408,6 +409,11 @@ python tests/run_all.py
 （`<N>` / `<F>` / `<M>` 都随每次开发变化，所以**一个都不写死** —— 跑一次就是当次的真实数字，
 本仓库不承诺"任何一台机器上都是 0 失败"。有红就照红念，归因写在 `开发者接手指南.md` §六 与当轮快照里。
 `run_all.py` 会逐批报"通过 X 项，失败 Y 项"，末尾给总账，有失败退出码为 1。）
+
+> 第一块是 **JS 语法闸**（`tests/_check_static_js.js`）：页面是 HTML，Python 那几千项断言碰不到内联 JS，
+> 而 JS 里一个引号写错的后果是「学生打开页面一片空白」。它扫 `app/static/` 下全部 `.html` 与外链 `.js`，
+> ⚠️ 没装 node 的机器上会打印「⚠️ 没找到 node，跳过 JS 语法闸」并**不算失败**（总项数因此比装了 node 的少 1 项）
+> —— 这一项**没验到**是明写在屏幕上的，不是悄悄通过。
 
 > ⚠️ 判"有没有红"要看**两行**，不能只看总账那句：总账只统计断言，某一份文件**整份崩了**
 > （比如 import 就挂）算不出"失败几项"，但它会在下一行列成 `有失败的文件：xxx.py`，退出码同样是 1。
