@@ -16,6 +16,7 @@
   ③ 形状/位置断言先剔注释，且判"走不到"要用 AST 位置，不认行号数字。
 """
 import ast
+import datetime
 import hashlib
 import json
 import os
@@ -27,7 +28,9 @@ from _harness import (Checker, data_path, make_client, patch_llm, sandbox,
 SRC_MAIN = "app/main.py"
 SRC_STATION = "app/modules/station.py"
 PROBE = "探针-不许念给店员"
-FUTURE = "2026-12-31"          # 写死的将来日期：不跟当天时钟耦合（挂账 #69 那一族）
+# ⚠️ 不许写死（挂账 #69，#56-C）：原来钉 `"2026-12-31"`，跨过那天它就是**过去**，
+#    红线 17「待办不许落在过去的日子」会正确拒收 —— 红的是夹具不是功能（test_42/test_71 同族）。
+FUTURE = (datetime.date.today() + datetime.timedelta(days=30)).isoformat()
 COURSES = [{"day": 6, "start": "19:00", "end": "21:00",
             "course": "晚课·社团", "location": "体育馆"}]
 

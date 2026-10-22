@@ -14,13 +14,18 @@
   ② 判据一律"读盘数条数"，不看状态码就下结论；
   ③ 形状/位置断言先剔注释，且**不认变量名只认形状**。
 """
+import datetime
 import json
 import os
 import re
 
 from _harness import Checker, data_path, make_client, sandbox, seed_todos, title
 
-FUTURE = "2026-12-31"          # is_past_date 那一档要过得去（今天 2026-10-17）
+# ⚠️ 这个日子**不许写死**（挂账 #69 那一族，#56-C 收的其中一颗）：
+#    原来是 `FUTURE = "2026-12-31"`，注释还写着"不跟当天时钟耦合"—— 那只在那天之前成立；
+#    跨过 12-31 它就变成**过去**，`is_past_date` 那一档反过来把整条卡判没，
+#    症状是"同一份代码昨天绿今天红，你根本没改东西"。30 天余量足够一批测试跑完。
+FUTURE = (datetime.date.today() + datetime.timedelta(days=30)).isoformat()
 SRC_STU = "app/static/student.html"
 SRC_CFM = "app/static/confirm.html"
 SRC_MAIN = "app/main.py"
