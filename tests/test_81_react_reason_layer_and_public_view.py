@@ -39,8 +39,8 @@ import subprocess
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from _harness import (PROJ_DIR, Checker, make_client, sandbox, seed_todos, title,  # noqa: E402
-                     write_express, write_takeout, write_timetable)
+from _harness import (PROJ_DIR, Checker, make_client, sandbox, title,  # noqa: E402
+                     write_express, write_takeout)
 
 MAIN = os.path.join(PROJ_DIR, "app", "main.py")
 ENGINE = os.path.join(PROJ_DIR, "app", "agent", "engine.py")
@@ -283,8 +283,15 @@ def batch_b_public_view():
     from app.agent.public_view import MAX_CHARS, public_view
 
     with sandbox():
-        write_timetable(TIMETABLE)
-        seed_todos([{"title": "复习数学", "date": D_PLUS, "start": "14:00", "end": "15:40"}])
+        # ⚠️ 种数据这件事**必须走产品自己的写函数**，不能只写 `student/timetable.json` 那个老路径：
+        #    克隆里红的那条（`get_day_courses` 是单行）就是这么来的 —— harness 的 `write_timetable()`
+        #    写的是**共享桶**，而 #32 之后工具读的是**按学号那一份**（`student/admin1/timetable.json`）。
+        #    本机为什么绿？因为 `sandbox()` 是 copytree 真实数据，而开发机上 admin1 那份课表**是用户手测出来的**
+        #    ⇒ 断言读的是"我这台机器上碰巧有什么"，不是"我种的什么"（4o3 那一族的又一实例，这次栽在写入路径上）。
+        from app import store
+
+        store.set_current_student("admin1")
+        store.save_timetable(TIMETABLE)          # 进 admin1 那一份，两台机器上形状一致
         write_express([{"id": "X1", "owner": "admin1", "item": "《算法导论》图书",
                         "station": "菜鸟驿站-北区", "pickup_code": "A-1234",
                         "arrived_at": (TODAY - dt.timedelta(days=9)).isoformat(),
@@ -293,6 +300,8 @@ def batch_b_public_view():
                         "items": "麦辣鸡腿堡套餐", "eta": "12:30",
                         "pickup_point": "宿舍楼外卖柜 A 区", "pickup_code": "A1",
                         "status": "配送中"}])
+        # 待办同理：`seed_todos()` 写的也是共享桶，身份设成 admin1 之后 `list_day_todos` 读不到它
+        store.add_todo("复习数学", D_PLUS, "14:00", "15:40")
 
         rows = _sweep()
         mods = {m for m, _, _, _ in rows}
@@ -337,7 +346,7 @@ def batch_b_public_view():
         # ⚠️ 这一条**第一版写成了全局计数**（`wr >= 6`），在严格克隆里当场红：
         #    克隆只有 tracked 的那份 `kb.json`，而 `search_kb` / 驿站那几只工具的行数跟着**数据**走
         #    （本机 7 只、克隆 5 只）。⇒ 正控要钉在**自己种的数据**上，不是钉在环境给的数字上。
-        #    现在改成逐只点名：这五只的返回形状由上面 `write_timetable` / `write_express` /
+        #    现在改成逐只点名：这五只的返回形状由上面 `store.save_timetable` / `write_express` /
         #    `write_takeout` 决定，与本机那份未提交的数据无关；哪天它们变成单行，红的是真的坏了。
         mine = {"get_day_courses", "list_my_packages", "list_pending_pickup",
                 "list_my_orders", "list_active_orders"}
