@@ -137,8 +137,9 @@ def _merged(query: str, extra: str = "") -> str:
     从"请求模型照做"变成**结构上只能做加法**：新词只会多、一个都不会少。
     反过来若让改写覆盖原句，那就不再是"补召回"，是"换了一个问题去查"。
 
-    ⚠️ 这个串**只进匹配**，不进任何给人看的文案：miss 那句回显、条目的 Q/A、
+    ⚠️ 这个串**只进匹配，不进任何给人看的文案**：miss 那句回显、条目的 Q/A、
        文档名都还是用原句（见 `search_kb` / `answer_for_student`）。
+       而且它**只喂条目那一圈** —— 文档那一圈要的是原句，原因见 `_kb_parts` 里那条 ⚠️⚠️。
     """
     e = " ".join(str(extra or "").split())
     return f"{query} {e}" if e else str(query or "")
