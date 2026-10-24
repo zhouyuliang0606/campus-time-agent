@@ -73,12 +73,17 @@ def render_all(cases):
         if not isinstance(trace, list) or not all(isinstance(t, dict) for t in trace):
             raise AssertionError("case 的形状坏了，trace 必须是 [{...}, ...]：拿这种输入去比 = 断言在量空气")
     src = open(STUDENT, encoding="utf-8").read()
+    # ⚠️ 抠的是 `renderTrace` 的**调用闭包**，不是它自己一个函数。#60-C 给它加了一个同伴
+    #    `_oneLine`（把工具结果折成一行），只抠 `renderTrace` 时 node 会 `ReferenceError: _oneLine is not defined`
+    #    —— 那副样子是"本批自己跟不上页面"，不是"渲染坏了"，容易误判成回归。
+    #    页面里 `renderTrace` 再调什么，这里就得一起带上（新加 helper 请往这个列表里补一行）。
     bundle = ("const fs=require('fs');"
               "const window={};"
               "eval(fs.readFileSync(process.argv[1],\"utf8\"));"
               "globalThis.esc=window.esc;"
               + _slice_fn(src, "function richText(")
               + re.search(r"const _BARE_TRACE_PHASES = \[.*?\];", src, re.S).group(0) + "\n"
+              + _slice_fn(src, "function _oneLine(")
               + _slice_fn(src, "function renderTrace(")
               + "const cs=JSON.parse(process.argv[2]);"
               "process.stdout.write(JSON.stringify(cs.map(c=>renderTrace(c[0],c[1]))));")
@@ -136,10 +141,17 @@ def batch_a_shape():
             "if (an && body && an === body) return;" in body)
 
     eng = open(ENGINE, encoding="utf-8").read()
-    c.check("E→A9 引擎侧一个字没改：四处 `_trace` 的形状还是 step/phase(+action/args/result/answer)",
+    # ⚠️ 这一条在 #60-B 被**改过口径**（改护栏要留两份证据）：
+    #   它防什么：防 #58 那种"顺手改引擎"——trace 的字段名是前端唯一的依赖，
+    #              `renderTrace` 只认 step/phase/action/args/result/answer，引擎漂了就又变隐形。
+    #   牙还在不在：三样都还钉着，而且 #60 给它**加**了一条更难的红线 ——
+    #              原始 `str(result)[:600]` 不许再回到 trace 里（V2 把 `public_view` 退回原样就当场红）。
+    c.check("E→A9 引擎只伸了 `result` 那一个字段：四处 `_trace`、action/args 形状没动，"
+            "而 trace 里已是给人看的那一份（原始 600 字不许回来）",
             eng.count('await self._trace(') == 4
             and '"action": fn_name, "args": args' in eng
-            and '"result": str(result)[:600]' in eng)
+            and '"result": str(result)[:600]' not in eng
+            and '"result": public_view(fn_name, result)' in eng)
     c.check("A10 本单不动接口：`/api/chat` 的返回里没有新增字段（trace 本来就带着 action/args/result 出来了）",
             '"trace"' in open(os.path.join(PROJ_DIR, "app", "main.py"), encoding="utf-8").read())
     return c

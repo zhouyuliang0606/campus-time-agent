@@ -87,6 +87,9 @@
     .trace .trace-row .st {
       display: inline-block; min-width: 14px; color: #9aa6c0; margin-right: 4px;
     }
+    /* #60：轨迹块限高、内部滚动 —— 不收起（收起=把要证明的东西藏起来），但也不许把页面顶爆。
+       限高加在 .trace-body 容器上，**不加在 .trace 上**，否则 summary 那行会跟着一起滚。 */
+    .trace .trace-body { max-height: 240px; overflow-y: auto; }
     .inputbar { display: flex; gap: 10px; margin-top: 14px; }
     .inputbar input {
       flex: 1; padding: 12px 14px; border: 1px solid #d8def0; border-radius: 10px;
@@ -1050,6 +1053,15 @@ html.gx-glass[data-gx-refine="on"] .composer, html.gx-glass[data-gx-refine="on"]
     //   ③ 单条截断：带 answer 的仍是 80 字（既有口径，别的测试钉着），
     //      工具那两条放宽到 120 —— 它们要装的是 `工具名(参数) → 结果片段`，80 字会把结果剪没。
     const _BARE_TRACE_PHASES = ["思考", "调用工具", "工具结果"];
+    // #60-C：把多行的工具结果折成**一行**（换行 → " · "，连续空白压掉）。
+    // ⚠️ 只折 `result`，不折 `args`：参数本来就是一行 JSON，折它没意义、还会把引号里的 \n 也算进去。
+    // 为什么是"折"不是"收起"：收起等于把要证明的东西藏起来，跟"让评委看见"正相反 —— 改密度，不改可见性。
+    function _oneLine(s) {
+      return String(s == null ? "" : s)
+        .replace(/\s*\n+\s*/g, " · ")
+        .replace(/[ \t]{2,}/g, " ")
+        .trim();
+    }
     function renderTrace(trace, content) {
       const body = String(content == null ? "" : content).trim();
       const rows = [];
@@ -1073,7 +1085,7 @@ html.gx-glass[data-gx-refine="on"] .composer, html.gx-glass[data-gx-refine="on"]
             try { a = JSON.stringify(t.args); } catch (e) { a = ""; }
             if (a && a !== "{}") an += "(" + a + ")";
           }
-          if (hasResult) an += (an ? " → " : "") + String(t.result).trim();
+          if (hasResult) an += (an ? " → " : "") + _oneLine(t.result);
         }
         if (an && body && an === body) return;                            // ②
         const cap = hasAns ? 80 : 120;                                    // ③
@@ -1086,8 +1098,10 @@ html.gx-glass[data-gx-refine="on"] .composer, html.gx-glass[data-gx-refine="on"]
           "</div>");
       });
       if (!rows.length) return "";
+      // #60-C：行装进 `.trace-body` 这个**容器**里限高（`max-height` 加在容器上、不加在 `.trace` 上 ——
+      // 加在外层的话 summary 会跟着一起滚，学生滚两下就找不到"我是这么想的"那行标题了）。
       return '<details class="trace" open><summary>🧠 我是这么想的</summary>' +
-        rows.join("") + "</details>";
+        '<div class="trace-body">' + rows.join("") + "</div></details>";
     }
 
     // 气泡上那个小标签：低代码那一路后端回的是 `custom:<服务id>`，
