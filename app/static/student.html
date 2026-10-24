@@ -404,6 +404,10 @@
   .model-sel { padding: 8px 10px; border: 1px solid #d8def0; border-radius: 9px; font-size: 13px; background: #fff; color: #4a5366; max-width: 340px; }
   .paste-btn { padding: 8px 12px; border: 1px solid #d8def0; border-radius: 9px; background: #fff; color: #4f7cff; font-size: 13px; cursor: pointer; }
   .paste-btn:hover { background: #eef2ff; }
+  /* #61-C4：Agent 模式的状态小标（勾上才显形）。它存在的唯一理由 = 演示时"我现在在不在这个模式"
+     要能当场指着给评委看，不能靠操作的人记 —— 所以放在输入框同一行，不在设置页里。 */
+  .agent-badge { display: none; align-items: center; gap: 5px; padding: 7px 11px; border: 1px solid #d8def0; border-radius: 9px; background: #eef2ff; color: #4f7cff; font-size: 12.5px; }
+  .agent-badge.on { display: inline-flex; }
   /* <svg class="ic"><use href="#gi-compass"/></svg> 意图诊断的结果条：默认不出现（display:none），点了按钮才 .show。
      用中性灰蓝而不是彩色，免得跟聊天气泡抢注意力——它只是个"看一眼"的工具。 */
   .probe-out { display: none; margin-top: 8px; padding: 9px 12px; border: 1px dashed #cfd6ea; border-radius: 9px; background: #f7f9ff; color: #3f4a63; font-size: 12.5px; line-height: 1.7; }
@@ -931,6 +935,7 @@ html.gx-glass[data-gx-refine="on"] .composer, html.gx-glass[data-gx-refine="on"]
           <select id="modelSel" class="model-sel" title="模型与 API"><option value="">默认模型（管理端配置）</option></select>
           <button class="paste-btn" id="pasteBtn" title="粘贴大段文本发给管家"><svg class="ic"><use href="#gi-doc"/></svg> 粘贴文本</button>
           <button class="paste-btn" id="probeBtn" aria-pressed="false" title="不写库、不进历史：只看它把这句话理解成什么；再点一次收起"><svg class="ic"><use href="#gi-compass"/></svg> 意图诊断</button>
+          <span class="agent-badge" id="agentBadge" title="Agent 模式开着：这一句会跳过确定性快路、走完整多轮推理（慢一点）"><svg class="ic"><use href="#gi-compass"/></svg> Agent 模式</span>
         </div>
         <div class="inputbar">
           <input type="file" id="file" style="display:none;" />
@@ -1036,6 +1041,17 @@ html.gx-glass[data-gx-refine="on"] .composer, html.gx-glass[data-gx-refine="on"]
     // 用 localStorage 记：学生自己选的，刷新页面不该被忘掉。
     function traceOn() {
       return localStorage.getItem("campustime_trace") !== "0";   // 默认 = 开
+    }
+
+    // ---- Agent 模式（#61-C）：演示用开关，默认关 ----
+    // 开着 = 这一句跳过所有"替模型抢话"的确定性快路，走完整 ReAct 循环（慢一点，但循环看得见）。
+    // 存的是 "1"/"0" 字符串，但**发给后端的是布尔**（后端两种都收，可别让它再猜一次）。
+    function agentOn() {
+      return localStorage.getItem("agent_mode") === "1";
+    }
+    function syncAgentBadge() {
+      const b = document.getElementById("agentBadge");
+      if (b) b.classList.toggle("on", agentOn());
     }
 
     // 把后端给的 trace（[{step, phase, answer, action, args, result}]）画成一块可折叠的"我是这么想的"。
@@ -2091,7 +2107,9 @@ html.gx-glass[data-gx-refine="on"] .composer, html.gx-glass[data-gx-refine="on"]
         resp = await fetch("/api/chat", {
           method: "POST",
           headers: { "Content-Type": "application/json", "Accept": "text/event-stream" },
-          body: JSON.stringify(body),
+          // #61-C4：开关在**这里**注入，不在两个调用点各写一遍（同一件事抄两遍就会漏一处）。
+          // streamChat 只服务 /api/chat，所以这一处覆盖普通发送和候选卡确认那一条路。
+          body: JSON.stringify(Object.assign({}, body, { agent_mode: agentOn() })),
         });
       } catch (e) { onError({ answer: "哎呀，网络好像开小差了，请稍后再试～" }); return; }
       if (!resp.ok) { onError({ answer: BAD }); return; }
@@ -3447,6 +3465,11 @@ html.gx-glass[data-gx-refine="on"] .composer, html.gx-glass[data-gx-refine="on"]
         // 演示/评委场景能回到"只看结果"的干净样子。
         '<div class="card"><h2>思考过程</h2><div class="desc">每条回复下面要不要展示"我是这么想的"（它把你的话听成了什么、依据是哪一档）。关掉之后只显示结果。</div>'+
         '<label style="display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;"><input type="checkbox" id="setTrace" '+(traceOn()?"checked":"")+' style="width:16px;height:16px;"> 展示思考过程</label></div>'+
+        // Agent 模式（#61-C）：**演示用**开关，默认关。真机上确定性快路更快、更不会胡说，
+        // 那才是产品该有的样子；只有要让评委"每一句都看见多轮循环"时才开。
+        // 勾上之后输入框旁边会一直挂着那颗「Agent 模式」小标 —— 在不在模式里当场能证明。
+        '<div class="card"><h2>Agent 模式（演示用）</h2><div class="desc">开着时每一句都走完整的多轮推理（思考 → 查 → 再答），思考轨迹里能看到它调了哪几只只读工具；代价是一句要慢几秒。写库仍然要你点确认条才生效。默认关。</div>'+
+        '<label style="display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;"><input type="checkbox" id="setAgent" '+(agentOn()?"checked":"")+' style="width:16px;height:16px;"> 每句都走多轮推理（慢一点）</label></div>'+
         '<div class="card"><h2>背景与外观</h2><div class="desc">底图、玻璃透不透、遮罩多暗、有没有动效，都在这调；只存这台浏览器，不上传。「不用图」= 关掉整层玻璃，回到改版前的样子。</div>'+
         '<div id="setBgList" class="persona-list"></div>'+
         '<div id="setBgLic" class="desc" style="margin:9px 0 2px;"></div>'+
@@ -3468,6 +3491,11 @@ html.gx-glass[data-gx-refine="on"] .composer, html.gx-glass[data-gx-refine="on"]
       // 不然一点开关满屏消息重排，学生反而不知道自己点了什么。
       document.getElementById("setTrace").addEventListener("change", function(e){
         localStorage.setItem("campustime_trace", e.target.checked ? "1" : "0");
+      });
+      // Agent 模式开关：存本机 + 立刻刷新输入框旁边那颗小标（不刷新就会"以为开着其实关着"）。
+      document.getElementById("setAgent").addEventListener("change", function(e){
+        localStorage.setItem("agent_mode", e.target.checked ? "1" : "0");
+        syncAgentBadge();
       });
       // ---- 背景与外观：改一项就立刻存本机 + 重新套一遍 ----
       // applyBackdrop 只写 CSS 变量、类名与 .gx-fx 里的装饰节点，不碰接口与业务状态。
@@ -3575,6 +3603,7 @@ html.gx-glass[data-gx-refine="on"] .composer, html.gx-glass[data-gx-refine="on"]
 
     applyBackdrop();   // 背景/暗度/动效：先于首屏绘制套好，避免闪一下无底的状态
     loadProfile();
+    syncAgentBadge();  // #61-C4：Agent 模式的状态标跟着刷新一次（开着时进页面就该看得见）
     loadModelSel();
     // 落地页：**日程**（2026-10-09 用户「主用的是日程这个板块，校园问答是一个小模块」）。
     // 顺序不能乱：先定 currentView → 用它应用开场白并拉历史 → 再 switchNav 摆面板。
