@@ -1045,7 +1045,7 @@ _QA_MODULES = frozenset({
 _SELF_SCHEDULE_WORDS = ("待办", "代办", "日程", "周表", "月表", "课表", "清单", "列表")
 
 
-def _kb_has_answer(text: str) -> bool:
+def _kb_has_answer(text: str, extra: str = "") -> bool:
     """这句话问的是**知识库里有的校园信息**吗（图书馆/校车/宿舍/奖学金…）。
     用来给确定性分支让路：学生问「校车在哪坐」，那是问校园信息，不该被
     "查日程"那条路当成"看不见某条待办"接走。查不到就返回 False——
@@ -1054,10 +1054,14 @@ def _kb_has_answer(text: str) -> bool:
     ⚠️ #41-B 起判据走 `faq.kb_has_answer`（**两个列表空不空**），不再嗅回话文案。
        以前这里是 `startswith("知识库里没有找到")` —— 同一判断抄两处，faq 一改措辞
        这边就**静默**把"都没找到"当成"有答案"（红线 12 那一族）。
+
+    :param extra: 模型为这句补的检索新词（#57-A）。**判空与渲染必须传同一个值**，
+       传两次各算一次就会问两遍模型（缓存兜着，但那是运气不是设计），
+       所以两个调用点都是"算一次 `extra`、两处都用它"。
     """
     try:
         from app.modules.faq import kb_has_answer   # 函数内导入：改动配置/打补丁都传入得去
-        return kb_has_answer(text)
+        return kb_has_answer(text, extra)
     except Exception:
         return False
 
@@ -2789,13 +2793,29 @@ async def _chat_impl(req: Request, meta: dict, emit=None):
             _pending_todo_remove_batch, _pending_todo_done_batch, _pending_todo_slots,
             _pending_todo_add_batch))
         if _campus_fact_ask(message) and not _holding_card:
+            from app.modules.faq import answer_for_student, query_expansion
             if _kb_has_answer(message):
-                from app.modules.faq import answer_for_student
                 return _kb_say(module_key, session_id, message,
                                answer="📚 " + answer_for_student(message),
                                note="校园问答：知识库直答",
                                phase="📚 问的是校园信息 → 翻知识库（按台账答，不现编）",
                                step_answer="知识库命中")
+            # ★ 原句查不到 → 补一组同义/别名再查一次（#57-A）。
+            #   ⚠️ 这一跳挂在**"本来要回『没查到』"那一支里面**，不是检索之前（施工单 §2.1
+            #   说的是"进入检索之前先取改写"，这里按实测把它挪后了一格，两条理由都是硬的）：
+            #   ① 命中那一路就此与改前**逐字相同**、也快掉 1.5 秒 —— 改写只可能救"漏的"，
+            #      不该碰"对的"：补词进了 BM25 就会参与重排，把已经答对的问题选出另一批块，
+            #      那是这一单真正的风险面，把它关进"反正已经答不上来"那一支里最省。
+            #   ② 日程/闲聊那句根本走不到这儿（`_campus_fact_ask` 在外层就拦掉了），
+            #      所以施工单 §三.2 担心的"扩词把 planner 的活抢走"在这条路上结构性地不成立。
+            #   失败/没 Key 回空串 → 直接落回原来那句"老实说没查到"，行为与没有这一档时相同。
+            _kb_x = await query_expansion(message, model_config)
+            if _kb_x and _kb_has_answer(message, extra=_kb_x):
+                return _kb_say(module_key, session_id, message,
+                               answer="📚 " + answer_for_student(message, extra=_kb_x),
+                               note="校园问答：知识库直答（换个说法才查到）",
+                               phase="📚 原句查不到 → 补同义/别名再查一次（命中）",
+                               step_answer="知识库命中（改写）")
             return _kb_say(module_key, session_id, message, answer=_KB_MISS_LINE,
                            note="校园问答：知识库里没有这一条",
                            phase="📚 问的是校园信息 → 知识库里没有这一条（老实说没查到）",
@@ -3929,6 +3949,7 @@ async def _chat_impl(req: Request, meta: dict, emit=None):
         #       ③ 没有任何改数据的意图（加/删/改待办、加/删课、清空课表）；
         #       ④ 它**像问句**，且知识库**真的**答得出来——答不出就老实交给模型
         #          （#41-B 之后，"像校园事实但两路都空"那种在上面报障分支里就地老实说了，不绕到这儿）。
+        #          #57-A 起这一条分**两段**：原句查不到时先补一组同义/别名再查一次，还查不到才交给模型。
         #       ⑤ 贴给学生的是 `answer_for_student`（**学生视图**，#41-A）：
         #          模型视图里那句「第 N 块（原文第 X 字起，相关度 Y）」是给模型定位用的元数据，
         #          不经模型直接贴进气泡就成了"当学生的面背数据库"。文档名保留，元数据去掉。
@@ -3943,14 +3964,26 @@ async def _chat_impl(req: Request, meta: dict, emit=None):
                          or _done_claim or wants_add_course(message)
                          or wants_remove_course(message)
                          or wants_clear_timetable(message))
-                and looks_like_question(message)
-                and _kb_has_answer(message)):
-            from app.modules.faq import answer_for_student
-            return _kb_say(module_key, session_id, message,
-                           answer="📚 " + answer_for_student(message),
-                           note="校园问答：知识库直答",
-                           phase="📚 问的是校园信息 → 翻知识库（按台账答，不现编）",
-                           step_answer="知识库命中")
+                and looks_like_question(message)):
+            from app.modules.faq import answer_for_student, query_expansion
+            # ⚠️ 判空从上面那条 `and` 链里挪进来了（#57-A）：它留在链上，"查不到"就没有落脚的地方
+            #   —— 改写那一档必须插在"原句查不到"之后、"交给模型"之前，只能做成嵌套的 if。
+            #   四条便宜的闸门照旧在链上：**先过闸、再问模型**，日程/报障/挂着卡的话一个字都不多问。
+            if _kb_has_answer(message):
+                return _kb_say(module_key, session_id, message,
+                               answer="📚 " + answer_for_student(message),
+                               note="校园问答：知识库直答",
+                               phase="📚 问的是校园信息 → 翻知识库（按台账答，不现编）",
+                               step_answer="知识库命中")
+            # 与上面校园问答栏那一档同一个改写器、同一条规矩（#57-A，本体在 `faq.query_expansion`）：
+            # 只在"本来要回没查到"时问一次，任何失败回空串 → 照旧交给模型，不拖住学生。
+            _kb_x = await query_expansion(message, model_config)
+            if _kb_x and _kb_has_answer(message, extra=_kb_x):
+                return _kb_say(module_key, session_id, message,
+                               answer="📚 " + answer_for_student(message, extra=_kb_x),
+                               note="校园问答：知识库直答（换个说法才查到）",
+                               phase="📚 原句查不到 → 补同义/别名再查一次（命中）",
+                               step_answer="知识库命中（改写）")
 
     # 4) 组装引擎并跑 ReAct 循环（会按需调用工具）
     engine = AgentEngine(
