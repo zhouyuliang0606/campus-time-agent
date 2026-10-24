@@ -13,7 +13,9 @@ import asyncio
 import json
 from typing import Any, Callable
 
+from app.agent.public_view import public_view
 from app.agent.tools import Tool
+from app.config import DEBUG
 from app.llm.gateway import ModelGateway
 
 
@@ -213,12 +215,18 @@ class AgentEngine:
                             "content": str(result),
                         }
                     )
+                    # ⚠️ #60-B：**上面那一路必须保持原文。**
+                    # 工具返回值里那些「候选卡已经挂在下面…严禁说已经写好了」是**模型下一步的依据**，
+                    # 把它一起洗掉不是隐私问题、是把 ReAct 循环改坏（护栏 C2 钉的就是模型那一头拿到的原文）。
+                    if DEBUG:
+                        print(f"[tool-raw] {fn_name}: {str(result)[:600]}")   # 原文只进服务端日志
                     await self._trace(
                         {
                             "step": step,
                             "phase": "📦 工具结果",
                             "action": fn_name,
-                            "result": str(result)[:600],
+                            # 轨迹是给学生/评委看的 → 只放**给人那一份**（收在写侧，不在前端打码）
+                            "result": public_view(fn_name, result),
                         }
                     )
                 # 拿到工具结果，进入下一轮"再想"
