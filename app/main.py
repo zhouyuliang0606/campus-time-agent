@@ -523,6 +523,13 @@ def _pending_todo(session_id: str) -> dict | None:
     return None
 
 
+# ⚠️ #59：这两份"候选清单"**不是卡** —— 它们是学生回「第二条 / 换一条」时的依据，
+# 挂在暂存里但没有 date/start/end，前端也没有对应的渲染分支。
+# 恢复接口（`/api/pending/{sid}`）按这份表把它们**跳过**（是"不选中"，**不是删掉**：
+# 删掉就等于把「第二条」那个出口砍了）。加新的辅助项请一并登记在这里。
+_PENDING_AUX_KINDS = {"todo_remove_candidates", "todo_done_candidates"}
+
+
 def _pending_remove_candidates(session_id: str) -> list:
     """暂存里那份"删待办候选清单"（人话：上一轮列给学生看的那几条，按显示顺序）。
 
@@ -6152,9 +6159,15 @@ async def pending_get(sid: str):
     # 已经执行过的单张卡不再显示（避免重复写入）
     opts = [o for o in (entry.get("options") or [])
             if isinstance(o, dict) and not o.get("applied")]
-    if not opts:
+    # ⚠️ #59：这里以前直接取 `opts[-1]`，靠的是"暂存里最后那一项就是卡"这个**位置约定**。
+    # 而删待办点名那一支写进去的是 `[提案, 候选清单]`（清单留在后面接「第二条」），
+    # 于是刷新后取到的正是那张**不是卡**的清单 → 前端没有它的分支 → 掉进候选时段渲染器
+    # → 三个 `undefined` 的乱码卡，点【确认所选】发出「确认 undefined undefined undefined 待办」。
+    # 判据从"位置"改成"身份"：辅助项照样留在暂存里（学生回「第二条」还要用），只是不许被选中当卡。
+    cards = [o for o in opts if o.get("kind") not in _PENDING_AUX_KINDS]
+    if not cards:
         return {"pending": None}
-    return {"pending": opts[-1], "session_id": sid}
+    return {"pending": cards[-1], "session_id": sid}
 
 
 @app.post("/api/chat/reset")
