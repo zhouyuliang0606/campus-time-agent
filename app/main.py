@@ -1492,6 +1492,62 @@ def _read_step(sem: dict | None, sem_intent: str | None,
     return {"step": 0, "phase": "🧠 " + msg, "answer": ""}
 
 
+def _reason_steps(*, rule_hit: str | None, asks: bool, qa_view: bool,
+                  rule_veto: bool, period_block: bool, done_claim: bool, physio: bool,
+                  is_material: bool, sem: dict | None, sem_intent: str | None) -> list[dict]:
+    """判定层的「为什么」，最多 3 条（#60-A）—— 与 `_read_step` 互补，不重复它。
+
+    `_read_step` 那句只说**听成了什么、依据哪一档**；评委接着要问的是
+    **"凭什么"和"你否决了什么"** —— 一条 ReAct 轨迹里没有这两样，看着就还是"工具流水"。
+
+    ⚠️ 这里**不是模型的思维链**，一个字都不许编（施工单 §六.2）。
+       每一条都只准陈述判定层**当场真的算出来过的东西**：
+       `rule_hit` / `asks` / `qa_view` / 四道否决 / "这次没叫模型"。
+       所以每条的触发条件都比文案严 —— 判不出来就少一行，宁少不假。
+    ⚠️ 文案给学生和评委看：不写 `_sem`、`module_key`、`faq`、`planner` 这类内脏词
+       （意图人话名走 `INTENT_MEANING`，与 `_read_step` 同一份表，不另建第二份）。
+    """
+    out: list[str] = []
+
+    # ① 否决类最值钱：它说明"两个信号打架时，系统按哪个、为什么"
+    # ⚠️ 措辞只准陈述**这一句真的关掉了哪条路**，不准承诺"结果一定长什么样"：
+    #    真机那句「帮我看看周一到周三哪天课最少，然后那天排两小时做题」就是被这条否决接走的
+    #    （语义层判"问事"），可后面引擎查完空档照样**提议**了一张确认条 ——
+    #    写"这一句不出卡"就是在轨迹里说假话（单据 §七 的第三条坑，撞上了同一个症状）。
+    if physio:
+        out.append("只是状态句（像「我饿了」）→ 不把它当「要办事」，这一句不给出待办卡的工具")
+    if done_claim and sem_intent == INTENT_DONE and rule_hit == INTENT_ADD_TODO:
+        out.append("这句是在宣布「办完了」→ 不按新增处理，免得把已做的事又加一条")
+    if period_block:
+        out.append("「每月 / 每个周末」这类周期我落不成一条待办 → 先问清楚，不替你猜")
+    if rule_veto:
+        out.append("规则层想办事，可这句在问事 → 以语义层为准，规则层那几条直接办事的路这一句不走")
+    if is_material:
+        out.append("这是一整段材料 → 只从这段里提取时间，不拿上一轮上下文去猜")
+
+    # ② 归类依据：说得出"凭什么归到这一类"才写，说不出就留给 ③
+    #    （没留"按模块名归类"那一条 —— `MODULE_MEANING` 的值是"课表/时间安排/复习计划"这种
+    #     给模型看的关键词，塞进学生屏幕就是另一种内脏。）
+    if not out:
+        if asks and sem_intent:
+            out.append("句子里有提问信号 → 这句先按「问事」答；真要改日程，还得走确认那一步")
+        elif qa_view and rule_hit:
+            out.append("你在问答这一栏说话 → 规则层想办的事要再复核一遍才认")
+        elif rule_hit and sem is None:
+            # 多钉了一个 `sem is None`：这句的"没往外问过"只有**真的没叫语义层**时才算事实
+            out.append(f"规则层认得这种说法（{INTENT_MEANING.get(rule_hit, rule_hit)}）→ 不用再猜一次")
+        elif sem and sem_intent == INTENT_CHAT:
+            out.append("没有办事的说法、也没有时间线索 → 按聊天答")
+
+    # ③ 兜底的一句实话：语义层这次**没参与判定**（没配 Key / 规则层已经认得 / 材料先拦下）
+    # ⚠️ 这一族的话术**不能出现"模型"二字**（红线：学生屏幕上不暴露技术内脏，
+    #    `test_38` 的 FORBIDDEN 里就有它；第一版写"这一句没问模型"被 test_01/test_38 当场抓回去）。
+    if not out and sem is None:
+        out.append("这一句判定没叫语义层参与 → 只依据规则层认出来的说法，少一次可能的猜错")
+
+    return [{"step": 0, "phase": "🧭 判定", "answer": line} for line in out[:3]]
+
+
 def _schedule_tools_allowed(module_key: str, sem_intent: str | None, message: str) -> bool:
     """判断当前语境该不该把出待办卡的只读工具交给模型。
 
@@ -1630,10 +1686,15 @@ async def _chat_json(req: Request, emit=None):
     meta: dict = {}
     resp = await _chat_impl(req, meta, emit=emit)
     read = meta.get("read")
-    if read and isinstance(resp, dict):
+    # #60-A：出口一次拼上「为什么」那几条（`read` 在前、`reasons` 跟在后面，都在引擎轨迹之前）
+    reasons = [r for r in (meta.get("reasons") or []) if isinstance(r, dict)]
+    # ⚠️ 判空条件不能挂在 `read` 上：那样 `read` 万一没设，reasons 会**跟着一起静默消失**
+    #    （症状正好是"补了 reasons 但屏幕上没有"，最难查）。两条各自成立才各自上。
+    head = ([read] if isinstance(read, dict) else []) + reasons
+    if head and isinstance(resp, dict):
         try:
             tr = [t for t in (resp.get("trace") or []) if isinstance(t, dict)]
-            resp["trace"] = [read] + tr
+            resp["trace"] = head + tr
         except Exception:
             pass
     return resp
@@ -1784,6 +1845,14 @@ async def _chat_impl(req: Request, meta: dict, emit=None):
     #    想在每个 return 上都补一句必然漏几个 —— 实测就漏了"加待办缺细节（追问）"
     #    那条（学生报障那类句子的必经之路）。记在 meta 里、出口补一次，覆盖全部。
     meta["read"] = _read_step(_sem, _sem_intent, _rule_hit)
+    # ⚠️ #60-A：`reasons` 与 `read` **互相独立** —— 下面那几个覆盖 `read` 的分支点（追问档 / 材料档 / 兜底档）一个都不动：
+    #    它们改的是"听成了什么"那一句，而 `reasons` 记的是"凭什么、否决了什么"，被覆盖就会变成第二份真相。
+    #    同样只在这里记下结论、出口拼一次（`_chat_json`）—— 这函数有几十个 return，逐个补必漏。
+    meta["reasons"] = _reason_steps(
+        rule_hit=_rule_hit, asks=_asks, qa_view=_qa_view,
+        rule_veto=_rule_veto, period_block=_period_block, done_claim=_done_claim,
+        physio=_physio, is_material=_is_material, sem=_sem, sem_intent=_sem_intent,
+    )
 
     # （这里曾经有一道"问答栏不许办待办"的拦截：学生在校园问答里说删/改/标记完成，
     #  系统只回一句『这件事要在「我的日程」里办哦』+ 一颗跳转按钮。）
