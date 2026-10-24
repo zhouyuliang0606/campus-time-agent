@@ -31,6 +31,7 @@ from app.agent.intent import (
 from app.agent.pending import (
     clear_pending, is_confirmation, mark_applied, peek_pending, save_pending, take_pending,
 )
+from app.agent.readonly import readonly_tools
 from app.agent.router import Router
 from app.config import (DEBUG, BaseUrlError, check_base_url_ssrf, check_config, get_llm_config,
                         sanitize_override)
@@ -453,6 +454,9 @@ ASSISTANT_RULES = """
       学生说的是课（"去掉周二的高数"）→ 那归课表，调 propose_course_change，别拿待办去套。
 4. 自我定位：你是辅助工具，不是决策者。所有对用户数据的改动，决定权永远在学生本人；
    学生上传的文件（docx/xlsx 等）只读取内容，**禁止修改或覆盖源文件**。
+5. 先查再说：你手上有几个只读工具（查课表 / 查空档 / 查待办 / 查快递 / 查订单 / 查知识库 / 查文件）。
+   需要事实就去查：查一次比猜一句强，学生看得见你查了什么。
+   但**只在真需要事实时查**，查到就要用掉——为了凑步子连查三次同一件事，比不查更糟。
 """
 
 # 「闲聊守则」（2026-09-30 补）：学生只是感叹/聊日常时，别把闲聊推销成待办。
@@ -1190,6 +1194,8 @@ def _campus_fact_ask(text: str) -> bool:
     """
     return (asks_calendar_fact(text) and is_time_ask(text)
             and not any(w in text for w in _SELF_SCHEDULE_WORDS))
+
+
 
 
 def _rule_intent(message: str) -> str | None:
@@ -1951,6 +1957,21 @@ async def _chat_impl(req: Request, meta: dict, emit=None):
     #     要出登记卡），跟着拦进去就把那件功能废了；管理端走自己的接口，不在这儿。
     #   判据在上面算成 `_station_surface`，这里只读它（同一件事不许有两个写法）。
     if not _station_surface:
+        # ★ #61-A 只读工具跨栏挂载：读不算"代办"，多给模型几只手不会多写一个字节。
+        #   护栏有三道：① 只挂 READONLY_SPEC 里那 15 个（写侧一个都进不来，见 readonly.py）；
+        #              ② `setdefault` 不覆盖模块自己那份 —— 说明书归模块维护，
+        #                 谁熟这块业务谁来写，跨栏那份只补"这个栏里本来没有"的手；
+        #              ③ 驿站端一只手都不挂：那 15 个里有 9 个是**学生个人数据**
+        #                 （我的快递/我的订单/我的待办/我的课表），店员看见就是串数据（#34 那条血）。
+        #                 ⇒ 写在闸门**圈内**，而不是在圈外再补一句 `if not _station_surface`：
+        #                   那样 `_chat_impl` 顶层就有两道同款闸门，test_61 C1 钉的"恰好一处"会红，
+        #                   更要紧的是"端的边界靠走不到来保证"（#34 的原话）多了一条破口。
+        #   病根（实测）：工具箱按**模块**切，学生这句落到 faq 栏，他手里就没有
+        #   `get_weekly_timetable` / `find_free_slots` / `list_day_todos` —— 模型想 Act，无手可动，
+        #   只能凭上下文瞎猜或反问。
+        for _n, _t in readonly_tools().items():
+            tools.setdefault(_n, _t)
+
         # 2.5) **课表导入：第一句话就直接出「确认修改」卡**（2026-10-07 学生报障）
         #   现象：上传课表那句被判成「问事」（语义层给了 chat、module=schedule），
         #   第一句没弹卡；第二次追问反而弹了张**代办**卡——
