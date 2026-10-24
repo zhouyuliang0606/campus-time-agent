@@ -1196,6 +1196,25 @@ def _campus_fact_ask(text: str) -> bool:
             and not any(w in text for w in _SELF_SCHEDULE_WORDS))
 
 
+# Agent 模式（#61-C）：演示用开关 —— 强制走 ReAct 引擎、跳掉所有"替模型抢话"的确定性快路。
+# 默认关：真机上确定性快路更快、更不会胡说，那是产品该有的样子；
+# 只有演示/评审时才需要"每一句都看得见多轮循环"。
+_AGENT_MODE_DEFAULT = (os.getenv("CAMPUSTIME_AGENT_MODE", "").strip().lower()
+                       in ("1", "true", "on", "yes"))
+
+
+def _agent_mode_on(body: dict) -> bool:
+    """三处来源，优先级：请求体 > 环境变量 > 默认关。
+
+    ⚠️ 别写 `bool(body.get("agent_mode"))` —— 前端传字符串 "false" 过来那也是真值，
+       演示时"我明明关了它还在走 Agent"就是这么来的。
+    """
+    v = body.get("agent_mode")
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, str):
+        return v.strip().lower() in ("1", "true", "on", "yes")
+    return _AGENT_MODE_DEFAULT
 
 
 def _rule_intent(message: str) -> str | None:
@@ -1706,6 +1725,287 @@ async def _chat_json(req: Request, emit=None):
     return resp
 
 
+async def _run_agent_loop(*, module_key, session_id, message, prompt, tools,
+                          persona_key, model_config, emit):
+    """组装引擎 + 跑 ReAct 循环 + 收尾补条 + 出口（原先 `_chat_impl` 的 4) 那一段，原样搬过来）。
+
+    #61-C 抽出来的唯一目的是**让它有两个调用点**：正常走到这儿、或 Agent 模式跳过快路直接到这儿。
+    纪律：这段代码全项目只有这一份，两个调用点参数形状完全一致 —— 不许复制第二份出来各改各的。
+    """
+    # 4) 组装引擎并跑 ReAct 循环（会按需调用工具）
+    engine = AgentEngine(
+        system_prompt=prompt, tools=tools, session_id=session_id,
+        llm_override=model_config,
+    )
+
+    # 之前聊过的内容（让 Agent 记得住上一轮商量到哪了）
+    history = get_conversation(session_id)
+
+    # 规划模块 + 没配密钥时，走确定性的离线 Mock 助手。
+    # 这样「查空档 → 给候选 → 学生勾选 → 写入」这套交互不用大模型也能完整演示，
+    # 评委没看到密钥也不影响看效果。
+    # 注意：若学生端自带了有效 API（model_config 有 key），就跳过 Mock，走真模型。
+    if module_key == "planner" and not get_llm_config(override=model_config)["api_key"]:
+        # ⚠️ 这条 Mock 出口**自己 return**，走不到下面那道出口复核 ——
+        # 但它恰恰是评委没配密钥时看到的那一幕：「每天背30个单词」在这儿会摊出三段
+        # 候选，等于当着人面前把"每天"扔掉。判据跟别处同一道（`unsupported_period`）。
+        _per_mock = unsupported_period(message)
+        if _per_mock:
+            return _period_reject_response(session_id, message, _per_mock)
+        result = mock_planner(message, history, persona_key)
+        append_conversation(session_id, "user", message)
+        append_conversation(session_id, "assistant", result["answer"])
+        return {
+            "module": module_key,
+            "session_id": session_id,
+            "answer": result["answer"],
+            "options": _remember_todo_options(session_id, result.get("options", [])),
+            "awaiting_choice": result.get("awaiting_choice", False),
+            # 离线 Mock 没有真实思考轨迹；学生端也本就不展示轨迹
+            "trace": [],
+        }
+
+    # 大模型可能因为"没配 Key / Key 无效 / 网络不通"失败。
+    # 与其让前端收到一个看不懂的 500，不如把原因说成人话，直接显示在对话里。
+    try:
+        if emit is None:
+            # 非流式那条：**调用形状与改前逐字相同**。测试里有 14 处假引擎写的是
+            # `async def run(self, message, history=None)`，多传一个参数就是 TypeError
+            # ——而 TypeError 会被下面那支 `except Exception` 咽成"这句没答成"，
+            # 红得一塌糊涂却看不出原因（刀 3 的假货签名教训，别再吃第二遍）。
+            result = await engine.run(message, history=history)
+        else:
+            result = await engine.run(message, history=history, on_event=emit)
+    except LLMError as e:
+        # 已知原因：密钥或网络问题。**日志和管理台留技术原文，学生只看到一句人话**
+        print(f"[LLM] 本轮对话没答成（kind={getattr(e, 'kind', '?')}）：{e}")
+        return {
+            "module": module_key,
+            "session_id": session_id,
+            "answer": _say_llm_error(e),
+            "trace": [{"step": 1, "phase": "❌ 没能联系上负责回答的服务",
+                       "answer": _say_llm_error(e)}],
+        }
+    except Exception as e:  # 兜底：任何意外都不该让演示现场崩掉
+        if DEBUG:
+            import traceback
+            traceback.print_exc()  # 开了 DEBUG 就打印完整堆栈，方便排查
+        print(f"[ERROR] /api/chat 兜底捕获：{type(e).__name__}: {e}")
+        return {
+            "module": module_key,
+            "session_id": session_id,
+            "answer": _say_llm_error(e),
+            "trace": [{"step": 1, "phase": "❌ 这一步没办成", "answer": _say_llm_error(e)}],
+        }
+
+    # 模型这轮**没调工具**、只在文字里念了方案（甚至自称"提案已发出"）→ 系统替它补条。
+    #
+    # 这就是"没有收到弹窗"那一幕（学生截屏投诉）：
+    #   学生说的不是"确认"（"没有收到弹窗"），所以 3a-c 那一支**根本不会跑**；
+    #   模型这轮又忘了调 propose_todo_tool，只在文字里写了
+    #   「**待办提案** - 事项：游泳 - 时间：周二 16:00~17:30 … 提案已发出，请点确认条上的【确认】」
+    #   界面上于是连一个按钮都没有 —— 学生看到的是"它说发了，可我没收到弹窗"。
+    #
+    # 3a-c 那条兜底（捞方案补条）以前**只挂在"学生回确认"那一支里**，
+    # 于是同一件事从别的入口进来就没人接。这里把它接到模型这一路上：
+    # 只要它自称发过提案，系统就照它的意思把卡补出来（写库仍要学生点按钮）。
+    model_opts = list(result.get("options") or [])
+    final_answer = result["answer"]
+    final_trace = list(result.get("trace") or [])
+    tt_source = ""   # 兜底补卡时课程清单的出处（"管家回话" / "文件原文"），只在回话里带一句
+
+    # ── 出卡环节诊断（visible in 学生端「🧠 我是这么想的」面板）──
+    # 即使最后没出卡，学生也能在这块看到卡在哪一档：
+    #   ① 这句有没有被识别成「课表导入」  ② 模型自己有没有调提案工具
+    #   ③ 从回话抠出几门 / 从文件原文抠出几门  ④ 最终为什么没出卡
+    _tt_diag = []
+    tt_detected = looks_like_timetable_import(message)
+    if tt_detected:
+        _tt_diag.append({
+            "step": 1,
+            "phase": "🔍 课表导入探测：命中（识别成「读课表文件导入」）",
+            "answer": f"这轮回答里带了 {len(model_opts)} 个候选",
+        })
+    elif "课表" in (message or ""):
+        # 提了"课表"却没命中正则 → 典型"说法逃过探测"，单独留痕提醒
+        _tt_diag.append({
+            "step": 1,
+            "phase": "🔍 课表导入探测：未命中（提到课表但说法逃过正则）",
+            "answer": "被当成普通/待办请求处理；若本意是导入课表，请用「上传课表」模板按钮（文案含 read_uploaded_file，必命中）",
+        })
+
+    if tt_detected and not model_opts:
+        # 课表导入请求走**自己的**兜底，绝不进下面的待办补条——
+        # 那会把模型话术里的「确认修改」当任务名，挂出
+        # 「要不要把 确认修改 排进日程」的假卡（2026-10-03 学生截图实测）。
+        # 正路是：模型读了文件却忘了调 propose_timetable_change、只在文字里
+        # 念了一遍课程清单 → 系统把清单抠回来，自己把「确认修改」卡挂出来
+        # （写库仍然只在学生点卡之后，执行层不经过模型）。
+        tt_courses = timetable_courses_from_reply(result.get("answer") or "")
+        tt_src = "管家回话"
+        tt_from_file = _tt_file_courses(message, session_id)
+        _tt_diag.append({
+            "step": 2,
+            "phase": "🔍 从这轮回答里抠课程",
+            "answer": f"回话里抠出 {len(tt_courses or [])} 门可识别课程",
+        })
+        _tt_diag.append({
+            "step": 3,
+            "phase": "🔍 从文件原文抠课",
+            "answer": (f"文件原文抠出 {len(tt_from_file or [])} 门"
+                       if tt_from_file else "未找到挂到本会话的课表文件，或文件非文本/表格格式（图片、PDF 截图都抠不出）"),
+        })
+        # 两路都抠，取**更全**的那份：学生那份文件原文（一天一行、；串多门）
+        # 经常比模型回话完整；反过来模型能替他把"第几节"换算成钟点。
+        # 宁可多列——清单全在卡上，学生看了再决定点不点确认。
+        if tt_from_file and (not tt_courses or len(tt_from_file) > len(tt_courses)):
+            tt_courses, tt_src = tt_from_file, "文件原文"
+        if tt_courses:
+            model_opts = [{
+                "kind": "timetable_change",
+                # 卡上只给门数：学生要的是"要不要改"，不是把十几门课再念一遍
+                # （2026-10-04 学生原话「不用每门课单独拎出来」）。
+                "summary": f"导入课表（共 {len(tt_courses)} 门课）",
+                "courses": tt_courses,
+            }]
+            tt_source = tt_src
+            _tt_diag.append({
+                "step": 4,
+                "phase": "🛟 这轮回答没给结构化课表 → 系统从话里补出「确认修改」卡",
+                "answer": f"最终采用：{tt_src}，共 {len(tt_courses)} 门 → 出卡",
+            })
+        else:
+            final_answer = _tt_import_no_card_answer()
+            _tt_diag.append({
+                "step": 4,
+                "phase": "⚠️ 课表导入没出卡 → 如实说明，绝不挂假卡",
+                "answer": "回答和文件两路都读不出课程：可能是文件没被真读到、是图片型 PDF、或排版不是表格/纯文本行",
+            })
+    elif tt_detected and model_opts:
+        # 模型自己调了 propose_timetable_change，引擎已给出卡，这里只统一回话
+        _tt_diag.append({
+            "step": 2,
+            "phase": "✅ 引擎自己出了「确认修改」卡（系统只统一回话）",
+            "answer": f"timetable_change 卡数 = {len([o for o in model_opts if o.get('kind') == 'timetable_change'])}",
+        })
+    elif not model_opts:
+        recent_add_req = _recent_add_request(session_id)
+        # ★ 模型有时**不调工具，而是把工具调用当文本打出来**（2026-10-11 真机：学生看到
+        #   `propose_todo_tool / {"title": "写作业", "when": "2024-01-05 15:00~18:00"}`）。
+        #   这一幕同时踩两条线：卡没出来（学生白等），而且把内部机制端到了学生面前。
+        #   两步一起做：① 认出这个形状就**替它执行这一次调用**（同一件函数，参数校验、
+        #   空档检查、周期否决一道不少 —— "打成字"和"真调用"结果必须一致）；
+        #   ② 无论执行得出执行不出，**那段文本都不许回显给学生**（换成系统话术）。
+        _echo = looks_like_tool_echo(result["answer"] or "")
+        if _echo:
+            echoed = textual_tool_card(result["answer"])
+            if echoed is not None:
+                model_opts = [echoed]
+                final_answer = _rescue_answer(echoed)
+            else:
+                final_answer = _no_card_answer()
+            final_trace = list(result.get("trace") or []) + [{
+                "step": 1,
+                "phase": "🛟 它把工具调用打成了字 → 系统替它执行这一次（那段文本不回显）",
+                "answer": (echoed or {}).get("summary") or "那段调用没能变成卡片，已如实说明",
+            }]
+        else:
+            rescued = rescue_proposal_from_reply(result["answer"], recent_add_req)
+            if rescued is not None:
+                model_opts = [rescued]
+                # 它那段文字在这一刻是自相矛盾的（前面说"还没生成出来"、后面说"已发出"），
+                # 整段换成系统话术，别让学生去猜哪句是真的。
+                final_answer = _rescue_answer(rescued)
+                final_trace = list(result["trace"] or []) + [{
+                    "step": 1,
+                    "phase": "🛟 这轮回答没给结构化结果 → 系统从话里补出确认条",
+                    "answer": rescued.get("summary", ""),
+                }]
+            elif claims_proposal_sent(result["answer"]) and (
+                    has_concrete_span(result["answer"]) or recent_add_req):
+                # 它自称"已经提交/已经加入"了，可方案**捞不出来**（正文里没有可认的
+                # 任务名或时间），系统补不出卡。这句话留着比没有更坏 ——
+                # 学生会以为安排好了、跑去等，而库里一条都没有。
+                # 删不掉这份假话，那就**如实纠正**并告诉他下一步怎么说。
+                #
+                # 两道闸门（纠正是有代价的——会把一段本来没问题的回答换掉）：
+                #   · 它这段话里得带**具体时段**（`08:00~09:00`），
+                #     否则"你点确认后系统才会入库"这种流程解释也会被误伤；
+                #   · 或者学生最近确实说过要加什么（那这句"提交了"多半是在说他那件事）。
+                final_answer = _no_card_answer()
+                final_trace = list(result["trace"] or []) + [{
+                    "step": 1,
+                    "phase": "⚠️ 回话说已提交但系统补不出卡 → 如实纠正，不让学生空等",
+                }]
+
+    # ★ 模型这一路出口再收一次口（判据同 `_offer_response`、同 `unsupported_period`）。
+    #   工具里那道 `period_reject` 看的是**模型自己传的参数** —— 它把「每个月剪一次头发」
+    #   改写成"剪头发 + 某个日子"就绕过去了（2026-10-11 真机实测：卡照样挂出来）。
+    #   这里拿**学生原话**判：句子要的周期表达不了，这一路生成的待办卡**一张都不留**，
+    #   回话换成那句如实说明（暂存里也就没有卡，学生点不到、也就不会写库）。
+    _per_out = unsupported_period(message)
+    if _per_out:
+        # ⚠️ 判"是不是待办卡"不能只看 `kind`：无密钥时那段兜底（`mock_planner`）摊出来的
+        # 候选**根本没有 kind 字段**（真机上这一段是模型跑的，形状也一样），
+        # 只挑 `kind.startswith("todo")` 就等于放过了这条路 —— 2026-10-11 一批真机句子打出来的。
+        # 所以反过来写：**只留课表那几种明确的非待办卡**，其余一律撤下。
+        _non_todo = ("timetable_change", "timetable_clear", "course_add")
+        _keep = [o for o in model_opts if str(o.get("kind") or "") in _non_todo]
+        if len(_keep) != len(model_opts):
+            model_opts = _keep
+            final_answer = _period_reject_answer(_per_out)
+            final_trace = final_trace + [{
+                "step": 1,
+                "phase": f"🚫 出口复核：「{_per_out}」这种周期接不了 → 撤下这一路生成的待办卡",
+                "answer": "没挂卡，也没写库"}]
+
+    # 把出卡环节的诊断拼回 trace（学生端「我是这么想的」面板可见，即使没出卡也能定位）
+    final_trace = final_trace + _tt_diag
+
+    # 上传课表 → 只要一张「是否修改」卡，回话统一成一句"要不要改"。
+    # 模型自己调了 propose_timetable_change 时最爱在文字里把十几门课再念一遍，
+    # 那句原话必须换掉（学生原话：不用每门课单独拎出来）——
+    # 清单他自己在文件里看过，确认后周表上也会一条条列出来。
+    if looks_like_timetable_import(message):
+        _tt_opts = [o for o in model_opts if o.get("kind") == "timetable_change"]
+        if _tt_opts:
+            _n = len(_tt_opts[-1].get("courses") or [])
+            final_answer = _tt_confirm_answer(_n, tt_source)
+
+    # 最后一道"不端内脏上桌"的保险（红线 8）：上面的分支都处理过了，但模型想法随时会变——
+    # 只要**最终要发给学生的这句话**里还留着"工具名 + JSON"那个形状，就换掉它。
+    # 宁可回一句"这一步没办成"，也不能让学生看见系统内部怎么调用的。
+    if looks_like_tool_echo(final_answer or ""):
+        final_answer = _no_card_answer()
+    # 同一类"内部记账的话被学生听见"：系统往会话历史里写过「已生成待办确认：…」这种
+    # **挂卡标记**（它存在的意义就是让"读历史"的那几支认出"这条已经挂过卡"，见
+    # `_is_system_note`）。模型读到这句会**原样复读**给学生 ——
+    # 2026-10-11 真机：连着两次说「那就周六吧」，第二次回答就只剩这句标记，
+    # 卡也没有。看着像"它答非所问"，实际是它把我们的账本念出来了。
+    if _is_system_note(final_answer or ""):
+        # 这句是系统自己写进历史里的账（"已生成待办确认：…"），不是回给学生的话。
+        # 直接回 `_no_card_answer()` 那句"刚才说已提交不作数"其实对不上 ——
+        # 它没自称提交过，只是念了一句账目，所以另写一句，别把不相干的纠正扣上去。
+        final_answer = ("⚠️ 刚才那句是我自己记账的话，不是说给你听的 —— 这一轮我没办成什么。\n"
+                        "你再说一遍要加什么（比如「帮我加个游泳」），我重新出一张确认条；"
+                        "点【确认加入】或回一句「确认」才会真写进日程。")
+
+    # 写进会话历史的是**学生最终看到的那一句**（补条之后的话术）。
+    # 以前这一步在补条之前，结果刷新页面看到的是模型那句"提案已发出"（底下没按钮），
+    # 而本次会话里看到的是系统补出来的条——两边对不上。
+    append_conversation(session_id, "user", message)
+    append_conversation(session_id, "assistant", final_answer)
+
+    # 4) 返回最终回答 + 思考轨迹（学生端不展示轨迹，但规划模块的候选选项要带回前端）
+    return {
+        "module": module_key,
+        "session_id": session_id,
+        "answer": final_answer,
+        "trace": final_trace,
+        "options": _remember_todo_options(session_id, model_opts),
+        "awaiting_choice": result.get("awaiting_choice", False) or bool(model_opts),
+    }
+
 async def _chat_impl(req: Request, meta: dict, emit=None):
     """对话主体（人话：前端把用户的话发到这里，返回回答 + Agent 思考轨迹）。
 
@@ -1722,6 +2022,8 @@ async def _chat_impl(req: Request, meta: dict, emit=None):
                             status_code=400)
     if not isinstance(body, dict):
         return JSONResponse({"error": "请求体必须是一个 JSON 对象"}, status_code=400)
+    # #61-C：开关**只在这里取一次**，后面全读这个局部量（两处各算 = 第二个 12b）。
+    _agent_mode = _agent_mode_on(body)
     message = (body.get("message") or "").strip()
     if not message:
         return JSONResponse({"error": "消息不能为空"}, status_code=400)
@@ -2652,6 +2954,26 @@ async def _chat_impl(req: Request, meta: dict, emit=None):
                         "options": [rm_prop],
                         "awaiting_choice": True,
                     }
+
+        # ★ #61-C Agent 模式：从这里往下全是"替模型抢话"的分支，整段跳掉，直接去找引擎。
+        #
+        #   为什么不插在 `if not _station_surface:` 那道闸上（把条件改成 `and not _agent_mode`）：
+        #   那会把上面**红线三件**一起关掉 ——
+        #     2.5 课表导入卡 / 2.6 上报卡（产品承诺的硬信号）
+        #     3 确认执行 / 3a-bis 候选卡确认（安全红线：AI 只提案、写库必须学生点头）
+        #     3a-c 确认落空兜底（诚实性：暂存没了就得如实说，不能让模型编"我再帮你出一次"）
+        #   Agent 模式要关的是"抢话"，不是"红线"。
+        #   所以短路点选在这三件之后、3b 之前 —— 上面一行代码都不用搬。
+        #
+        #   代价（要说清）：Agent 模式下"课表全删了"「把X排到今天19:00」这类话不再走确定性分支，
+        #   改由模型调 propose_clear_timetable / propose_todo_tool。写入仍然要学生点确认
+        #   —— 安全性不变，只是路径变长（这正是演示想让人看见的）。
+        if _agent_mode:
+            return await _run_agent_loop(
+                module_key=module_key, session_id=session_id, message=message,
+                prompt=prompt, tools=tools, persona_key=persona_key,
+                model_config=model_config, emit=emit,
+            )
 
         # 3b) **确定性清空分支**（人话：学生明说"课表全删了"，直接出弹窗，不劳模型判断）
         #    跟上面"一句确认即落库"是同一个思路：能由代码定死的，就别交给模型。
@@ -4082,279 +4404,12 @@ async def _chat_impl(req: Request, meta: dict, emit=None):
                                phase="📚 原句查不到 → 补同义/别名再查一次（命中）",
                                step_answer="知识库命中（改写）")
 
-    # 4) 组装引擎并跑 ReAct 循环（会按需调用工具）
-    engine = AgentEngine(
-        system_prompt=prompt, tools=tools, session_id=session_id,
-        llm_override=model_config,
+    # 4) 组装引擎并跑 ReAct 循环（#61-C：整段抽到 `_run_agent_loop`，这里只留一次调用）
+    return await _run_agent_loop(
+        module_key=module_key, session_id=session_id, message=message,
+        prompt=prompt, tools=tools, persona_key=persona_key,
+        model_config=model_config, emit=emit,
     )
-
-    # 之前聊过的内容（让 Agent 记得住上一轮商量到哪了）
-    history = get_conversation(session_id)
-
-    # 规划模块 + 没配密钥时，走确定性的离线 Mock 助手。
-    # 这样「查空档 → 给候选 → 学生勾选 → 写入」这套交互不用大模型也能完整演示，
-    # 评委没看到密钥也不影响看效果。
-    # 注意：若学生端自带了有效 API（model_config 有 key），就跳过 Mock，走真模型。
-    if module_key == "planner" and not get_llm_config(override=model_config)["api_key"]:
-        # ⚠️ 这条 Mock 出口**自己 return**，走不到下面那道出口复核 ——
-        # 但它恰恰是评委没配密钥时看到的那一幕：「每天背30个单词」在这儿会摊出三段
-        # 候选，等于当着人面前把"每天"扔掉。判据跟别处同一道（`unsupported_period`）。
-        _per_mock = unsupported_period(message)
-        if _per_mock:
-            return _period_reject_response(session_id, message, _per_mock)
-        result = mock_planner(message, history, persona_key)
-        append_conversation(session_id, "user", message)
-        append_conversation(session_id, "assistant", result["answer"])
-        return {
-            "module": module_key,
-            "session_id": session_id,
-            "answer": result["answer"],
-            "options": _remember_todo_options(session_id, result.get("options", [])),
-            "awaiting_choice": result.get("awaiting_choice", False),
-            # 离线 Mock 没有真实思考轨迹；学生端也本就不展示轨迹
-            "trace": [],
-        }
-
-    # 大模型可能因为"没配 Key / Key 无效 / 网络不通"失败。
-    # 与其让前端收到一个看不懂的 500，不如把原因说成人话，直接显示在对话里。
-    try:
-        if emit is None:
-            # 非流式那条：**调用形状与改前逐字相同**。测试里有 14 处假引擎写的是
-            # `async def run(self, message, history=None)`，多传一个参数就是 TypeError
-            # ——而 TypeError 会被下面那支 `except Exception` 咽成"这句没答成"，
-            # 红得一塌糊涂却看不出原因（刀 3 的假货签名教训，别再吃第二遍）。
-            result = await engine.run(message, history=history)
-        else:
-            result = await engine.run(message, history=history, on_event=emit)
-    except LLMError as e:
-        # 已知原因：密钥或网络问题。**日志和管理台留技术原文，学生只看到一句人话**
-        print(f"[LLM] 本轮对话没答成（kind={getattr(e, 'kind', '?')}）：{e}")
-        return {
-            "module": module_key,
-            "session_id": session_id,
-            "answer": _say_llm_error(e),
-            "trace": [{"step": 1, "phase": "❌ 没能联系上负责回答的服务",
-                       "answer": _say_llm_error(e)}],
-        }
-    except Exception as e:  # 兜底：任何意外都不该让演示现场崩掉
-        if DEBUG:
-            import traceback
-            traceback.print_exc()  # 开了 DEBUG 就打印完整堆栈，方便排查
-        print(f"[ERROR] /api/chat 兜底捕获：{type(e).__name__}: {e}")
-        return {
-            "module": module_key,
-            "session_id": session_id,
-            "answer": _say_llm_error(e),
-            "trace": [{"step": 1, "phase": "❌ 这一步没办成", "answer": _say_llm_error(e)}],
-        }
-
-    # 模型这轮**没调工具**、只在文字里念了方案（甚至自称"提案已发出"）→ 系统替它补条。
-    #
-    # 这就是"没有收到弹窗"那一幕（学生截屏投诉）：
-    #   学生说的不是"确认"（"没有收到弹窗"），所以 3a-c 那一支**根本不会跑**；
-    #   模型这轮又忘了调 propose_todo_tool，只在文字里写了
-    #   「**待办提案** - 事项：游泳 - 时间：周二 16:00~17:30 … 提案已发出，请点确认条上的【确认】」
-    #   界面上于是连一个按钮都没有 —— 学生看到的是"它说发了，可我没收到弹窗"。
-    #
-    # 3a-c 那条兜底（捞方案补条）以前**只挂在"学生回确认"那一支里**，
-    # 于是同一件事从别的入口进来就没人接。这里把它接到模型这一路上：
-    # 只要它自称发过提案，系统就照它的意思把卡补出来（写库仍要学生点按钮）。
-    model_opts = list(result.get("options") or [])
-    final_answer = result["answer"]
-    final_trace = list(result.get("trace") or [])
-    tt_source = ""   # 兜底补卡时课程清单的出处（"管家回话" / "文件原文"），只在回话里带一句
-
-    # ── 出卡环节诊断（visible in 学生端「🧠 我是这么想的」面板）──
-    # 即使最后没出卡，学生也能在这块看到卡在哪一档：
-    #   ① 这句有没有被识别成「课表导入」  ② 模型自己有没有调提案工具
-    #   ③ 从回话抠出几门 / 从文件原文抠出几门  ④ 最终为什么没出卡
-    _tt_diag = []
-    tt_detected = looks_like_timetable_import(message)
-    if tt_detected:
-        _tt_diag.append({
-            "step": 1,
-            "phase": "🔍 课表导入探测：命中（识别成「读课表文件导入」）",
-            "answer": f"这轮回答里带了 {len(model_opts)} 个候选",
-        })
-    elif "课表" in (message or ""):
-        # 提了"课表"却没命中正则 → 典型"说法逃过探测"，单独留痕提醒
-        _tt_diag.append({
-            "step": 1,
-            "phase": "🔍 课表导入探测：未命中（提到课表但说法逃过正则）",
-            "answer": "被当成普通/待办请求处理；若本意是导入课表，请用「上传课表」模板按钮（文案含 read_uploaded_file，必命中）",
-        })
-
-    if tt_detected and not model_opts:
-        # 课表导入请求走**自己的**兜底，绝不进下面的待办补条——
-        # 那会把模型话术里的「确认修改」当任务名，挂出
-        # 「要不要把 确认修改 排进日程」的假卡（2026-10-03 学生截图实测）。
-        # 正路是：模型读了文件却忘了调 propose_timetable_change、只在文字里
-        # 念了一遍课程清单 → 系统把清单抠回来，自己把「确认修改」卡挂出来
-        # （写库仍然只在学生点卡之后，执行层不经过模型）。
-        tt_courses = timetable_courses_from_reply(result.get("answer") or "")
-        tt_src = "管家回话"
-        tt_from_file = _tt_file_courses(message, session_id)
-        _tt_diag.append({
-            "step": 2,
-            "phase": "🔍 从这轮回答里抠课程",
-            "answer": f"回话里抠出 {len(tt_courses or [])} 门可识别课程",
-        })
-        _tt_diag.append({
-            "step": 3,
-            "phase": "🔍 从文件原文抠课",
-            "answer": (f"文件原文抠出 {len(tt_from_file or [])} 门"
-                       if tt_from_file else "未找到挂到本会话的课表文件，或文件非文本/表格格式（图片、PDF 截图都抠不出）"),
-        })
-        # 两路都抠，取**更全**的那份：学生那份文件原文（一天一行、；串多门）
-        # 经常比模型回话完整；反过来模型能替他把"第几节"换算成钟点。
-        # 宁可多列——清单全在卡上，学生看了再决定点不点确认。
-        if tt_from_file and (not tt_courses or len(tt_from_file) > len(tt_courses)):
-            tt_courses, tt_src = tt_from_file, "文件原文"
-        if tt_courses:
-            model_opts = [{
-                "kind": "timetable_change",
-                # 卡上只给门数：学生要的是"要不要改"，不是把十几门课再念一遍
-                # （2026-10-04 学生原话「不用每门课单独拎出来」）。
-                "summary": f"导入课表（共 {len(tt_courses)} 门课）",
-                "courses": tt_courses,
-            }]
-            tt_source = tt_src
-            _tt_diag.append({
-                "step": 4,
-                "phase": "🛟 这轮回答没给结构化课表 → 系统从话里补出「确认修改」卡",
-                "answer": f"最终采用：{tt_src}，共 {len(tt_courses)} 门 → 出卡",
-            })
-        else:
-            final_answer = _tt_import_no_card_answer()
-            _tt_diag.append({
-                "step": 4,
-                "phase": "⚠️ 课表导入没出卡 → 如实说明，绝不挂假卡",
-                "answer": "回答和文件两路都读不出课程：可能是文件没被真读到、是图片型 PDF、或排版不是表格/纯文本行",
-            })
-    elif tt_detected and model_opts:
-        # 模型自己调了 propose_timetable_change，引擎已给出卡，这里只统一回话
-        _tt_diag.append({
-            "step": 2,
-            "phase": "✅ 引擎自己出了「确认修改」卡（系统只统一回话）",
-            "answer": f"timetable_change 卡数 = {len([o for o in model_opts if o.get('kind') == 'timetable_change'])}",
-        })
-    elif not model_opts:
-        recent_add_req = _recent_add_request(session_id)
-        # ★ 模型有时**不调工具，而是把工具调用当文本打出来**（2026-10-11 真机：学生看到
-        #   `propose_todo_tool / {"title": "写作业", "when": "2024-01-05 15:00~18:00"}`）。
-        #   这一幕同时踩两条线：卡没出来（学生白等），而且把内部机制端到了学生面前。
-        #   两步一起做：① 认出这个形状就**替它执行这一次调用**（同一件函数，参数校验、
-        #   空档检查、周期否决一道不少 —— "打成字"和"真调用"结果必须一致）；
-        #   ② 无论执行得出执行不出，**那段文本都不许回显给学生**（换成系统话术）。
-        _echo = looks_like_tool_echo(result["answer"] or "")
-        if _echo:
-            echoed = textual_tool_card(result["answer"])
-            if echoed is not None:
-                model_opts = [echoed]
-                final_answer = _rescue_answer(echoed)
-            else:
-                final_answer = _no_card_answer()
-            final_trace = list(result.get("trace") or []) + [{
-                "step": 1,
-                "phase": "🛟 它把工具调用打成了字 → 系统替它执行这一次（那段文本不回显）",
-                "answer": (echoed or {}).get("summary") or "那段调用没能变成卡片，已如实说明",
-            }]
-        else:
-            rescued = rescue_proposal_from_reply(result["answer"], recent_add_req)
-            if rescued is not None:
-                model_opts = [rescued]
-                # 它那段文字在这一刻是自相矛盾的（前面说"还没生成出来"、后面说"已发出"），
-                # 整段换成系统话术，别让学生去猜哪句是真的。
-                final_answer = _rescue_answer(rescued)
-                final_trace = list(result["trace"] or []) + [{
-                    "step": 1,
-                    "phase": "🛟 这轮回答没给结构化结果 → 系统从话里补出确认条",
-                    "answer": rescued.get("summary", ""),
-                }]
-            elif claims_proposal_sent(result["answer"]) and (
-                    has_concrete_span(result["answer"]) or recent_add_req):
-                # 它自称"已经提交/已经加入"了，可方案**捞不出来**（正文里没有可认的
-                # 任务名或时间），系统补不出卡。这句话留着比没有更坏 ——
-                # 学生会以为安排好了、跑去等，而库里一条都没有。
-                # 删不掉这份假话，那就**如实纠正**并告诉他下一步怎么说。
-                #
-                # 两道闸门（纠正是有代价的——会把一段本来没问题的回答换掉）：
-                #   · 它这段话里得带**具体时段**（`08:00~09:00`），
-                #     否则"你点确认后系统才会入库"这种流程解释也会被误伤；
-                #   · 或者学生最近确实说过要加什么（那这句"提交了"多半是在说他那件事）。
-                final_answer = _no_card_answer()
-                final_trace = list(result["trace"] or []) + [{
-                    "step": 1,
-                    "phase": "⚠️ 回话说已提交但系统补不出卡 → 如实纠正，不让学生空等",
-                }]
-
-    # ★ 模型这一路出口再收一次口（判据同 `_offer_response`、同 `unsupported_period`）。
-    #   工具里那道 `period_reject` 看的是**模型自己传的参数** —— 它把「每个月剪一次头发」
-    #   改写成"剪头发 + 某个日子"就绕过去了（2026-10-11 真机实测：卡照样挂出来）。
-    #   这里拿**学生原话**判：句子要的周期表达不了，这一路生成的待办卡**一张都不留**，
-    #   回话换成那句如实说明（暂存里也就没有卡，学生点不到、也就不会写库）。
-    _per_out = unsupported_period(message)
-    if _per_out:
-        # ⚠️ 判"是不是待办卡"不能只看 `kind`：无密钥时那段兜底（`mock_planner`）摊出来的
-        # 候选**根本没有 kind 字段**（真机上这一段是模型跑的，形状也一样），
-        # 只挑 `kind.startswith("todo")` 就等于放过了这条路 —— 2026-10-11 一批真机句子打出来的。
-        # 所以反过来写：**只留课表那几种明确的非待办卡**，其余一律撤下。
-        _non_todo = ("timetable_change", "timetable_clear", "course_add")
-        _keep = [o for o in model_opts if str(o.get("kind") or "") in _non_todo]
-        if len(_keep) != len(model_opts):
-            model_opts = _keep
-            final_answer = _period_reject_answer(_per_out)
-            final_trace = final_trace + [{
-                "step": 1,
-                "phase": f"🚫 出口复核：「{_per_out}」这种周期接不了 → 撤下这一路生成的待办卡",
-                "answer": "没挂卡，也没写库"}]
-
-    # 把出卡环节的诊断拼回 trace（学生端「我是这么想的」面板可见，即使没出卡也能定位）
-    final_trace = final_trace + _tt_diag
-
-    # 上传课表 → 只要一张「是否修改」卡，回话统一成一句"要不要改"。
-    # 模型自己调了 propose_timetable_change 时最爱在文字里把十几门课再念一遍，
-    # 那句原话必须换掉（学生原话：不用每门课单独拎出来）——
-    # 清单他自己在文件里看过，确认后周表上也会一条条列出来。
-    if looks_like_timetable_import(message):
-        _tt_opts = [o for o in model_opts if o.get("kind") == "timetable_change"]
-        if _tt_opts:
-            _n = len(_tt_opts[-1].get("courses") or [])
-            final_answer = _tt_confirm_answer(_n, tt_source)
-
-    # 最后一道"不端内脏上桌"的保险（红线 8）：上面的分支都处理过了，但模型想法随时会变——
-    # 只要**最终要发给学生的这句话**里还留着"工具名 + JSON"那个形状，就换掉它。
-    # 宁可回一句"这一步没办成"，也不能让学生看见系统内部怎么调用的。
-    if looks_like_tool_echo(final_answer or ""):
-        final_answer = _no_card_answer()
-    # 同一类"内部记账的话被学生听见"：系统往会话历史里写过「已生成待办确认：…」这种
-    # **挂卡标记**（它存在的意义就是让"读历史"的那几支认出"这条已经挂过卡"，见
-    # `_is_system_note`）。模型读到这句会**原样复读**给学生 ——
-    # 2026-10-11 真机：连着两次说「那就周六吧」，第二次回答就只剩这句标记，
-    # 卡也没有。看着像"它答非所问"，实际是它把我们的账本念出来了。
-    if _is_system_note(final_answer or ""):
-        # 这句是系统自己写进历史里的账（"已生成待办确认：…"），不是回给学生的话。
-        # 直接回 `_no_card_answer()` 那句"刚才说已提交不作数"其实对不上 ——
-        # 它没自称提交过，只是念了一句账目，所以另写一句，别把不相干的纠正扣上去。
-        final_answer = ("⚠️ 刚才那句是我自己记账的话，不是说给你听的 —— 这一轮我没办成什么。\n"
-                        "你再说一遍要加什么（比如「帮我加个游泳」），我重新出一张确认条；"
-                        "点【确认加入】或回一句「确认」才会真写进日程。")
-
-    # 写进会话历史的是**学生最终看到的那一句**（补条之后的话术）。
-    # 以前这一步在补条之前，结果刷新页面看到的是模型那句"提案已发出"（底下没按钮），
-    # 而本次会话里看到的是系统补出来的条——两边对不上。
-    append_conversation(session_id, "user", message)
-    append_conversation(session_id, "assistant", final_answer)
-
-    # 4) 返回最终回答 + 思考轨迹（学生端不展示轨迹，但规划模块的候选选项要带回前端）
-    return {
-        "module": module_key,
-        "session_id": session_id,
-        "answer": final_answer,
-        "trace": final_trace,
-        "options": _remember_todo_options(session_id, model_opts),
-        "awaiting_choice": result.get("awaiting_choice", False) or bool(model_opts),
-    }
 
 
 # ============ 判定层只读接口（意图抽取 / 路由诊断） ============
