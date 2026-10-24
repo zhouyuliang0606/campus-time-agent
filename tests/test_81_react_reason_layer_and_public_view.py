@@ -290,7 +290,9 @@ def batch_b_public_view():
                         "arrived_at": (TODAY - dt.timedelta(days=9)).isoformat(),
                         "status": "待取"}])
         write_takeout([{"id": "T1", "owner": "admin1", "shop": "麦当劳",
-                        "item": "麦辣鸡腿堡套餐", "eta": "12:30", "status": "配送中"}])
+                        "items": "麦辣鸡腿堡套餐", "eta": "12:30",
+                        "pickup_point": "宿舍楼外卖柜 A 区", "pickup_code": "A1",
+                        "status": "配送中"}])
 
         rows = _sweep()
         mods = {m for m, _, _, _ in rows}
@@ -299,6 +301,18 @@ def batch_b_public_view():
         c.check("B0 扫描自证：6 个模块、20 只以上工具真的各调了一次（少于这个数 = 扫描本身坏了）",
                 len(mods) >= 6 and len(names) >= 20,
                 f"模块 {len(mods)} 个 / 工具 {len(names)} 只")
+
+        # ⚠️ B0-bis 也是**犯了才补的**：外卖那两只有三轮扫出来的是 `Tool.run` 的围栏句
+        #    （我 fixture 里把 `items` 写成 `item` ⇒ KeyError ⇒ "调用 list_my_orders 时出错了…"），
+        #    这种样本喂进 `public_view` 一样"没有内脏词、也不超长"，于是 B1/B2/B3 全绿 ——
+        #    绿的是一只根本没跑通的工具。⇒ 自种的几只必须先证明"跑通了"。
+        errs = sorted({n for _, n, _, s in rows
+                       if s.startswith("调用 ") and ("时出错了" in s or "时参数不对" in s)})
+        seeded = ("get_day_courses", "list_my_packages", "list_pending_pickup",
+                  "list_my_orders", "list_active_orders")
+        c.check("B0-bis 我拿来当正控的那五只不许扫成围栏句（拿错误串当被测样本 = 下面几条全在量空气）",
+                not [n for n in seeded if n in errs],
+                f"围栏句：{[n for n in seeded if n in errs]} ／ 全扫描里 {len(errs)} 只这样（模型传错参数那一族，正常）")
 
         bad, empty, nl, over = [], [], [], []
         for m, n, obj, s in rows:
@@ -320,8 +334,17 @@ def batch_b_public_view():
         c.check("B3 全扫描：给人那份里没有换行、也不超 240 字（写侧折行 + 限长，前端只管限高）",
                 not nl and not over, f"有换行 {nl[:4]} / 超长 {over[:4]}")
         wr = sum(1 for _, _, _, s in rows if "\n" in s)
-        c.check("B3-bis 而原始里**确实**有带换行的返回（全是单行的话，上面那条『没有换行』就是白过的）",
-                wr >= 6, f"原始带换行的工具 {wr} 只")
+        # ⚠️ 这一条**第一版写成了全局计数**（`wr >= 6`），在严格克隆里当场红：
+        #    克隆只有 tracked 的那份 `kb.json`，而 `search_kb` / 驿站那几只工具的行数跟着**数据**走
+        #    （本机 7 只、克隆 5 只）。⇒ 正控要钉在**自己种的数据**上，不是钉在环境给的数字上。
+        #    现在改成逐只点名：这五只的返回形状由上面 `write_timetable` / `write_express` /
+        #    `write_takeout` 决定，与本机那份未提交的数据无关；哪天它们变成单行，红的是真的坏了。
+        mine = {"get_day_courses", "list_my_packages", "list_pending_pickup",
+                "list_my_orders", "list_active_orders"}
+        single = sorted({n for _, n, _, s in rows if n in mine and "\n" not in s})
+        c.check("B3-bis 我自种的那五只工具，原始返回**确实**是多行（全是单行的话 B3 的『没有换行』就是白过的）",
+                not single and len({n for _, n, _, _ in rows if n in mine}) == 5,
+                f"单行的：{single} / 全局带换行 {wr} 只")
         clean = [(m, n) for m, n, _, s in rows if s.strip() and not _hits(s)]
         c.check("B4 对照（正控）：扫描里确实有一批工具**原始就没有**内脏词 —— "
                 "没有这一组，B1/B2 会把「全都空」也判成通过",
