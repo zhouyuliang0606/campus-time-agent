@@ -1035,16 +1035,20 @@ html.gx-glass[data-gx-refine="on"] .composer, html.gx-glass[data-gx-refine="on"]
       return localStorage.getItem("campustime_trace") !== "0";   // 默认 = 开
     }
 
-    // 把后端给的 trace（[{step, phase, answer}]）画成一块可折叠的"我是这么想的"。
-    // ⚠️ 一律走 esc/richText —— phase 里有学生原话，直接塞 innerHTML 就是 XSS。
+    // 把后端给的 trace（[{step, phase, answer, action, args, result}]）画成一块可折叠的"我是这么想的"。
+    // ⚠️ 一律走 esc/richText —— phase / result 里有学生原话与文档原文，直接塞 innerHTML 就是 XSS。
     //
     // 三处收拾（都是实测看到的噪声，不收拾的话这块比正文还长）：
-    //   ① ReAct 的空流程标记（"🤔 思考""🔧 调用工具""📦 工具结果"）**没有内容**，
-    //      对学生等于三个看不懂的词 —— 只有当它们带内容时才画。
+    //   ① "空流程标记"不画 —— 但**判"有没有内容"要看对字段**（#58 修的就是这一处）：
+    //      「🤔 思考」确实什么都没有（模型不吐 CoT），画出来是三个看不懂的词；
+    //      而「🔧 调用工具」「📦 工具结果」的内容**在 action / args / result 里，不叫 answer**。
+    //      旧代码只认 answer ⇒ 一条完整的 Reason→Act→Observe 循环被整条扔掉，
+    //      界面上只剩确定性快路那种单步"我做了个操作"——**越依赖引擎，ReAct 越隐形**。
     //   ② 问答模块的轨迹里有一条"💡 最终回答"，它**就是气泡里那段正文**，
     //      再画一遍等于把回答重复一次 → **整条不画**（只把 answer 抹掉的话，
     //      会剩下一个光秃秃的"💡 最终回答"标签，比重复更莫名其妙）。
-    //   ③ 单条 answer 截断到 80 字：轨迹是给人扫一眼的，不是给人读第二遍正文的。
+    //   ③ 单条截断：带 answer 的仍是 80 字（既有口径，别的测试钉着），
+    //      工具那两条放宽到 120 —— 它们要装的是 `工具名(参数) → 结果片段`，80 字会把结果剪没。
     const _BARE_TRACE_PHASES = ["思考", "调用工具", "工具结果"];
     function renderTrace(trace, content) {
       const body = String(content == null ? "" : content).trim();
@@ -1053,10 +1057,27 @@ html.gx-glass[data-gx-refine="on"] .composer, html.gx-glass[data-gx-refine="on"]
         if (!t || !t.phase) return;
         const label = String(t.phase).replace(/[^\u4e00-\u9fa5A-Za-z0-9]/g, "");
         const hasAns = t.answer != null && String(t.answer).trim() !== "";
-        if (!hasAns && _BARE_TRACE_PHASES.indexOf(label) >= 0) return;   // ①
-        let an = hasAns ? String(t.answer).trim() : "";
+        const hasAction = t.action != null && String(t.action).trim() !== "";
+        const hasResult = t.result != null && String(t.result).trim() !== "";
+        const hasTool = hasAction || hasResult;
+        if (!hasAns && !hasTool && _BARE_TRACE_PHASES.indexOf(label) >= 0) return;   // ①
+        let an = "";
+        if (hasAns) {
+          an = String(t.answer).trim();
+        } else if (hasTool) {
+          // 工具那两步各自成一行：调用那行是「名字(参数)」，结果那行是「名字 → 结果片段」。
+          // 参数用 JSON 原样（键名就是模型给的那些，改了反而对不上文档），整串一起过最后那道 richText。
+          an = hasAction ? String(t.action).trim() : "";
+          if (t.args && typeof t.args === "object") {
+            let a = "";
+            try { a = JSON.stringify(t.args); } catch (e) { a = ""; }
+            if (a && a !== "{}") an += "(" + a + ")";
+          }
+          if (hasResult) an += (an ? " → " : "") + String(t.result).trim();
+        }
         if (an && body && an === body) return;                            // ②
-        if (an.length > 80) an = an.slice(0, 80) + "…";                   // ③
+        const cap = hasAns ? 80 : 120;                                    // ③
+        if (an.length > cap) an = an.slice(0, cap) + "…";
         // 步骤号只在**真有编号**时画：0 是"判定层"那条自加的说明，不是第 0 步，
         // 画个"0"出来只会让人以为少了一步。（JS 里 0 是假值，正好顺带垫掉。）
         const st = t.step ? '<span class="st">' + esc(String(t.step)) + "</span>" : "";
