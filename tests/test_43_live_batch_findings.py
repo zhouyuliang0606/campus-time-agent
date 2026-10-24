@@ -215,7 +215,13 @@ def batch_e_period_carry():
     # 真机那句「工作日晚上七点背单词」就排到了周日 19:00。
     import datetime
     today = datetime.date.today()
-    sat = (today + datetime.timedelta(days=(6 - today.isoweekday()) % 7)).isoformat()
+    # ⚠️ 兜底那天必须是**严格还没到的那个周六**。原来 `(6 - wd) % 7` 在周六当天算出 0
+    #    ⇒ 兜底那天 == 今天，这一批就变成"只在 19:00 之前跑才绿"：过了 19:00，
+    #    那句「晚上七点」落到过去，被红线 17「不许排在过去的日子」正确推走，对照那条当场红。
+    #    （2026-10-24 周六 19:14 实测到；A/B 在 #59 之前那笔 `2d6751b` 上同样红 ⇒ 不是回归，
+    #     是夹具自己跟墙上时钟耦合 —— 挂账 #69 那一族的第四个实例。）
+    #    改的是**输入**（挑一个未来的周六），不是把期望放宽成"sat 或 sat+1 都算对"。
+    sat = (today + datetime.timedelta(days=((6 - today.isoweekday()) % 7) or 7)).isoformat()
     s1 = span_only_proposal("工作日晚上七点背单词", "背单词", sat)
     c.check(f"兜底那天是周末（{sat}）时，说了「工作日」就要挪到工作日",
             bool(s1) and _wd(s1["date"]) < 6 and s1["start"] == "19:00",
