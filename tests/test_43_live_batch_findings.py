@@ -23,7 +23,7 @@ import ast
 import io
 import json
 
-from _harness import Checker, make_client, sandbox, title
+from _harness import Checker, chat_src, make_client, sandbox, title
 from app.store import set_settings
 
 PLANNER = "app/modules/planner.py"
@@ -111,9 +111,9 @@ def batch_c_tool_echo_never_shown():
             "")
     src = io.open(MAIN, encoding="utf-8").read()
     tree = ast.parse(src)
-    impl = [n for n in ast.walk(tree) if isinstance(n, ast.AsyncFunctionDef)
-            and n.name == "_chat_impl"][0]
-    body = ast.unparse(impl)
+    # #61-C：出口补条那一段住在 `_run_agent_loop`，所以判"主链路里"= `_chat_impl` + 它
+    #（`chat_src` 少一个函数会直接报错，不会只查一半还全绿）。
+    body = chat_src(tree)
     c.check("主链路里既写了「替它执行」（textual_tool_card），也写了回显前最后一道保险",
             "textual_tool_card(" in body and 'looks_like_tool_echo(final_answer or' in body, "")
     return c

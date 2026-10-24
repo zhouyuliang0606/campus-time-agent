@@ -253,11 +253,32 @@ def batch_c_shape():
 
     c.check("C5 跑 agent 的代码**只有一份**：`AgentEngine(` 全文件 1 处",
             code.count("AgentEngine(") == 1, str(code.count("AgentEngine(")))
-    runs = [n for n in ast.walk(fn) if "engine.run" in ast.unparse(n)]
-    inside_run = [n for n in ast.walk(guard[0]) if isinstance(n, ast.Call)
-                  and "engine.run" in ast.unparse(n)] if guard else []
-    c.check("C5-bis `engine.run` 全在闸门**之后**（驿站端与学生端共用同一次调用，没有第二份）",
-            bool(runs) and not inside_run, f"圈内有 {len(inside_run)} 处")
+    # ★ #61-C 把那 272 行引擎段从 `_chat_impl` 抽成了 `_run_agent_loop`（好让"正常走到这儿"和
+    #   "Agent 模式跳过快路"两个调用点共用同一份）。原来这条钉的是"`engine.run` 在闸门之后"，
+    #   抽完之后它压根不在 `_chat_impl` 里了 —— 那是**改口**，不是放宽：现在钉三件事，
+    #   每一件都比原来更难被绕过。
+    loop = _fn(tree, "_run_agent_loop")
+    runs_in_impl = [n for n in ast.walk(fn) if "engine.run" in ast.unparse(n)]
+    runs_in_loop = [n for n in ast.walk(loop) if "engine.run" in ast.unparse(n)] if loop else []
+    c.check("C5-bis `engine.run` 只写在 `_run_agent_loop` 那一份里"
+            "（`_chat_impl` 里出现一处就是复制了一份引擎代码去各改各的）",
+            bool(runs_in_loop) and not runs_in_impl,
+            f"`_run_agent_loop` {len(runs_in_loop)} 处 / `_chat_impl` {len(runs_in_impl)} 处")
+    c.check("C5-bis2 全文件 `_run_agent_loop` 的定义恰好一处、调用点恰好两处"
+            "（委托那一次 + Agent 模式短路那一次；出现第三次就是有人复制了参数形状）",
+            code.count("async def _run_agent_loop(") == 1
+            and code.count("await _run_agent_loop(") == 2,
+            f"定义 {code.count('async def _run_agent_loop(')} / 调用 {code.count('await _run_agent_loop(')}")
+    calls = [n for n in ast.walk(fn) if isinstance(n, ast.Call)
+             and getattr(n.func, "id", "") == "_run_agent_loop"]
+    inside = [n.lineno for n in calls if span[0] < n.lineno <= span[1]]
+    after = [n.lineno for n in calls if n.lineno > span[1]]
+    before = [n.lineno for n in calls if n.lineno <= span[0]]
+    c.check("C5-bis3 调用点各一处、分工明确：闸门**圈内**那处是 #61-C 的 Agent 模式短路"
+            "（驿站端走不到它），闸门**之后**那处两端共用同一次引擎调用；"
+            "闸门之前出现一处就等于把引擎提到了端边界前面",
+            len(inside) == 1 and len(after) == 1 and not before,
+            f"圈内 {sorted(inside)} / 圈后 {sorted(after)} / 圈前 {sorted(before)}")
 
     c.check("C6 驿站端拿不到排程工具：`if not _station_surface and _schedule_tools_allowed(` 恰好 1 处",
             code.count("if not _station_surface and _schedule_tools_allowed(") == 1,

@@ -426,3 +426,37 @@ def patch_llm(reply: str, with_key: bool = True):
 def title(text):
     """打印分节标题，让输出像一份可读的检查清单。"""
     print(f"\n=== {text} ===")
+
+
+CHAT_FUNCS = ("_chat_impl", "_run_agent_loop")
+
+
+def chat_nodes(tree):
+    """聊天主体的函数节点（人话：**"主链路"从 #61-C 起是两个函数，不是一个**）。
+
+    为什么要有它：`_chat_impl` 里那段"组装引擎 + 跑 ReAct + 出口补条"（原 4) 那一段）
+    被整段抽成了 `_run_agent_loop`，好让"正常走到这儿"和"Agent 模式跳过快路"两个调用点
+    共用**同一份**引擎代码。于是一批按 AST 钉"这一句落在哪个函数里"的断言会认错窝 ——
+    它们要钉的其实是"聊天主体里有没有这段逻辑"，不是"这段逻辑恰好在 `_chat_impl` 里"。
+    各测试自己写一遍这个名单 = 第三个判据抄两遍（红线 4/11），所以收在这儿。
+
+    用法：`for n in chat_nodes(tree): ...` 或 `chat_src(tree)`（两段的源码拼一起）。
+    ⚠️ 返回顺序固定为 CHAT_FUNCS 的顺序；**少一个就直接报错**，不要静默返回一个 ——
+       静默少一个正好是"断言全绿但其实只查了一半"的那种假绿。
+    """
+    import ast
+
+    found = {n.name: n for n in ast.walk(tree)
+             if isinstance(n, (ast.AsyncFunctionDef, ast.FunctionDef)) and n.name in CHAT_FUNCS}
+    missing = [k for k in CHAT_FUNCS if k not in found]
+    if missing:
+        raise AssertionError(f"main.py 里找不到聊天主体的函数：{missing}"
+                             "（被改名/被合并了 —— 用这个 helper 的断言全都在找它，先修这里）")
+    return [found[k] for k in CHAT_FUNCS]
+
+
+def chat_src(tree):
+    """聊天主体两段的源码拼成一份（人话：判"这句在不在主链路里"，不判它在哪个函数里）。"""
+    import ast
+
+    return "\n".join(ast.unparse(n) for n in chat_nodes(tree))

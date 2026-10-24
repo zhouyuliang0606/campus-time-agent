@@ -23,7 +23,7 @@ import io
 import json
 import os
 
-from _harness import Checker, data_path, make_client, sandbox, title
+from _harness import Checker, chat_nodes, chat_src, data_path, make_client, sandbox, title
 from app.store import set_settings
 
 PLANNER = "app/modules/planner.py"
@@ -319,13 +319,16 @@ def batch_f_funnel_gates():
                 "记不了" in (d3.get("answer") or ""), (d3.get("answer") or "")[:90])
 
     tree = ast.parse(io.open(MAIN, encoding="utf-8").read())
-    impl = [n for n in ast.walk(tree) if isinstance(n, ast.AsyncFunctionDef)
-            and n.name == "_chat_impl"][0]
-    body = ast.unparse(impl).replace("'", '"')
-    calls = sum(1 for n in ast.walk(impl) if isinstance(n, ast.Call)
-                and isinstance(n.func, ast.Name) and n.func.id == "unsupported_period")
-    c.check("判定层之外，出口那一段也按**学生原话**复核（同一函数里≥3 处：模型出口 + Mock 出口 + 判定层）",
-            calls >= 3, f"_chat_impl 里调了 {calls} 次")
+    # #61-C：引擎那一段（含模型出口与 Mock 出口）从 `_chat_impl` 抽成了 `_run_agent_loop`，
+    # 所以这里量的是**聊天主体**（两个函数），不是"恰好在 `_chat_impl` 里"。
+    # helper 缺一个函数会直接报错，不会静默只查一半（那种假绿比红难查）。
+    nodes = chat_nodes(tree)
+    body = chat_src(tree).replace("'", '"')
+    calls = sum(1 for n in nodes for c_ in ast.walk(n) if isinstance(c_, ast.Call)
+                and isinstance(c_.func, ast.Name) and c_.func.id == "unsupported_period")
+    c.check("判定层之外，出口那一段也按**学生原话**复核（聊天主体里≥3 处：模型出口 + Mock 出口 + 判定层；"
+            "#61-C 之后前两处住在 `_run_agent_loop`）",
+            calls >= 3, f"聊天主体里调了 {calls} 次")
     # 撤卡的动作要钉住，而且**不能钉成"清空所有 options"**：课表那几种卡必须留着
     # （兜底/mock 摊出来的候选**没有 kind 字段**，所以判"是不是待办"只能反着写白名单）。
     c.check("撤卡用白名单反写：只留 timetable_change / timetable_clear / course_add",
