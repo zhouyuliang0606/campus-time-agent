@@ -1900,13 +1900,32 @@ html.gx-glass[data-gx-refine="on"] .composer, html.gx-glass[data-gx-refine="on"]
       }
 
       // ---- ① 候选时间段：可勾选卡片 ----
+      // ⚠️ #59：这个循环只画得出**有时间形状**的那几张。
+      //    以前它什么都接：任何带 kind 却没被上面分支接住的东西，都会被按 {date,start,end,title}
+      //    硬拼成一张「undefined（）undefined-undefined · 约 ? 分钟」的勾选卡 —— 学生看到的那张乱码卡
+      //    就是这么来的，点【确认所选】还会发出「确认 undefined undefined undefined 待办」去撞别的分支。
+      //    判据为什么不写成「带 kind 就跳过」（施工单 §二 那一版）：`todo_pick` 与 `todo_remove` 提案
+      //    都带 kind，而**只有**这个循环会画 todo_pick（模型那一路存进暂存的确认条就是它，
+      //    刷新后全靠这里才能勾）；那一版实测把两条都判成"画不出来"，证据在快照 §二。
+      const drawable = options.filter(o => o && o.date && o.start && o.end);
+      if (!drawable.length) {
+        // 走到这儿说明后端给了一张这页画不出来的卡（多半是新 kind 还没写分支）。
+        // 与其画一张乱码让他点确认去误伤别的数据，不如老实说一句，请他把那句话再说一遍。
+        const miss = document.createElement("div");
+        miss.className = "opt-hint";
+        miss.textContent = "⚠️ 上一轮那张卡没能在这一页还原出来——请把刚才那句话再说一遍，我重新出卡。";
+        wrap.appendChild(miss);
+        container.appendChild(wrap);
+        return;                      // 关键：不画下面那颗【确认所选】
+      }
+
       const hint = document.createElement("div");
       hint.className = "opt-hint";
       hint.textContent = "勾选你想要的时间，点「确认所选」即可排入日程：";
       wrap.appendChild(hint);
 
       const cards = [];
-      options.forEach(o => {
+      drawable.forEach(o => {
         const card = document.createElement("label");
         card.className = "opt-card";
         const cb = document.createElement("input");
