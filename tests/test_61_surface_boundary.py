@@ -242,6 +242,19 @@ def batch_c_shape():
                 "（哪天它开始落库，驿站端就重新打通了）",
                 not hit, f"出现写入口 {hit}")
 
+    # ★ #61-C 之后 `_run_agent_loop` 里也多了一处课表尾巴（它原本就在 `_chat_impl` 尾部，
+    #   是整段搬过去的，逻辑一个字没改）。它同样在闸门**之外**、驿站端同样会走到 ⇒
+    #   那条"只许改文案、不许有写入口"必须跟着搬过去，**不能因为它换了函数就少查一处**。
+    #   （实测：改口第一版就是这儿静默少了一条，test_61 从 34 条变 33 条，而全量还是全绿。）
+    loop_fn = _fn(tree, "_run_agent_loop")
+    tt_loop = [n for n in (ast.walk(loop_fn) if loop_fn else [])
+               if isinstance(n, ast.If) and "looks_like_timetable_import" in ast.unparse(n.test)]
+    for n in tt_loop:
+        hit = [w for w in _WRITERS if w + "(" in ast.unparse(n)]
+        c.check(f"C2-bis2 搬进 `_run_agent_loop` 的那处课表尾巴（L{n.lineno}）仍然只改文案、"
+                "一个写入口都不许有（驿站端与学生端共用这一段）",
+                not hit, f"出现写入口 {hit}")
+
     if guard:
         tb = [n.lineno for n in ast.walk(fn)
               if isinstance(n, ast.If) and "looks_like_timetable_import" in ast.unparse(n.test)]
