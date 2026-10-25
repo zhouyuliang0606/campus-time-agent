@@ -77,13 +77,14 @@ def batch_structure(c):
     tools = M.REGISTRY["planner"][1]()
     c.check("A2 planner 的工具箱里确实没有 add_todo_tool 这个名字",
             "add_todo_tool" not in tools)
-    c.check("A3 只删了那一个：planner 剩 12 个工具，提案/查询的本事一个没少",
-            len(tools) == 12 and {
+    c.check("A3 只删了那一个、只多了 #63 那一只：planner 现在 13 个工具，提案/查询的本事一个没少"
+            "（12 + 1；这个数字钉的是\"没有第二个人顺手往里塞\"，动它之前先查是哪只进的）",
+            len(tools) == 13 and {
                 "propose_todo_tool", "propose_todo_mode_tool", "propose_todo_slots_tool",
                 "propose_slots", "propose_todo_remove", "propose_todo_done",
                 "propose_timetable_change", "propose_course_change",
                 "propose_clear_timetable", "find_free_slots", "list_day_todos",
-                "get_weekly_timetable"} <= set(tools),
+                "get_weekly_timetable", "list_todos_range"} <= set(tools),
             sorted(tools))
     c.check("A4 摘的是注册、不是把能力删了：scheduling_tools() 那组仍齐（test_06 原来只查到这儿）",
             {"find_free_slots", "propose_todo_tool", "propose_slots", "list_day_todos"}

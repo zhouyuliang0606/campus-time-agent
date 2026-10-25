@@ -2,7 +2,7 @@
 
 三批形状 + 两批行为，各钉一件事：
 
-  A 形状：账本只收只读那 15 只、写侧一只都不许进来；挂载在端边界**圈内**；
+  A 形状：账本只收只读那 16 只、写侧一只都不许进来；挂载在端边界**圈内**；
           开关判据全项目一处；短路点在红线三件之后、3b 之前；引擎段只有一份、两个调用点。
   B 行为：模型每一栏实际拿到几只手（数字写死）、写侧一只都不许出现、
           驿站端一只手都不许多挂、`get_by_code` 用的是学生口径、只读池子跑一遍不写库。
@@ -38,11 +38,11 @@ RO = os.path.join(PROJ, "app", "agent", "readonly.py")
 STUDENT = os.path.join(PROJ, "app", "static", "student.html")
 ESC_JS = os.path.join(PROJ, "app", "static", "esc.js")
 
-# 15 只只读工具的名字（钉名单，不钉数量 —— 数量跟着名单走，改名单是另一件事）
-RO15 = ["find_free_slots", "get_by_code", "get_day_courses", "get_order", "get_weekly_timetable",
+# 16 只只读工具的名字（钉名单，不钉数量 —— 数量跟着名单走，改名单是另一件事）
+RO16 = ["find_free_slots", "get_by_code", "get_day_courses", "get_order", "get_weekly_timetable",
         "list_active_orders", "list_day_todos", "list_my_orders", "list_my_packages",
         "list_pending_pickup", "list_uploaded_files", "plan_task", "read_uploaded_file",
-        "search_docs", "search_kb"]
+        "list_todos_range", "search_docs", "search_kb"]
 
 # 写侧：#61 一条都不许跨栏挂出去（`_schedule_tools_allowed` 那道判据不动）
 WRITE11 = ["propose_clear_timetable", "propose_course_change", "propose_slots",
@@ -51,7 +51,12 @@ WRITE11 = ["propose_clear_timetable", "propose_course_change", "propose_slots",
            "propose_custom_record", "submit_work_order"]
 
 # 实测的"每栏模型拿到几只手"（Agent 模式强制进引擎后取的数；数字变了就是挂载清单变了）
-COUNTS = {"faq": 15, "schedule": 18, "express": 16, "takeout": 16, "planner": 24}
+COUNTS = {"faq": 16, "schedule": 19, "express": 17, "takeout": 17, "planner": 25}
+import datetime as _dt
+_mon = _dt.date.today() + _dt.timedelta(days=(7 - _dt.date.today().weekday()) % 7 or 7)
+_NEXT_MONDAY = _mon.isoformat()
+_NEXT_SUNDAY = (_mon + _dt.timedelta(days=6)).isoformat()
+
 SENT = {"faq": "图书馆几点关门", "schedule": "今天有什么课", "express": "我有哪些快递",
         "takeout": "我的外卖到哪了", "planner": "周三什么时候有空"}
 
@@ -142,8 +147,8 @@ def batch_a_shape():
                       and isinstance(n.targets[0], ast.Name) else None))
         if name == "READONLY_SPEC" and isinstance(val, ast.Dict):
             spec = {k.value: v.value for k, v in zip(val.keys, val.values)}
-    c.check("A1 READONLY_SPEC 就是那 15 只（名单逐字钉住，不是钉数量 —— 数量对了名单错了等于没钉）",
-            sorted(spec or []) == sorted(RO15), f"实际 {sorted(spec or [])}")
+    c.check("A1 READONLY_SPEC 就是那 16 只（名单逐字钉住，不是钉数量 —— 数量对了名单错了等于没钉）",
+            sorted(spec or []) == sorted(RO16), f"实际 {sorted(spec or [])}")
     c.check("A2 反向断言：写侧那 11 只一只都不许在账本里（M1 的靶子）",
             not (set(spec or {}) & set(WRITE11)),
             f"混进来的：{sorted(set(spec or {}) & set(WRITE11))}")
@@ -155,7 +160,7 @@ def batch_a_shape():
     from app.agent.readonly import READONLY_SPEC, WRITE_TOOL_NAMES, readonly_tools
 
     pool = readonly_tools()
-    c.check("A5 15 只全都能从各自模块取到（缺一只就是静默跳过，症状是「那一栏查不到」，最难查）",
+    c.check("A5 16 只全都能从各自模块取到（缺一只就是静默跳过，症状是「那一栏查不到」，最难查）",
             len(pool) == len(READONLY_SPEC), f"取到 {len(pool)} / 账本 {len(READONLY_SPEC)}")
     c.check("A6 WRITE_TOOL_NAMES 与实测的写侧名单一致（这份表是反向断言的依据，它漏了 M1 就白设）",
             sorted(WRITE_TOOL_NAMES) == sorted(WRITE11), sorted(WRITE_TOOL_NAMES))
@@ -284,12 +289,12 @@ def batch_b_mount():
                 added = sorted(n for n in (got or []) if n not in pre and n not in sched)
                 c.check(f"B1 {mod} 栏引擎那一轮拿到 {COUNTS[mod]} 只（数字写死，改了挂载清单必须一起改这里）",
                         len(got or []) == COUNTS[mod], f"实际 {len(got or [])} 只：{got}")
-                c.check(f"B2 {mod} 栏跨栏补进来的每一只都在 READONLY_SPEC 那 15 只里"
+                c.check(f"B2 {mod} 栏跨栏补进来的每一只都在 READONLY_SPEC 那 16 只里"
                         "（多出来一只就是本单越界，M1 的靶子）",
-                        set(added) <= set(RO15), f"账本之外的收获：{added}")
+                        set(added) <= set(RO16), f"账本之外的收获：{added}")
                 c.check(f"B2-bis {mod} 栏跨栏补进来的没有一只是写侧（写侧仍只走 _schedule_tools_allowed 那道判据）",
                         not (set(added) & set(WRITE11)), f"混进来的写侧：{sorted(set(added) & set(WRITE11))}")
-            # 驿站端：一只都不许多挂（那 15 只里 9 只是学生个人数据）
+            # 驿站端：一只都不许多挂（那 16 只里 10 只是学生个人数据）
             box.clear()
             cli.post("/api/chat", json={"message": "我的代办", "session_id": "b61-station",
                                         "module": "station", "agent_mode": True})
@@ -331,7 +336,7 @@ def batch_b_mount():
         finally:
             store.set_current_student(prev)
 
-    # 「只读」这个词的行为证明：15 只挨个跑一遍，沙箱里一个字节都不许多
+    # 「只读」这个词的行为证明：16 只挨个跑一遍，沙箱里一个字节都不许多
     from app.agent.readonly import READONLY_SPEC, readonly_tools
     with sandbox():
         write_timetable([{"day": 1, "start": "08:00", "end": "09:40",
@@ -347,7 +352,9 @@ def batch_b_mount():
                 "find_free_slots": {"date": "2026-10-28"}, "list_day_todos": {"date": "2026-10-28"},
                 "get_by_code": {"pickup_code": "A-1001"}, "get_order": {"order_id": "Y1"},
                 "read_uploaded_file": {"file_id": "nope"}, "search_docs": {"query": "图书馆"},
-                "search_kb": {"query": "图书馆"}}
+                "search_kb": {"query": "图书馆"},
+                # #63 新加的这一只也要真跑一遍：日期**按今天算**，不写死（写死的跨过午夜就成过去）
+                "list_todos_range": {"start": _NEXT_MONDAY, "end": _NEXT_SUNDAY}}
         import asyncio
         for name, tool in sorted(readonly_tools().items()):
             kw = args.get(name, {})
@@ -361,7 +368,7 @@ def batch_b_mount():
             if isinstance(out, dict) and out.get("__proposal__"):
                 wrote.append(name)
         after = _tree_fingerprint(data_path())
-        c.check("B7 15 只全跑了一遍（没跑通的断言等于没断言，所以这里先数跑了几只）",
+        c.check("B7 16 只全跑了一遍（没跑通的断言等于没断言，所以这里先数跑了几只）",
                 ran == len(READONLY_SPEC), f"{ran}/{len(READONLY_SPEC)} 只｜跑不通：{boomed[:4]}")
         c.check("B8 跑完一遍，沙箱数据树一个字节都没变（这就是「只读」两个字的定义）",
                 before == after, _fingerprint_diff(before, after))
@@ -429,7 +436,7 @@ def batch_c_agent_mode():
                     any("🤔" in p for p in ph_on) and not any("生成清空提案" in p for p in ph_on),
                     ph_on[:4])
             c.check("C2-bis 开着时模型手里确实有工具（跳过快路 ≠ 空转 —— 引擎拿到了跨栏那 24 只）",
-                    len(eng_on) == 24, f"{len(eng_on)} 只")
+                    len(eng_on) == 25, f"{len(eng_on)} 只")
 
             # 2) 3c 加待办报了准点：同样被跳过
             d2_off, ph2_off, _ = ask("帮我加个游泳 周三19:00到20:30", "planner", False, "c61-add-off")
