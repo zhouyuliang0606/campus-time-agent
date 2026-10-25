@@ -1264,10 +1264,12 @@ def _rule_intent(message: str) -> str | None:
         return INTENT_CLEAR_TIMETABLE
     if wants_add_todo(message):
         return INTENT_ADD_TODO
-    # ★ #65-B3：「查课优先于查待办」在**规则层**也要有一格，不然这句在轨迹里仍显示
-    #   "看待办列表"（判据的结论与学生看到的解释就该是同一份，见 3c-pre 那段注释）。
+    # ★ #65-B3：「查课优先于查待办」在**规则层**也要有一格。⚠️ 光有加这一格还不够 ——
+    #   `_read_step` 的优先序是"语义层/样本库 先于 规则层"，样本库撞成 list_todo 时轨迹首行
+    #   照旧写"听成 看待办列表"（真机实测，#65-F 那一处改的就是它）。两处加起来才是
+    #   "判据与说法同一份"：这一格决定主链路拒不拒，`_read_step` 决定屏幕上怎么说。
     #   顺序必须排在 `wants_list_todo` **之前**：问课的句子偶尔也带"有什么"这类列表味，
-    #   排在后面就永远轮不到。这里只当**预判**——本单不开确定性查课分支（见快照 §偏离）。
+    #   排在后面就永远轮不到。这里只当**预判**——本单不开确定性查课分支（见快照 §八）。
     if looks_like_course_ask(message):
         return INTENT_LIST_COURSE
     if wants_list_todo(message):
@@ -1534,12 +1536,18 @@ def _read_step(sem: dict | None, sem_intent: str | None,
     # ⚠️ 别只看 `sem_intent`：常规下单句（「帮我加个游泳周四19:00」）是**故意不叫**
     #    语义层的（`_need_review` 为假，零 API 调用），这时候只看 `sem_intent`
     #    会把一句明白的"办事"报成"问事"——轨迹里写假话比不写更坏。
-    intent = sem_intent or rule_hit
+    intent = rule_hit if rule_hit == INTENT_LIST_COURSE else (sem_intent or rule_hit)
+    # ↑ ★ #65-F：问课那一格**优先**。主链路就是按这个先后拒掉列待办分支的
+    #   （`looks_like_course_ask` 挡在两半判据上），这里必须复述同一个结论。
+    #   不这么写的症状真机抓到过：A/B 上之后答案已经是课表了，轨迹首行还写着
+    #   "听成 办事（看待办列表）｜依据：样本库" —— 屏幕上的解释和被执行的判据成了两份真相。
     verdict = "问事" if (not intent or intent == INTENT_CHAT) else "办事"
     # 依据：哪一档判的。样本库/语义层是 `sem` 自己标的；
     # 它俩都没给结论时，看规则层预检有没有认出来。
     src = (sem or {}).get("source")
-    if src not in SOURCE_MEANING:
+    if rule_hit == INTENT_LIST_COURSE:
+        src = "rule"          # 这一句的结论出自问课那一格，样本库撞上的那个 list_todo 没被采用
+    elif src not in SOURCE_MEANING:
         src = "rule" if rule_hit else "none"
     msg = f"我把这句听成 **{verdict}**"
     if intent and intent != INTENT_CHAT:
@@ -1584,7 +1592,11 @@ def _reason_steps(*, rule_hit: str | None, asks: bool, qa_view: bool,
         out.append("这句是在宣布「办完了」→ 不按新增处理，免得把已做的事又加一条")
     if period_block:
         out.append("「每月 / 每个周末」这类周期我落不成一条待办 → 先问清楚，不替你猜")
-    if rule_veto:
+    # ★ #65-F：问课那一格赢下这一句时，"以语义层为准"是假话（真机实测到的形状：答案已是课表、
+    #   判定行还说规则层让给了语义层）。这时要说得出**谁被拒了**：样本库那句「看待办列表」没被接走。
+    if rule_hit == INTENT_LIST_COURSE:
+        out.append("这句在问课 → 不按「看待办列表」接走，交给能查课的那条路")
+    elif rule_veto:
         out.append("规则层想办事，可这句在问事 → 以语义层为准，规则层那几条直接办事的路这一句不走")
     if is_material:
         out.append("这是一整段材料 → 只从这段里提取时间，不拿上一轮上下文去猜")
