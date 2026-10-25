@@ -462,6 +462,19 @@ def batch_d_front():
             and not re.search(r'id="[^"]*(replay|rerun|TraceRun)[^"]*"', st, flags=re.I)
             and not re.search(r'adminFetch\("/api/admin/trace/[^"]*(replay|rerun)', st)
             and "重放" in st, "")
+    # D14 是真机赔出来的一条（#64 快照 §真机）：口令刚填完，这一档**没被补拉**，界面上留着
+    #   刚才那次 401 的框，而框里那句"3 秒后自动重试"救不了它 —— 这一档与文档那档的轮询都走
+    #   `_pollVisible`，标签页在后台时**一次都不打**（实测 document.hidden=true，那个框能挂一整晚）。
+    #   判据要成对：那张"点开才拉的档"的成对表里有 trace，且表里的 loader 与 switchNav 那一支**同名**
+    #   （不同名 = 改了 switchNav 忘了改这张表，或反过来 —— 只钉一边等于换个坏法照样绿）。
+    pair = re.search(r'\[\s*"trace"\s*,\s*(load\w+)\s*\]', st)
+    swl = re.search(r'view === "trace"\)\s*(load\w+)\(\)', sw)
+    c.check("D14 口令一填就补拉**在前景的那档**：成对表里有 trace、文档那档没被挤掉，"
+            "且表里的 loader 与 switchNav 那一支同名",
+            bool(pair) and bool(swl) and pair.group(1) == swl.group(1) == "loadTrace"
+            and '["docs", loadDocs]' in st and '"view-" + pair[0]' in st,
+            "表里=%s switchNav=%s" % (pair.group(1) if pair else None,
+                                      swl.group(1) if swl else None))
     return c
 
 
