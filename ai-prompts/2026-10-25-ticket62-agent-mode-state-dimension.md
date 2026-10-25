@@ -121,6 +121,8 @@ B 批打的是**哨兵**（整段 `_run_agent_loop` 换成记时的假货），�
 - 严格克隆（tracked-only，树 `b7a0221`）：**同样 4918 项 / 0 失败（84 批）**，红点 0；
   克隆里没有 `.env` / `app/data/settings.json` / `demo_timetable` / `run_local.bat` / `tests/_optional_browser`。
   **连续第十三轮**克隆侧零失败。
+- **文档落盘之后本机又跑了一次全量**（树 `d3a96ba`，含本笔文档与主 README/指南改动，因为 `test_30` 读 README、
+  `test_39` 读指南）：**同样 4918 项 / 0 失败（84 批）**，红点 0。⇒ 上面那两条数不是"改文档前的旧账"。
 - 本轮提交（5 笔代码/测试 + 本笔文档）：`579d56a` A · `35dcf3c` B · `036f862` 三处旧断言改口 ·
   `62564d3` test_83 · `b7a0221` 撤掉 E 批自造的噪声 · （本笔）文档。未推笔数一律现查
   `git rev-list --count origin/master..HEAD`（写到 `b7a0221` 时是 253 笔 —— 这句必然随着下一笔提交过期）。
