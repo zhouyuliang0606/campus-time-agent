@@ -504,6 +504,19 @@ def batch_e_ledger():
     seg = h[h.index("SCRATCH = ("):h.index("def __enter__")]
     c.check("E6 trace 没被塞进 SCRATCH（它跟 usage 同性质：沙箱里要读得到自己写的那本，不是草稿）",
             "trace_log" not in seg, "")
+    # E7 是 §一 那本账与 `.gitignore` 的**配对**判据：文件名在 store 里定义、忽略规则在仓库根上，
+    #    两处各写一次就有一处会漂。漏掉的后果不是"测试红"，是把每一轮的原始轨迹（含工具结果原文与
+    #    会话 id）提进公开仓库 —— 与 #41 那次"口令泄漏打码"同族，但量大得多。
+    gi = read(os.path.join(PROJ_DIR, ".gitignore")).replace("\r\n", "\n")
+    names = [ln.strip() for ln in gi.split("\n") if ln.strip() and not ln.startswith("#")]
+    from app import store as S
+    c.check("E7 `.gitignore` 排掉了 trace_log.jsonl（这本比用量账更敏感：每一轮的原始轨迹 + 会话 id；"
+            "漏一行 = 谁 `git add .` 一次就把全校轨迹提进公开仓库）",
+            any(x in ("/app/data/trace_log.jsonl", "app/data/trace_log.jsonl") for x in names),
+            "忽略名单里的 jsonl：%s" % [x for x in names if x.endswith(".jsonl")])
+    c.check("E7-bis 忽略的那一条与 store 里那个文件名**是同一个名字**（两处不同名 = 规则形同虚设）",
+            any(x.endswith("/" + S.TRACE_FILE) or x == "app/data/" + S.TRACE_FILE for x in names),
+            "TRACE_FILE=%s" % getattr(S, "TRACE_FILE", None))
     return c
 
 
