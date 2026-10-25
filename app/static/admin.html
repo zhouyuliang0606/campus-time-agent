@@ -613,10 +613,13 @@
         setTokenStatus(v ? "已用这个口令，正在重新拉取…" : "口令已清空", !v);
         loadNotices(); loadPersona(); loadKB(); loadMessages(); loadWorkOrders();
         loadApiSettings(); loadUsage();
-        // 文档那一档**不在开场预载里**（它是这页最重的一份：每份文件都要读一次索引数块数），
-        // 点开那档时现拉；口令刚改过就得补一次，否则刚才那次 401 留下的错误框会一直挂着。
+        // 「点开才拉」的那几档（文档知识库 / Agent 工作流）不在开场预载里，口令刚改过就得各补一次，
+        // 否则刚才那次 401 留下的框会一直挂着。⚠️ 别指望"3 秒后自动重试"那句话：这两档的轮询都走
+        // `_pollVisible`，标签页在后台时**一次都不打**（实测 document.hidden=true 时那个框能挂一整晚）。
         // 判据看的是**面板在不在前面**（不是去比侧栏哪一项 active）：这一档点开过才需要补拉。
-        if (document.getElementById("view-docs").classList.contains("active")) loadDocs();
+        [["docs", loadDocs], ["trace", loadTrace]].forEach(function (pair) {
+          if (document.getElementById("view-" + pair[0]).classList.contains("active")) pair[1]();
+        });
       });
     }
     initTokenBar();
