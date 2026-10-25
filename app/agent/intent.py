@@ -50,13 +50,16 @@ INTENT_FIND_CARD = "find_card"        # 在找刚才那张确认卡 / 弹窗
 INTENT_RETIME = "retime_todo"         # 想把已排好的某件事换个时间
 INTENT_DONE = "done_todo"             # 想把一条已有的待办标记为已完成
 INTENT_CLEAR_TIMETABLE = "clear_timetable"   # 想清空课表
+INTENT_LIST_COURSE = "list_course"  # 在**问课**（#65：「我今天有什么课」）。规则层的预判，
+                                    # 提示词里**不枚举**它——语义层不许发明意图，这里只给规则层一个落点，
+                                    # 作用是让「查课优先于查待办」有依据，不是新造一条执行路径。
 INTENT_CUSTOM_RECORD = "custom_record"       # 想把一件事**登记到驿站开的某项服务**（失物招领…）
 INTENT_CHAT = "chat"                  # 以上都不是
 
 KNOWN_INTENTS = (
     INTENT_ADD_TODO, INTENT_REMOVE_TODO, INTENT_LIST_TODO,
     INTENT_FIND_CARD, INTENT_RETIME, INTENT_DONE,
-    INTENT_CLEAR_TIMETABLE, INTENT_CUSTOM_RECORD, INTENT_CHAT,
+    INTENT_CLEAR_TIMETABLE, INTENT_CUSTOM_RECORD, INTENT_LIST_COURSE, INTENT_CHAT,
 )
 
 # ── 类型（module）白名单 ─────────────────────────────────────────────────────
@@ -103,6 +106,7 @@ INTENT_MODULE = {
     INTENT_LIST_TODO: "planner", INTENT_FIND_CARD: "planner",
     INTENT_RETIME: "planner", INTENT_DONE: "planner",
     INTENT_CLEAR_TIMETABLE: "planner",
+    INTENT_LIST_COURSE: "schedule",        # 问课归课表那一栏管（#65）
     INTENT_CHAT: DEFAULT_MODULE,
 }
 
@@ -117,6 +121,7 @@ INTENT_MEANING = {
     INTENT_RETIME: "改时间",
     INTENT_DONE: "标记完成",
     INTENT_CLEAR_TIMETABLE: "清空课表",
+    INTENT_LIST_COURSE: "查课表",              # 只读的一种（#65；给学生看的"我是这么想的"取这份）
     INTENT_CUSTOM_RECORD: "登记一件事（驿站开的服务）",
     INTENT_CHAT: "问事 / 闲聊",
 }

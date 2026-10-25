@@ -156,6 +156,38 @@ def _free_blocks(day: str) -> list[tuple[int, int]]:
     return free
 
 
+# 「他在问课，不是在问待办」—— 与 planner 的 `wants_add_course`（加课优先于加待办）对称，
+# 补的是同一业务原则的另一半：**查课优先于查待办**（#65）。
+# 为什么必须有：样本库的模糊匹配会把「我今天有什么课」判成 list_todo
+# （实测 Dice 0.909 撞上脏样本「今天有什么课」、0.667 撞上正常样本「今天有什么代办」，
+#  阈值 `_SIM_THRESHOLD = 0.42`），于是 `main.py` 的列待办分支把它接走、
+# 用待办数据回答了一个关于课的问题（真机事故，见 `ai-prompts/2026-10-26-ticket65-*.md`）。
+_COURSE_WORDS = ("课表", "课程", "上课", "有课", "节课", "几节课", "哪节课", "什么课", "没课", "排课")
+# 带着这些**办事动作**的句子不算"问课"：课只是前提，学生要的是办一件事
+_COURSE_ASK_EXCLUDE = ("删", "清空", "取消", "加一节", "加节", "改成", "换到", "挪到")
+_COURSE_ASK_ASKS = ("什么", "哪些", "哪", "几", "吗", "?", "？", "有没有")
+
+
+def looks_like_course_ask(text: str) -> bool:
+    """这句话是不是在**问课**（人话：问「我今天有什么课」「明天有课吗」）。
+
+    只认「课程词 + 疑问形状」，不认句子里单纯出现"课"字：
+      · 「今天有什么课」「明天有课吗」「后天几节课」→ 是
+      · 「明天不上课了，我要回家」→ **不是**（那是加待办，课只是前提，而且句里没有疑问代词）
+      · 「帮我把课表清空」→ **不是**（那是清空课表，另有分支）
+    判错的代价不对称：多说"是"会把加待办抢走，少说"是"会被答成待办清单——
+    所以**宁可窄**：既要出现课程词，也要出现疑问形状，还带办事动作的直接交回别的分支。
+    """
+    t = (text or "").strip()
+    if not t or len(t) > 40:
+        return False
+    if not any(w in t for w in _COURSE_WORDS):
+        return False
+    if any(w in t for w in _COURSE_ASK_EXCLUDE):
+        return False
+    return any(w in t for w in _COURSE_ASK_ASKS)
+
+
 def get_day_courses(day: str) -> str:
     """工具①：查某一天**这个学生**的全部课程。"""
     courses = _courses_on(day)

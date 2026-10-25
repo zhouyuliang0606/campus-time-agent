@@ -23,7 +23,7 @@ from app.admin_guard import verify_admin
 from app.agent.engine import AgentEngine
 from app.agent.intent import (
     DEFAULT_MODULE, INTENT_ADD_TODO, INTENT_CHAT, INTENT_CLEAR_TIMETABLE,
-    INTENT_DONE, INTENT_FIND_CARD, INTENT_LIST_TODO, INTENT_MEANING,
+    INTENT_DONE, INTENT_FIND_CARD, INTENT_LIST_COURSE, INTENT_LIST_TODO, INTENT_MEANING,
     INTENT_REMOVE_TODO, INTENT_RETIME, SOURCE_MEANING,
     QUESTION_RE, asks_calendar_fact, classify, looks_like_question, physio_state_only,
     remember, to_canonical,
@@ -38,7 +38,8 @@ from app.config import (DEBUG, BaseUrlError, check_base_url_ssrf, check_config, 
 from app.llm.client import LLMError
 from app.llm.gateway import ModelGateway
 from app.upload import UploadError, extract_text, ext_supported, unsupported_reason
-from app.modules.schedule import SYSTEM_PROMPT as SCHEDULE_PROMPT, build_tools as schedule_tools
+from app.modules.schedule import (SYSTEM_PROMPT as SCHEDULE_PROMPT, build_tools as schedule_tools,
+                                  looks_like_course_ask)
 from app.store import (
     add_message, list_messages, add_notice, list_notices,
     list_services, get_service, validate_service_def, add_service,
@@ -1263,6 +1264,12 @@ def _rule_intent(message: str) -> str | None:
         return INTENT_CLEAR_TIMETABLE
     if wants_add_todo(message):
         return INTENT_ADD_TODO
+    # ★ #65-B3：「查课优先于查待办」在**规则层**也要有一格，不然这句在轨迹里仍显示
+    #   "看待办列表"（判据的结论与学生看到的解释就该是同一份，见 3c-pre 那段注释）。
+    #   顺序必须排在 `wants_list_todo` **之前**：问课的句子偶尔也带"有什么"这类列表味，
+    #   排在后面就永远轮不到。这里只当**预判**——本单不开确定性查课分支（见快照 §偏离）。
+    if looks_like_course_ask(message):
+        return INTENT_LIST_COURSE
     if wants_list_todo(message):
         return INTENT_LIST_TODO
     if wants_remove_todo(message) or wants_remove_todo_loose(message):
@@ -3268,12 +3275,30 @@ async def _chat_impl(req: Request, meta: dict, emit=None):
         # 3c-pre5) **语义兜底的收尾**（判定本身已经在 `0) 判定层` 做完了，这里只留回执）。
         #     `_sem` / `_sem_intent` / `_sem_module` / `_rule_veto` 都在那一处算好，
         #     所以下面每条确定性分支都能用上同一次判定——**同一句话只判一次**。
-        def _sem_done(resp: dict | None) -> dict | None:
-            """语义层命中、并且真的出了卡 → 把这句原话学进样本库（越用越懂）。
+        def _sem_done(resp: dict | None, readonly: bool = False) -> dict | None:
+            """语义层命中、**并且真的办成了** → 把这句原话学进样本库（越用越懂）。
 
-            只在**办成了**的时候记。模型自由发挥那一句不算——那会把错误意图学进去。
+            ⚠️ 判据必须是「这次真的办成了」，**不是「这条分支返回了」**（#65）。
+               列待办、找卡落空这些分支也返回响应，但它们什么都没办成——
+               把「念了一遍清单」当成「办成功了」，就会把错判固化成模板：
+               实测「我今天有什么课」被样本库半命中判成 list_todo → 列待办分支返回 →
+               旧判据认为办成 → `remember()` 学进去 → 下次这句 Dice=0.909 永久精确命中。
+               上面 3c-pre 那段注释（「把一句问话学成模板，下次近似说法照着错」）
+               记的就是这个坑，当时只在 `_asking_what_to_do` 一档绕开，列待办这档没绕。
+
+            为什么用显式参数 `readonly=True`、不去猜 `resp` 的形状：
+              现场 7 个调用点里，改期那一支（`_sem_done(_rt_prop)`）传进来的**就是提案对象本身**
+              （有 title/date/start，没有 `options` 字段），它是一等一的「真办成了」。
+              若按「有没有 options」判，会把它一起误停 —— 那是拿一个隐式形状约定
+              去赌另一处的调用方式，正是本项目最贵的那类 bug。
+              所以：**该不该学，由调用方用一句话声明**，函数不猜。
             """
-            if resp is not None and _sem_intent:
+            # 自证：声明成「只读」却挂着卡，说明调用方判错了，当场说出来（别静默）
+            if readonly and isinstance(resp, dict) and (
+                    resp.get("options") or resp.get("awaiting_choice")):
+                print("[WARN] _sem_done(readonly=True) 却带着 options/awaiting_choice"
+                      f"：{str(resp.get('answer'))[:40]}")
+            if resp is not None and _sem_intent and not readonly:
                 try:
                     remember(message, _sem_intent, _sem or {})
                 except Exception:
@@ -3367,7 +3392,13 @@ async def _chat_impl(req: Request, meta: dict, emit=None):
         #     查到什么说什么；一条都没有也如实讲。
         #     ⚠️ 位置必须在 3c-ter 之前：「代办显示不出来」既像"看不见 X"、又该走"读列表"，
         #     但学生真正要的是"你把我的待办念给我听"——读出来比一句"确实还没有"更有用。
-        if (wants_list_todo(message) and not _rule_veto) or _sem_intent == INTENT_LIST_TODO:
+        # ★ #65-B「查课优先于查待办」：问课的句子两半都不许接走。
+        #   只挡前半句等于没挡——这次放行靠的正是后半句 `or _sem_intent == INTENT_LIST_TODO`
+        #   （样本库把「我今天有什么课」半命中成 list_todo，实测 Dice 0.909/0.667 > 阈值 0.42）。
+        #   判据算一次就够（判定层"同一句话只判一次"是同一条规矩），两半共用 `_course_ask`。
+        _course_ask = looks_like_course_ask(message)
+        if ((wants_list_todo(message) and not _rule_veto and not _course_ask)
+                or (_sem_intent == INTENT_LIST_TODO and not _course_ask)):
             todos = list_todos()
             if not todos:
                 fallback = ("📋 你目前还没有任何待办。\n"
@@ -3408,7 +3439,7 @@ async def _chat_impl(req: Request, meta: dict, emit=None):
                            "answer": f"{len(todos)} 条"}],
                 "options": [],
                 "awaiting_choice": False,
-            })
+            }, readonly=True)
 
         # 3d-ret) **改期（已经排进日程的待办想换个时间）**——"把周四那个健身挪到周五"。
         #     跟删待办同一套规矩：只出提案、学生点头才动；而且是"删旧 + 加新"，
@@ -3698,7 +3729,7 @@ async def _chat_impl(req: Request, meta: dict, emit=None):
                            "answer": "暂存里没有提案"}],
                 "options": [],
                 "awaiting_choice": False,
-            })
+            }, readonly=True)
 
         # ★ 「每月 / 每个周末 / 下个月」这一类周期说法：**任何一档判成加待办都不许出卡**
         #   （「每天」2026-10-13 起不在这儿了 —— 它现在表达得了：一条 daily 习惯，只进代办不进日历）
