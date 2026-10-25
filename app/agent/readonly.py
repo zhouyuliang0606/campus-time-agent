@@ -22,6 +22,7 @@ READONLY_SPEC: dict[str, str] = {
     "get_weekly_timetable": "planner",
     "find_free_slots":      "planner",
     "list_day_todos":       "planner",
+    "list_todos_range":     "planner",     # ← #63：查"一段"的粒度，不登记就只在 planner 栏有
     "search_kb":            "faq",
     "list_my_packages":     "express",
     "list_pending_pickup":  "express",

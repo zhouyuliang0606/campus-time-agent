@@ -23,6 +23,7 @@ from app.store import (
     add_todo, get_timetable, list_todos,
     save_timetable, update_todo,
     REPEAT_NONE, REPEAT_WEEKLY, REPEAT_DAILY, is_past_date, todo_done_on,
+    todo_occurs_on, WEEKLY_HORIZON_MONTHS,
 )
 from app.modules.student_persona import mock_phrase
 
@@ -1319,6 +1320,74 @@ def list_day_todos(date: str) -> list:
         "end": t["end"],
         "status": t["status"],
     } for t in todos]
+
+
+def list_todos_range(start: str, end: str) -> list:
+    """列 start~end（含两端，YYYY-MM-DD）这段时间里已安排的待办：**一条一行**，行里带上它落在哪几天。
+
+    为什么要有它（#63）：`list_day_todos` 只能查一天，学生问「这周有什么待办」时模型手里
+    没有"查一段"的那只手，只能把七天挨个点一遍 —— 实测 7 次调用、轨迹 22 行、七次返回长得一模一样。
+    那是**工具粒度与提问粒度没对齐**，不是模型笨。底层能力早就齐（`store.list_todos()` 一次取全量），
+    这一支只是把"逐天筛"从模型那一侧搬进系统这一侧。
+
+    ⚠️ 筛法走 `store.todo_occurs_on`，**不是** `start <= t["date"] <= end`。
+       后者实测会**吞掉重复待办**：一条「每周三游泳」的记录只有一个锚点（上周三），
+       按字面 date 筛，本周三就看不见它 ⇒ 回一句「之间没有安排任何待办」——
+       那不是省一次调用，那是**答错**（探针 `probe63.py`：三条待办只筛出 1 条）。
+       `list_todos_in_month` 2026-10-10 就是为这件事改成逐天问的 ⇒ 判据仍只有 `todo_occurs_on` 一处。
+    ⚠️ 一条一行（不是一天一行）：习惯（daily）在一周里天天出现，按天摊就是 7 行同样的事，
+       比模型逐日调还啰嗦；所以把"这周哪几天"放进 `dates` 里给模型，行数只跟**事情数**挂钩。
+       习惯**照实列出**：问的是"这周有什么事要做"，天天要做的晨跑就是这周的事
+       （月视图滤习惯是因为格子装不下习惯，用户 2026-10-13 拍板，不是"习惯不算待办"）。
+    ⚠️ 跨度夹住：尺子借 `WEEKLY_HORIZON_MONTHS`（每周重复最多铺 3 个月那把），
+       别让模型一句「查 2020 到 2030」把整库摊进一次工具结果里。
+    """
+    from datetime import date as _date, timedelta
+
+    s, e = str(start or "").strip(), str(end or "").strip()
+    try:
+        d0, d1 = _date.fromisoformat(s), _date.fromisoformat(e)
+    except ValueError:
+        # 模型常把「这周」直接当参数递过来：别猜哪天，把该给的格式说回去，它下一步就会补对。
+        return [{"info": "起止日期要写成 YYYY-MM-DD（例如 2026-10-26 到 2026-11-01）。"
+                         "先按学生的说法算出具体日子，再来查这一段。"}]
+    if d1 < d0:
+        d0, d1, s, e = d1, d0, e, s          # 学生/模型说反了不算错，换过来就是了
+
+    notes: list = []
+    max_span = WEEKLY_HORIZON_MONTHS * 31
+    if (d1 - d0).days + 1 > max_span:
+        d1 = d0 + timedelta(days=max_span - 1)
+        e = d1.isoformat()
+        notes.append({"info": f"一次最多查 {max_span} 天（与「每周重复最多铺 "
+                              f"{WEEKLY_HORIZON_MONTHS} 个月」同一把尺子），下面只算到 {e}"})
+
+    todos = list_todos()
+    by_id: dict = {}
+    order: list = []
+    day = d0
+    while day <= d1:
+        iso = day.isoformat()
+        for t in todos:
+            if not todo_occurs_on(t, iso):
+                continue
+            row = by_id.get(t["id"])
+            if row is None:
+                row = {"id": t["id"], "title": t["title"], "date": iso,
+                       "start": t["start"], "end": t["end"], "status": t["status"],
+                       "dates": [iso]}
+                rep = str(t.get("repeat") or "")
+                if rep and rep != REPEAT_NONE:
+                    row["repeat"] = rep
+                by_id[t["id"]] = row
+                order.append(row)
+            else:
+                row["dates"].append(iso)      # 同一件事在这段里出现几天，就并到一行里
+        day += timedelta(days=1)
+    if not order:
+        return notes + [{"info": f"{s} ~ {e} 之间没有安排任何待办"}]
+    order.sort(key=lambda r: (r["date"], r["start"] or ""))
+    return notes + order
 
 
 def add_todo_tool(title: str, date: str, start: str, end: str, note: str = "") -> str:
@@ -5870,7 +5939,9 @@ def build_tools() -> dict[str, Tool]:
         ),
         "list_day_todos": Tool(
             name="list_day_todos",
-            description="列出某一天已经安排的待办事项。",
+            description="列出**某一天**已经安排的待办事项。"
+                        "只看这一天；要查一段（这周 / 这个月 / 周三到周五）用 `list_todos_range`，"
+                        "别一天一天调这把。",
             parameters={
                 "type": "object",
                 "properties": {
@@ -5879,6 +5950,28 @@ def build_tools() -> dict[str, Tool]:
                 "required": ["date"],
             },
             func=list_day_todos,
+        ),
+        # ★ #63：只补**一个粒度**，理由是"底层能力现成、只是没切出这一段"，
+        #   不是"多给模型一只手"（那是 #61-A 已经做完的事）。参数就 start/end 两个：
+        #   参数每多一个（按状态筛、按标题搜），模型选错的概率就高一档。
+        "list_todos_range": Tool(
+            name="list_todos_range",
+            description=(
+                "查**一段时间内**已安排的待办（含起止那两天），一条待办返回一行，"
+                "行里的 `dates` 是它在这段里出现的具体日子（重复的事不会变成好几行）。"
+                "学生问「这周 / 这个月有什么安排」「周三到周五有没有事」时用**这一个**，"
+                "不要一天一天调 `list_day_todos`。"
+                "入参 start、end 都是日期，格式如 2026-10-25；说反了会自动换过来。"
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "start": {"type": "string", "description": "起始日期，如 2026-10-25"},
+                    "end": {"type": "string", "description": "结束日期（含），如 2026-10-31"},
+                },
+                "required": ["start", "end"],
+            },
+            func=list_todos_range,
         ),
         # 出确认条的三件（都是**只读**：真写入永远在系统那侧）：
         #   · propose_todo_mode_tool → 还没定时间，先问「你自己定 / 我帮你挑」  ← 首选
