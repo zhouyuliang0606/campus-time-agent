@@ -144,10 +144,13 @@ def batch_c_shape():
     i_gate = src.index("if _campus_fact_ask(message) and not _holding_card:")
     c.check("C1 那道闸排在 `_asking_what_to_do` **之前**（排后面等于让它先抢，施工单 §2.3）",
             i_gate < i_ask, f"闸 @{i_gate} < 那档 @{i_ask}")
-    c.check("C2 闸的条件里带着「挂着卡不接管」（复用 3i 那条 `_holding_card`，同一份）",
+    c.check("C2 闸的条件里带着「挂着卡不接管」（#62 起那份名单收进 `_any_pending`，"
+            "两处判据共用同一个函数 ⇒ 这里改判『只有一份名单』而不是『名单长什么样』）",
             "_holding_card" in src[i_gate - 900:i_gate]
-            and src.count("_holding_card = any(") == 1,
-            f"_holding_card 赋值 {src.count('_holding_card = any(')} 处")
+            and src.count("_holding_card = _any_pending(") == 1
+            and src.count("any(f(session_id) for f in (") == 1,
+            f"`_holding_card = _any_pending(…)` {src.count('_holding_card = _any_pending(')} 处、"
+            f"就地 `any(f(session_id) …)` {src.count('any(f(session_id) for f in (')} 处")
     c.check("C3 知识库那一路的响应形状只拼一份（`_kb_say` 定义一处、三处以上调用它）",
             src.count("def _kb_say(") == 1 and src.count("return _kb_say(") >= 3,
             f"定义 {src.count('def _kb_say(')} 处、调用 {src.count('return _kb_say(')} 处")

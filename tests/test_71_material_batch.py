@@ -425,8 +425,10 @@ def batch_c_shape():
     ab = _func(st, "add_todos_batch")
     c.check("C7 批量写只**读写一次**（循环调 add_todo 时后一条看不见刚写进去的前一条，重复就拦不住）",
             _call_count(ab, "_swrite") == 1 and _call_count(ab, "_sread") == 1)
-    c.check("C8 材料卡进了 `_holding_card` 那份名单（挂着它时 #42-A 那道闸与 3i 直答都不许接管这句）",
-            "_pending_todo_add_batch" in _holding_card_calls(body), _holding_card_calls(body)[:60])
+    c.check("C8 材料卡进了「挂着卡不接管」那份名单（挂着它时 #42-A 那道闸与 3i 直答都不许接管这句；"
+            "#62 起名单在 `_any_pending` 里，取值仍走 `_holding_card`）",
+            "_pending_todo_add_batch" in _holding_card_calls(body, mn),
+            _holding_card_calls(body, mn)[:60])
 
     html = open(os.path.join(PROJ_DIR, "app", "static", "student.html"), encoding="utf-8").read()
     js_lines = [ln for ln in html.splitlines()
@@ -543,13 +545,28 @@ def _material_branch_isolated(body):
     return ({"extract_deterministic", "_material_card", "_material_answer"} <= got) and not leak
 
 
-def _holding_card_calls(body):
-    """`_holding_card = any(f(session_id) for f in (…))` 括号里那份**名单**（都是 Name，不是 Call）。"""
+def _holding_card_calls(body, tree=None):
+    """挂着卡的那份**名单**。
+
+    #62 之前它就地写成 `_holding_card = any(f(session_id) for f in (…))`；
+    #62 起收成 `_holding_card = _any_pending(session_id)`（同一份判据被 Agent 模式短路复用），
+    名单搬到 `_any_pending` 的函数体里去了 ⇒ 这里跟着**多跟一跳**，
+    两种写法都认：以后谁再把它挪回来，这条也不用改。
+    """
     for n in ast.walk(body):
         if isinstance(n, ast.Assign):
             for t in n.targets:
                 if isinstance(t, ast.Name) and t.id == "_holding_card":
-                    return sorted({x.id for x in ast.walk(n.value) if isinstance(x, ast.Name)})
+                    names = {x.id for x in ast.walk(n.value) if isinstance(x, ast.Name)}
+                    call = next((x for x in ast.walk(n.value)
+                                 if isinstance(x, ast.Call) and isinstance(x.func, ast.Name)
+                                 and x.func.id not in ("any",)), None)
+                    if call is not None and tree is not None:
+                        for f in ast.walk(tree):
+                            if isinstance(f, (ast.FunctionDef, ast.AsyncFunctionDef)) \
+                                    and f.name == call.func.id:
+                                names |= {x.id for x in ast.walk(f) if isinstance(x, ast.Name)}
+                    return sorted(names)
     return []
 
 

@@ -201,8 +201,12 @@ def batch_a_shape():
             "_AGENT_MODE_DEFAULT = (os.getenv(" in code and 'in ("1", "true", "on", "yes")' in code, "")
 
     gspan = (gate[0].lineno, gate[0].body[-1].end_lineno)
+    # ⚠️ #62 起短路条件多了两维（`and not _any_pending(session_id) and not _is_material`），
+    #   所以这里不能钉"整个条件 == `_agent_mode`"。要钉的从来就不是那句字面文本，而是
+    #   "有这么一块：开关打头、块里只叫引擎"——位置（闸门圈内 / 红线之后 / 3b 之前）一条都不放松。
     br = [n for n in ast.walk(impl) if isinstance(n, ast.If)
-          and ast.unparse(n.test).strip() == "_agent_mode"]
+          and ast.unparse(n.test).strip().startswith("_agent_mode")
+          and "_run_agent_loop" in ast.unparse(n)]
     c.check("A12 短路块只有一处、而且就在闸门圈内",
             len(br) == 1 and gspan[0] < br[0].lineno <= gspan[1], f"{[n.lineno for n in br]}")
     if br:
