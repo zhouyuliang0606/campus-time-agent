@@ -14,6 +14,9 @@
           而**形似**的两条好样本一条没少；再加一条整扫闸（比黑名单耐用）。
   D 配对：新增那一格不破坏「`_rule_intent` 的返回值都在白名单里」这条不变式；
           这批测试自己不污染真实样本库。
+  E 解释：判据改了道，学生看到的「我把这句听成什么」也得跟着改 —— 真机实测到最坏的一种对：
+          答案已是课表、轨迹首行还写「听成 看待办列表｜依据：样本库」（#65-F）。
+          这一批只钉**说法**，行为那半由 B1 钉 —— 两半分开，红名单才指认得出塌的是哪一半。
 
 ⚠️ 「每栏几只手」在 `test_82` 钉、只读工具粒度在 `test_84` 钉、轨迹落盘与只读接口在 `test_85` 钉
    —— 本文件一条都不重复钉（同一件事两处各钉就是两个会互相打脸的判据）。
@@ -102,7 +105,10 @@ def ask(cl, msg, sid, agent=None):
     return {"answer": str(js.get("answer") or ""),
             "options": js.get("options") or [],
             "tools": [str(t.get("action")) for t in tr if t.get("action")],
-            "phases": [str(t.get("phase") or "") for t in tr]}
+            "phases": [str(t.get("phase") or "") for t in tr],
+            # 判定那一段的"凭什么/否决了什么"写在 `answer` 里（`phase` 只有「🧭 判定」四个字），
+            # 只收 phase 的读法看不见它 —— E3 第一跑就是红在这儿，不是代码错，是探针少收了一栏。
+            "notes": [f"{t.get('phase') or ''}｜{t.get('answer') or ''}" for t in tr]}
 
 
 def listed_todo(answer):
@@ -362,11 +368,70 @@ def batch_d_pair():
             it.INTENT_LIST_COURSE in it.INTENT_MEANING
             and bool(str(it.INTENT_MEANING.get(it.INTENT_LIST_COURSE, "")).strip()),
             str(it.INTENT_MEANING.get(it.INTENT_LIST_COURSE)))
-    m = read(MAIN)
-    c.check("D5 它不落在任何**写库**分支的判据里（本单只加「别接走」，没加「由我接管」）："
-            "main 里这个符号只出现在导入 + 规则预判两处 + 列待办那两半",
-            m.count("INTENT_LIST_COURSE") <= 3,
-            f"main 里出现 {m.count('INTENT_LIST_COURSE')} 次")
+    m = read(MAIN).replace("\r\n", "\n")
+    # 判据从**计数**改成**位置**（#65-F 一加，`INTENT_LIST_COURSE` 在 main 里就从 3 次变 5 次了；
+    # 拿次数当闸，下一个合法用处会把它顶成假红，而它真正要挡的是"这符号出现在写库分支里"）。
+    where = set()
+    tree = ast.parse(m)
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            body = ast.get_source_segment(m, node) or ""
+            if "INTENT_LIST_COURSE" in body:
+                where.add(node.name)
+        elif isinstance(node, (ast.ImportFrom, ast.Import)):
+            if "INTENT_LIST_COURSE" in (ast.get_source_segment(m, node) or ""):
+                where.add("<导入>")
+    c.check("D5 这个符号只出现在**判定与解释**那几处（导入 + 规则预判 + 轨迹复述），"
+            "一个都不在写库分支里（本单只加「别接走」，没加「由我接管」）",
+            where and where <= {"<导入>", "_rule_intent", "_read_step", "_reason_steps"},
+            f"出现在 {sorted(where)}")
+    return c
+
+
+def batch_e_explain():
+    c = Checker()
+    title("E. 解释：判据改了道，屏幕上那句话也得跟着改（#65-F）")
+    with sandbox():
+        write_timetable(COURSES)
+        seed_todos(TODOS)
+        write_lib(SEED_LIB)
+        cl = make_client()
+
+        e = ask(cl, COURSE_ASK, "t65-e-first")
+        first = e["phases"][0] if e["phases"] else ""
+        joined = " ".join(e["phases"])
+        c.check("E1 轨迹首行不再说「看待办列表」（答案已经对了，解释不能再是错的——"
+                "真机实测到的就是这个形状：答的是课表，首行还写「听成 看待办列表｜依据：样本库」）",
+                "看待办列表" not in first, first[:80])
+        c.check("E2 首行说的是「查课表」，依据记在**规则层那一格**（样本库撞上的 list_todo 没被采用，"
+                "就不能把它写成结论的出处）",
+                "查课表" in first and "规则层" in first, first[:80])
+        c.check("E3 判定那一段要说得出**谁被拒了**（只说「听成了什么」，被否决的那条就无痕）",
+                any("问课" in n and "看待办" in n for n in e["notes"]),
+                " ｜ ".join(n[:40] for n in e["notes"][1:4])[:120])
+        c.check("E3-bis 同一句不许**再写**「以语义层为准」：这一句的赢家是规则层那一格，"
+                "那句否决说明留着就是第二条假话（写成 elif 就是为了这个）",
+                not any("以语义层为准" in n for n in e["notes"]),
+                " ｜ ".join(n[:40] for n in e["notes"][1:4])[:120])
+        c.check("E4 与 B1 成对：改了说法没改行为 —— 这一句的答案仍然不是念了一遍待办清单",
+                not listed_todo(e["answer"]) and LIST_MARK not in joined,
+                e["answer"][:60].replace("\n", " "))
+
+        g = ask(cl, "看看我的待办", "t65-e-real-todo")
+        gfirst = g["phases"][0] if g["phases"] else ""
+        c.check("E5 反向配对：真在看清单的那句，首行**照旧**说「看待办列表」——"
+                "这一处只把「问课」那一格提前，不是把学生的解释一律改黄",
+                "看待办列表" in gfirst, gfirst[:80])
+        c.check("E6 提前只发生在问课那一格认得的时候：规则层没认出的句子，优先序一个字没动",
+                listed_todo(g["answer"]) or "待办" in g["answer"], g["answer"][:50].replace("\n", " "))
+
+    rs = seg_of(MAIN, func_of(MAIN, "_read_step")) or ""
+    rsn = seg_of(MAIN, func_of(MAIN, "_reason_steps")) or ""
+    c.check("E7 `_read_step` 里这一格的优先序写在 `sem_intent or rule_hit` **之前**"
+            "（写反了就是行为对、说法错，而这种错只有真打一遍才看得见）",
+            "rule_hit == INTENT_LIST_COURSE" in rs and "sem_intent or rule_hit" in rs, "")
+    c.check("E8 `_reason_steps` 里那行否决说明是**按这一格的条件**写的（不是照抄 rule_veto 那句话）",
+            "INTENT_LIST_COURSE" in rsn and "这句在问课" in rsn, "")
     return c
 
 
@@ -378,7 +443,8 @@ def main():
                       ("B 批（行为）", batch_b_live),
                       ("B-bis 批（边界）", batch_b_edges),
                       ("C 批（数据）", batch_c_data),
-                      ("D 批（配对与自污）", batch_d_pair)):
+                      ("D 批（配对与自污）", batch_d_pair),
+                      ("E 批（解释与判据同一份）", batch_e_explain)):
         try:
             rc = fn().summary(label)
         except Exception as e:
