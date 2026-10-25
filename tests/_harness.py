@@ -49,6 +49,14 @@ USAGE_SANDBOX_DIR = tempfile.mkdtemp(prefix="campustime-usage-")
 os.environ.setdefault("CAMPUSTIME_USAGE_FILE",
                       os.path.join(USAGE_SANDBOX_DIR, "llm_usage.jsonl"))
 
+# ==== 进程级隔离 Agent 轨迹流水（#64，做法与上面那本账逐字相同）====
+# 为什么必须一起管住：`_chat_json` 出口现在是**每条 /api/chat 都写一行**，
+# 而全量里有十几批测试直接打这个接口 —— 不设这道 env，跑一遍全量就把测试话术
+# 灌进演示用的那本轨迹里（管理端「Agent 工作流」第一屏全是测试句，演示前要手动清空）。
+# 同一个临时目录、另一个文件名：目录退出时一起删，不再多挂一个 atexit。
+os.environ.setdefault("CAMPUSTIME_TRACE_FILE",
+                      os.path.join(USAGE_SANDBOX_DIR, "trace_log.jsonl"))
+
 
 def _drop_usage_dir():
     shutil.rmtree(USAGE_SANDBOX_DIR, ignore_errors=True)
@@ -137,6 +145,10 @@ class sandbox:
         # 外面那层是进程级临时账本（见文件头），pop 掉会让沙箱外的批又开始往真实文件写。
         self._prev_usage = os.environ.get("CAMPUSTIME_USAGE_FILE")
         os.environ["CAMPUSTIME_USAGE_FILE"] = os.path.join(dest, "llm_usage.jsonl")
+        # #64：Agent 轨迹流水同一做法（同一理由、同一套存取）—— 沙箱内读得到自己写的那本，
+        # 外面那层是进程级临时流水，出去时恢复而不是 pop。
+        self._prev_trace = os.environ.get("CAMPUSTIME_TRACE_FILE")
+        os.environ["CAMPUSTIME_TRACE_FILE"] = os.path.join(dest, "trace_log.jsonl")
         # 万一测试中途崩了，退出进程时也保证删掉，不留垃圾
         atexit.register(self._clean)
         return dest
@@ -153,6 +165,9 @@ class sandbox:
         if getattr(self, "_prev_usage", None) is not None:
             os.environ["CAMPUSTIME_USAGE_FILE"] = self._prev_usage
             self._prev_usage = None
+        if getattr(self, "_prev_trace", None) is not None:      # #64：轨迹流水同一处理
+            os.environ["CAMPUSTIME_TRACE_FILE"] = self._prev_trace
+            self._prev_trace = None
         print("\n[临时数据目录已删除，真实演示数据没被碰过]")
 
 

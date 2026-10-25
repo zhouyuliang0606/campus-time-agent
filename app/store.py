@@ -2073,3 +2073,111 @@ def clear_llm_usage() -> int:
     except Exception:
         return 0
     return n
+
+
+# ============ Agent 轨迹流水（#64：管理端「Agent 工作流」页的数据源）============
+# 为什么另起一本、不塞进 llm_usage.jsonl：那本是**模型调用账**（一次调用一行，给用量统计看），
+# 这本是**一轮对话一行**（含这一轮走了哪几步，给演示回放看）。两种粒度混在一份文件里，
+# 统计和回放都会各算各的，而且 `test_50` 钉着"真正 open 账本的只有 log/read/clear 三处" —— 混进去就是把那把尺子弄弯。
+TRACE_FILE = "trace_log.jsonl"
+TRACE_ROW_MAX = 64 * 1024       # 单行上限：超了就砍 trace 尾部（宁可少记几 step，不能让一句长回答撑爆整本）
+
+
+def _trace_path() -> str:
+    """轨迹流水的位置。
+
+    `CAMPUSTIME_TRACE_FILE` 有值就直取它，否则跟着数据目录走 —— 三条理由与 `_usage_path()` 逐字相同：
+    ① 生产不设这个 env，所以落盘就在数据目录下那份（管理端读的就是它）；
+    ② 测试沙箱靠 `CAMPUSTIME_DATA_DIR` 带着走，**没进沙箱**的那几批得靠这条 env 才管得住；
+    ③ 每次现读，不在 import 时缓存（红线 23：导入时定死的路径就是沙箱的漏点）。
+    """
+    return os.environ.get("CAMPUSTIME_TRACE_FILE") or _path(TRACE_FILE)
+
+
+def log_trace(record: dict) -> None:
+    """追加一轮对话的轨迹（人话：这一轮谁问的、判成了什么、走了哪条路、调了哪几只工具）。
+
+    **对外承诺不抛异常**：记账是旁路，对话才是主线（与 `log_llm_usage` 同一条硬要求）。
+    """
+    try:
+        os.makedirs(os.path.dirname(_trace_path()) or ".", exist_ok=True)
+        row = dict(record or {})
+        row.setdefault("ts", _now())
+        row.setdefault("id", uuid.uuid4().hex[:12])
+        line = json.dumps(row, ensure_ascii=False)
+        if len(line.encode("utf-8")) > TRACE_ROW_MAX:
+            row["trace"] = (row.get("trace") or [])[:20]      # 砍尾部，保住"判定 + 前几步"这副骨架
+            row["truncated"] = True
+            line = json.dumps(row, ensure_ascii=False)
+        with open(_trace_path(), "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except Exception:
+        pass
+
+
+def read_trace_log(limit: int = 100, *, module: str = "",
+                   agent_mode: str = "", only_tools: bool = False,
+                   q: str = "") -> list:
+    """读最近 limit 轮（**新的在前**）。
+
+    筛选只写在这里、不写进路由（项目老规矩：同一判据两处各写一遍，迟早一处藏一处不藏）。
+    返回的每一行**剥掉完整 trace**，只留摘要 —— 列表页不需要几万字；要看细节走 `get_trace_row(id)`。
+    ⚠️ 剥皮发生在筛完之后：`q` 要能在 trace 里搜（"哪个工具回过这句话"是这一页最有用的查法）。
+    """
+    rows: list = []
+    try:
+        with open(_trace_path(), encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rows.append(json.loads(line))
+                except Exception:
+                    continue
+    except Exception:
+        return []
+    if module:
+        rows = [r for r in rows if str(r.get("module") or "") == module]
+    if agent_mode in ("1", "0"):
+        want = agent_mode == "1"
+        rows = [r for r in rows if bool(r.get("agent_mode")) is want]
+    if only_tools:
+        rows = [r for r in rows if int(r.get("tool_calls") or 0) > 0]
+    if q:
+        rows = [r for r in rows if q in str(r.get("answer") or "")
+                or q in json.dumps(r.get("trace") or [], ensure_ascii=False)]
+    rows = rows[-max(1, int(limit or 100)):]
+    rows.reverse()
+    return [{k: v for k, v in r.items() if k != "trace"} for r in rows]
+
+
+def get_trace_row(row_id: str) -> dict | None:
+    """按 id 取一整轮（含完整 trace）。"""
+    try:
+        with open(_trace_path(), encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    r = json.loads(line)
+                except Exception:
+                    continue
+                if str(r.get("id") or "") == str(row_id):
+                    return r
+    except Exception:
+        return None
+    return None
+
+
+def clear_trace_log() -> int:
+    """清空轨迹流水，返回清掉的行数（管理端【清空】按钮用，跟用量清理同款）。"""
+    n = 0
+    try:
+        with open(_trace_path(), encoding="utf-8") as f:
+            n = sum(1 for ln in f if ln.strip())
+        open(_trace_path(), "w", encoding="utf-8").close()
+    except Exception:
+        pass
+    return n
