@@ -1,13 +1,16 @@
 """#64 的护栏：管理端「Agent 工作流」—— 每一轮的推理链落盘并画出来（只读可观测性）。
 
-六批：
+批次分工：
 
   A 形状：**落盘点只有一个**（`_chat_json` 的 `return resp` 之前；`_chat_impl` 那几十个 return 一个都不许补）；
         三条「会当众说错话」的规则各钉一条 —— 工具次数折半、result 收 1200 而学生视图仍收 120、
         单行上限按**字节**不是按字符；store 侧真正 open 流水的只有四处且都走 `_trace_path()`。
   B 行为：真打一句 → 流水恰好多一行且字段齐；`owner` 兜底是 `demo` 不是空串（施工单那条与实测不同）；
         `_trace_record` 用合成 resp 精确复现「两次调用 = 四条 action」与超长 result；
-        超上限那一行必须打 `truncated`；坏行跳过；**旁路不许拖主线**（写不进去时那句话照常 200）。
+        超上限那一行必须打 `truncated`，且这条输入**字符数在上限之下、字节数在上限之上**
+        （B12 原样喂的那行两种算法同解，分不出按字节还是按字符 —— 变异 Y6 逼出来的洞）；
+        坏行跳过；**旁路不许拖主线**（写不进去时那句话照常 200，且那句请求自己包 try：
+        让它报红而不是把整批打崩，崩≠这条判据有牙）。
   C 接口：三个口都要口令；`clear` 注册在 `{row_id}` 之前；列表不许带完整 trace；limit 夹住；
         三个口调完业务数据一个字节没动（「只读」两个字的证明）；也没有第四个「重放/重跑」口。
   D 前端：四处配对（左栏 / 容器 / 标题表 / switchNav）；3 秒轮询走 `_pollVisible` 且那一档不在前景就不打；
@@ -20,6 +23,7 @@
 """
 import ast
 import hashlib
+import json as _json
 import io
 import os
 import re
@@ -244,6 +248,22 @@ def batch_b_live():
         c.check("B12 超过单行上限的那一行被砍到 20 步并打上 truncated（宁可少记几步，不能让一句长回答撑爆整本）",
                 bool(back) and back.get("truncated") is True and len(back.get("trace") or []) == 20,
                 f"truncated={back.get('truncated')} 步={len(back.get('trace') or [])}")
+        # ★ 变异 Y6 打出来的洞：上面那行 `big` 有 72k 字，按**字符**数也照样超上限 ——
+        #   也就是说 B12 那两条根本分不出"按字节"和"按字符"两种写法（Y6 红了 A9 却没红 B12）。
+        #   补一条只有按字节才成立的：中文那一行字符数在上限**之下**、字节数在上限**之上**。
+        zh = {"sid": "中文行", "trace": [{"step": i, "phase": "汉字" * 150} for i in range(100)]}
+        zline = _json.dumps(zh, ensure_ascii=False)
+        cap = S.TRACE_ROW_MAX
+        c.check("B12-tris 这条输入自己的形状先钉住：字符数在单行上限之下、字节数在上限之上"
+                "（形状不成立下面那条就是在测空气，Y6 那一类改法会一路绿灯）",
+                len(zline) < cap < len(zline.encode("utf-8")),
+                f"字符={len(zline)} 字节={len(zline.encode('utf-8'))} 上限={cap}")
+        S.log_trace(zh)
+        zg = [x for x in S.read_trace_log(limit=99) if x.get("sid") == "中文行"]
+        zback = S.get_trace_row(zg[0]["id"]) if zg else {}
+        c.check("B12-tris2 那一行**必须**被砍（按字符数算它没超，所以这一条只有按字节才红得起来 —— Y6 的靶子）",
+                bool(zback) and zback.get("truncated") is True and len(zback.get("trace") or []) == 20,
+                f"truncated={zback.get('truncated')} 步={len(zback.get('trace') or [])}")
         S.log_trace({"sid": "small", "trace": [{"step": 1, "phase": "x"}]})
         sm = [x for x in S.read_trace_log(limit=99) if x.get("sid") == "small"]
         c.check("B12-bis 没超上限的行**不许**带 truncated 标（带了就是告诉人「这条被砍过」，那是谎）",
@@ -276,14 +296,20 @@ def batch_b_bypass():
         a0 = chat(cl, "我的待办", "t64-ok").json().get("answer")
         prev = os.environ.get("CAMPUSTIME_TRACE_FILE")          # 出去时**恢复**，不是 pop：
         os.environ["CAMPUSTIME_TRACE_FILE"] = PROJ_DIR          #   外面那层是进程级临时流水（pop 会让后面的批开始写别处）
-        r = chat(cl, "我的待办", "t64-bad")
-        a1 = r.json().get("answer")
+        # ★ 这里必须自己接住异常：变异 Y11（两层保险一起拆）实测会让这一句**直接抛穿** _chat_json，
+        #   不接就是"整批崩了"——崩只告诉你批次没了，不告诉你 B17 这条判据有没有牙。
+        try:
+            r = chat(cl, "我的待办", "t64-bad")
+            a1, boom = r.json().get("answer"), ""
+        except Exception as e:
+            r, a1, boom = None, None, f"{type(e).__name__}: {e}"
         if prev is None:
             os.environ.pop("CAMPUSTIME_TRACE_FILE", None)
         else:
             os.environ["CAMPUSTIME_TRACE_FILE"] = prev
         c.check("B17 流水写不下去时这一句照常 200、答案与之前**逐字相同**（Y4 的靶子：旁路挂了不能拖主线）",
-                r.status_code == 200 and a0 == a1 and bool(a0), f"{r.status_code} / {str(a1)[:40]}")
+                boom == "" and r is not None and r.status_code == 200 and a0 == a1 and bool(a0),
+                f"{boom or (str(r.status_code) + ' / ' + str(a1)[:40])}")
         c.check("B18 失败时也没在别处留下半成品文件（旁路失败就该安静，不该到处留临时垃圾）",
                 not os.path.exists(os.path.join(PROJ_DIR, "trace_log.jsonl")), "")
     return c
