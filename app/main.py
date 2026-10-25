@@ -61,7 +61,9 @@ from app.store import (
     add_workorder, list_workorders, update_workorder_status,
     set_workorder_archived, set_message_archived, list_archived_workorders,
     delete_service, delete_custom_record, delete_notice,
-    set_current_student, current_student, is_registered, list_accounts, timetable_saved,
+    set_current_student, current_student, current_owner, is_registered, list_accounts, timetable_saved,
+    # #64：Agent 轨迹流水（管理端「Agent 工作流」那一页的数据源；写侧只有 _chat_json 一处）
+    log_trace, read_trace_log, get_trace_row, clear_trace_log,
 )
 from app.modules.faq import SYSTEM_PROMPT as FAQ_PROMPT, build_tools as faq_tools
 from app.modules.express import SYSTEM_PROMPT as EXPRESS_PROMPT, build_tools as express_tools
@@ -1733,6 +1735,44 @@ async def chat(req: Request):
                                       "X-Accel-Buffering": "no"})
 
 
+TRACE_RESULT_MAX = 1200      # 落盘时每条工具结果收多长（**不是**学生端那 120 字，见 `_trace_record`）
+TRACE_STEPS_MAX = 60         # 一轮最多留多少步（引擎最多 6 轮 × 几只工具，正常一轮十几步，用不到这道闸）
+TRACE_HEAD_MAX = 40          # 列表页那一列"前 40 字"
+
+
+def _trace_record(resp: dict, meta: dict) -> dict:
+    """把一轮出口收成像 `trace_log.jsonl` 的那一行（#64）。
+
+    单独抽成一个函数只为**可单测** —— 里面三条规则每一条都是一个会当众说错话的地方：
+    ① `tool_calls` 要折半：引擎每调一次工具在 trace 里占**两条**（🔧 调用工具 + 📦 工具结果，
+       两条都带 `action` —— 实测 `engine.py:148` 与 `:223`），直接数条数就把"调了 2 次"说成"调了 4 次"；
+    ② 每条 result 收到 `TRACE_RESULT_MAX`：与学生端那 120 字**不是同一个理由** ——
+       那边是"别让人看内脏"，这边是"别把日志撑爆"，两个理由两个数，不许合并成一份；
+    ③ `answer_head` 存前 40 字：列表接口把 trace 剥掉了（答案正文在 💡 那一步里），
+       不单独存一截，摘要那一列就只剩一个字数。
+    ⚠️ 存的是**原始 trace**，不是 `public_view` 收过的那份：管理端要看的就是"模型实际拿到什么"。
+    """
+    tr = [t for t in (resp.get("trace") or []) if isinstance(t, dict)]
+    tr = [dict(t, result=str(t["result"])[:TRACE_RESULT_MAX] + "…")
+          if isinstance(t.get("result"), str) and len(t["result"]) > TRACE_RESULT_MAX
+          else t for t in tr]
+    acts = [str(t.get("action")) for t in tr if t.get("action")]
+    ans = str(resp.get("answer") or "")
+    return {
+        "sid": str(resp.get("session_id") or ""),
+        "owner": str(meta.get("owner") or ""),
+        "module": str(resp.get("module") or ""),
+        "agent_mode": bool(meta.get("agent_mode")),
+        "tool_calls": len(acts) // 2,
+        "tools": acts,
+        "steps": len(tr),
+        "answer_len": len(ans),
+        "answer_head": ans[:TRACE_HEAD_MAX],
+        "options_n": len(resp.get("options") or []),
+        "trace": tr[:TRACE_STEPS_MAX],
+    }
+
+
 async def _chat_json(req: Request, emit=None):
     """JSON 出口的本体：跑 `_chat_impl` + 统一补"听成什么"。SSE 那条也复用它（两路口径必然一致）。
 
@@ -1752,6 +1792,18 @@ async def _chat_json(req: Request, emit=None):
             resp["trace"] = head + tr
         except Exception:
             pass
+    # ★ #64：这一轮"Agent 是怎么走的"记一笔 —— 管理端「Agent 工作流」那一页的数据源。
+    #   为什么只在这儿写：`_chat_json` 是**唯一汇聚点**（JSON 与 SSE 两条出口都从这儿出去，
+    #   `_chat_impl` 那 79 个 return 全在下游 —— 实测数字见 #64 快照）。跟上面拼 `read`/`reasons`
+    #   同一个道理：一处覆盖全部，逐个补必漏。
+    #   收像的规则抽成 `_trace_record` 单独一个函数，只为可单测（里面三条各是会当众说错话的地方）。
+    #   存的是**原始 trace**，不是 `public_view` 收过的那份：管理端要看的就是"模型实际拿到什么"，
+    #   学生那份已经被截到 120 字并洗掉内部词，看它等于看二手（红线 8 管的是学生屏幕，不管这一本）。
+    if isinstance(resp, dict):
+        try:
+            log_trace(_trace_record(resp, meta))
+        except Exception:
+            pass      # 落盘是旁路：它挂了也绝不能让这一句话失败
     return resp
 
 
@@ -2054,6 +2106,13 @@ async def _chat_impl(req: Request, meta: dict, emit=None):
         return JSONResponse({"error": "请求体必须是一个 JSON 对象"}, status_code=400)
     # #61-C：开关**只在这里取一次**，后面全读这个局部量（两处各算 = 第二个 12b）。
     _agent_mode = _agent_mode_on(body)
+    # #64：出口落盘要用"这一轮是不是 Agent 模式"和"按谁的口径"，就在算出来的地方就地记进小本子
+    #      （跟 `meta["read"]` 同一个用法：判定在各处做一次，出口统一取，别再第二处各算一遍）。
+    # ⚠️ `owner` 这一列**不会是空串**：`store.current_owner()` 没身份时兜到 `DEMO_OWNER`（"demo"）。
+    #    施工单写的是"驿站/管理端可能是空串，那就记空" —— 实测那个兜底在 #45 就定下来了，
+    #    所以管理端看到 `demo` 的意思是"这一轮没带身份"，不是"数据缺了"。
+    meta["agent_mode"] = _agent_mode
+    meta["owner"] = current_owner()
     message = (body.get("message") or "").strip()
     if not message:
         return JSONResponse({"error": "消息不能为空"}, status_code=400)
@@ -5783,6 +5842,51 @@ async def usage_clear():
     """
     n = clear_llm_usage()
     return {"ok": True, "cleared": n, "message": f"已清空 {n} 条调用记录"}
+
+
+# ============ 管理控制台：Agent 工作流（#64）============
+# 数据源就是 `_chat_json` 出口记下的那本 JSONL 流水（app/data/trace_log.jsonl）。
+# 这一档**只读**：三个口里只有【清空】会动文件，动的也只是这本旁路日志。
+# ⚠️ 故意**不提供"重放/重跑"**：重跑就会走写库那几条分支，而"写入必须学生点过确认"是红线 4，
+#    一个只给看的工作流视图要是能替模型再跑一遍，就等于把红线旁开了一个洞。
+# 筛选判据只写在 `store.read_trace_log` 一处，路由这里不重复判（同一件事两处各判迟早一处藏一处不藏）。
+
+@app.get("/api/admin/trace", dependencies=[Depends(verify_admin)])
+async def admin_trace(limit: int = 100, module: str = "", agent_mode: str = "",
+                      only_tools: bool = False, q: str = ""):
+    """Agent 工作流列表（只读，新的在前；**不含完整 trace**，点开才取）。"""
+    limit = max(1, min(int(limit or 100), 300))     # 上限 300：演示机上一屏也就看得见十几行
+    rows = read_trace_log(limit=limit, module=module, agent_mode=agent_mode,
+                          only_tools=only_tools, q=q)
+    # 下拉里的候选项从**没筛过的**那一份算（多读一次文件换一件事）：
+    # 要是拿筛过的结果算，选过一次「问答」之后模块下拉就只剩「问答」一项，换不回去了。
+    mods = sorted({str(r.get("module") or "")
+                   for r in read_trace_log(limit=500) if r.get("module")})
+    return {"ok": True, "rows": rows, "modules": mods}
+
+
+# ⚠️ 这条 `clear` 必须注册在 `{row_id}` **之前**。
+#    实测（#64 快照）：今天它俩方法不同（POST vs GET），换顺序也还打得通 —— 真正挡着的是方法；
+#    但"同层同方法"那一刻就会被 `{row_id}` 吞成一个 id 去查（实验里 GET /api/admin/trace/clear
+#    直接被当成 row_id="clear"）。顺序按"静态段在前"钉住，别把安全性押在下一个人不改成 GET 上。
+@app.post("/api/admin/trace/clear", dependencies=[Depends(verify_admin)])
+async def admin_trace_clear():
+    """清空轨迹流水（只清这本旁路日志，不碰任何业务数据）。"""
+    n = clear_trace_log()
+    return {"ok": True, "cleared": n, "message": f"已清空 {n} 轮对话轨迹"}
+
+
+@app.get("/api/admin/trace/{row_id}", dependencies=[Depends(verify_admin)])
+async def admin_trace_one(row_id: str):
+    """取某一轮的完整轨迹（只读）。
+
+    `row_id` 只拿来跟记录里的 id **比对**，不参与任何路径拼接（这本流水只有一个固定文件名），
+    所以指南红线「先认记录、再碰文件」在这里的自然做法就是：整本读、逐行比。
+    """
+    row = get_trace_row(row_id)
+    if not row:
+        return JSONResponse({"error": "这一轮找不到了（可能已被清空）"}, status_code=404)
+    return {"ok": True, "row": row}
 
 
 # ============ 学生个人库：周表（课程）与待办 ============
