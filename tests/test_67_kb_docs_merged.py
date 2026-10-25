@@ -178,16 +178,31 @@ def batch_b_boundaries():
                 "观星台在下月一号迁址" in search_kb("观星台迁址"))
 
         # K5 无循环导入：**新进程**里单独先导 faq 再调，才测得出"faq 顶层不许碰 files"
+        #
+        # ★ #62-B 码页：**两端一起钉死**，只钉父端会换个方向坏（实测，见 test_83 E 批那张表）。
+        #   子进程往 stdout 写什么编码，取决于**它自己继承到的 env**：
+        #     外层 shell 干净 ⇒ 子进程 gbk；外层带了 PYTHONIOENCODING=utf-8 或 PYTHONUTF8=1 ⇒ 子进程 utf-8。
+        #   父端 `text=True` 不写 encoding 时按 `locale.getpreferredencoding(False)` 解 ——
+        #   实测这一路在中文 Windows 上是 cp936，**连外层设了 PYTHONUTF8 也还是 cp936**（那是子进程的事，
+        #   不改父进程的区域设置）。于是"跑全量必须带 PYTHONUTF8=1"这条依赖不写在任何地方，
+        #   换 shell 就红：子进程吐 UTF-8、父进程按 GBK 解 ⇒ reader 线程 UnicodeDecodeError ⇒
+        #   `probe.stdout` 变 None ⇒ 下面那句拼接不是红一条，是整批以 TypeError 崩掉。
+        #   反过来只钉父端（`encoding="utf-8"` 而子进程仍写 gbk）**同样错**：解出来是一串
+        #   「֪ʶ」，断言 `startswith("知识库里没有")` 直接假红 —— 施工单给的这一版就是这个形状。
+        #   ⇒ 子端 `-X utf8`（写死 UTF-8，不继承外层）+ 父端 `encoding="utf-8"`，两头各自定死才对得上。
+        #   `errors="replace"` 是第二道：真撞上非 UTF-8 字节给个替换符继续，让断言去比内容而不是整批崩。
         probe = subprocess.run(
-            [sys.executable, "-c",
+            [sys.executable, "-X", "utf8", "-c",
              "import sys; sys.path.insert(0, r'%s');"
              "from app.modules.faq import search_kb;"
              "print(search_kb('天文台')[:12])" % PROJ_DIR],
-            capture_output=True, text=True, cwd=PROJ_DIR, timeout=60)
+            capture_output=True, text=True, cwd=PROJ_DIR, timeout=60,
+            encoding="utf-8", errors="replace")
+        # 同一处理由的兜底：解码真出事时宁可红一条，不许崩一批（None 参与 + 就是崩）。
+        out = (probe.stdout or "") + (probe.stderr or "")
         c.check("K5 新进程里先 import faq 再调 search_kb 不炸（files 是函数内导入，没成环）",
-            "Traceback" not in (probe.stdout + probe.stderr)
-            and (probe.stdout.startswith("知识库里没有") or "文档" in probe.stdout),
-            (probe.stdout or probe.stderr)[:70].replace("\n", " "))
+            "Traceback" not in out and (out.startswith("知识库里没有") or "文档" in out),
+            out[:70].replace("\n", " "))
     return c
 
 
