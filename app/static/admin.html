@@ -82,6 +82,30 @@
     /* 后勤报修那一档（#54）：配色跟着管理端自己的橙红，不引驿站的青绿 */
     .rpNew { display: flex; gap: 8px; margin-bottom: 6px; }
     .rpNew input { flex: 1; padding: 7px 10px; border: 1px solid #d8def0; border-radius: 8px; font-size: 13px; }
+    /* Agent 工作流那一档（#64）：筛选条 + 六段流水线 + 时间轴。颜色沿用本页的蓝灰，
+       提案那一枚用橙红 —— 这一页"要处理的东西才烫"，一条流水不该烫。 */
+    .tfBar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 10px 0 12px; }
+    .tfBar select, .tfBar input { padding: 6px 8px; border: 1px solid #d8def0; border-radius: 8px; font-size: 12px; background: #fff; }
+    .tfBar input { min-width: 190px; }
+    .tfBar .tfCk { display: flex; align-items: center; gap: 5px; font-size: 12px; color: #4a5366; }
+    .tfBar .tfCk input { min-width: 0; width: 14px; }
+    .tfChip { font-size: 11px; border-radius: 6px; padding: 1px 6px; background: #eef2ff; color: #4f5fb3; }
+    .tfChip.agent { background: #e8f0ff; color: #2f5fd0; }
+    .tfChip.plain { background: #eef1f9; color: #6a7388; }
+    .tfChip.prop { background: #fff1e8; color: #b4530f; }
+    .tfFlow { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin: 4px 0 10px; }
+    .tfSeg { font-size: 12px; padding: 3px 10px; border-radius: 999px; border: 1px solid #e3e7f2;
+      color: #a9b1c6; background: #fafbfe; }
+    .tfSeg.on { border-color: #b9c8f0; color: #2f4f9e; background: #eaf1ff; font-weight: 600; }
+    .tfArrow { color: #c8cfe0; font-size: 12px; }
+    .tfStep { display: flex; flex-wrap: wrap; gap: 8px; padding: 7px 0; border-bottom: 1px dashed #eef0f6; font-size: 12px; }
+    .tfStep .ph { flex: 0 0 210px; color: #4a5366; white-space: pre-wrap; word-break: break-word; }
+    .tfStep .bd { flex: 1; min-width: 200px; color: #2c3346; white-space: pre-wrap; word-break: break-word; }
+    .tfStep.tool { background: #f8faff; }
+    .tfStep.write { background: #fff7ef; }
+    .tfDetail { margin-top: 12px; border: 1px solid #e6eaf5; border-radius: 12px; padding: 12px 14px; background: #fcfdff; }
+    .tfDetail h3 { margin: 0 0 6px; font-size: 15px; }
+    .tfArgs { color: #8a93a6; font-size: 11px; margin-top: 2px; }
     /* 知识库那栏的关键词行（#55-B）：输入框占满、按钮跟在右边，
        不然「自动拆词」那颗浮到下一行，人会以为是两个独立的动作 */
     .kk-row { display: flex; gap: 8px; align-items: center; }
@@ -207,6 +231,9 @@
         <div class="sb-item" data-nav="kb"><span class="ico">📚</span><span class="lbl">知识库</span></div>
         <div class="sb-item" data-nav="docs"><span class="ico">📄</span><span class="lbl">文档知识库</span></div>
         <div class="sb-item" data-nav="usage"><span class="ico">📊</span><span class="lbl">用量统计</span></div>
+        <!-- #64：这一档就在「用量统计」后面 —— 那本数的是"花了多少"，这本数的是"它是怎么走的"，
+             演示时两本账连着讲最顺。图标用 🧾（流水单），它不在 test_44 那份下线字形名单里。 -->
+        <div class="sb-item" data-nav="trace"><span class="ico">🧾</span><span class="lbl">Agent 工作流</span></div>
         <div class="sb-item" data-nav="api"><span class="ico">🔑</span><span class="lbl">API 配置</span></div>
         <div class="sb-item" data-nav="persona"><span class="ico">🎭</span><span class="lbl">客服人格</span></div>
       </nav>
@@ -376,7 +403,52 @@
           </div>
         </div>
 
-        <!-- ⑦ 知识库管理 -->
+        <!-- ⑥-bis Agent 工作流（#64：演示时"评委问一句 → 这里 2 秒内出现这一轮 → 点开能指着讲"）
+             编号跟着「⑥ 模型用量统计」走：那本数的是"花了多少"，这本数的是"它是怎么走的"，
+             同一类"只读回放"，所以并排放，后面的 ⑦⑧ 编号一个字不动。 -->
+        <div id="view-trace" class="nav-view">
+          <div class="card">
+            <h2>🧾 Agent 工作流（每一轮一行 · 只读回放，不参与任何写入）</h2>
+            <div class="small" id="traceMeta">读取中…</div>
+
+            <div class="tfBar">
+              <select id="traceModule"><option value="">全部模块</option></select>
+              <select id="traceMode">
+                <option value="">全部模式</option>
+                <option value="1">只 Agent 模式</option>
+                <option value="0">只普通模式</option>
+              </select>
+              <label class="tfCk"><input type="checkbox" id="traceTools" /> 只看调过工具的</label>
+              <input id="traceQ" placeholder="关键词（答案与工具回话都搜）" />
+              <button class="btn ghost" id="traceGo">查</button>
+              <span class="small" id="traceNew"></span>
+            </div>
+
+            <div class="utab-wrap" id="traceList" style="max-height:320px;">
+              <div class="empty">还没有轨迹。去学生端问一句，这一页三秒内就该多出一种“它是这么走的”</div>
+            </div>
+
+            <div style="margin-top:10px;">
+              <button class="btn ghost" id="refreshTrace">立即刷新</button>
+              <button class="btn ghost" id="clearTrace">清空轨迹流水</button>
+              <span class="small" id="traceStatus" style="margin-left:8px;"></span>
+            </div>
+
+            <div id="traceDetail"></div>
+
+            <div class="small" style="margin-top:8px;">
+              流水文件：<code>app/data/trace_log.jsonl</code>（一行一轮，只追加；跟用量那本分开，
+              因为那本一次调用一行、是给统计看的，这本一轮一行、是给回放看的）。<br />
+              <b>这一页存的是原始轨迹</b>，不是学生屏幕那份 —— 学生那份被收过内部词、截到 120 字，
+              看它等于看二手；红线 8 管的是学生屏幕，不管这一本。<br />
+              <b>「工具」那一列是次数，不是轨迹行数</b>：引擎每调一次工具会写两条（🔧 调用 + 📦 结果），
+              所以次数 = 带工具名的行数 ÷ 2。直接把行数当次数印出去，就会当着评委把 2 次说成 4 次。<br />
+              <b>没有【重放】按钮</b>，是故意的：重跑会走写库那几条分支，而"写入必须学生点过确认"是红线 4。
+            </div>
+          </div>
+        </div>
+
+        <!-- ⑧ 知识库管理 -->
         <div id="view-kb" class="nav-view">
           <div class="card">
       <h2>📚 知识库管理（零代码维护，学生端问答直接吃这份数据）</h2>
@@ -1478,13 +1550,211 @@
       }
     });
 
+    // ---------- Agent 工作流（#64）----------
+    // 这一页只读：数据源是 `_chat_json` 出口写的 app/data/trace_log.jsonl，一个字节都不写回业务数据。
+    // 六段流水线的命中条件**只看 trace 里已有的字样**，不给 `_chat_impl` 那 79 个 return 逐个补分支 ID
+    //（实测 79 条 return；施工单 §不做的事 2 就是为这件事写的）—— 归不上的行原样显示，宁可少一段高亮。
+    // ⚠️ 这一族的写法纪律：标签一律写死在字符串里，`${}` 里只放**值**（且过 esc / _num / Number / String）。
+    //    把 `<span>` 这类 HTML 字面量塞进三元里，test_33 的 E 批会当成"新增未审裸插值"打红 —— 那不是它苛刻，
+    //    正是这一族写法历史上漏过 XSS 的位置。
+    const TRACE_SEG_NAMES = ["① 判定", "② 路由", "③ 思考", "④ 工具", "⑤ 提案", "⑥ 回答"];
+
+    function traceSegments(row) {
+      const steps = row.trace || [];
+      const has = (word) => steps.some(t => String(t.phase || "").indexOf(word) >= 0);
+      const hit = [
+        () => has("我把这句听成"),                         // 判定：`_read_step` 那一句
+        () => has("🧭"),                                  // 路由：#60 那几条 `🧭 判定` 依据
+        () => has("🤔"),                                  // 思考：引擎每轮一条
+        () => steps.some(t => !!t.action),                 // 工具：🔧 调用 与 📦 结果 都带 action
+        () => Number(row.options_n || 0) > 0,              // 提案：整轮的事实，不是某一步的
+        // ⚠️ 第 6 段与施工单不同，是实测改的：没走模型的那几支（确定性直答、学生点【确认】那一轮）
+        //    **根本不写 `💡 最终回答` 那行** —— 实测「我的待办」那轮只有
+        //    `🧠 我把这句听成…` + `📋 列出待办（系统读取）` 两行。只认 💡 的话，
+        //    对比剧本里"Agent 关"那一行会**六段全暗**，看着像这一页坏了。
+        //    所以放宽成「有 💡 那行，或这一轮确实答了点什么」—— 高亮少一段可以，全暗会误导。
+        () => has("💡") || Number(row.answer_len || 0) > 0
+      ];
+      return hit.map((f) => { try { return !!f(); } catch (e) { return false; } });
+    }
+
+    function traceFlowHtml(row) {
+      const on = traceSegments(row);
+      const parts = on.map((v, i) =>
+        '<span class="tfSeg' + (v ? " on" : "") + '">' + esc(TRACE_SEG_NAMES[i]) + "</span>");
+      return '<div class="tfFlow">' + parts.join('<span class="tfArrow">→</span>') + "</div>";
+    }
+
+    function traceStepHtml(t) {
+      const ph = String(t.phase || "");
+      // 「系统写入」那一族单独上色：演示时那一轮工具次数是 0，但**它才是红线证据**（写入由系统做，不由模型做）
+      const isWrite = ph.indexOf("学生确认") >= 0 || ph.indexOf("系统写入") >= 0;
+      let cls = "tfStep";
+      if (t.action) cls += " tool";
+      if (isWrite) cls += " write";
+      let body = "";
+      if (t.args && Object.keys(t.args).length) {
+        body += '<div class="tfArgs">参数 ' + esc(JSON.stringify(t.args)) + "</div>";
+      }
+      const txt = typeof t.result === "string" ? t.result
+                : (typeof t.answer === "string" ? t.answer : "");
+      // 工具结果**默认展开**：演示时手指要当场点到，不能再让人多点一次"展开"
+      if (txt) body += '<div class="bd">' + esc(txt) + "</div>";
+      return '<div class="' + esc(cls) + '"><div class="ph">' + esc(_num(t.step))
+        + " · " + esc(ph || "—") + '</div><div>'
+        + (body || '<span class="tfArgs">（这一步只有个标记，没带话）</span>') + "</div></div>";
+    }
+
+    function renderTraceDetail(row) {
+      const steps = row.trace || [];
+      const head = '<div class="tfDetail"><h3>这一轮 ' + esc(String(row.ts || "").slice(0, 19))
+        + '</h3><div class="small">问的人 ' + esc(row.owner || "—")
+        + " · 判成 " + esc(row.module || "—")
+        + ' · <span class="tfChip ' + esc(row.agent_mode ? "agent" : "plain") + '">'
+        + esc(row.agent_mode ? "Agent 模式" : "普通模式（没走模型）") + "</span>"
+        + " · 工具 " + esc(_num(row.tool_calls)) + " 次"
+        + " · 轨迹 " + esc(_num(row.steps)) + " 行"
+        + " · 提案 " + esc(_num(row.options_n)) + " 张"
+        + " · 答案 " + esc(_num(row.answer_len)) + " 字"
+        + (row.truncated ? ' · <span class="tfChip plain">单行超长，尾部已截</span>' : "")
+        + "</div>" + traceFlowHtml(row);
+      const body = steps.length ? steps.map(traceStepHtml).join("")
+                                : '<div class="empty">这一轮没记下任何步</div>';
+      document.getElementById("traceDetail").innerHTML = head + body + "</div>";
+    }
+
+    let traceTopId = "";      // 上一次看到的**首行 id**（不是时间 —— 同一秒可以落两轮）
+    let traceOpenId = "";     // 正在看的那一轮：刷新后替人重画，别把人看到一半的详情弄丢
+
+    function traceQuery() {
+      const g = (id) => document.getElementById(id).value;
+      const p = new URLSearchParams();
+      p.set("limit", "20");
+      if (g("traceModule")) p.set("module", g("traceModule"));
+      if (g("traceMode")) p.set("agent_mode", g("traceMode"));
+      if (document.getElementById("traceTools").checked) p.set("only_tools", "true");
+      if (g("traceQ").trim()) p.set("q", g("traceQ").trim());
+      return p.toString();
+    }
+
+    async function loadTrace() {
+      // 这一档不在前景就不打：演示机开一上午，切走了还每 3 秒白读一本流水。
+      //（后勤那档先立的规矩：`_pollVisible` 之外，档自己也得知道"我在不在前景"）
+      const view = document.getElementById("view-trace");
+      if (!view || !view.classList.contains("active")) return;
+      let d;
+      try {
+        d = await (await adminFetch("/api/admin/trace?" + traceQuery())).json();
+      } catch (e) {
+        document.getElementById("traceMeta").textContent = "轨迹接口暂时读不到，3 秒后自动重试";
+        return;
+      }
+      const rows = d.rows || [];
+      // 模块下拉的候选：只在候选真的变了时重画，否则人正开着下拉就被刷没了
+      const mods = d.modules || [];
+      const sel = document.getElementById("traceModule");
+      const key = mods.join(",");
+      if (sel.dataset.key !== key) {
+        const cur = sel.value;
+        sel.innerHTML = '<option value="">全部模块</option>'
+          + mods.map(m => '<option value="' + esc(m) + '">' + esc(m) + "</option>").join("");
+        sel.value = cur;
+        if (cur && mods.indexOf(cur) < 0) sel.value = "";
+        sel.dataset.key = key;
+      }
+      const first = rows.length ? String(rows[0].id || "") : "";
+      const news = document.getElementById("traceNew");
+      if (first && traceTopId && first !== traceTopId) {
+        const at = rows.findIndex(r => String(r.id) === traceTopId);
+        news.textContent = "＋" + esc(_num(at < 0 ? 1 : at)) + " 轮";   // 找不到上一行就按 1 说，不虚报
+      } else if (!first || !traceTopId) {
+        news.textContent = "";
+      }
+      if (first) traceTopId = first;
+      document.getElementById("traceMeta").textContent =
+        "最近 " + esc(_num(rows.length)) + " 轮（新的在上）· 「工具」那一列是**次数**："
+        + "引擎每次调用写两条（🔧 + 📦），这里已经折过半";
+      if (!rows.length) {
+        document.getElementById("traceList").innerHTML =
+          '<div class="empty">还没有轨迹 —— 去学生端问一句，这一页 3 秒内就该出现第一行</div>';
+      } else {
+        document.getElementById("traceList").innerHTML =
+          '<table class="utab"><thead><tr><th>时间</th><th>学生</th><th>模块</th><th>模式</th>'
+          + "<th>工具</th><th>轨迹</th><th>提案</th><th>摘要</th></tr></thead><tbody>"
+          + rows.map(r => '<tr data-tr="' + esc(String(r.id || "")) + '">'
+              + "<td>" + esc(String(r.ts || "").slice(11, 19) || "—") + "</td>"
+              + "<td>" + esc(r.owner || "—") + "</td>"
+              + "<td>" + esc(r.module || "—") + "</td>"
+              + '<td><span class="tfChip ' + esc(r.agent_mode ? "agent" : "plain") + '">'
+              + esc(r.agent_mode ? "Agent" : "普通") + "</span></td>"
+              + "<td>" + esc(_num(r.tool_calls)) + "</td>"
+              + "<td>" + esc(_num(r.steps)) + "</td>"
+              + "<td>" + esc(_num(r.options_n)) + "</td>"
+              + "<td>" + esc(String(r.answer_head || "").slice(0, 40))
+              + ' <span class="small">' + esc(_num(r.answer_len)) + " 字</span></td>"
+              + "</tr>").join("")
+          + "</tbody></table>";
+      }
+      if (traceOpenId && rows.some(r => String(r.id) === traceOpenId)) openTrace(traceOpenId, true);
+    }
+
+    async function openTrace(id, quiet) {
+      traceOpenId = id;
+      if (!quiet) document.getElementById("traceDetail").innerHTML = '<div class="small">读取中…</div>';
+      let d;
+      try {
+        d = await (await adminFetch("/api/admin/trace/" + encodeURIComponent(id))).json();
+      } catch (e) {
+        document.getElementById("traceDetail").innerHTML =
+          '<div class="small">这一轮读不到了（可能刚被清空，或 id 打错了）</div>';
+        return;
+      }
+      renderTraceDetail(d.row || {});
+    }
+
+    async function clearTrace() {
+      // 与【清空用量】同一个理由走自绘的 askConfirm：一页留两种确认框，迟早有人分不清哪个是真删
+      const ok = await askConfirm({
+        title: "清空全部对话轨迹？",
+        body: "只清这本旁路日志（app/data/trace_log.jsonl），不动任何待办/课表/会话/工单。",
+        warn: "演示前清一次是好的；但刚演完那几轮也一起没了，回放不回来（这一页没有回收站）。",
+        okText: "清空轨迹",
+      });
+      if (!ok) return;
+      const st = document.getElementById("traceStatus");
+      let d;
+      try {
+        d = await (await adminFetch("/api/admin/trace/clear", { method: "POST" })).json();
+      } catch (e) { st.textContent = "❌ 清空没成功：" + esc(e.message); return; }
+      traceTopId = ""; traceOpenId = "";
+      document.getElementById("traceDetail").innerHTML = "";
+      st.textContent = "✅ " + (d.message || "已清空");
+      loadTrace();
+      setTimeout(() => { st.textContent = ""; }, 4000);
+    }
+
+    document.getElementById("traceList").addEventListener("click", e => {
+      const tr = e.target.closest("tr[data-tr]");
+      if (tr && tr.dataset.tr) openTrace(tr.dataset.tr);
+    });
+    // 换筛选条件时把"上一行"忘掉：拿旧游标去比新筛选的结果，会凭空报出一个「＋N 轮」
+    const traceReset = () => { traceTopId = ""; loadTrace(); };
+    document.getElementById("traceGo").addEventListener("click", traceReset);
+    document.getElementById("traceQ").addEventListener("keydown", e => {
+      if (e.key === "Enter") traceReset();
+    });
+    ["traceModule", "traceMode", "traceTools"].forEach(id =>
+      document.getElementById(id).addEventListener("change", traceReset));
+    document.getElementById("refreshTrace").addEventListener("click", loadTrace);
+    document.getElementById("clearTrace").addEventListener("click", clearTrace);
+
     // ---------- 三栏外壳：左栏点开哪档，中间就只显示哪档（只动 display，DOM 全程不重建） ----------
     // 因为不重建：正在填的通知、编辑到一半的知识库条目（editingKb）、刚选的附件，
     // 切走再切回来都还在 —— 这页一半的卡是**表单**，重建一次就是一次数据丢失。
     const NAV_TITLE = {
       wo: "学生工单", repair: "后勤报修", inbox: "学生消息收件箱", notice: "发布通知", kb: "知识库管理",
       docs: "文档知识库",
-      usage: "模型用量统计", api: "API 配置", persona: "客服人格配置",
+      usage: "模型用量统计", trace: "Agent 工作流", api: "API 配置", persona: "客服人格配置",
     };
 
     // 两种数字语义不同，各画各的：红点=有活要干（未结工单），灰计数=单纯有多少条（这页没有"已读"状态）
@@ -1519,6 +1789,7 @@
       else if (view === "kb") loadKB();
       else if (view === "docs") loadDocs();
       else if (view === "usage") loadUsage();
+      else if (view === "trace") loadTrace();      // #64：点开才拉（loadTrace 自己知道"不在前景就不打"）
       else if (view === "persona") loadPersona();
     }
 
@@ -1544,6 +1815,10 @@
     setInterval(_poll(loadWorkOrders), 5000);
     setInterval(_poll(loadUsage), 5000);
     setInterval(_pollVisible(loadRepair), 5000);
+    // #64：Agent 工作流 3 秒一轮 —— 演示时"你刚问的那句，这儿已经有了"就靠它（比 5 秒那几档快半拍，
+    // 因为这一页的用途是**紧接着上一句话**给人看）。真·守卫在 loadTrace 开头：那一档不在前景就直接返回，
+    // 所以切走后这一拍只是一个空函数调用，不会去打接口、更不会把流水读成"自己在刷自己"。
+    setInterval(_pollVisible(loadTrace), 3000);
   </script>
 </body>
 </html>
