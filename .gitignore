@@ -47,6 +47,11 @@ app/data/intent_samples.json
 # 管理员想从零计数，在后台「用量统计」卡片点清空即可（不用动文件）。
 app/data/llm_usage.jsonl
 
+# trace_log.jsonl（#64：管理端「Agent 工作流」那本流水）比用量账更敏感 ——
+# 里面是**每一轮的原始轨迹**（判定依据、工具参数、工具结果原文）加上学生自己的会话 id。
+# 本地服务一跑就会生成它，漏掉这行 = 谁 `git add .` 一次就把全校的对话轨迹提进公开仓库。
+app/data/trace_log.jsonl
+
 # 注意：app/data/kb.json 是"入库的种子知识库"，有意保留版本管理，
 # 管理员在后台改条目后会出现 diff —— 这是知识内容本身，值得被记录。
 app/data/workorders.json
