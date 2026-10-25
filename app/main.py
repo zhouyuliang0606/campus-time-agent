@@ -941,6 +941,30 @@ def _pending_todo_mode(session_id: str) -> dict | None:
     return None
 
 
+def _any_pending(session_id: str) -> bool:
+    """这个会话里是否挂着**一张待确认的待办卡**（人话：上一轮留没留一条让学生点的条）。
+
+    为什么单独立一个函数：它是**状态**判据，被两处判据共用 ——
+      ① #62 的 Agent 模式短路（挂着卡时，这句话多半是在**回应那张卡**，不能交给模型）；
+      ② #42-A 校历闸 / planner 栏知识库直答闸（挂着卡时不接管，别把学生的卡弄丢）。
+    同一件事不许有两个写法：以前 ② 在就地写了个 `any(...)`，本单把它收成这一份。
+
+    ⚠️ 名单必须**全**：`:929` 的 `_pending_todo_mode`（二选一卡）以前就漏在这里，
+       于是"只挂着 modality 卡"时两处判据都当没卡 ⇒ 校历闸会把那张卡挤掉。
+       `tests/test_83` 有一条**从源码里数出所有 `_pending_*` 单卡取器**再比这份名单的断言 ——
+       以后新增一种卡却忘了加进来，那条会红，不会留下"卡在但看不见"。
+    ⚠️ 覆盖范围是**待办那一族**：暂存里还能挂 `timetable_change` / `timetable_clear` /
+       `work_order_report` 那几种（不是待办卡），本函数对它们回 False。
+       那几种的"学生回确认"由短路点**之上**的 `3)` / `3a-c` 接住，卡也不会丢
+       （`/api/pending/{sid}` 按 kind 过筛能接回来），所以本单不扩大到这里。
+    """
+    return any(f(session_id) for f in (
+        _pending_todo, _pending_todo_remove, _pending_todo_done,
+        _pending_todo_remove_batch, _pending_todo_done_batch, _pending_todo_slots,
+        _pending_todo_add_batch, _pending_todo_mode,          # ← #62 补上的那条
+    ))
+
+
 def _mode_answer(card: dict, lead: str = "") -> str:
     """二分卡出条时那句回话（人话：把这个二选一摊在聊天里）。
 
@@ -2968,7 +2992,23 @@ async def _chat_impl(req: Request, meta: dict, emit=None):
         #   代价（要说清）：Agent 模式下"课表全删了"「把X排到今天19:00」这类话不再走确定性分支，
         #   改由模型调 propose_clear_timetable / propose_todo_tool。写入仍然要学生点确认
         #   —— 安全性不变，只是路径变长（这正是演示想让人看见的）。
-        if _agent_mode:
+        #
+        # ★ #62：判据补上"**状态**"这一维 —— 只看 `_agent_mode` 会连六支**回应卡片 / 处理刚上传的
+        #   材料**的分支一起关掉（`3c-pre` / `pre2` / `pre3` / `pre4` 与 `_is_material` 那一支）。
+        #   那几支的判据是 `held_*` / `_is_material`（"上一轮留下了什么"），跟学生这句怎么说无关，
+        #   所以它们不是"抢话"。而它们的注释里逐条记着掉回模型的**实测**后果：
+        #     「我说了它当没听见」「已经帮你排好啦，可日程里是空的」「连一张确认条都没有」。
+        #   ⇒ 手上挂着卡、或有待处理的材料 = 这句话是在回应它 = 走确定性；
+        #      手上干净 = 这是一句新的话 = 交给模型，评委才看得见多轮。
+        #
+        #   为什么不在这里读 `_holding_card`：它在下面 `:3210` 那一处才算，而 2971→3210 之间
+        #   有几个分支会改写暂存（换卡、重挂）—— 把计算上提会让那道闸读到**分支执行前**的状态，
+        #   今天看不出差因为那些分支都 return 了，但那属于"靠巧合成立"。⇒ 各算各的，
+        #   两处都在自己的正确时刻取数（判据本身仍只有一份：都走 `_any_pending`）。
+        #
+        #   代价（说清）：挂着一张卡时，学生哪怕说了句完全无关的闲话，这一句也会走快路
+        #   （可能被某个分支接走）。可接受 —— 那时候演示的重点已经是那张卡本身。
+        if _agent_mode and not _any_pending(session_id) and not _is_material:
             return await _run_agent_loop(
                 module_key=module_key, session_id=session_id, message=message,
                 prompt=prompt, tools=tools, persona_key=persona_key,
@@ -3207,10 +3247,10 @@ async def _chat_impl(req: Request, meta: dict, emit=None):
         #   ⚠️ 必须排在 `_asking_what_to_do` **之前**：那档的判据太宽（`startswith("啥")`），
         #   排它后面就等于让它先抢走（施工单 §2.3 同一句）。
         #   手上挂着待确认的卡时不接管（跟 3i 同一条闸）—— 别把学生的卡弄丢（#33 那一族）。
-        _holding_card = any(f(session_id) for f in (
-            _pending_todo, _pending_todo_remove, _pending_todo_done,
-            _pending_todo_remove_batch, _pending_todo_done_batch, _pending_todo_slots,
-            _pending_todo_add_batch))
+        # #62：这份名单收进 `_any_pending`（同一份判据，与 Agent 模式短路共用一个函数），
+        #        原来这里就地写的 `any(...)` 漏了 `_pending_todo_mode` ⇒ 只挂二选一卡时下面那道
+        #        校历闸会把它挤掉（#33 那一族"把学生的卡弄丢"）。取值时刻没动：仍在闸门前一行。
+        _holding_card = _any_pending(session_id)
         if _campus_fact_ask(message) and not _holding_card:
             from app.modules.faq import answer_for_student, query_expansion
             if _kb_has_answer(message):
