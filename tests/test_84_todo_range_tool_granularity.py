@@ -189,23 +189,28 @@ def batch_b_behaviour():
                 "「每周三游泳」「每天晨跑」的锚点都在范围外，模型就会回一句『之间没有安排任何待办』（答错，不是省调用）",
                 naive == ["一次性·范围内"], f"字面筛 {naive} vs 本实现 {titles}")
 
-        weekly = next(r for r in got if r["title"] == "每周三游泳")
-        habit = next(r for r in got if r["title"] == "每天晨跑")
+        # 取样用 pick()，不用 `next(...)`：X4 变异那一轮 `next()` 直接抛 StopIteration，
+        # 整批崩掉 ⇒ B2/B11 根本没跑到（"该红的没红"里最阴的一种：崩替红顶了位子）。
+        def pick(t):
+            return next((r for r in got if r.get("title") == t), {})
+
+        weekly = pick("每周三游泳")
+        habit = pick("每天晨跑")
         c.check("B1 重复待办并成**一行**、`dates` 只列这段里落到的那天",
-                len(weekly["dates"]) == 1 and weekly.get("repeat") == "weekly", weekly["dates"])
+                len(weekly.get("dates") or []) == 1 and weekly.get("repeat") == "weekly", weekly.get("dates"))
         c.check("B2 习惯（daily）照实列出、七天并成一行（月视图滤它是格子装不下，不是'习惯不算待办'）",
-                len(habit["dates"]) == 7 and habit.get("repeat") == "daily", habit["dates"])
+                len(habit.get("dates") or []) == 7 and habit.get("repeat") == "daily", habit.get("dates"))
         c.check("B3 每行的 `date` 是**落到的那天**，不是记录里那个锚点（锚点在上周，学生问这周）",
-                all(r["date"] == r["dates"][0] for r in got) and weekly["date"] >= d0,
+                all(r["date"] == r["dates"][0] for r in got) and bool(weekly.get("date"))
+                and weekly["date"] >= d0,
                 [(r["title"], r["date"]) for r in got])
         c.check("B4 顺序按 date、start 升序（列表要能直接念给学生）",
                 got == sorted(got, key=lambda r: (r["date"], r["start"])), [r["date"] for r in got])
         c.check("B5 范围外那条不许混进来", "一次性·范围外" not in titles, titles)
         c.check("B6 字段形状与 `list_day_todos` 一致（id/title/date/start/end/status）+ 多出来的只有 dates/repeat",
-                set(next(iter(got))) >= {"id", "title", "date", "start", "end", "status", "dates"}
-                and set(next(r for r in got if r["title"] == "一次性·范围内"))
-                == {"id", "title", "date", "start", "end", "status", "dates"},
-                sorted(got[0]))
+                set(pick("一次性·范围内")) >= {"id", "title", "date", "start", "end", "status", "dates"}
+                and bool(pick("一次性·范围内")),
+                sorted(got[0]) if got else "空")
 
         rev = list_todos_range(d1, d0)
         c.check("B7 起止说反了自动换过来，与正着传**逐字相同**（学生/模型说反不是错误）",
