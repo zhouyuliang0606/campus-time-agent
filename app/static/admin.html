@@ -179,7 +179,7 @@
     .topbar .grow { flex: 1; }
     .tb-link { font-size: 13px; color: #d94b68; text-decoration: none; background: #fff1ee; padding: 5px 12px; border-radius: 8px; }
     .tb-link:hover { background: #ffe6df; }
-    /* 口令条常驻顶栏：七档全都吃它，藏在某一档里就等于"切个档突然全页读取失败" */
+    /* 口令条常驻顶栏：左栏每一档都吃它，藏在某一档里就等于"切个档突然全页读取失败" */
     .tb-token { display: flex; align-items: center; gap: 6px; font-size: 12px; color: #6a7388; }
     .tb-token input {
       padding: 6px 8px; border: 1px solid #d8def0; border-radius: 7px; font-size: 12px; width: 180px;
@@ -243,7 +243,7 @@
     <main class="main">
       <div class="topbar">
         <div class="t" id="navTitle">学生工单</div>
-        <!-- 口令条常驻顶栏：七档全都吃它。放进某一档里 = 切个档就"满屏读取失败"却没人知道为什么 -->
+        <!-- 口令条常驻顶栏：左栏每一档都吃它。放进某一档里 = 切个档就"满屏读取失败"却没人知道为什么 -->
         <!-- 管理口令（app/admin_guard.py 校验，请求头 X-Admin-Token）
              口令只存在这台浏览器这次的 sessionStorage 里：关标签就清、不落盘、不进请求体。
              为什么要当面要：服务端 .env 里那串是唯一真相，页面不猜也不存历史，

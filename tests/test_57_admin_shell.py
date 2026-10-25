@@ -155,7 +155,7 @@ def batch_d_token_bar():
     title("D. 口令条与既有安全语义：常驻顶栏、只落 sessionStorage、封装仍是一份")
     st = F.read_text(encoding="utf-8")
     bar = st[st.index('<div class="topbar">'):st.index('<div class="stage">')]
-    c.check("口令条三段（输入 / 按钮 / 状态）都在顶栏里 —— 八档都吃它，藏进某一档=切个档满屏读取失败",
+    c.check("口令条三段（输入 / 按钮 / 状态）都在顶栏里 —— 左栏每一档都吃它，藏进某一档=切个档满屏读取失败",
             'id="adminToken"' in bar and 'id="saveToken"' in bar and 'id="tokenStatus"' in bar, "")
     c.check("口令仍然只进 sessionStorage（关标签就清、不落盘），不许这轮顺手改成 localStorage 存长期",
             'sessionStorage.setItem(TOKEN_KEY, v)' in st and "localStorage" not in code_of(st), "")
