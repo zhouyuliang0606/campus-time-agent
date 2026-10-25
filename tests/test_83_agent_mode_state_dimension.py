@@ -532,7 +532,6 @@ def batch_e_codepage():
 
     CN = "知识库里没有「天文台」"
     argv_utf8 = [sys.executable, "-X", "utf8", "-c", f"print('{CN}')"]
-    bare = [sys.executable, "-c", f"print('{CN}')"]
     clean = {k: v for k, v in os.environ.items() if k not in ("PYTHONUTF8", "PYTHONIOENCODING")}
 
     def child(tag, argv, outer):
@@ -542,20 +541,15 @@ def batch_e_codepage():
                            encoding="utf-8", errors="replace")
         return (p.stdout or "").strip()
 
-    def raw(tag, argv, outer):
-        """原件形状（两端都不写）：只当读数，不当断言 —— 红不红取决于本机区域设置。"""
-        env = dict(clean)
-        env.update(outer)
-        try:
-            p = subprocess.run(argv, capture_output=True, text=True, timeout=60, env=env)
-            return repr((p.stdout or "<None>")[:16])
-        except Exception as e:
-            return f"抛 {type(e).__name__}"
-
+    # ⚠️ 这里**不放**"原件形状"的反例跑一遍。第一版放了，实测代价写在这里：
+    #   两端不钉的那一格会在**父进程 stderr** 上打出 reader 线程的 UnicodeDecodeError  traceback，
+    #   全量日志里看着就像"环境坏了"（正是本单要治的那类噪声），而它是我自己造的。
+    #   反例的证据归变异跑（W5a/W5b，`D:\campustime-scratch\mut62.py`），不进交付的测试集：
+    #     W5a 只钉父端 ⇒ 干净外层那一格假红；W5b 两端都不钉 ⇒ 带 utf-8 外层那一格崩。
     print(f"  本机父进程 locale.getpreferredencoding(False) = {locale.getpreferredencoding(False)}")
     for outer in ({}, {"PYTHONIOENCODING": "utf-8"}, {"PYTHONUTF8": "1"}):
         got = child("fix", argv_utf8, outer)
-        print(f"  · 外层 {outer or '干净'}：原件形状读到 {raw('raw', bare, outer)} ｜ 两端钉死后读到 {got[:16]!r}")
+        print(f"  · 外层 {outer or '干净'}：两端钉死后读到 {got[:16]!r}")
         c.check(f"E2 外层 {outer or '干净'} → 两端钉死后仍解出正确中文"
                 f"（这条与外层无关，所以换机器、换 shell 都不会莫名红）",
                 got == CN, got[:16])
@@ -582,8 +576,7 @@ def batch_e_codepage():
                     and any(k.arg == "text" for k in n.keywords) \
                     and not any(k.arg == "encoding" for k in n.keywords):
                 pend.append(f"{fn}:{n.lineno}")
-    print(f"  同类未写 encoding 的记账（本单只报不改）：{len(pend)} 处 → {', '.join(pend) or '无'}"
-          f"（test_83 里那一处是 E 批自己种的『原件形状』反例，故意不写）")
+    print(f"  同类未写 encoding 的记账（本单只报不改）：{len(pend)} 处 → {', '.join(pend) or '无'}")
     c.check("E3-bis test_67 自己那一处已经干净（其余文件先记账，别一次全改 —— 一次改一处才分得清是谁红的）",
             not [x for x in pend if x.startswith("test_67")], "")
     return c
