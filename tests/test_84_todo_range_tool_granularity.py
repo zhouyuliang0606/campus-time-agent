@@ -2,7 +2,8 @@
 
 四批：
 
-  A 形状：新工具的定义/注册/账本登记/说明书边界/提示词那句各只有一处；
+  A 形状：新工具的定义/注册/账本登记各只有一处；旧工具那只的说明书补了边界；
+          **全局提示词里不出现具体工具名**（施工单 B 项经真机实测**没做**，理由钉在 A7 的名字里）；
           筛法**必须**走 `store.todo_occurs_on`（字面 date 筛会吞掉重复待办 —— 实测过，钉成红线）；
           跨度那把尺子借 `WEEKLY_HORIZON_MONTHS`，不许在两处各写一个数字；
           函数体里一个写库调用都没有（"只读"两个字的 AST 证明）。
@@ -128,11 +129,16 @@ def batch_a_shape():
 
     rules = io.open(MAIN, encoding="utf-8").read()
     i5 = rules.find("5. 先查再说")
-    i_end = rules.find('"""', i5)
-    seg = rules[i5:i_end]
-    c.check("A7 提示词那句「查一段时间用一次工具」补在第 5 条**里面**（不新起一条，条数仍是 5：6. 一冒出来"
-            "就和'输出要求/上报工单/身份隔离/自我定位'那几条并列，权重是假的）",
-            i5 > 0 and NEW in seg and "\n6." not in seg and "list_day_todos" in seg, seg[-60:].replace("\n", " ⏎ "))
+    seg = rules[i5:rules.find('"""', i5)]
+    c.check("A7 全局提示词里**不出现具体工具名**（施工单的 B 项经实测**没做**：把「查一段时间用 "
+            "`list_todos_range` 一次查完」那句删掉后，真机三跑三回仍是一次 range 查完、"
+            "`list_day_todos` 零命中 ⇒ 该说的边界归工具自己的 description。"
+            "要把这类句子加回全局，请先拿新的对照数据）",
+            i5 > 0 and NEW not in seg and OLD not in seg, seg[-56:].replace("\n", " ⏎ "))
+    old_desc = _desc_of(old_entry) if old_entry is not None else ""
+    c.check("A7-bis 那句边界确实写在 `list_day_todos` 自己的说明书里（撤掉全局提示词之后，"
+            "它是唯一还生效的一道闸 —— 别两处都没有）",
+            NEW in old_desc, old_desc[:60])
 
     calls = {ast.unparse(n.func) for n in ast.walk(fn) if isinstance(n, ast.Call)} if fn else set()
     c.check("A8 函数体里**没有任何写库/提案调用**（'只读'两个字要能被 AST 查出来，不能只看函数名）",
