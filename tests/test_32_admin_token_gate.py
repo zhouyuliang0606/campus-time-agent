@@ -53,6 +53,12 @@ ADMIN_ENDPOINTS = [
     ("POST", "/api/admin/services", {"description": "门测：加一项服务"}),
     # 2026-10-22 #55-B：知识库拆词（只产建议、不写库，但它吃口令 ⇒ 也得挂门）
     ("POST", "/api/admin/kb/split", {"question": "门测：游泳馆价格"}),
+    # 2026-10-25 #64：Agent 工作流那三条。前两条只读、第三条会真清 —— 但沙箱里清的是沙箱那份
+    # （`sandbox()` 把 CAMPUSTIME_TRACE_FILE 指进临时目录），真实演示台账一个字节不动。
+    # `{row_id}` 带对口令会回 404（那个 id 不存在），A4 只把 401/403 当"被门挡住"，所以不用进 SKIP_WITH_TOKEN。
+    ("GET", "/api/admin/trace", None),
+    ("GET", "/api/admin/trace/no-such-row", None),
+    ("POST", "/api/admin/trace/clear", None),
 ]
 # 其中这几个「带对口令后」不去实跑：/settings/test 真会往大模型发一次请求，
 # 用一个假 key 打真网络既慢又不稳定，门该验的只是「没口令进不去」。
@@ -243,6 +249,12 @@ def batch_wiring(c):
         "POST /api/admin/service-records/{sid}/{rid}/status",
         "POST /api/admin/services",
         "POST /api/admin/kb/split",   # 21→26（#55-B）
+        # 2026-10-25 #64：Agent 工作流三条 —— 列表 / 某一轮详情 / 清空。
+        # 前两条**只读也要挂门**：这一本流水里存着全校每一轮的原始 trace（含别人问的话），
+        # 与 `GET /api/admin/service-records` 是同一条理由 —— 只读不等于免口令。
+        "GET /api/admin/trace",
+        "GET /api/admin/trace/{row_id}",
+        "POST /api/admin/trace/clear",   # 26→29
     }
     got = _guarded_routes()
     # 名字里的数字改成从清单自己算：以前写死"这 20 个"，加一条就得改两处（计数式判据自己咬自己那一族）

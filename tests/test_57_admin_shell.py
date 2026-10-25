@@ -26,9 +26,14 @@ MUST_KEEP_IDS = [
     "kq", "ka", "kk", "kbSave", "kbCancel", "kbList",
     # #40 新增「文档知识库」那一档的四个绑点（两个按钮 + 状态行 + 表格容器）
     "docfile", "refreshDocs", "docStatus", "docList",
+    # #64 新增「Agent 工作流」那一档：JS 里 getElementById 硬绑的十二个绑点。
+    # 这张表的作用就是"改 id 等于把那张卡废了"—— 那十二个名字任何一个被改名，JS 不会报错，
+    # 只会安静地画不出东西（本项目反复吃过这种静默）。
+    "traceMeta", "traceModule", "traceMode", "traceTools", "traceQ", "traceGo", "traceNew",
+    "traceList", "traceDetail", "refreshTrace", "clearTrace", "traceStatus",
     "woBox", "refresh", "inbox", "woNum", "msgNum",
 ]
-VIEWS = ["wo", "repair", "inbox", "notice", "kb", "docs", "usage", "api", "persona"]
+VIEWS = ["wo", "repair", "inbox", "notice", "kb", "docs", "usage", "trace", "api", "persona"]
 
 
 def code_of(text: str) -> str:
@@ -40,7 +45,7 @@ def code_of(text: str) -> str:
 
 def batch_a_shell():
     c = Checker()
-    title("A. 外壳：旧容器连 CSS 删净、八档齐、id 一个不少、配色没抄错")
+    title("A. 外壳：旧容器连 CSS 删净、每档都有视图、id 一个不少、配色没抄错")
     st = F.read_text(encoding="utf-8")
     c.check("六件套结构在（shell/sidebar/topbar/stage/main + nav-view 那套命名，与驿站端同构）",
             all(('class="' + k + '"') in st or ("." + k + " {") in st
@@ -54,7 +59,8 @@ def batch_a_shell():
             not missing, "缺：" + "、".join(missing))
     views = re.findall(r'id="view-([a-z]+)"', st)
     navs = re.findall(r'data-nav="([a-z]+)"', st)
-    c.check("左栏九档与九块视图一一对应（多一档没地方显示、少一档点了没反应；#54 加了「后勤报修」）",
+    c.check("左栏档位与视图容器**一一对应**（多一档没地方显示、少一档点了没反应；"
+            "名字从 VIEWS 那份表算，断言里不写「九档/十档」—— #64 加一档时这种数必然过期）",
             sorted(views) == sorted(navs) == sorted(VIEWS), f"views={views} navs={navs}")
     c.check("每块 view 里只装原来那张卡，工单/收件箱这两张**不许有第二份**（搬家最容易漏删旧的那份，"
             "重复 id 会让 JS 只认第一个，另一份成永远刷不新的死表格）",
@@ -82,21 +88,28 @@ def batch_b_switch():
     # 负向半边先剔注释：我 switchNav 里那句"为什么 api 档不现拉"的说明正好引用了这个名字
     #（本仓第七次同类绊红，规矩是死的：不许拿自己的注释当代码判红）
     sw_code = code_of(sw)
+    # (档位 → loader) 从 switchNav 里**自己 parse 出来**，不写死清单：
+    # 写死八对的那一版在 #64 加第九档时不会红，只会安静地少覆盖一档 —— 那正是这仓反复记的那种假绿。
+    loaded = dict(re.findall(r'view === "(\w+)"\)\s*(load\w+)\(\)', sw_code))
     c.check("API 那一档**不在**进入时现拉（loadApiSettings 会把值写回输入框，一进就拉=抹掉刚敲的一半）",
             "loadApiSettings" not in sw_code and 'view === "api"' not in sw_code
             and 'document.getElementById("akey").value =' in st,
             "switchNav 里出现了 loadApiSettings")
-    c.check("其余八档进哪档现拉一次（5 秒轮询照旧，这里只是别让人对着上一分钟的数据看）；"
-            "「文档知识库」那一档也在里面 —— 它是这页最重的一份，但**点开才拉**，不在开场预载；"
-            "#54 的「后勤报修」也在里面（点开就拉，改完状态还立刻再拉一次）",
-            all(s in sw for s in ('view === "wo") loadWorkOrders();',
-                                'view === "repair") loadRepair();',
-                                'view === "inbox") loadMessages();',
-                                'view === "notice") loadNotices();', 'view === "kb") loadKB();',
-                                'view === "docs") loadDocs();',
-                                'view === "usage") loadUsage();', 'view === "persona") loadPersona();')), "")
-    c.check("顶栏标题查表（九档一份 NAV_TITLE，不是九个 if 各写一遍）",
-            't.textContent = NAV_TITLE[view]' in sw and st.count("const NAV_TITLE") == 1, "")
+    c.check("每一档（API 除外）进档都现拉一次，而且拉的是**那一档自己的** loader —— "
+            "名单从 VIEWS 算，不写死八对（#64 加「Agent 工作流」这一档，写死的清单会静默少覆盖一档；"
+            "「文档知识库」那档最重也照样点开才拉，不在开场预载）",
+            not [v for v in VIEWS if v != "api" and v not in loaded]
+            and loaded.get("wo") == "loadWorkOrders"      # 两个名字推不出来的，逐条点名
+            and loaded.get("inbox") == "loadMessages"
+            and loaded.get("trace") == "loadTrace"
+            and len(loaded) == len([v for v in VIEWS if v != "api"]),
+            f"switchNav 里的 (档 → loader) = {loaded}")
+    c.check("顶栏标题查表，不是每档一个 if 各写一遍（NAV_TITLE 只有一份，且每个档位都在里面 —— "
+            "加了左栏档位忘了标题表，切过去就退回「管理控制台」那个默认值，这种半截最不容易被发现）",
+            't.textContent = NAV_TITLE[view]' in sw and st.count("const NAV_TITLE") == 1
+            and not [v for v in VIEWS if not re.search(r'\b%s\w*:' % v,
+                                                       st[st.index("const NAV_TITLE"):st.index("function switchNav")])],
+            "")
     c.check("开场默认停在「学生工单」，且那一档的初始加载**只有一处**（switchNav 已经拉过，"
             "再在 init 里补一遍就是同一件事两份）",
             'switchNav("wo");' in st and 'view-wo" class="nav-view active"' in st
