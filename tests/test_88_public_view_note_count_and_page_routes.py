@@ -189,11 +189,19 @@ def batch_b_routes():
     # 后者是子串匹配，将来谁写 `dept.get("id")` / `student.get("id")`（别的记录、与本单无关）
     # 就会被误判成"第二份待办判据" —— 实测 main.py 现有 10 行 `.get("id")`（`f.` / `w.` / `svc.` …），
     # 名字只要以 t 结尾就撞。词边界版今天的命中数与子串版一样是 0，但它不会随名字漂。
+    # ⚠️ 括号**必须转义**：`r'\bt\.get("id")'` 里的 `("id")` 会被当成**捕获组**，
+    #    于是它要的是 `t.getid` 那种文本 —— 实测对 `t.get("id")` 命中 **False**，
+    #    整条 B5 变成永远不会红的死断言（V4 变异就是这么暴露的）。写死判据前先拿样本行验一次。
+    SECOND = r'\bt\.get\("id"\)'      # 判据本体只写一份，正控/反控也用它
     hard = [ln.strip() for ln in main_src.split("\n")
-            if not ln.strip().startswith("#")
-            and re.search(r'\bt\.get("id")', ln)]
-    c.check("B5 main 里没有第二份待办 id 判据（两路各写一遍就是两份会漂的账，判据只此 `planner._todo_has_id` 一处）",
-            not hard, str(hard[:3]))
+            if not ln.strip().startswith("#") and re.search(SECOND, ln)]
+    can_fire = bool(re.search(SECOND, 'probe = t.get("id")'))
+    no_false = not re.search(SECOND, 'probe = dept.get("id")')
+    c.check("B5 main 里没有第二份待办 id 判据（判据只此 `planner._todo_has_id` 一处，"
+            "两路各写一遍就是两份会漂的账）—— **自带正控**：同一个模式必须能命中样本行，"
+            "否则这条就是永远不会红的死断言；顺带一条反控：`dept.get(\"id\")` 不误伤",
+            (not hard) and can_fire and no_false,
+            "命中 %d 行｜正控 %s｜反控（不误伤 dept）%s" % (len(hard), can_fire, no_false))
     return c
 
 
