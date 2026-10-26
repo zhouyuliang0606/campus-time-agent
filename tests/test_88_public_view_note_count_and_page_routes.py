@@ -85,16 +85,19 @@ def batch_a_count():
     c.check("A1-bis 那句说明**还在**（滤掉计数不等于把话吞掉 —— 学生得知道少了一条）",
             "没有 id" in txt, repr(txt[:120]))
 
-    # `list_todos_range` 的实际形状：notes 在**最前面**（施工记录 §1406 那一处）
-    txt2, exc2 = pv([{"info": NOTE},
-                     {"id": "k1", "title": "做题", "date": DAY, "start": "14:00",
-                      "end": "16:00", "status": "planned"},
-                     {"id": "k2", "title": "上课", "date": DAY, "start": "08:00",
-                      "end": "09:40", "status": "planned"}])
-    c.check("A2 notes 排在最前时，真条目**仍进得了「前三句」**（说明句不许挤掉条目 —— 真机这个坑更常见）",
-            "做题" in txt2 and "上课" in txt2, repr(txt2[:120]) + " " + exc2)
-    c.check("A2-bis 同时计数只数条目（两条 ⇒ 「共 2 条」）",
-            "共 2 条" in txt2, repr(txt2[:60]))
+    # `list_todos_range` 的实际形状：notes 在**最前面**（`planner.py:1436` `return notes + order`）。
+    # ⚠️ 样本必须让两种坏写法**不同解**（#64 那条教训）：原来只喂「1 句说明 + 2 条条目」，
+    # 那时 `obj[:3]` 与 `items[:3]` 取到的是同一批 ⇒ V8 那笔变异（挑三项退回 `obj[:3]`）一条都红不出来。
+    rows2 = [{"id": "k%d" % n, "title": "第%d件" % n, "date": DAY,
+              "start": "%02d:00" % n, "end": "%02d:40" % n, "status": "planned"}
+             for n in (1, 2, 3, 4)]
+    txt2, exc2 = pv([{"info": NOTE}] + rows2)
+    c.check("A2 notes 排在最前时，「挑三项」取的必须是**条目前三**（第四件该被挤出去 —— "
+            "说明句一占位，真条目就少一句）",
+            all(("第%d件" % n) in txt2 for n in (1, 2, 3)) and "第4件" not in txt2,
+            repr(txt2[:160]) + " " + exc2)
+    c.check("A2-bis 计数只数条目（四件 ⇒ 「共 4 条」，说明行不算），且那句说明仍挂在尾巴上",
+            "共 4 条" in txt2 and "没有 id" in txt2, repr(txt2[:80]))
 
     txt3, exc3 = pv([{"info": NOTE}])
     c.check("A3 整份返回只有说明行 ⇒ 直接念说明，**不许**念成「共 0 条」再补一句"
