@@ -1307,19 +1307,58 @@ def is_slot_answer(text: str) -> bool:
     return _pick_span(t)[0] is not None or _pick_date(t) is not None
 
 
+def _todo_has_id(t: dict) -> bool:
+    """这条待办有没有可用的 `id`。缺了就**不往外交**（#66，这是兜底的唯一例外）。
+
+    为什么不兜成空串：`id` 在界面上是**操作句柄**（勾完成 / 删除 / 改期都按它回传），
+    兜成 `""` 之后所有缺 id 的记录会挤到同一个 key 上 —— `list_todos_range` 里
+    `by_id[""]` 那一行会把好几件不同的事**并成一条**（`row["dates"].append` 一路加下去），
+    学生勾一条会连带勾掉别的。**静默错乱比崩溃贵得多**，所以宁可这一条不出。
+    """
+    return bool(str(t.get("id") or "").strip())
+
+
+def _todo_public_row(t: dict, date: str) -> dict:
+    """待办记录 → 给模型/前端的对外形状（**这一族只此一处翻译**，#66）。
+
+    为什么兜底、不许硬取（口径与 `store.owner_of_row` / `trail` / `ref` / `purpose` 那几处
+    成文的规矩一致：**缺键按默认值兜，不批量迁移文件** —— 每迁移一次就多一次改坏真实数据的机会）：
+      · 两个写入口确实把六个键写全（实测：`store.add_todo` 从存储层第一笔 `0a31534` 起就写
+        `status`，`add_todos_batch` 同样）⇒ **"老记录天然缺 status"这句不成立**，会缺键的
+        只有被手改过的 `todos.json` 或外部导入的那一份。
+      · 而这两把工具是挂在 `build_tools()` 里给模型用的（`readonly.py` 也把它们放进跨栏只读池）：
+        硬取一个缺掉的键得到的不是"报警"，是**这一轮工具调用失败** —— 模型会拿着那条报错
+        继续编一句答案，比少列一条更糟。校验的位置在写侧（那边已经在做），不该由读展示层当报警器。
+      · 代价要说明白：兜底之后"数据被手改过"在界面上只剩一个空值。要当场暴露得靠**启动自检**
+        （另立一单），不是靠这里崩一下。
+    ⚠️ 三个键兜成 `""` 是**可见的降级**，不是掩盖：`status` 缺 ⇒ 与 `store.todo_done_on`
+       （`str(t.get("status") or "") == "done"`）天然一致 = 没完成，**宁可不勾**；
+       `title` 缺 ⇒ 一行只有时间的空标题；`date` 缺 ⇒ 排序沉到最前。
+    ⚠️ `id` 这里虽然也写成 `.get`，但缺 id 的记录**进不到这一行** —— 调用方先过 `_todo_has_id`。
+    `date` 由调用方传，不从记录里取：`list_day_todos` 传记录自己的锚点日期（既有行为，不许顺手改），
+    `list_todos_range` 传**落到的那天**（`test_84` B3 钉着这一头）。两种语义都留着，本单只收进同一处翻译。
+    """
+    return {
+        "id": str(t.get("id") or ""),
+        "title": str(t.get("title") or ""),
+        "date": str(date or ""),
+        "start": str(t.get("start") or ""),
+        "end": str(t.get("end") or ""),
+        "status": str(t.get("status") or ""),
+    }
+
+
 def list_day_todos(date: str) -> list:
     """列某天已安排的待办（人话：看看这天已经塞了些什么）。"""
     todos = list_todos(date)
     if not todos:
         return [{"info": f"{date}（{_weekday_name(date)}）目前没有安排待办"}]
-    return [{
-        "id": t["id"],
-        "title": t["title"],
-        "date": t["date"],
-        "start": t["start"],
-        "end": t["end"],
-        "status": t["status"],
-    } for t in todos]
+    rows = [_todo_public_row(t, str(t.get("date") or "")) for t in todos if _todo_has_id(t)]
+    dropped = len(todos) - len(rows)
+    if dropped:
+        # 说出去，不静默：模型看得见才会跟学生解释，而不是回一句「这天没有安排」
+        rows.append({"info": f"另有 {dropped} 条待办没有 id，列不出来（数据可能被手改过）"})
+    return rows
 
 
 def list_todos_range(start: str, end: str) -> list:
@@ -1363,6 +1402,9 @@ def list_todos_range(start: str, end: str) -> list:
                               f"{WEEKLY_HORIZON_MONTHS} 个月」同一把尺子），下面只算到 {e}"})
 
     todos = list_todos()
+    # 缺 `id` 的记录一次数清（**别在按天的循环里数** —— 一条习惯落到七天会被计成七条）
+    no_id = sum(1 for t in todos if not _todo_has_id(t))
+    todos = [t for t in todos if _todo_has_id(t)]
     by_id: dict = {}
     order: list = []
     day = d0
@@ -1371,19 +1413,23 @@ def list_todos_range(start: str, end: str) -> list:
         for t in todos:
             if not todo_occurs_on(t, iso):
                 continue
-            row = by_id.get(t["id"])
-            if row is None:
-                row = {"id": t["id"], "title": t["title"], "date": iso,
-                       "start": t["start"], "end": t["end"], "status": t["status"],
-                       "dates": [iso]}
+            row = _todo_public_row(t, iso)          # 这一族唯一的翻译处（#66）
+            seen = by_id.get(row["id"])
+            if seen is None:
+                row["dates"] = [iso]
                 rep = str(t.get("repeat") or "")
                 if rep and rep != REPEAT_NONE:
                     row["repeat"] = rep
-                by_id[t["id"]] = row
+                by_id[row["id"]] = row
                 order.append(row)
             else:
-                row["dates"].append(iso)      # 同一件事在这段里出现几天，就并到一行里
+                seen["dates"].append(iso)      # 同一件事在这段里出现几天，就并到一行里
         day += timedelta(days=1)
+    if no_id:
+        # 与 `list_day_todos` 同一句实话。#66 单据原本决定这里不吭声（怕打断"一条一行"），
+        # 但 `notes` 这一栏 #63 就是为"这种该说一声的话"设的、且摆在最前面不混进条目里
+        # （`test_84` B6/B7 取条目时是先滤掉带 info 的行再算的 ⇒ 不破坏那条契约）。
+        notes.append({"info": f"另有 {no_id} 条待办没有 id，没列进来（数据可能被手改过）"})
     if not order:
         return notes + [{"info": f"{s} ~ {e} 之间没有安排任何待办"}]
     order.sort(key=lambda r: (r["date"], r["start"] or ""))
