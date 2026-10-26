@@ -214,7 +214,9 @@ def batch_b_live():
                 row.get("owner") == "demo", repr(row.get("owner")))
         full = S.get_trace_row(row.get("id")) or {}
         tr = full.get("trace") or []
-        c.check("B5 存的是**原始**那条链：判定那一行与本轮自己的步都在（只存学生视图那份等于看二手）",
+        c.check("B5 存的是**完整**那条链（判定那一行 + 本轮自己的步都在）。"
+                "注意它只钉「链没被裁」，**不**钉「工具结果是原文」——"
+                "`engine.py:229` 存的就是 `public_view` 那份（#66 追记更正）",
                 any("我把这句听成" in str(t.get("phase") or "") for t in tr) and len(tr) >= 2, f"{len(tr)} 步")
         c.check("B6 列表读出来的每行不带 trace、`get_trace_row` 才给全文（一屏 20 行 × 几万字会把管理页自己拖死）",
                 all("trace" not in x for x in S.read_trace_log(limit=5))

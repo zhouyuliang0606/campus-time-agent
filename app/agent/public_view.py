@@ -80,6 +80,17 @@ def _strip_internal(text: str) -> str:
     return _squash(" · ".join(out))
 
 
+def _is_note(it) -> bool:
+    """这一项是不是**纯说明行**（`{"info": …}` —— 一句话，不是一件东西）（#66 追记）。
+
+    契约在两把待办工具那头：查空了得回一句人话给模型（回空列表它会自己编「你这周很空」），
+    而那种行只有一个 `info` 键。
+    判据只认"**只有** info 一个键"这种纯说明行：带别的键的记录即使也写了 info，
+    它仍然是一件东西，照旧算条目 —— 别把"有 info 的条目"也顺手排除掉。
+    """
+    return isinstance(it, dict) and set(it) == {"info"}
+
+
 def _item_line(it) -> str:
     """一项怎么念：优先取它自己写好的那句话，其次拼事实。"""
     if not isinstance(it, dict):
@@ -140,9 +151,21 @@ def public_view(tool_name: str, result) -> str:
     if isinstance(obj, list):
         if not obj:
             return "查下来是空的"
-        lines = [ln for ln in (_item_line(it) for it in obj[:3]) if ln]
-        head = f"共 {len(obj)} 条"
-        return _strip_internal(head + ("：" + " / ".join(lines) if lines else ""))
+        # #66 追记（2026-10-26 真机）：`{"info": …}` 是**一句话**，不是一件事 ——
+        # 不许算进「共 N 条」，也不许占掉「挑三项」那三个位置。
+        # 实测两处都撞上：一条待办 + 一句「另有 1 条待办没有 id」念成「共 3 条」（数错），
+        # 而 `list_todos_range` 是把 notes 摆在**最前面**的，那三句一读，真条目一句都挤不进去。
+        items = [it for it in obj if not _is_note(it)]
+        notes = [it for it in obj if _is_note(it)]
+        if not items:
+            # 整份返回只有说明行（典型：查到的记录全缺 id）—— 直接念说明，
+            # 不许念成「共 0 条」再补一句（那读起来像"查到了，但你看不见"）
+            return _strip_internal("；".join(n for n in (_item_line(x) for x in notes) if n))
+        lines = [ln for ln in (_item_line(it) for it in items[:3]) if ln]
+        head = f"共 {len(items)} 条"
+        body = head + ("：" + " / ".join(lines) if lines else "")
+        tail = "".join(f"（{n}）" for n in (_item_line(x) for x in notes) if n)
+        return _strip_internal(body + tail)
 
     # ③ 本来就是人话的那一大类：只剪指令片段
     return _strip_internal(str(result if result is not None else ""))

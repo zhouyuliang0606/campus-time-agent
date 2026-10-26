@@ -35,7 +35,8 @@
 - `store.py` 在 `clear_llm_usage()` 之后另起一本账：`TRACE_FILE="trace_log.jsonl"`、`TRACE_ROW_MAX=64*1024`（按**字节**）、`_trace_path()` 走 `CAMPUSTIME_TRACE_FILE` 覆盖 + `_path()` 生产回落、`log_trace/read_trace_log/get_trace_row/clear_trace_log` 四个函数，每个都吞异常（"旁路不拖主线"与 `log_llm_usage` 同一条硬要求）。筛法只写在 `read_trace_log` 一处。
 - `main.py` 的 `_chat_json` 出口：`if isinstance(resp, dict): try: log_trace(_trace_record(resp, meta)) except: pass`。收像的三条规则抽成**纯函数** `_trace_record`（result 收 1200 字 / 摘要 40 字 / `tool_calls = len(actions)//2` / trace 限 60 步）—— 只为一件事：能单测。
 - `_chat_impl` 里只在 `_agent_mode` 算出来那一处回填 `meta["agent_mode"]` / `meta["owner"]`（A11 钉"两处各算 = 第二个 12b"）。
-- 存的是**原始 trace**，不是 `public_view` 收过的那份（管理端要看的就是"模型实际拿到了什么"）。
+- 存的是 **`public_view` 收过的那份**（`engine.py:229` 写轨迹时就调了它），不是模型拿到的工具返回原文 —— 所以管理端这一页和学生屏幕**同源**。想看原文只有 `DEBUG` 下那行 `[tool-raw]`（`engine.py:221`，只进服务端日志，不落这本账）。
+  > ⚠️ **2026-10-26 更正（#66 真机撞出）**：原件在这里写的是「存的是**原始 trace**，不是 `public_view` 收过的那份（管理端要看的就是"模型实际拿到了什么"）」—— 方向刚好反了，实测不成立。
 
 **B 三个只读口**：`GET /api/admin/trace`（列表，剥掉 trace）、`POST /api/admin/trace/clear`、`GET /api/admin/trace/{row_id}`（详情）。
 `clear` 注册在 `{row_id}` **之前**，同时两个口**方法不重叠** —— 两道都钉（`C10`/`C11`），因为实测只有方法那道今天真挡着，而"下一个人把 clear 改成 GET"不是假设。
@@ -149,7 +150,7 @@ ccc86c8 feat(#64 A2/A3/B) 落盘只在 _chat_json 一处 + 管理端三个只读
 1. **这一句要在**有课表**的那个账号上演。** 副本上以 `demo`（空课表）实测同一句，得到的是 7 行 / 1 次工具 / 0 张卡，答案直说"你的周表还是空的" —— 它讲的是"查不到就如实说"，不是那条排程链。演示前先在学生端把课表传好（`admin1` 那 14 门课是他自己传的，别删）。
 2. **对比剧本（同句开/不开 Agent 模式）现在才安全。** #63 之前那句「我这周有什么待办」会把同一把 `list_day_todos` 连点七次，评委会看到七行同样的工具；#63 换成一把 `list_todos_range` 之后实测从 8 次降到 1 次。两行的 `agent_mode` 一 True 一 False，靠 D 批那枚芯片就能分开指。
 
-页面文案里也写着"`<ToolResult>` 是模型看到的原文，不是学生屏幕那份"—— 这句话有 `B5` 兜着（存的是原始 trace，不是 `public_view` 那份）。
+页面文案里也写着"`<ToolResult>` 是模型看到的原文，不是学生屏幕那份"—— **这句原来写反了**（`engine.py:229` 写的就是 `public_view` 那份），已改口成「和学生屏幕同源」。而 `B5` 兜的只有"判定那一行与本轮自己的步都在"，**不**兜"存的是原文"（2026-10-26 更正）。
 
 ---
 

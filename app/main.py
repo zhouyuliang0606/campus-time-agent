@@ -102,6 +102,7 @@ from app.modules.planner import (
     _name_match as _planner_name_match,
     DAY_NAMES,
     _weekday_name,
+    _todo_has_id,                    # #66 收尾：页面那两路也要按同一个判据滤，见 /api/todos
     has_concrete_span,
     render_todo_remove_list,
     render_todo_done_list,
@@ -6020,16 +6021,35 @@ async def timetable_apply(req: Request):
 
 @app.get("/api/todos")
 async def todos_list(date: str | None = None):
-    """列待办。带 date 查某一天，不带就全给（前端自己按日期分组）。"""
-    return {"todos": list_todos(date)}
+    """列待办。带 date 查某一天，不带就全给（前端自己按日期分组）。
+
+    ⚠️ #66 收尾：缺 `id` 的记录**不往外交**，判据与工具那两路同一个 `_todo_has_id`。
+       前端这一路把 `id` 当**操作句柄**（勾完成 PUT / 删除 DELETE / 改期都按它回传），
+       缺了会原样变成 `id=undefined`（或 `id=None`）打回来 —— 要么删不掉、要么命中的是
+       另一条。少一条但把条数说在 `dropped` 里，别让"少了一条"没人知道。
+    """
+    rows = list_todos(date)
+    keep = [t for t in rows if _todo_has_id(t)]
+    return {"todos": keep, "dropped": len(rows) - len(keep)}
 
 
 @app.get("/api/todos/month")
 async def todos_month(month: str = ""):
-    """按日期聚合某个月的待办（人话：月视图要给每天标"有几项待办"）。"""
+    """按日期聚合某个月的待办（人话：月视图要给每天标"有几项待办"）。
+
+    ⚠️ 同 `/api/todos`：缺 `id` 的不进格子。某天滤空了就把那一天从表里去掉（前端按"没有键
+       = 0 项"处理），别留一个空列表 —— 那会让格子上显示"有 0 项"这种自相矛盾的角标。
+    """
     if not month:  # 没传月份就默认当月
         month = clock.today().strftime("%Y-%m")
-    return {"month": month, "days": list_todos_in_month(month)}
+    days: dict = {}
+    dropped = 0
+    for d, rows in list_todos_in_month(month).items():
+        keep = [t for t in rows if _todo_has_id(t)]
+        dropped += len(rows) - len(keep)
+        if keep:
+            days[d] = keep
+    return {"month": month, "days": days, "dropped": dropped}
 
 
 def _card_close_guard(sid: str, body: dict) -> str:
