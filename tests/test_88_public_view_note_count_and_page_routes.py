@@ -18,10 +18,12 @@
      B 批直接调路由函数，不去起服务再解析 —— 起服务会让这一批从 2 秒变 20 秒，
      而它测的东西跟 HTTP 无关。
 """
+import ast
 import asyncio
 import io
 import json
 import os
+import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -166,10 +168,32 @@ def batch_b_routes():
                 and (again or {}).get("dropped") == 0,
                 "%s %s" % (again, exc4))
 
-    c.check("B4 两路的判据是**同一个** `_todo_has_id`（在 main 里各写一遍 `t.get(\"id\")` 就会漂）",
-            "from app.modules.planner import" in read("app/main.py")
-            and read("app/main.py").count("_todo_has_id(") >= 2,
-            str(read("app/main.py").count("_todo_has_id(")))
+    # #69：原判据是 `read("app/main.py").count("_todo_has_id(") >= 2` —— 那是**数字符串**：
+    # 注释里写一遍就 +1，两次调用都堆在 `todos_list` 里、`todos_month` 一次都没有也照样凑够 2。
+    # 改成 AST 数**真调用**并逐函数分开数（注释不是节点，天然排除）。
+    # ⚠️ 两路都是 `async def`（`ast.AsyncFunctionDef`）—— 只认 `FunctionDef` 会得到**空字典**，
+    #    而"空 == 空"这种断言最容易假绿；所以先要在未变异代码上真拿到 {1, 1}，红了才说明它在工作。
+    main_src = read("app/main.py")
+    calls = {}
+    for node in ast.walk(ast.parse(main_src)):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in (
+                "todos_list", "todos_month"):
+            calls[node.name] = sum(
+                1 for x in ast.walk(node)
+                if isinstance(x, ast.Call) and getattr(x.func, "id", "") == "_todo_has_id")
+    c.check("B4 两路**各调一次**同一个 `_todo_has_id`（判真调用、逐函数分数量 —— "
+            "注释凑数 / 两次都堆在一路上 / 另一路漏掉，三种坏法都拦得住）",
+            calls == {"todos_list": 1, "todos_month": 1}, str(calls))
+
+    # B5：main 里不许出现第二份待办 id 判据。用**词边界**正则而不是 `'t.get("id")' in ln`：
+    # 后者是子串匹配，将来谁写 `dept.get("id")` / `student.get("id")`（别的记录、与本单无关）
+    # 就会被误判成"第二份待办判据" —— 实测 main.py 现有 10 行 `.get("id")`（`f.` / `w.` / `svc.` …），
+    # 名字只要以 t 结尾就撞。词边界版今天的命中数与子串版一样是 0，但它不会随名字漂。
+    hard = [ln.strip() for ln in main_src.split("\n")
+            if not ln.strip().startswith("#")
+            and re.search(r'\bt\.get("id")', ln)]
+    c.check("B5 main 里没有第二份待办 id 判据（两路各写一遍就是两份会漂的账，判据只此 `planner._todo_has_id` 一处）",
+            not hard, str(hard[:3]))
     return c
 
 
