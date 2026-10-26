@@ -223,6 +223,39 @@
   ⚠️ 流程上要说的一条：**两个窗口同时动同一个仓** ⇒ 单据 §落地记录 空白 ≠ 没做，开工前先 `git log -1`；
   另外那一笔把**施工单原文**以快照命名入了库（md5 与原件逐字节相同）⇒ `git mv` 成 `-drop-in.md`、快照占用原名，
   并补上原本漏写的 README 索引两处；指南 §6 里三个行号（`intent.py:420/464`、`planner.py:1423`）现改为实测的 `:416/:463/1436`。
+- `2026-10-27-ticket69-code-freeze-checkup.md` — **冻代码前的最后一单：一行行为都没改**（#68 四条批示剩下的三项 +
+  推送前体检 + 交付动作）。两项是**注释在撒谎**：`/api/todos` 的 docstring 写着「把条数说在 `dropped` 里，
+  别让"少了一条"没人知道」，而实测 `dropped` **零消费者**（读这一路的三处全只取 `td.todos`：
+  `plan.html:260`、`student.html:2346`、`student.html:3263`）—— 那句话是我自己在 #67 写进去的，一行 grep 就否证；
+  `todos_month` 那句「前端按没有键=0项处理」也没有观察者（**两处月历都是前端自己按天分桶**：
+  `student.html:2434`、`plan.html:370`；全仓只剩 `test_03` 与 `docs/build_tech_doc.py` 调这一路）⇒
+  都改成实话，并写明**为什么不进前端**（学生不知道 `id` 是什么、也修不了它，多一行只会让他怀疑自己弄坏了数据；
+  该知道的人是维护者 ⇒ 那是 `/api/health/data` 的活）和**真代价**（页面会比工具少数几条、学生看不出来）。
+  第三项是**护栏假绿**：`test_88` B4 原来数字符串 `count("_todo_has_id(") >= 2` ⇒ 注释里写一遍就凑够、
+  两次调用都堆在同一路上也照样过；改成 **AST 逐函数数真调用**（`calls == {"todos_list": 1, "todos_month": 1}`），
+  并补 B5「main 里不许有第二份 id 判据」。
+  ⚠️ **我自己在这一项上又栽了一次，值得单独记**：B5 第一版用 `r'\bt\.get("id")'` —— 正则里 `("id")` 是**捕获组**，
+  它要的是 `t.getid` 那种文本，实测对目标行 **False** ⇒ **B5 从落笔起就永远不会红**；是 V4 变异（把判据改写成
+  行为等价的 `t.get("id")`，这恰是 B5 唯一该管的场景）跑出来"B4 红、B5 沉默"才暴露的。
+  修法不止转义括号：把**正控做进断言本身**（同一个模式必须能命中样本行 `probe = t.get("id")`，
+  外加反控 `dept.get("id")` 不误伤 —— 这条正是我从单据的子串匹配改成词边界正则的理由：
+  实测 main.py 有 10 行 `.get("id")`，名字以 `t` 结尾就会被子串版误判）。
+  变异四笔逐笔实测：V1 砍月视图那一路 ⇒ B2/B2-bis/B4 红且 B4 报 `{'todos_list': 1, 'todos_month': 0}`；
+  V2 只加注释 ⇒ **全绿**（AST 不被骗）；**V3 删一处真调用+注释补一处 ⇒ 旧 count 看到 2、被骗绿，新 AST 红 3 条**
+  （这一笔就是 B4 改法存在的全部理由）；V4 第二份判据 ⇒ B4+B5 红、B2 照旧绿（行为等价，正是 B5 的地盘）。
+  §二 七条推送前体检逐条复跑对上（`git ls-files app/data/` = 5 个种子；五个敏感路径跟踪历史全 0；
+  `ghp_`/`github_pat_` 零命中；remote 不含 token；`requirements.txt` 首行确有 BOM）——
+  **一处与单据不同**：`sk-` 宽版实测 **40 行 / 14 个文件**（单据只列 5 处，且写的 `test_02:55` 实为
+  `test_02_upload.py:81`）；按"像真 key 的形状"再收一刀（`sk-[A-Za-z0-9]{8,}`）只剩 **6 行**，
+  逐条看语境：`.env.example` 与 README 的 `sk-xxxxxxxx…` 占位符、`ai-logs/09` 与 `test_02_upload.py` 的
+  自证诱饵串 `sk-abcdefghijklmnop1234`、两份快照里**引述这些字符串**的行 ⇒ **结论同（没有真 Key）**，
+  但要看的清单必须按现跑列，不能照抄旧列。
+  交付四脏项一次性入库（`kb.json` +10/-1、`demo_timetable/` 56 KB、`run_local.bat`、`tests/_optional_browser/` 168 KB），
+  **提前逐个扫过敏感值**（拿 `.env` 口令与 `accounts.json` 字段去 25 个待提交文件里找，只报位置不报值，命中 0；
+  docx/xlsx 解包扫 `sk-`/`ghp_`/`password`/`token`/`cookie` 也 0）；`run_local.bat` 按单据补了"Edge 路径硬编码、
+  没 Edge 只会不弹浏览器、`Uvicorn running` 出现就是服务好了"。
+  账：全量 **5125 / 0（89 批）** = `5078 + 26 + 21`（#67 文档里写的"test_88 20 项"是当时事实，不改那份快照）。
+  ⚠️ **本单之后代码冻结**：改 `app/**.py`、`app/static/`、`tests/` 既有判据都要另开单；只剩文档 + 提交 + 推送 + 演示。
 - （后续每次开发会话追加新文件……）
 ### 用户侧施工单原件（原文照入，一字未改）
 
@@ -269,6 +302,7 @@
 | `2026-10-26-ticket65-course-ask-vs-todo-drop-in.md` | #65 问课被答成待办：`_sem_done` 的判据从「这条分支返回了」改成「真的办成了」（由调用方声明 `readonly=True`，只动列待办与找卡落空两处）、新增 `looks_like_course_ask` 补「查课优先于查待办」这一半、规则层加 `list_course` 一格 + 四处登记、样本库**点名**清两条化石（先备份、后判据、A/B 先上）；执行中据真机追加 §F：`_read_step`/`_reason_steps` 的优先序与主链路对齐，否则答案对了屏幕上还在说「听成 看待办列表」 | `2026-10-26-ticket65-course-ask-vs-todo.md` |
 | `2026-10-26-ticket66-todo-public-shape-drop-in.md` | #66 待办对外形状缺键：`_todo_public_row` 一处翻译两处共用（六键兜底、值全 str）、`_todo_has_id` 让缺句柄的整条不出并明说丢了几条；单据 §0.5 的"status 是后加字段"被 `git log -S` 推翻、§3.1 预计红的 test_84 B6 打不出来 ⇒ 换 A2/A3/A5 靶子、`test_86` 撞名 ⇒ `test_87` | `2026-10-26-ticket66-todo-public-shape.md` |
 | `2026-10-26-ticket67-note-count-page-routes-wording-drop-in.md` | #67 #66 追记：`_is_note` 让说明行不进条目数（顺带撞出「notes 排最前 ⇒ 挤掉真条目」这个更常见的第二坑）、页面两路借同一个 `_todo_has_id` 并给 `dropped`、#64 那句「原始轨迹」改口成「同源」（不另存原文）；同族「7 处」更正为 5 处并明确不收（崩比错便宜） | `2026-10-26-ticket67-note-count-page-routes-wording.md` |
+| `2026-10-27-ticket69-code-freeze-checkup-drop-in.md` | #69 冻代码前最后一单：两处撒谎的注释改实话（`dropped` 零消费者 / month 无页面调用）+ B4 从数字符串改 AST 逐函数数真调用 + 补 B5（我自己第一版写成死断言，V4 暴露后加了自带正控）+ 推送前 7 条体检复跑 + 四脏项入库（先扫敏感值）；账 5125/0（89 批） | `2026-10-27-ticket69-code-freeze-checkup.md` |
 | `2026-10-16-ticket24-two-decisions-brief.md` | #24 两件拍板：驿站列学生登记条目 / 自定义服务优先于通用工单 | `2026-10-16-ticket24-two-decisions.md` |
 
 > **几份没入库的，原因照实写在这里**（免得有人翻到写作侧的目录时对不上）：
