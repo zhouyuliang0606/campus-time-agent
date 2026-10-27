@@ -137,14 +137,16 @@ def batch_a_shape():
             "and not readonly" in src and "resp is not None" in src, "")
     calls = calls_of(MAIN, "_sem_done")
     with_ro = [n for n in calls if any(k.arg == "readonly" for k in n.keywords)]
-    c.check("A3 调用点七处、声明只读的**恰好两处**（数量也钉：以后加第八处或多标一处，都得回这张表登记）",
-            len(calls) == 7 and len(with_ro) == 2, f"共 {len(calls)} 处，只读 {len(with_ro)} 处")
+    c.check("A3 调用点八处、声明只读的**恰好两处**（数量也钉：以后再加一处或多标一处，"
+            "都得回这张表登记）—— 第八处是 #73「补齐缺口」那个出卡出口："
+            "**它挂着提案、必须继续学样本**，所以没标只读",
+            len(calls) == 8 and len(with_ro) == 2, f"共 {len(calls)} 处，只读 {len(with_ro)} 处")
     marks = " ".join(seg_of(MAIN, n) for n in with_ro)
     c.check("A4 那两处正是病根与它的同伴：列待办（念一遍清单）+ 找卡·手上没卡（什么都没办）",
             LIST_MARK in marks and EMPTY_CARD_MARK in marks, marks[:70])
     others = [n for n in calls if not any(k.arg == "readonly" for k in n.keywords)]
     oth = " ".join(seg_of(MAIN, n) for n in others)
-    c.check("A5 其余五处一个没动 —— 尤其**改期**那处传进来的就是提案对象本身（没有 options 字段），"
+    c.check("A5 其余六处一个没标只读 —— 尤其**改期**那处传进来的就是提案对象本身（没有 options 字段），"
             "它必须继续学；按「有没有 options」猜形状会把它的学习一起停掉",
             all(LIST_MARK not in seg_of(MAIN, n) and EMPTY_CARD_MARK not in seg_of(MAIN, n) for n in others)
             and "_sem_done(_rt_prop)" in oth, oth[:70])
