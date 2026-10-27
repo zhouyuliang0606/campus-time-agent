@@ -243,8 +243,10 @@ def batch_a_shape():
     calls = [n for n in ast.walk(impl) if isinstance(n, ast.Call)
              and getattr(n.func, "id", "") == "_run_agent_loop"]
     kwsets = [frozenset(k.arg for k in n.keywords) for n in calls]
-    c.check("A16 两个调用点的参数形状**完全一致**（差一个参数就是有人复制了一段去各改各的）",
-            len(calls) == 2 and len(set(kwsets)) == 1, f"{[sorted(k) for k in kwsets]}")
+    c.check("A16 三处调用点（#61-C 的短路 + 尾部，加 #76 的让渡点）的参数形状**完全一致**"
+            "（差一个参数就是有人复制了一段去各改各的；★ #76 把 2 改口成 3，改的是数、"
+            "管的是形状——这一条比原来更硬：多出来那处必须和前两处逐字同参）",
+            len(calls) == 3 and len(set(kwsets)) == 1, f"{[sorted(k) for k in kwsets]}")
     need = {"module_key", "session_id", "message", "prompt", "tools", "persona_key",
             "model_config", "emit"}
     c.check("A17 传进去的就那 8 个（单子量的那个数；多一个就是剪早了/剪晚了）",

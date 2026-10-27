@@ -277,21 +277,49 @@ def batch_c_shape():
             "（`_chat_impl` 里出现一处就是复制了一份引擎代码去各改各的）",
             bool(runs_in_loop) and not runs_in_impl,
             f"`_run_agent_loop` {len(runs_in_loop)} 处 / `_chat_impl` {len(runs_in_impl)} 处")
-    c.check("C5-bis2 全文件 `_run_agent_loop` 的定义恰好一处、调用点恰好两处"
-            "（委托那一次 + Agent 模式短路那一次；出现第三次就是有人复制了参数形状）",
+    c.check("C5-bis2 全文件 `_run_agent_loop` 的定义恰好一处、调用点恰好三处"
+            "（★ #76 把这一条从 2 改口成 3，是**改口不是放宽**：委托那两处（短路 + 尾部）+ #76 让渡点一处。"
+            "原话『出现第三次就是有人复制了参数形状』现在由 C5-bis3 的**名分**和 `test_82` A16/A17 的"
+            "**形状一致**两把更硬的尺子接着管；这里的数只挡『有人把让渡点写成不 return 的半接管』）",
             code.count("async def _run_agent_loop(") == 1
-            and code.count("await _run_agent_loop(") == 2,
-            f"定义 {code.count('async def _run_agent_loop(')} / 调用 {code.count('await _run_agent_loop(')}")
+            and code.count("await _run_agent_loop(") == 3
+            and code.count("return await _run_agent_loop(") == 3,
+            f"定义 {code.count('async def _run_agent_loop(')} / 调用 {code.count('await _run_agent_loop(')}"
+            f" / 带 return {code.count('return await _run_agent_loop(')}")
     calls = [n for n in ast.walk(fn) if isinstance(n, ast.Call)
              and getattr(n.func, "id", "") == "_run_agent_loop"]
     inside = [n.lineno for n in calls if span[0] < n.lineno <= span[1]]
     after = [n.lineno for n in calls if n.lineno > span[1]]
     before = [n.lineno for n in calls if n.lineno <= span[0]]
-    c.check("C5-bis3 调用点各一处、分工明确：闸门**圈内**那处是 #61-C 的 Agent 模式短路"
-            "（驿站端走不到它），闸门**之后**那处两端共用同一次引擎调用；"
-            "闸门之前出现一处就等于把引擎提到了端边界前面",
-            len(inside) == 1 and len(after) == 1 and not before,
-            f"圈内 {sorted(inside)} / 圈后 {sorted(after)} / 圈前 {sorted(before)}")
+    ifs = [n for n in ast.walk(fn) if isinstance(n, ast.If)]
+
+    def _inner_if(node):
+        """包住这个调用的**最里面**那条 if（外层 if 的 unparse 含着下面每一条分支，
+        从外往里比会把短路点也认成让渡点 —— 同一个坑见 `test_83._line_of` 的注释②）。"""
+        cands = [i for i in ifs if i.lineno <= node.lineno <= i.end_lineno]
+        return max(cands, key=lambda i: i.lineno) if cands else None
+
+    def _tagged(node):
+        i = _inner_if(node)
+        if i is None:
+            return "尾部"
+        if any(isinstance(x, ast.Call) and getattr(x.func, "id", "") == "log_intent_gap"
+               for x in ast.walk(i)):
+            return "让渡"          # #76：让渡那一支的入口，体内先记一笔缺口账
+        return "短路" if "_agent_mode" in ast.unparse(i.test) else "别的"
+
+    named = {}
+    for n in calls:
+        named.setdefault(_tagged(n), []).append(n.lineno)
+    c.check("C5-bis3 三处调用点各有名分、位置也钉死：短路点在闸门圈内且排在让渡点之前"
+            "（#61-C 的 Agent 模式短路，驿站端走不到它）、让渡点也在圈内但排在闸门之后（#76 让渡口，"
+            "所以驿站端与 Agent 模式开着的请求都到不了它）、尾部那处两端共用且必须排在闸门圈外；"
+            "闸门之前出现一处就是把引擎提到了端边界前面，冒出『别的』这一类就是有人新加了一处没名分的调用",
+            len(inside) == 2 and len(after) == 1 and not before
+            and set(named) == {"短路", "让渡", "尾部"}
+            and len(named["短路"]) == len(named["让渡"]) == len(named["尾部"]) == 1
+            and named["短路"][0] < named["让渡"][0] < span[1] < named["尾部"][0],
+            f"圈内 {sorted(inside)} / 圈后 {sorted(after)} / 圈前 {sorted(before)} / {named}")
 
     c.check("C6 驿站端拿不到排程工具：`if not _station_surface and _schedule_tools_allowed(` 恰好 1 处",
             code.count("if not _station_surface and _schedule_tools_allowed(") == 1,

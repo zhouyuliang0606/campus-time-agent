@@ -153,19 +153,33 @@ def _chat_impl(tree):
 
 
 def _engine_call_ranges(body):
-    """`_chat_impl` 里两个 `_run_agent_loop(...)` 调用点的行范围。
+    """`_chat_impl` 里三处 `_run_agent_loop(...)` 调用点的行范围。
 
-    返回 (短路点范围, 尾部范围)：短路点认的是"条件里带 `_agent_mode` 的那个 `if` 包着的那次调用"，
-    不认行号——行号每天在漂，条件不漂。
+    返回 {"短路点", "让渡点", "尾部"}：短路点认"条件里带 `_agent_mode` 的那个 `if` 包着的那次调用"，
+    让渡点认"体内调了 `log_intent_gap` 的那个 `if` 包着的那次调用"（#76），
+    谁都没包着的那次才是尾部。三个名分都不认行号——行号每天在漂，条件不漂。
+
+    ⚠️ 归类只比**最里面**那条 if：外层 `if` 的 unparse 里含着下面每一条分支，
+       从外往里比会把短路点也认成让渡点（同一个坑见 `_line_of` 的注释②）。
     """
-    ifs = [n for n in ast.walk(body)
-           if isinstance(n, ast.If) and "_agent_mode" in ast.unparse(n.test)]
-    out = {"短路点": None, "尾部": None}
+    ifs = [n for n in ast.walk(body) if isinstance(n, ast.If)]
+
+    def _inner(node):
+        cands = [i for i in ifs if i.lineno <= node.lineno <= i.end_lineno]
+        return max(cands, key=lambda i: i.lineno) if cands else None
+
+    out = {"短路点": None, "让渡点": None, "尾部": None}
     for n in ast.walk(body):
         if isinstance(n, ast.Return) and "_run_agent_loop" in ast.unparse(n):
-            rng = (n.lineno, n.end_lineno)
-            in_if = any(i.lineno <= rng[0] and rng[1] <= i.end_lineno for i in ifs)
-            out["短路点" if in_if else "尾部"] = rng
+            i = _inner(n)
+            if i is not None and any(isinstance(x, ast.Call) and _call_name(x) == "log_intent_gap"
+                                     for x in ast.walk(i)):
+                tag = "让渡点"
+            elif i is not None and "_agent_mode" in ast.unparse(i.test):
+                tag = "短路点"
+            else:
+                tag = "尾部"
+            out[tag] = (n.lineno, n.end_lineno)
     return out
 
 
@@ -282,6 +296,12 @@ def batch_a_shape():
     c.check("A6-bis `_is_material` 在短路点**之上**就算好了（判据读得到，不是读到半成品）",
             _line_of(body, "looks_like_material(message)", "材料判据") < rng["短路点"][0],
             f"材料 @{_line_of(body, 'looks_like_material(message)', '材料判据')}")
+    c.check("A6-bis2 三个名分各有其位、且按源码次序排好（短路 < 让渡 < 尾部）："
+            "让渡点那一处被删掉时这里先红 —— 不让 B6/B7 靠『少一个名分』继续绿，"
+            "也不让人把引擎调用挪到尾部之后再补一个同名 return",
+            all(rng[k] is not None for k in ("短路点", "让渡点", "尾部"))
+            and rng["短路点"][0] < rng["让渡点"][0] < rng["尾部"][0],
+            str({k: v[0] if v else None for k, v in rng.items()}))
 
     holds = [n for n in ast.walk(body)
              if isinstance(n, ast.Assign) and any(
