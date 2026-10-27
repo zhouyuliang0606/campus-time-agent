@@ -521,7 +521,8 @@ def candidate_slots(text: str = "", max_slots: int = 3, days_ahead: int = 5) -> 
     return out[:max_slots]
 
 
-def parse_slot_text(text: str, title: str = "", fallback_date: str = "") -> dict | None:
+def parse_slot_text(text: str, title: str = "", fallback_date: str = "",
+                    minutes: int = 0) -> dict | None:
     """把学生在「其他」里自己填的一行字，解析成一张待办卡（人话：自填也要认）。
 
     三种都认：
@@ -536,6 +537,10 @@ def parse_slot_text(text: str, title: str = "", fallback_date: str = "") -> dict
     实测候选卡挂着「写作业」时学生说「周五晚上七点到九点值日」，
     拼成「…值日 写作业」→ `_pick_title` 抠出 **「值日写作业」** 挂上确认条。
     他换了事情，系统却把上一轮的事情缝进名字里（2026-10-10 真机复现）。
+
+    `minutes`（#73）= 调用方从卡上读到的"这件事单次多久"。没这一参，凡是只报哪天
+    或只报时长的那句都会掉到 `AUTO_SLOT_LENGTH`=90（实测：卡上 60 分钟、学生说
+    「改成周六」，出来的还是 08:00-09:30/90）。谁优先见下面两处的写法。
     """
     t = (text or "").strip()
     if not t:
@@ -549,9 +554,9 @@ def parse_slot_text(text: str, title: str = "", fallback_date: str = "") -> dict
     blob = t if keep else f"{t}，{title}".strip("， ")
     prop = parse_add_todo(blob)
     if prop is None:
-        prop = auto_todo_proposal(blob)
+        prop = auto_todo_proposal(blob, minutes=minutes)
     if prop is None:
-        prop = span_only_proposal(t, title, fallback_date)
+        prop = span_only_proposal(t, title, fallback_date, minutes=minutes)
     if prop is None:
         return None
     # 名字**只认这两个来源**：这句自己报的（`keep`），或者外面传进来的那件事（`title`）。
@@ -565,7 +570,8 @@ def parse_slot_text(text: str, title: str = "", fallback_date: str = "") -> dict
     return prop
 
 
-def span_only_proposal(text: str, title: str = "", fallback_date: str = "") -> dict | None:
+def span_only_proposal(text: str, title: str = "", fallback_date: str = "",
+                       minutes: int = 0) -> dict | None:
     """只有起止钟点、没有日期的那一行字 → 用兜底那天补成一张卡。
 
     顺延规则：兜底那天就是今天、而这一段已经过去了 → 挪到明天。
@@ -597,7 +603,9 @@ def span_only_proposal(text: str, title: str = "", fallback_date: str = "") -> d
     if _iso_weekday(day) == 0:
         return None
     if not finish:
-        finish = to_hhmm(to_minutes(begin) + 60)
+        # 时长：这一句说的 > 卡上记着的（`minutes`）> 60。以前是写死的 60 ——
+        # 实测学生说「下周三，一小时」排出来 90 分钟那一档，他刚报的数当没听见。
+        finish = to_hhmm(to_minutes(begin) + (wanted_minutes(text) or minutes or 60))
     if to_minutes(finish) <= to_minutes(begin):
         return None
     if day == clock.today().isoformat() and to_minutes(begin) <= _now_minutes():
@@ -635,7 +643,7 @@ def span_only_proposal(text: str, title: str = "", fallback_date: str = "") -> d
 
 
 def build_todo_slots(title: str, slots: list, hint: str = "", preselect: int = 0,
-                     repeat: str = "") -> dict:
+                     repeat: str = "", times: int = 0, duration: int = 0) -> dict:
     """把几个候选时段包成一张「挑时间」的提案（人话：弹框里那串能打勾的时间）。
 
     它的形状跟别的提案不一样：**一个提案里装着好几个时段**，学生勾哪个算哪个
@@ -650,6 +658,12 @@ def build_todo_slots(title: str, slots: list, hint: str = "", preselect: int = 0
     `/api/todos/batch`，中途任何一处把它丢了，学生看到的就还是"只排这一周"。
     `repeat="daily"` 同理，只是那条以后**每天**出现、且只进代办清单不进日历
     （2026-10-13 加，服务「我每天都要背单词」）。
+
+    `times` / `duration`（#73 加）= 学生**明说了**的几个、每次多少分钟，0 = 他没说。
+    这两个数以前只用来算这一轮的段数，算完就丢了：下一轮他补一句「改成三次」，
+    系统手上没有任何地方能读到"上一轮要几次"，只能拿整句话重新猜一遍。
+    卡上存下来之后，补充句只补他明说的那几项，其余照旧不动。
+    `origin` = 这件事最早那个名字（不是拼过之后的整串），给"不许从整句重抠事名"当底。
     """
     items = []
     for s in slots or []:
@@ -672,6 +686,9 @@ def build_todo_slots(title: str, slots: list, hint: str = "", preselect: int = 0
         "hint": hint,
         "preselect": pre,
         "repeat": repeat or "",
+        "times": int(times or 0),
+        "duration": int(duration or 0),
+        "origin": title or "",
         "summary": (f"{'每周重复 · ' if repeat == REPEAT_WEEKLY else ''}"
                     f"{'每天 · ' if repeat == REPEAT_DAILY else ''}"
                     f"{title or '待办'}｜{len(items)} 个候选时段"
@@ -933,7 +950,8 @@ def _clock_note(text: str, slots: list) -> str:
             f"下面给的是别的时间段，不是你点的那个。")
 
 
-def todo_slots_proposal(text: str, max_slots: int = 3) -> dict | None:
+def todo_slots_proposal(text: str, max_slots: int = 3,
+                        times: int | None = None) -> dict | None:
     """学生只说了"加个健身"（没说几点）→ 摊开几个候选时段，让他自己打勾。
 
     这是**本轮规格的核心改动**。上一版的做法是"系统替他挑一个时间、出一张单条确认卡"，
@@ -957,7 +975,10 @@ def todo_slots_proposal(text: str, max_slots: int = 3) -> dict | None:
     # 但**不能什么都不说** —— 学生会以为自己报的钟点被听见了。
     bare_clock = _bare_clock_note(t)
     day = _pick_date(_FREQ_RE.sub(" ", t))
-    times = weekly_times(t) or 0
+    # `times` 允许调用方从上一轮那张卡上递进来（#73）：补充句常常只剩「三次」这种
+    # 没有"周"字的省略写法，`weekly_times` 结构上看不到上一轮，读出来是 None，
+    # 于是这一句从频次分支掉回普通分支 —— 段数和预勾两处一起变，学生看到的卡就"没循环确认"。
+    times = (weekly_times(t) or 0) if times is None else max(0, int(times))
     # 「一周三次」里的"一周"会被 `_pick_date` 当成相对日期（一周后 = 2026-10-14），
     # 于是频次模式被"他指定了哪天"这道闸误拦，候选还全挤到那一天去。
     # 所以判"有没有点名哪天"、以及去找空档，都用**去掉频次短语之后**的那句话。
@@ -983,7 +1004,8 @@ def todo_slots_proposal(text: str, max_slots: int = 3) -> dict | None:
             hint = _note + "\n" + hint
         if bare_clock:
             hint = bare_clock + "\n" + hint
-        return build_todo_slots(title, slots, hint=hint, preselect=0, repeat="weekly")
+        return build_todo_slots(title, slots, hint=hint, preselect=0, repeat="weekly",
+                                times=0, duration=wanted_minutes(t) or 0)
     # ==== 「我每天都要背单词」：固定每天 + 无限重复 → 一条 repeat=daily 的**习惯** ====
     # 与 weekly 的分工不在"铺几天"，在**出没出现在日历上**（用户 2026-10-13 拍板）：
     # weekly 有固定星期几和钟点，是时间承诺，照旧画进日程；daily 没说哪天，
@@ -1014,7 +1036,8 @@ def todo_slots_proposal(text: str, max_slots: int = 3) -> dict | None:
             hint = _note + "\n" + hint
         if bare_clock:
             hint = bare_clock + "\n" + hint
-        return build_todo_slots(title, slots, hint=hint, preselect=0, repeat=REPEAT_DAILY)
+        return build_todo_slots(title, slots, hint=hint, preselect=0, repeat=REPEAT_DAILY,
+                                times=0, duration=wanted_minutes(t) or 0)
     # 「一周三次」且**没指定哪天** → 按一周 N 段排，前 N 段替他勾上。
     # 为什么要求"没指定哪天"：他要是说了「周四一周三次」，那两句本身就打架
     # （候选全挤在周四 = 一天三练），这种矛盾句宁可退回老路子只排那天，
@@ -1049,7 +1072,11 @@ def todo_slots_proposal(text: str, max_slots: int = 3) -> dict | None:
             hint = _note + "\n" + hint
     if bare_clock:
         hint = bare_clock + "\n" + hint
-    return build_todo_slots(title, slots, hint=hint, preselect=pre)
+    # ⚠️ `times` 在这一支**以前被整个丢掉**：只有频次分支（`times >= 2` 且没点名哪天）
+    #    替学生勾了段数，走这一支的（说了具体哪天、或只说一次）下一轮补「改成三次」时，
+    #    卡上读不到次数，只能重猜。#73 T3 那种"次数不变"就挂在这一句上。
+    return build_todo_slots(title, slots, hint=hint, preselect=pre,
+                            times=times, duration=wanted_minutes(t) or 0)
 
 
 def build_todo_mode(title: str, when: str = "", date: str = "",
@@ -2582,6 +2609,130 @@ def weekly_times(text: str) -> int | None:
     return n
 
 
+# 「N 次」的**省略写法**：上一句已经说过"周"，这一句只报个数（「是改成三次」）。
+# 认得极窄：整片必须是「(纠正前缀)?(范围词)?N次」，前后不许再挂别的东西 ——
+# 「我去了三次图书馆」这种陈述句因此一条都进不来（片里有"我去了""图书馆"）。
+# 为什么要自己认「下周三次」而不是靠 `weekly_times`：`_FREQ_RE` 里那个
+# `(?![一二三四五六日天])` 是**故意的** ——「周三」得读成日子、不能读成"礼拜三次"，
+# 代价就是「下周三次」它不认。那个 lookahead 不能动（动了全项目遭殃），
+# 所以这一档在补丁自己的窄口里补上，影响面只有"补充句"这一条路。
+# ⚠️ 这张表只给 `parse_todo_patch` 用。**不要拿去放宽 `weekly_times`**：那个函数被
+# `todo_slots_proposal` 三条分支和 `unsupported_period` 共用，一放宽，凡是带「N 次」的
+# 话都会开始要学生排日程，而那类误伤在测试里往往没人写、只有真机上学生会踩到。
+_PATCH_PREFIX_RE = re.compile(
+    r"^(?:是|不对|不是|应该|我说的是|还是|就|要|只要)*\s*"
+    r"(?:改成|换成|改为|变成|调成|排成)?\s*")
+_PATCH_TIMES_RE = re.compile(
+    r"^(?:(?:下|本|这|上|每)?(?:周|星期|礼拜))?\s*"
+    r"([0-9]{1,2}|[一二两三四五六七八九十]{1,2})\s*(?:次|回|遍|趟)$")
+
+
+def parse_todo_patch(text: str) -> dict:
+    """这一句**改了什么**：说到的填值，没说的填 None（人话：不许替他重算）。
+
+    学生说「改成三次，每次一小时」，就只交出 `{"times":3,"duration":60}`，
+    事名、日期、钟点一律 None —— 那些他没提，上一轮的答案就该原样留着。
+
+    为什么要有这个函数：`weekly_times` / `_pick_title` / `_pick_span` / `_pick_date` /
+    `wanted_minutes` 的签名都只收一句话，结构上没有"上一轮"这个入口。以前补一句信息是
+    拿整串重猜一遍（实测：次数从 None 救回 3 ✓，事名却从「健身」变成「健身是每次」✗）——
+    猜对一项就赌坏另一项。这里把"这句话到底说了哪几项"先量出来，
+    合并那一步（见 `main.py` 的加待办分支）只覆盖他明说的项。
+
+    `title` 一律 None：事名是这一族里最容易猜坏、也最贵的字段（卡上写着谁也没说过的
+    「每次」，学生只会认为系统没听懂）。要换事名走的是**全新下单**那条路，由调用方的
+    否决（`_veto_as_new_order`）负责，不在这里猜。
+    """
+    t = (text or "").strip()
+    out = {"times": None, "duration": None, "date": None,
+           "start": None, "end": None, "title": None}
+    if not t:
+        return out
+    times = weekly_times(t)
+    if times is None and len(t) <= 12:
+        pieces = [p.strip() for p in re.split(r"[，,。；;、\s]+", t) if p.strip()]
+        hit = None
+        for p in pieces:
+            m = _PATCH_TIMES_RE.match(_PATCH_PREFIX_RE.sub("", p))
+            if m:
+                hit = p
+                n = _num(m.group(1))
+                if n is not None and 1 <= n <= 7:
+                    times = n
+                break
+        # 除了那一片"N次"，别片擦完不许剩下一个合法事名 ——
+        # 「三次，去游泳」这种混着新名字的，不配当补丁（宁可走全新下单）。
+        if times is not None:
+            for p in pieces:
+                if p == hit:
+                    continue
+                cand = _strip_title_noise(p)
+                if cand and cand != "待办" and _title_ok(cand):
+                    times = None
+                    break
+    out["times"] = times
+    out["duration"] = wanted_minutes(t)
+    # 「下周三次」里的"下周"会被 `_pick_date` 读成一个具体日子（同 `todo_slots_proposal`：
+    # 那里也先用 `_FREQ_RE` 把频次短语摘掉再找日子），所以这儿同源处理。
+    out["date"] = _pick_date(_FREQ_RE.sub(" ", t))
+    sp_begin, sp_finish = _pick_span(t)
+    # 裸钟点（1..6 点、没说上下午）不进补丁：判据与 `span_only_proposal` / `_day_slots`
+    # 同一条 —— 替他猜"下午三点"错了要改一整条安排，问一句的成本低得多。
+    sp = parse_time_spec(t)
+    if sp_begin and (not sp.get("clock") or sp.get("clock_ok")):
+        out["start"] = sp_begin
+        out["end"] = sp_finish
+    return out
+
+
+def patched_todo_blob(base_phrase: str, message: str) -> str:
+    """把"上一轮剩下的那半句/那个名字"和这一句缝成解析器吃的一句话（#73）。
+
+    拼接只是**为了让只收一句话的老解析器看得见事名和日子**，最终屏幕上写什么名字由
+    `retitle_todo_card` 按铁律定 —— 两件事必须分开：实测光靠拼接吐出来的事名
+    就是「健身是每次」，救回次数、弄坏名字。
+    """
+    b = (base_phrase or "").strip().strip("，,、 ")
+    m = (message or "").strip().strip("，,、 ")
+    if not b or not m:
+        return b or m
+    if b in m:
+        return m
+    if m in b:
+        return b
+    return f"{m}，{b}"
+
+
+def retitle_todo_card(card: dict, name: str) -> dict:
+    """把一张待办卡的事名换成 `name`，`summary` 跟着重算（事名铁律的落点）。
+
+    只走这一处，别在调用点手拼 summary：候选卡回到 `build_todo_slots` 重造，
+    单条卡按 `_make_todo_card` 那一行的格式重算 —— 模板各只有一份，
+    抄第二份迟早和屏幕上那句对不上。
+    """
+    if not isinstance(card, dict) or not name or card.get("title") == name:
+        return card
+    if card.get("kind") == "todo_slots":
+        return build_todo_slots(name, card.get("slots") or [],
+                                hint=card.get("hint") or "",
+                                preselect=card.get("preselect") or 0,
+                                repeat=card.get("repeat") or "",
+                                times=card.get("times") or 0,
+                                duration=card.get("duration") or 0)
+    out = dict(card)
+    out["title"] = name
+    if out.get("date") and out.get("start"):
+        out["summary"] = (f"{name}｜{out['date']}（"
+                          f"{out.get('weekday') or _weekday_name(out['date'])}）"
+                          f"{out['start']}-{out.get('end') or ''}")
+    return out
+
+
+def todo_patch_empty(patch: dict) -> bool:
+    """这一句什么都没明说（人话：它不是一句补丁，别拿它覆盖卡上的任何东西）。"""
+    return not any(v is not None for v in (patch or {}).values())
+
+
 # 全角 → 半角，**只转跟时间沾的这几个字符**。
 # 为什么不用 `unicodedata.normalize("NFKC", …)` 整句归一：那会把书名号/括号/顿号一起换掉，
 # 而 `_fix_typo_time_words` 与标题残渣那几处判据全是按中文标点写的 —— 一次全变，
@@ -3166,9 +3317,25 @@ def _pick_title(text: str) -> str:
     return "待办"
 
 
+# 学生报"几次"时，把时间词/时长都擦干净之后剩下的那一点**计数残渣**（#73）。
+# 实测：「下周三次，每次一小时」擦完是「每次」、「一次一小时」擦完是「一次」——
+# 这两个都不是事情的名字，可 `looks_like_thing` 照样放行，于是候选卡上写着「每次」。
+# 这道门开在 `_title_ok` 上而不是开在某个调用点上，理由有两条：
+#   1. `_pick_title` 的整句档和切段档都过这一道门，一处改两档都生效；
+#   2. 拦掉之后 `_pick_title` 返回 "待办"，而 `parse_slot_text` / `span_only_proposal`
+#      本来就有"名字是待办就退回调用方递进来的那个"的兜底 —— 卡上的真名字自然落回来，
+#      不用新写一条兜底，`main.py:3235`、`main.py:6339` 两处调用点一起好。
+# ⚠️ 必须整串匹配（等价 `fullmatch`），不许 `search`：`search` 会把「二次元」「第一次」
+#    「下次」这些真名字一起判死（实测：只有整串匹配这一种写法放行它们）。
+#    形如「(计数词)*计数单元」 repeated —— 「次每次」「三次每次」这种**多个单元粘在一起**的
+#    残渣也得拦掉（实测它们是 `_pick_title` 在 档③ 那句上吐出来的名字），所以用 `+` 而不是只匹配一段。
+_COUNT_RESIDUE_RE = re.compile(r"(?:[每共一两二三四五六七八九十百半]*[次回遍趟])+")
+
+
 def _title_ok(t: str) -> bool:
-    """擦完的这串能不能当待办名用（没内容 / 只剩类别词 / 只是心情感叹 → 不行）。"""
+    """擦完的这串能不能当待办名用（没内容 / 只剩类别词 / 只剩计数残渣 / 只是心情感叹 → 不行）。"""
     return (bool(t) and t not in _EMPTY_TITLES
+            and not _COUNT_RESIDUE_RE.fullmatch(t)
             and not _looks_like_correction(t)
             and not looks_like_chitchat(t) and looks_like_thing(t))
 
@@ -3459,7 +3626,7 @@ def todo_missing_advice(text: str) -> str:
             "时间你还没定的话，我也可以替你挑一段。")
 
 
-def auto_todo_proposal(text: str) -> dict | None:
+def auto_todo_proposal(text: str, minutes: int = 0) -> dict | None:
     """学生只说了"哪天"、没说"几点"——由系统替他把时间想出来，凑成一张完整提案。
 
     这就是被截屏投诉的那一幕（原话：「**没有帮我想时间，是我问了才说的**」）：
@@ -3487,7 +3654,15 @@ def auto_todo_proposal(text: str) -> dict | None:
     title = _pick_title(t)
     if not title or title == "待办":
         return None
-    slot = pick_free_slot(date, prefer=t)
+    # 时长四级：这一句的起止（上面 `_pick_span` 有值就不归它管）> 这一句说的时长
+    # > 卡上记着的 `minutes` > `AUTO_SLOT_LENGTH`。以前只走最后一档，
+    # 实测学生说「周四加个两小时的自习」排出来是 90 分钟 —— 他明说的 120 没人看。
+    _want = wanted_minutes(t) or minutes or AUTO_SLOT_LENGTH
+    # `minutes` 这一参是"这段至少要多长才作数"（不是学生要的时长）——
+    # 学生要 30 分钟却不一起压低它，`pick_free_slot` 会拿 60 当下限把这段否掉、返回 None
+    # （同文件 `plan_todo_slot` 早就这么处理了，两处口径要一致）。
+    slot = pick_free_slot(date, prefer=t, minutes=min(_want, AUTO_SLOT_MINUTES),
+                          length=_want)
     if not slot:
         return None
     wd = _weekday_name(date)
@@ -4000,6 +4175,7 @@ def retime_todo_proposal(card: dict, text: str) -> dict | None:
       · 只说时刻（"下午两点到三点"、"改成晚上七点到八点"）→ 换时段，日期不动；
       · 说了一个新日子、没说时刻（"改成周六"）→ 在那个新日子上重新挑一段空档。
     标题永远沿用原卡（他没说要换事，只说时间不对）。
+    时长同理：这一句没报长度就沿用原卡那条的，不再一律按 90 分钟重挑（#73）。
 
     认不出来的返回 None，交给别的分支处理——绝不硬猜。
     """
@@ -4025,10 +4201,16 @@ def retime_todo_proposal(card: dict, text: str) -> dict | None:
     wd = _weekday_name(date)
     if begin:
         if not finish:
-            finish = to_hhmm(to_minutes(begin) + 60)
+            finish = to_hhmm(to_minutes(begin)
+                             + (wanted_minutes(t) or card.get("minutes") or 60))
     elif new_date and new_date != old_date:
-        # 只换日子、没说几点 → 在那个新日子上重新挑一段空档
-        slot = pick_free_slot(date, prefer=t)
+        # 只换日子、没说几点 → 在那个新日子上重新挑一段空档。
+        # 长度**沿用卡上那一条的**（#73）：以前这里不传 length，落到 `AUTO_SLOT_LENGTH`=90，
+        # 实测卡上 19:00-20:00（60 分钟）、学生只说「改成周六」，出来 08:00-09:30/90 ——
+        # 他改的是日子，长度被系统顺手改长了 30 分钟。
+        _want = wanted_minutes(t) or card.get("minutes") or AUTO_SLOT_LENGTH
+        slot = pick_free_slot(date, prefer=t,
+                              minutes=min(_want, AUTO_SLOT_MINUTES), length=_want)
         if not slot:
             return None
         begin, finish = slot["start"], slot["end"]

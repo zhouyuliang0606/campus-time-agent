@@ -93,6 +93,10 @@ from app.modules.planner import (
     parse_remove_course,
     parse_slot_text,
     parse_todo_from_reply,
+    parse_todo_patch,                  # #73：这一句只补它明说的哪几项
+    patched_todo_blob,
+    retitle_todo_card,
+    todo_patch_empty,
     parse_mode_answer,
     plan_todo_slot,
     span_only_proposal,
@@ -117,6 +121,8 @@ from app.modules.planner import (
     slot_is_free,
     todo_mode_proposal,
     todo_slots_proposal,
+    weekly_times,                      # #73：base 档③要从上一句原话里读回次数
+    wanted_minutes,                    #      和单次时长（卡上那两键在追问路径上还不存在）
     carry_freq,
     carry_period,
     unsupported_period,
@@ -1008,6 +1014,69 @@ def _pending_todo_slots(session_id: str) -> dict | None:
         if isinstance(o, dict) and o.get("kind") == "todo_slots" and not o.get("applied"):
             return o
     return None
+
+
+# ==== #73：学生补/改一句时，"上一轮是什么样"从哪儿读 ====
+# 那些解析器（`weekly_times` / `_pick_title` / `_pick_span` / `wanted_minutes`）的签名
+# 只收一句话，结构上没有"上一轮"这个入口 —— 所以以前补一句就得整句重猜一遍，
+# 猜对次数就猜坏事名（实测「健身」→「健身是每次」）。这里先把上一轮读出来当 base。
+#
+# 三档从先到后，**判据各不相同，别当成一处冗余删掉**（都实测过）：
+#   ① 暂存有候选卡（todo_slots）：「下周三次健身，一次一小时」出卡之后再改一句 ⇒ 只有它命中，
+#      而且写哨兵之前那句 `clear_pending` 根本没跑过，`asking_add` 是 False。
+#   ② 暂存有单条卡（todo_add）：它已经定好一个点，`minutes` 就是那一轮的单次时长。
+#   ③ 只有「加待办缺细节」哨兵 + 上一句原话：连事名都没说的那种追问（「帮我加个」），
+#      走哨兵那条路时 `:3999` 已经把暂存清了 ⇒ 这一档**不可能**被①②覆盖。
+_PATCH_BASE_SLOT_KEYS = ("origin", "title", "times", "duration", "repeat")
+
+# 这一句带着"我在改上一句"的语气。列在这里就够了，不追求全：
+# 它只用来**放行补丁**，判不准的后果是"走回原来的全新解析"，不是办错事。
+_CORRECT_HINT = ("改成", "改到", "换成", "换到", "不对", "不是", "应该是", "我说的是", "是改",
+                 "每次", "一次", "两次", "三次", "挪到", "调到", "重来", "小时", "分钟")
+
+
+def _todo_patch_base(session_id: str, prev_user: str, asking_add: bool) -> dict | None:
+    """上一轮那件事的参数（读不到就返回 None = 这不是补充句，别硬凑 base）。
+
+    ⚠️ `title` 里的「待办」是**占位符**、不是一个名字：把它当 base 交下去，
+    `retitle_todo_card` 会用占位符盖掉这一句自己抠出来的真名字。所以三档都洗成空串。
+    """
+    slots = _pending_todo_slots(session_id)
+    if slots:
+        _t = slots.get("origin") or slots.get("title") or ""
+        return {"title": "" if _t == "待办" else _t,
+                "times": int(slots.get("times") or 0) or None,
+                "duration": int(slots.get("duration") or 0) or None,
+                "repeat": slots.get("repeat") or "",
+                "date": None, "start": None, "end": None}
+    one = _pending_todo(session_id)
+    if one:
+        _t = one.get("title") or ""
+        return {"title": "" if _t == "待办" else _t,
+                "times": None,
+                "duration": int(one.get("minutes") or 0) or None,
+                "repeat": one.get("repeat") or "",
+                "date": one.get("date"), "start": one.get("start"), "end": one.get("end")}
+    if asking_add and prev_user:
+        _t = todo_title_of(prev_user)
+        return {"title": "" if _t == "待办" else _t,
+                "times": weekly_times(prev_user) or None,
+                "duration": wanted_minutes(prev_user) or None,
+                "repeat": "",
+                "date": None, "start": None, "end": None}
+    return None
+
+
+def _patch_is_new_order(message: str, base_title: str) -> bool:
+    """这句像"换了件事重新下单"吗？像 → 不许当补丁（判据顺序不能反，见下面两行）。"""
+    if any(w in (message or "") for w in _CORRECT_HINT):
+        return False          # 先看语气：「是改成三次，每次一小时」也"带了个名字"，那是残渣
+    cand = todo_title_of(message)
+    if cand in ("", "待办") or cand == (base_title or ""):
+        return False          # 没有名字可比就说不上"换了件事"
+    if any(w in cand for w in _CORRECT_HINT):
+        return False
+    return True               # ③ 否决：「周六加个游泳」= 新单，不许当成给「健身」改期
 
 
 def _slots_answer(card: dict, lead: str = "") -> str:
@@ -3203,6 +3272,19 @@ async def _chat_impl(req: Request, meta: dict, emit=None):
         asking_add = any("加待办缺细节" in (m.get("content") or "")
                          for m in conv[-4:] if m.get("role") == "assistant")
 
+        # #73：这一句是不是"只补几项"的补丁 —— 在下面两处都要用，所以在这儿算一次。
+        # （`parse_todo_patch` / `_todo_patch_base` 都不写任何东西，纯读。）
+        _patch73 = parse_todo_patch(message)
+        _base73 = (_todo_patch_base(session_id, prev_user, asking_add)
+                   if not todo_patch_empty(_patch73) else None)
+        _is_patch73 = (_base73 is not None
+                       and not _patch_is_new_order(message, _base73["title"]))
+        # 只把"报了次数或单次时长"的那句算作要抢 3d-ret 的补丁：
+        # 「把周四那个健身挪到周五」这类纯换日子的句子仍走原来的按名字改期，行为不动。
+        _patch73_freq = (_is_patch73
+                         and (_patch73["times"] is not None
+                              or _patch73["duration"] is not None))
+
         # 3c-pre) **学生嫌系统挑的点不合适、自己报了个时刻** → 换时间重新出条。
         #     背景：学生只说了"哪天"时，系统会替他挑一段并说明"这个点不合适你说个点"。
         #     他真说了（"下午两点到三点"、"改成晚上七点到八点"、"改成周六"），
@@ -3232,7 +3314,8 @@ async def _chat_impl(req: Request, meta: dict, emit=None):
         if held_slots and not is_confirmation(message) and is_slot_answer(message):
             fb = next((s.get("date") or "" for s in (held_slots.get("slots") or [])
                        if isinstance(s, dict)), "")
-            one = parse_slot_text(message, held_slots.get("title") or "待办", fb)
+            one = parse_slot_text(message, held_slots.get("title") or "待办", fb,
+                                  held_slots.get("duration") or 0)
             if one is not None:
                 return _offer_response(
                     session_id, one, message,
@@ -3499,8 +3582,13 @@ async def _chat_impl(req: Request, meta: dict, emit=None):
         #     不是就地改字段，这样一旦新时间不合适还能追溯旧的那条。
         #     规则认得（含"改成/挪到"等词）或语义层兜回来的 retime_todo 都走这儿；
         #     前提：手上没有挂着的待确认卡（那种是 3c-pre 那一档，已在前面处理过了）。
-        if ((wants_retime_todo(message) and not _rule_veto)
-                or _sem_intent == INTENT_RETIME) and not held_add:
+        #     ⚠️ `_patch73_freq` 让路（#73）：学生手上挂着候选卡、说的是「是改成三次，每次一小时」
+        #     这种**报次数/单次时长**的纠正句时，他要改的是**这一张还没落库的提案**，
+        #     不是日程里某条既有待办 —— 以前这一档先截走，然后按名字找不到那条，
+        #     回一句「没找到那条待办」，他这句补充就蒸发了（实测）。
+        #     纯换日子的「把周四那个健身挪到周五」不在此列，照旧走按名字改期。
+        if (((wants_retime_todo(message) and not _rule_veto)
+                or _sem_intent == INTENT_RETIME) and not held_add and not _patch73_freq):
             from app.modules.planner import build_retime_existing_proposal, _weekday_name as _wd2
             _rt = build_retime_existing_proposal(
                 message, _sem if _sem_intent == INTENT_RETIME else None)
@@ -3812,10 +3900,17 @@ async def _chat_impl(req: Request, meta: dict, emit=None):
         # 末尾的 `and not _physio`：**纯生理状态感叹（"我饿了""好累啊"）任何情况下
         #   都不许进这条分支** —— 哪怕语义层硬判了 add_todo。这是他的一条安全绳，
         #   判据见 `intent.physio_state_only`（生理词 + 无行动词 + 没报钟点 + 短句）。
-        if ((not _rule_veto
-                and (wants_add_todo(message) or (asking_add and is_add_todo_answer(message))))
-                or _sem_intent == INTENT_ADD_TODO) \
-                and not _physio and not wants_add_course(message):
+        # ⚠️ 入口多一条 `_is_patch73`（#73）：学生**看着卡**纠正的那一句（「一次一小时」
+        #    「是改成三次，每次一小时」）既没有"加/安排"这类意图词、规则层也读不出意图，
+        #    以前根本走不到这条分支 —— 要么被上面"按名字改期"接走（可那张卡还没写库，
+        #    于是回一句「没找到那条待办」），要么掉回兜底，他这句补充当场蒸发。
+        #    `_is_patch73` 三条同时成立才为真（读得到上一轮 + 这句报了至少一项 + 不是换了件事），
+        #    所以放宽的只是"接着上一句改"这一小类，不是所有短句。
+        if ((_is_patch73
+             or ((not _rule_veto
+                  and (wants_add_todo(message) or (asking_add and is_add_todo_answer(message))))
+                 or _sem_intent == INTENT_ADD_TODO))
+                and not _physio and not wants_add_course(message)):
             # 追问后的补充回答（学生先说"帮我安排周二的游泳"，再补"下午两点到三点"）：
             # 补充那句里没有标题、也没有日期，单独解析会把标题弄丢——
             # 把上一句原话拼回来一起算。识别标记就是下面追问分支写进会话历史的那句"加待办缺细节"。
@@ -3832,7 +3927,37 @@ async def _chat_impl(req: Request, meta: dict, emit=None):
             else:
                 blob = (prev_user + "，" + message) if (asking_add and prev_user) else message
             proposal = None
-            if asking_add and prev_user:
+            if _is_patch73:
+                # 只把上一轮的**事名**拼进来，不拼整句原话：
+                # 拼整句会让上一句的时长/次数反过来压掉这一句（实测「一次一小时」
+                # 被上一句的「一次三小时」顶掉，卡上还是 180 分钟）——
+                # 那正是本单要修的"整句重猜"，只不过换成了拼接版。
+                # 其余字段各有正源：次数走 `_base73["times"]`/`_patch73["times"]`，
+                # 时长由这一句自己报（`wanted_minutes`），事名由下面的铁律兜底。
+                _pblob = patched_todo_blob(_base73["title"], message)
+                proposal = parse_add_todo(_pblob)
+                if proposal is not None and _base73["title"]:
+                    # 事名铁律：只有这一句自己报了**新**事名才换名（那是③否决过的情况），
+                    # 走到这里一律回到上一轮那个 —— 永远不从拼接串重抠。
+                    proposal = retitle_todo_card(proposal, _base73["title"])
+                if proposal is None:
+                    # 次数从上一轮接过来：这一句常常只剩「三次」这种没有"周"字的写法，
+                    # `weekly_times` 看不到上一轮，于是候选段数和预勾两处一起掉回默认值。
+                    _pSlots = todo_slots_proposal(
+                        _pblob, times=_patch73["times"] or _base73["times"] or None)
+                    if _pSlots is not None:
+                        # 候选卡**不是**"已经定好一个点"，不能落到下面那段单条话术里
+                        # （它按 `proposal['date']` 取值，候选卡没这个键 → KeyError），
+                        # 走下面同一张出口、同一个 `_slots_answer`。
+                        if _base73["title"]:
+                            _pSlots = retitle_todo_card(_pSlots, _base73["title"])
+                        _pLead = _slots_lead(persona_key) or (
+                            "⏰ 给你找了几个空着的时间段，挑方便的勾上（可勾多个）：\n\n")
+                        return _sem_done(_offer_response(
+                            session_id, _pSlots, message,
+                            _slots_answer(_pSlots, lead=_pLead),
+                            "🧩 补充句只补它明说的几项，其余照上一轮（#73 补齐缺口）"))
+            if not _is_patch73 and asking_add and prev_user:
                 proposal = parse_add_todo(prev_user + "，" + message)
             if proposal is None:
                 proposal = parse_add_todo(blob)
@@ -6327,16 +6452,20 @@ async def todo_add_batch(req: Request):
     unparsed = ""
     if other:
         fb = chosen[0][0] if chosen else ""
-        if not fb:
-            # 学生一段都没勾、只写了「其他」——兜底那天取候选卡里最靠前的那天，
-            # 这样他写「晚上七点到八点」（只有钟点、没写哪天）也能落地。
-            held = peek_pending(sid) or {}
-            for o in held.get("options") or []:
-                if isinstance(o, dict) and o.get("kind") == "todo_slots":
+        # 「其他」这一行也吃同一条时长四级（#73）：候选卡上记着的单次时长要递下去，
+        # 否则学生勾完两段、在「其他」里补一句「周六」，那条就按 90 分钟长了。
+        _dur73 = 0
+        _held73 = peek_pending(sid) or {}
+        for o in _held73.get("options") or []:
+            if isinstance(o, dict) and o.get("kind") == "todo_slots":
+                _dur73 = int(o.get("duration") or 0)
+                if not fb:
+                    # 学生一段都没勾、只写了「其他」——兜底那天取候选卡里最靠前的那天，
+                    # 这样他写「晚上七点到八点」（只有钟点、没写哪天）也能落地。
                     fb = next((s.get("date") or "" for s in (o.get("slots") or [])
                                if isinstance(s, dict)), "")
-                    break
-        prop = parse_slot_text(other, title, fb)
+                break
+        prop = parse_slot_text(other, title, fb, _dur73)
         if prop is None:
             unparsed = other
         else:
