@@ -22,6 +22,7 @@ import asyncio
 import http.server
 import json
 import os
+import sys
 import threading
 import time
 
@@ -173,8 +174,30 @@ def _sse(obj) -> bytes:
     return ("data: " + json.dumps(obj, ensure_ascii=False) + "\n\n").encode("utf-8")
 
 
+class _QuietServer(http.server.ThreadingHTTPServer):
+    """只吞 truncate 剧本自己制造的收尾异常，其它异常照旧打到 stderr。
+
+    见 _StreamServer 的 truncate 分支：它故意 close 掉 wfile 模拟断流，
+    随后标准库收尾时仍会 flush 那条已关的流，抛 ValueError(closed file)。
+    那不是被测代码的问题，把 traceback 打出来只会让人以为测试挂了。
+    访问日志那一半已经由 _StreamServer.log_message 静音，这里补齐另一半。
+
+    ⚠️ 静音点必须加在**服务器类**上：handle_error 是 socketserver.BaseServer 的方法，
+       不是 handler 的方法 —— 给 _StreamServer 加一个同名方法不会有任何效果。
+    ⚠️ 这里不写 `pass`：宽静音会把这台假服务器将来任何真异常一起吞掉
+       （_chunk / _end_chunk / 各段剧本都在 handler 里跑，将来改出 AttributeError
+       或 BrokenPipeError 时那条 traceback 是唯一线索）。
+    """
+
+    def handle_error(self, request, client_address):
+        exc = sys.exc_info()[1]
+        if isinstance(exc, ValueError) and "closed file" in str(exc):
+            return
+        super().handle_error(request, client_address)
+
+
 def _serve_stream():
-    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _StreamServer)
+    srv = _QuietServer(("127.0.0.1", 0), _StreamServer)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     return srv
 
