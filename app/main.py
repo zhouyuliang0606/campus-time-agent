@@ -81,6 +81,7 @@ from app.modules.custom import custom_prompt, custom_tools
 from app.modules.planner import (
     DAY_NAMES,
     asks_campus_fact,
+    asks_repair_eta,                  # #71：「报修要多久」这类进度问句不许替学生挂上报卡
     auto_todo_proposal,
     build_system_prompt as PLANNER_PROMPT,
     build_tools as planner_tools,
@@ -1088,6 +1089,19 @@ _QA_MODULES = frozenset({
 # 以前这两条闸门各写一遍同样的元组（报障那条的让路 + 知识库直答），
 # 加一档就得记着改两处 —— 这正是本项目反复吃的"抄两份、漏一份"（红线 12 那一族）。
 _SELF_SCHEDULE_WORDS = ("待办", "代办", "日程", "周表", "月表", "课表", "清单", "列表")
+
+# 自建服务的触发词档**不许抢**的那几种意图（#71）：这六种都是"学生已经明确让系统动日程"，
+# 这时候就算他话里恰好蹭到某个服务的触发词（例：「宿舍灯坏了**明天要去修**，帮我加个待办」），
+# 正题也是日程，不是报修登记。
+# ⚠️ **`custom_record` 故意不在这份清单里**（这是本单的核心一笔）：模型把「电梯坏了」判成
+#    `custom_record` 是**同一个意思的另一种说法**（要登记这条服务），不是"另有别的事要办"。
+#    老写法是白名单 `if _eff_intent in (None, INTENT_CHAT)` —— 于是"模型判对了 custom_record"
+#    反倒成为不接管的理由，实测三句（电梯坏了 / 宿舍灯坏了 / 空调不制冷）都死在这一格上：
+#    显式栏目 `planner` 压掉语义层的 `custom:*`（上面「显式栏目 > 语义层」那一行），
+#    本该救场的触发词硬信号档又因意图不是 chat 而跳过 ⇒ 哪一路都不挂卡。
+#    改成"黑名单"之后：除这六种办事意图，其余一律听**管理员亲手登记的触发词**（红线 5）。
+_CUSTOM_YIELD_INTENTS = (INTENT_ADD_TODO, INTENT_REMOVE_TODO, INTENT_RETIME,
+                         INTENT_DONE, INTENT_CLEAR_TIMETABLE, INTENT_LIST_COURSE)
 
 
 def _kb_has_answer(text: str, extra: str = "") -> bool:
@@ -2304,7 +2318,13 @@ async def _chat_impl(req: Request, meta: dict, emit=None):
     #     并且问句一律不接管（复用 `looks_like_question`，不另写判据）。
     if not is_custom_module(module_key) and not looks_like_question(message):
         _eff_intent = _sem_intent or _rule_hit
-        if _eff_intent in (None, INTENT_CHAT):
+        # ★ #71：原来是 `if _eff_intent in (None, INTENT_CHAT)`（白名单），它把"模型判成了
+        #   custom_record"当成不接管的理由 —— 真机实测（带 Key 的副本 8042）：
+        #     「电梯坏了」→ sem module=custom:c8ef8355 / intent=custom_record，但客户端在 planner 栏，
+        #     上面那一行「显式栏目 > 语义层」已经把 module_key 定成 planner，这一档又跳过，
+        #     于是模型拿着 planner 的人设回了一句「电梯坏了确实挺烦的…爬楼当锻炼」。
+        #   现在按黑名单来：只有 `_CUSTOM_YIELD_INTENTS` 那六种"学生要系统动日程"的意图才让位。
+        if _eff_intent not in _CUSTOM_YIELD_INTENTS:
             _svc_hit = match_service_by_trigger(message)
             if _svc_hit:
                 module_key = custom_module(_svc_hit["id"])
@@ -2448,7 +2468,15 @@ async def _chat_impl(req: Request, meta: dict, emit=None):
         #   （宿舍报修、设施报修…）。前面刚把这句归到 `custom:<宿舍报修>`，这里再劫持走，
         #   管理员建的服务就永远接不到活 —— 通用兜底不该盖过"用户明确说要接管这句话"的服务。
         #   没有自定义服务接管时（`module_key` 不是 custom）行为一字不变：照旧出上报卡。
-        if _wo_kind and not is_custom_module(module_key):
+        # ★ #71 第二道让路：问"要多久 / 几天能好"的**进度问句**不许替它挂上报卡。
+        #   这条分支的位置在所有待办分支之前、而且**过去完全不看"这句是不是在问"** ——
+        #   真机原话「报修要多久」于是出了卡，屏幕上还先印了一句「句子里有提问信号 →
+        #   这句先按问事答」，下一行就挂卡（说法与做的事矛盾，#65-F 那一族的加强版）。
+        #   只在"问进度 + 确实像问句"两样同时成立时让路：是非问句「我的快递丢了吗」照旧出卡
+        #   （那条由 test_54 钉），「快递丢了怎么办」也照旧出卡（它要的是入口，不是时间）。
+        if (_wo_kind and not is_custom_module(module_key)
+                and not (asks_repair_eta(message) and looks_like_question(message))):
+            _facility_wo = _wo_kind == "设施报修"
             _wo_card = {
                 "kind": "work_order_report",
                 "summary": f"上报驿站：{_wo_kind}",
@@ -2462,13 +2490,25 @@ async def _chat_impl(req: Request, meta: dict, emit=None):
             # 这句规则层明说是"办事"（上报工单），别再被写成"问事"——轨迹里写假话比不写更坏。
             meta["read"] = {
                 "step": 0,
-                "phase": "🧠 我把这句听成 **办事**（上报工单）｜依据：规则层（快递/外卖问题上报，硬信号）",
+                "phase": ("🧠 我把这句听成 **办事**（上报工单）｜依据：规则层（设施报修，硬信号）"
+                          if _facility_wo else
+                          "🧠 我把这句听成 **办事**（上报工单）｜依据：规则层（快递/外卖问题上报，硬信号）"),
                 "answer": "",
             }
             return {
-                "module": "express",
+                # #71：栏目以前写死 `express`，于是「宿舍网络坏了要报修」被归进快递/外卖那一栏。
+                #   `repair` 是 `REGISTRY` 里就有的合法栏目（`main.py` 那串可路由模块之一），
+                #   不是自造给前端的新值（前端拿 `d.module` 只是给气泡打标签，`student.html:2197`）。
+                "module": "repair" if _facility_wo else "express",
                 "session_id": session_id,
+                # #71：屏幕上这句话也必须跟着 `_wo_kind` 走。以前五种类型共用一句
+                #   「你的快递/外卖可能出了问题」，卡上的 kind 明明写着"设施报修"，
+                #   学生看到的还是快递/外卖 —— #54-J 修了字段没修这句话，就是补的这一步。
                 "answer": (
+                    "🔧 听起来是**设施坏了**（电梯 / 灯 / 空调 / 网络那一类）。要不要上报？\n"
+                    "下面这条确认条点【确认上报】就会生成工单（也可填补充描述）；"
+                    "点【取消】就不上报，数据一点都不会动。"
+                    if _facility_wo else
                     "📮 听起来你的快递/外卖可能出了问题。要不要**上报驿站**立案跟进？\n"
                     "下面这条确认条点【确认上报】就会生成工单（也可填补充描述）；"
                     "点【取消】就不上报，数据一点都不会动。"

@@ -1804,7 +1804,11 @@ _WORK_ORDER_RE = re.compile(
 # 只列**设施**，不列"报修/维修"这种动词：那两个词已经由 `_WORK_ORDER_RE` 管进门，
 # 这里只负责"进来这句到底是哪一族"。
 _FACILITY_RE = re.compile(r"(电梯|空调|水龙头|水管|门锁|灯|插座|马桶|下水道|洗衣机"
-                          r"|热水器|宿舍.{0,4}(坏|修|报修))")
+                          r"|热水器|宿舍.{0,4}(坏|修|报修)"
+                          # #71：网络这一族原来一个词都没有，「网络报修」直接掉进兜底「疑似丢件」。
+                          # 不写孤零零一个「网络」（那是"网络课""网络中心在哪"也认），要**带故障态或报修动词**。
+                          r"|网络.{0,6}(坏|断|不通|连不上|没网|报修|维修)"
+                          r"|宽带.{0,6}(坏|断|不通|慢|报修|维修))")
 
 
 def _work_order_kind(message: str) -> str:
@@ -1828,13 +1832,28 @@ def _work_order_kind(message: str) -> str:
 def looks_like_work_order_report(message: str) -> str | None:
     """这句是不是「要上报驿站处理快递/外卖问题」。
 
-    命中返回问题类型（疑似丢件/包裹破损/取件码异常/外卖丢失），没命中返回 None。
+    命中返回问题类型（疑似丢件 / 包裹破损 / 取件码异常 / 外卖丢失 / **设施报修**），
+    没命中返回 None。第五种是 #54 加的（真机原话「帮我报修电梯」当时被兜底成"疑似丢件"），
+    这句 docstring 到 #71 才跟 `_work_order_kind` 的实际返回值对齐。
     只用在 main.py 的出卡兜底里挑路，**不参与路由**——正常请求照旧走各自分支。
     """
     t = message or ""
     if not _WORK_ORDER_RE.search(t):
         return None
     return _work_order_kind(t)
+
+
+# 问的是**进度/时长**（"要多久""几天能好"），不是"替我报这一单"。
+# #71：`_WORK_ORDER_RE` 里「报修」二字是硬信号，所以「报修要多久」也进了门，
+#      出卡之前没人看过"这句是不是在问"——屏幕上因此先说「这句先按问事答」、下一行就挂了卡。
+#      这道闸只管这一件窄事：问进度的句子不许被替它挂上报卡（"我的快递丢了吗"这类
+#      是非问句照旧出卡，那条由 `test_54` 钉着）。
+_ETA_ASK_RE = re.compile(r"(多久|多长时间|几天|几周|什么时候|啥时候|几号)")
+
+
+def asks_repair_eta(message: str) -> bool:
+    """这句是在问"要等多久 / 什么时候能好"吗（人话：他要的是一个时间，不是一张卡）。"""
+    return bool(_ETA_ASK_RE.search(message or ""))
 
 
 def timetable_courses_from_reply(text: str) -> list | None:
