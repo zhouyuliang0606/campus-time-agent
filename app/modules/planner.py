@@ -472,6 +472,25 @@ def candidate_slots(text: str = "", max_slots: int = 3, days_ahead: int = 5) -> 
     # 实测「我要平时去吃火锅」若照常 _pick_date，抠不出日期就按"从今天起逐天"，
     # 学生观感是"怎么给我排周六"；他说的是"平时"，周末就不该出现在候选里。
     workday_mode = any(w in t for w in ("平时", "工作日"))
+    # ★ #75：与上面**对称**的那一半——以前只有"不排周末"，没有"只排周末"。
+    #   学生说「周末打篮球」，「周末」在 `_TIME_WORDS` 里是时间词、擦干净就没了事，
+    #   `_pick_date` 也不认它（那张正则要「周 + 一二三四五六日天」，「末」不在字符集里），
+    #   于是候选从今天往后铺 → 周三/周四/周五。他把哪天方便说得最死的一次，
+    #   系统当成他没说（实测 `todo_slots_proposal('周末打篮球')` 就是这个结果）。
+    weekend_mode = any(w in t for w in ("周末", "双休"))
+    if workday_mode and weekend_mode:
+        # 一句里两样都报了（「平时和周末都行」）= 他压根没限制。这两条跳过必须**一起关掉**：
+        # 留着任何一个，工作日被 `workday_mode` 跳过、周末被 `weekend_mode` 跳过，
+        # 整段范围被两边轮流吃光 ⇒ **一张卡都出不来**（实测「平时周末都可以打篮球」= None）。
+        workday_mode = weekend_mode = False
+    if weekend_mode:
+        # 放宽 `days_ahead` 有两笔账，缺一笔都会出"某天才坏"那种最难解释的 bug：
+        #   ① 今天要是周日，下一个周末在 6 天后：默认 5 天够不着，下面那条跳过会把
+        #      整段范围吃光 ⇒ **一张卡都出不来**（周日问"周末打球"正好撞上）；
+        #   ② 一个周末只有周六周日**两天**，而跨天那一档每天只给一段（`limit=1`）——
+        #      只看这周末最多两段，学生说了"周末"却只挑两个，这周末课排满就直接归零。
+        #      放到 14 天 = 连下个字周末一起摊开（段数仍由 `max_slots` 封顶）。
+        days_ahead = max(days_ahead, 14)
     picked_day = None if workday_mode else _pick_date(t)
     # 学生说了时长（"大概三小时"）→ 候选段就按 3 小时找；没说才回落 90 分钟。
     # 这里必须认，不然候选卡上全是 90 分钟，学生会拿到「不是我想要的 3 小时」。
@@ -516,6 +535,8 @@ def candidate_slots(text: str = "", max_slots: int = 3, days_ahead: int = 5) -> 
         day = (today + datetime.timedelta(days=off)).isoformat()
         if workday_mode and _iso_weekday(day) >= 6:
             continue          # 「平时 / 工作日」不排周末，周六周日直接跳过
+        if weekend_mode and _iso_weekday(day) < 6:
+            continue          # #75「周末 / 双休」只排周六周日（与上面那条成对，方向相反）
         for s in _day_slots(day, prefer, limit=1, rotate=off, length=want, spec=spec):
             _push(s)
     return out[:max_slots]
