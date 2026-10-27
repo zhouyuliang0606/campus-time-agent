@@ -606,10 +606,15 @@ def batch_b3_shape():
             and 'data-f="${esc(String(k))}"' in cf
             and 'value="${esc(String(f[k] || ""))}"' in cf, "")
     # 硬信号那一档的**驱动条件**（顺序本身就是判据，注释挡不住改代码的人）：
-    # 语义层已经选了服务就不动；意图已被认成"要办别的事"也不动；问句不动。
-    c.check("接管条件钉住三条：不是 custom / 不是问句 / 意图为空或 chat",
+    # 语义层已经选了服务就不动；问句不动；#71 把"意图"那一半从**白名单**改成**黑名单** ——
+    # 老写法 `in (None, INTENT_CHAT)` 把"模型判对了 custom_record"当成了不接管的理由
+    # （真机三句「电梯坏了 / 宿舍灯坏了 / 空调不制冷」全死在这一格，见 #71 快照 §〇）。
+    # 现在只有六个"学生要系统动日程"的意图才让位；功能那一半的牙在 `test_89` C3/C4。
+    c.check("接管条件钉住三条：不是 custom / 不是问句 / 意图不在**办事让位清单**里"
+            "（#71：白名单→黑名单，`custom_record` 必须被接管）",
             "not is_custom_module(module_key) and not looks_like_question(message)" in code_only
-            and "_eff_intent in (None, INTENT_CHAT)" in code_only, "")
+            and "_eff_intent not in _CUSTOM_YIELD_INTENTS" in code_only
+            and "_eff_intent in (None, INTENT_CHAT)" not in code_only, "")
     st = pathlib.Path("app/static/student.html").read_text(encoding="utf-8")
     c.check("学生端认得 custom_record 这张卡（走既有确认页通道，没新造一套卡片组件）",
             'o.kind === "custom_record"' in st and "openConfirm(one, container)" in st, "")
