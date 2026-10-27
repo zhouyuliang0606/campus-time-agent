@@ -121,6 +121,7 @@ from app.modules.planner import (
     slot_is_free,
     todo_mode_proposal,
     todo_slots_proposal,
+    build_todo_slots,                # #75：同名多张 `todo_add` 收敛成一张候选卡，复用正牌构造器
     weekly_times,                      # #73：base 档③要从上一句原话里读回次数
     wanted_minutes,                    #      和单次时长（卡上那两键在追问路径上还不存在）
     carry_freq,
@@ -1450,6 +1451,59 @@ def _offer_response(session_id: str, card: dict, message: str,
     }
 
 
+def _collapse_same_title_adds(options: list) -> list:
+    """#75：同一轮里**同名**的两张以上 `todo_add` 收敛成**一张** `todo_slots`。
+
+    现场（学生截图）：他说「周末安排打篮球」，模型给周六、周日各调了一次
+    `propose_todo_tool`，于是 options 里躺着两条 `todo_add`。前端是
+    `options.filter(o => o.kind === "todo_add")` 逐条渲染的，屏幕上就叠了两张确认条、
+    按钮也各来一份 —— 看着像"它把一件事当两件事办"。
+
+    更麻烦的是暂存：`_remember_todo_options` 结尾 `save_pending` 是**覆盖**语义，
+    暂存里只留得下最后一张。学生点**第一张**的【确认加入】，系统认的是第二张，
+    两边对不上。所以收口放在**同一个函数的入口**：渲染的那份和暂存的那份
+    必须出自同一次收敛，只改前端（比如只渲染最后一张）会丢信息、也照样错位。
+
+    三条约束（都在验证里点名）：
+      · **只收同名**：title 不同的两张是真的同时加两件事，各留一张 —— 全合并会吃掉一件事；
+      · **repeat 取第一条非空的**：模型有时只在第一张上带 weekly，丢了就变"只排这一周"；
+      · **不开新 kind**：收敛出来的就是既有的 `todo_slots`，下面那条候选时段暂存分支
+        本来就认它，前端 TodoSlots 那一支也本来就渲染它。
+    """
+    if not options or len(options) < 2:
+        return options
+    groups = {}
+    for i, o in enumerate(options):
+        if not isinstance(o, dict) or o.get("kind") != "todo_add":
+            continue
+        if not (o.get("date") and o.get("start") and o.get("end")):
+            continue                      # 残缺的条留给原样流程，别在这儿替它编时间
+        groups.setdefault((o.get("title") or "待办").strip(), []).append((i, o))
+    merged = {}                            # 首条下标 -> 收敛出来的卡
+    drop = set()
+    for title, members in groups.items():
+        if len(members) < 2:
+            continue
+        first_at = members[0][0]
+        cards = [o for _, o in members]
+        drops = {i for i, _ in members if i != first_at}
+        repeat = next((o.get("repeat") for o in cards if o.get("repeat")), "")
+        mins = {o.get("minutes") for o in cards if o.get("minutes")}
+        merged[first_at] = build_todo_slots(
+            title,
+            [{"date": o["date"], "weekday": o.get("weekday") or "", "start": o["start"],
+              "end": o["end"], "minutes": o.get("minutes")} for o in cards],
+            repeat=repeat,
+            # 两段时长一致才敢当"每次多少分钟"存进卡；不一致说明模型各算各的，
+            # 硬取一个数会把另一段的时间说成统一的，宁可不存（卡上 0 = 学生没说）。
+            duration=mins.pop() if len(mins) == 1 else 0,
+        )
+        drop |= drops
+    if not merged:
+        return options
+    return [merged.get(i, o) for i, o in enumerate(options) if i not in drop]
+
+
 def _remember_todo_options(session_id: str, options: list) -> list:
     """把候选时段记进暂存（人话：学生点【确认所选】时，系统要自己认出是哪一张）。
 
@@ -1458,6 +1512,9 @@ def _remember_todo_options(session_id: str, options: list) -> list:
     planner / schedule / admin 中的任意一个，落到别处就没人写这条待办。
     系统手里有这份候选，就能自己认出"就是它"，直接落库。
     """
+    # ★ #75：先收敛、再往下走。下面既是渲染用的返回值、也是暂存的来源，
+    #   收口放这一层，屏幕上那张和系统认的那张就一定是同一张。
+    options = _collapse_same_title_adds(options)
     picks = []
     for o in options or []:
         # ⚠️ 这一段专门接"**没有** date/start/end 的提案"，两种都要原样保住（kind 不改）：
