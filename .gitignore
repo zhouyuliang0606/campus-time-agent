@@ -42,6 +42,11 @@ app/data/pending.json
 # 不入库的另一个理由：它会把本机调试时说的话记进去，那是私人语料。
 app/data/intent_samples.json
 
+# #76 规则层让渡账（store.log_intent_gap 每让渡一句追加一行）：里面是**学生原话 + 会话 id**，
+# 与上面那份样本库同性质 —— 运行时语料，绝不进版本库（施工单假设它"天然被忽略"，实测**没有**，
+# 所以这一行是新增的：漏了它 = 跑一次真机 `git status` 就多一个脏文件，一次 `git add -A` 就把语料带走）。
+app/data/intent_gaps.jsonl
+
 # ===== 模型用量流水（app/llm/gateway.py 每次调用追加一行） =====
 # 跟 pending.json 同性质：纯运行时流水，且里面写着**学生的会话 id**，属隐私。
 # 管理员想从零计数，在后台「用量统计」卡片点清空即可（不用动文件）。

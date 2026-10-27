@@ -2115,6 +2115,35 @@ def log_trace(record: dict) -> None:
         pass
 
 
+GAPS_FILE = "intent_gaps.jsonl"
+GAP_TEXT_MAX = 200              # 原话截这么长：够看清"是怎么一句说法"，不让一本账被长文本撑爆
+
+
+def _gaps_path() -> str:
+    """让渡账的位置：**每次现读**数据目录（红线 23，与 `_trace_path()` 同一条理由）。
+
+    ⚠️ 刻意不写成相对路径 `app/data/…`：那种写法跟着**进程 CWD** 走，
+    测试沙箱换了 `CAMPUSTIME_DATA_DIR` 它照样往仓库里写 —— 于是"跑一遍测试"
+    就把学生原话落进工作区（`git status` 从此不干净，还可能被一次 `git add -A` 带走）。
+    """
+    return _path(GAPS_FILE)
+
+
+def log_intent_gap(*, why: str, text: str, session_id: str = "") -> None:
+    """追加一行"规则层刚才接不住的是哪句、为什么"（#76：让渡不是白让）。
+
+    **对外承诺不抛异常**（与 `log_trace` / `log_llm_usage` 同一条硬要求）：
+    记账是旁路，对话才是主线 —— 账本写坏了不能把学生那句话一起拖没。
+    """
+    try:
+        row = {"ts": _now(), "why": (why or "")[:40],
+               "text": (text or "")[:GAP_TEXT_MAX], "session": session_id or ""}
+        with open(_gaps_path(), "a", encoding="utf-8") as f:
+            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+
+
 def read_trace_log(limit: int = 100, *, module: str = "",
                    agent_mode: str = "", only_tools: bool = False,
                    q: str = "") -> list:

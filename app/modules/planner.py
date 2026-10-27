@@ -446,6 +446,57 @@ def _said_part(text: str) -> bool:
                                 "下午", "晚上", "傍晚", "夜里", "今晚", "今夜"))
 
 
+# ── #76 · 规则层能力清单（这张表就是"我们会算什么"的可执行文档）────────────────
+# 为什么摆在这儿：`candidate_slots` 判"平时/周末"用的就是这两份词表，而 #76 的
+# "接不住就交给引擎" 也须按**同一份**判 —— 抄第二份迟早走样（红线 11b）：
+# 一边加了「双休」另一边没加，就会出现"能算出来却被告警说算不出"，那种错最难查。
+_WORKDAY_WORDS = ("平时", "工作日")
+_WEEKEND_WORDS = ("周末", "双休")
+
+# **规则层算得出**的说法。加一行 = 学会一类话（不是学一句），永久生效、零成本 ——
+# 这正是"学完不变慢"的意思：样本库学的是"这句→这个意图"的映射，只覆盖说过的话；
+# 这里划的是**边界**，边界不随句子增多而膨胀。
+RULE_CAN_DO = frozenset({
+    "今天", "明天", "后天", "大后天",
+    "周一", "周二", "周三", "周四", "周五", "周六", "周日",
+    "下周", "本周", "这周", "下星期",
+    "上午", "中午", "下午", "晚上", "早上", "夜里",
+    "每天",                      # 一条 daily 习惯，`unsupported_period` 已放行
+}) | frozenset(_WEEKEND_WORDS) | frozenset(_WORKDAY_WORDS)   # ★「周末」这一档是 #75 挣来的
+
+# 规则层算不了、**且现在没有任何机制拦**的说法。收录标准只有一条：
+# `unsupported_period()` 拦不到它 —— 拦得到的（每月/下个月/隔天/每个周末…）一律不收，
+# 那边有 `_period_reject_response` 的专门话术（"这个我办不了、能办的是哪几种"），
+# 比丢给引擎更诚实、更可控。**同一件事不许两处管。**
+RULE_CANNOT = ("隔周", "双周", "月底", "季末", "节假日", "寒暑假", "调休")
+
+_UNPARSED_MIN = 3     # 擦完还剩几个字，才算"有内容、但我们没认出来"
+
+
+def rule_cannot_do(text: str) -> str:
+    """原话里有"规则层算不了"的约束吗？返回那个词；没有返回空串。"""
+    t = text or ""
+    for w in RULE_CANNOT:
+        if w in t and w not in RULE_CAN_DO:
+            return w
+    return ""
+
+
+def title_unparsed(text: str) -> bool:
+    """有实词、却抠不出事名？—— 不是"他没说要加什么"，是"我们没认出来"。
+
+    分界线全靠实测校准（单据 §1.2 那张表里三行的长度是错的，实测见快照）：
+      '时间打篮球'    (5 字) → True    ← 有内容，认不出
+      '找个时间打篮球' (7 字) → True
+      ''             (0 字) → False   ← 真的什么都没说（"帮我安排一下"），该去追问
+      '隔周打球'      → **False**（整句过了 `_title_ok`，事名是"隔周打球"）
+       ⇒ 这一族靠 `rule_cannot_do` 那一半接住，**不是**这一半。
+    """
+    if todo_title_of(text) != "待办":
+        return False
+    return len(_strip_title_noise(text)) >= _UNPARSED_MIN
+
+
 def candidate_slots(text: str = "", max_slots: int = 3, days_ahead: int = 5) -> list:
     """替学生**列几个**候选时段（人话：不替他定一个，摊开来让他打勾）。
 
@@ -471,13 +522,13 @@ def candidate_slots(text: str = "", max_slots: int = 3, days_ahead: int = 5) -> 
     # 「平时 / 工作日」= 周一到周五哪天都行 → 不锁死单日，跨工作日摊开列。
     # 实测「我要平时去吃火锅」若照常 _pick_date，抠不出日期就按"从今天起逐天"，
     # 学生观感是"怎么给我排周六"；他说的是"平时"，周末就不该出现在候选里。
-    workday_mode = any(w in t for w in ("平时", "工作日"))
+    workday_mode = any(w in t for w in _WORKDAY_WORDS)
     # ★ #75：与上面**对称**的那一半——以前只有"不排周末"，没有"只排周末"。
     #   学生说「周末打篮球」，「周末」在 `_TIME_WORDS` 里是时间词、擦干净就没了事，
     #   `_pick_date` 也不认它（那张正则要「周 + 一二三四五六日天」，「末」不在字符集里），
     #   于是候选从今天往后铺 → 周三/周四/周五。他把哪天方便说得最死的一次，
     #   系统当成他没说（实测 `todo_slots_proposal('周末打篮球')` 就是这个结果）。
-    weekend_mode = any(w in t for w in ("周末", "双休"))
+    weekend_mode = any(w in t for w in _WEEKEND_WORDS)
     if workday_mode and weekend_mode:
         # 一句里两样都报了（「平时和周末都行」）= 他压根没限制。这两条跳过必须**一起关掉**：
         # 留着任何一个，工作日被 `workday_mode` 跳过、周末被 `weekend_mode` 跳过，

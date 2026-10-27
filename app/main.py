@@ -65,6 +65,8 @@ from app.store import (
     set_current_student, current_student, current_owner, is_registered, list_accounts, timetable_saved,
     # #64：Agent 轨迹流水（管理端「Agent 工作流」那一页的数据源；写侧只有 _chat_json 一处）
     log_trace, read_trace_log, get_trace_row, clear_trace_log,
+    # #76：规则层让渡账 —— 每让渡一句记一笔"我们不会什么"（旁路，绝不影响对话）
+    log_intent_gap,
 )
 from app.modules.faq import SYSTEM_PROMPT as FAQ_PROMPT, build_tools as faq_tools
 from app.modules.express import SYSTEM_PROMPT as EXPRESS_PROMPT, build_tools as express_tools
@@ -97,6 +99,8 @@ from app.modules.planner import (
     patched_todo_blob,
     retitle_todo_card,
     todo_patch_empty,
+    rule_cannot_do,                  # #76：规则层能力清单 —— 这句我接不住就交出去
+    title_unparsed,
     parse_mode_answer,
     plan_todo_slot,
     span_only_proposal,
@@ -3968,6 +3972,29 @@ async def _chat_impl(req: Request, meta: dict, emit=None):
                   and (wants_add_todo(message) or (asking_add and is_add_todo_answer(message))))
                  or _sem_intent == INTENT_ADD_TODO))
                 and not _physio and not wants_add_course(message)):
+            # ★ #76 规则层让渡口：这一句我接不住，就把话交出去 —— 绝不硬算，也绝不装没听见。
+            #   为什么挂在**这一支的入口**、不挂在出口：下面有四个出口（单条确认卡 / 候选卡 /
+            #   AI 敲定兜底 / 出不了卡改追问），四个都改**必漏一个**（`:2401` 那条"几十个 return"
+            #   的教训原文就写在那儿）；而"这句我接不接得住"本来就该在动手算之前判。
+            #   两份判据都是纯函数、零 API（`planner.rule_cannot_do` / `planner.title_unparsed`），
+            #   成本微秒级；只有被让出去的那一句才付引擎那一次调用。
+            #   ⚠️ 两道"别抢"的闸，缺一会倒退（第三条是"放哪儿"，见上面）：
+            #     · `not _holding_card` —— 手上有卡 = 这句是在**回应那张卡**（补时长、改次数、勾时段），
+            #       那是 #73/#74/#75 刚做对的地盘，交给模型等于把"补一句"变成"重谈一遍"；
+            #       ⚠️ 这里读 `:3540` 算好的那一份，不在自己这儿再调一次 `_any_pending`：
+            #       3540→3988 之间唯一那次 `save_pending`（`:3659`）写在它自己 `return` 的分支里，
+            #       能走到这一行的时候那份值仍是当前真相 —— 判据一份、取值两处（`test_83` A8 钉的就是这个）。
+            #     · `not _is_patch73` —— 单据原本只有前一道。实测「改成三次，每次一小时」这种补充句
+            #       `title_unparsed` 也是 True（擦完剩「三次每次」4 字），而追问那一档刚把暂存清掉 ⇒
+            #       只看"手上有没有卡"会把它让出去，#74 的成果当场废掉。多钉这一道（证据在快照）。
+            _gap76 = rule_cannot_do(message) or ("事名认不出" if title_unparsed(message) else "")
+            if _gap76 and not _holding_card and not _is_patch73:
+                log_intent_gap(why=_gap76, text=message, session_id=session_id)
+                return await _run_agent_loop(
+                    module_key=module_key, session_id=session_id, message=message,
+                    prompt=prompt, tools=tools, persona_key=persona_key,
+                    model_config=model_config, emit=emit,
+                )
             # 追问后的补充回答（学生先说"帮我安排周二的游泳"，再补"下午两点到三点"）：
             # 补充那句里没有标题、也没有日期，单独解析会把标题弄丢——
             # 把上一句原话拼回来一起算。识别标记就是下面追问分支写进会话历史的那句"加待办缺细节"。
