@@ -318,9 +318,16 @@ def batch_s_static():
             "只留一边就是这次要修的那个洞",
             "if workday_mode and _iso_weekday(day) >= 6:" in seg
             and "if weekend_mode and _iso_weekday(day) < 6:" in seg, "")
-    c.check("S2 weekend_mode 的词表就这两个（周末/双休）；判据写在这一行字面上，"
-            "不是在源码里数「周末」出现几次",
-            'weekend_mode = any(w in t for w in ("周末", "双休"))' in seg, "")
+    c.check("S2 weekend_mode 的词表就这两个（周末/双休）；判据钉的是**常量本身**，"
+            "不是在源码里数「周末」出现几次 —— #76 把这两份词表抽成了 `_WEEKEND_WORDS`/"
+            "`_WORKDAY_WORDS` 一处共用（能力清单要用同一把尺子），所以字面量搬进了常量定义行；"
+            "抄第二份词表这件事由下面 S2c 钉（candidate_slots 里不许再出现字面量）",
+            "weekend_mode = any(w in t for w in _WEEKEND_WORDS)" in seg
+            and '_WEEKEND_WORDS = ("周末", "双休")' in pl
+            and '_WORKDAY_WORDS = ("平时", "工作日")' in pl, "")
+    c.check("S2c `candidate_slots` 里不许再出现「周末」/「平时」的字面量元组"
+            "（两份词表 = #76 的能力清单会与候选档各说各话）",
+            'for w in ("周末"' not in seg and 'for w in ("平时"' not in seg, "")
     j = seg.find("if weekend_mode:")
     k = seg.find("picked_day =")
     c.check("S3 放宽档挂在 `if weekend_mode:` 与 `picked_day =` 之间，且用的是 `max` "
