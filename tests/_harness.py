@@ -124,6 +124,12 @@ class sandbox:
     #   不种就等于是拿用户今天手测到什么来判测试。
     SCRATCH = ("settings.json", "uploads.json", "uploads", "notices.json",
                "student_messages.json", "workorders.json", "intent_samples.json",
+               # ★ #76 的那本"缺口账"同一性质（这一行是 #80 补的，#76 只把它加进了 `.gitignore`）：
+               #   它是系统自己长出来的流水，不是种子数据。实测：用户 23:07 自己演示那一轮
+               #   往真实 `intent_gaps.jsonl` 写了一行（session `s6d2b6d6866`），
+               #   `test_92` 那批按"账本里有几条"判的 Y1/D1/D3/D4 **四条一起变红**，
+               #   而克隆侧（这文件不入库 ⇒ 克隆里没有）始终绿 —— 又是"拿用户今天测到什么当起点"。
+               "intent_gaps.jsonl",
                # 低代码那两项也是同一性质：演示时管理员真会建一项叫「失物招领」的服务，
                # 带进沙箱就会让 test_53 里"合法定义该落库"因为**撞名**而红 —— 看着像功能坏了，
                # 其实是测试拿用户今天手测到什么当起点。删掉后 store 会自动回到内置种子。
