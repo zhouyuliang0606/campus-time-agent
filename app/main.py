@@ -898,6 +898,41 @@ def _no_card_answer() -> str:
     )
 
 
+# ★ #80：屏幕上**一张卡都没有**，回话却在让学生「去勾 / 去点」——这一族说法。
+#   词表宁短勿长（施工单 §五.3）：进来的每一个词都得是"没卡时说了有卡的话"。
+#   「确认」「点」「选」这类泛词一个都不加 —— 它们大量出现在**真出卡**的正确话术里
+#   （「已为你生成确认条，点【确认】生效」），加进来就是把实话改成假话。
+_CARD_TALK_RE = re.compile(
+    r"(勾一个|勾一下|打勾|勾选|勾好|"
+    r"下面(?:这条|那张|的)卡|在卡上|卡片上|"
+    r"点\s*【[^】]{1,8}】|点一下就能|点一下想)"
+)
+
+_NO_CARD_TAIL = ("这一轮我**没有挂出卡片**，屏幕上没有能勾的东西。\n"
+                 "你想怎么办，直接回我一句（比如「就排 16:00 那段」），我照这句再往下办。")
+
+
+def _drop_card_talk(text: str) -> str:
+    """把"去勾 / 去点"那几句摘掉，补一句他**这一轮真能照做**的出路。
+
+    为什么要有这一道（真机 `trace_log.jsonl` id=`35efcea54909`：`tool_calls=2` 而 `options_n=0`）：
+    它查了周四的课、也算出了两段空档，**唯独没调 propose_slots**，然后照提示词第 3 条补了一句
+    「勾一个，点【加入日程】。」——屏幕上一个可点的东西都没有（学生原话：「瞎编一个弹窗」）。
+    提示词那边已经写明"必须调用"（`planner.py` 工作流程第 2 条），那是软约束、这次就被漏掉了；
+    **能机器强制的事不交给模型自觉**。
+
+    为什么按**行**摘、不整段换掉：前面那些冲突和空档是真查出来算出来的，
+    是这段回答里最值钱的部分，整段删了学生反而更懵（施工单 §2.4）。
+    """
+    if not (text or "").strip():
+        return text      # 空回话不是"说了有卡的话"，别凭空造一句出去
+    if not _CARD_TALK_RE.search(text):
+        return text      # 没有"去勾/去点"就别动它 —— 这一句让函数自己成立，不靠调用方记得先筛
+    kept = [ln for ln in text.splitlines() if not _CARD_TALK_RE.search(ln)]
+    body = "\n".join(kept).rstrip()
+    return f"{body}\n\n{_NO_CARD_TAIL}" if body else _NO_CARD_TAIL
+
+
 def _tt_confirm_answer(n_courses: int, source: str = "") -> str:
     """上传课表后那句回话：**只问"要不要改"，不逐门念课**。
 
@@ -2207,6 +2242,20 @@ async def _run_agent_loop(*, module_key, session_id, message, prompt, tools,
                 final_trace = list(result["trace"] or []) + [{
                     "step": 1,
                     "phase": "⚠️ 回话说已提交但系统补不出卡 → 如实纠正，不让学生空等",
+                }]
+            elif _CARD_TALK_RE.search(result["answer"] or ""):
+                # ★ #80：这一轮一张卡都没挂，回话却在让学生「去勾 / 去点」——那句话指的是
+                #   一个不存在的东西（真机原句「勾一个，点【加入日程】。」而 `options_n=0`）。
+                #   挂在**这条链的末尾**，位置就是判据：上面三支（打成字 / 捞出方案 / 自称已提交）
+                #   系统已经把整段回话换成**自己的**话术了，而那几份话术里就带着
+                #   「点【确认加入】」「你打勾」—— 换在它们外层，砍掉的就是刚说出口的那句实话
+                #   （实测三份都会中：`_no_card_answer`、`_period_reject_answer`、
+                #   `_is_system_note` 那一支的回话）。
+                final_answer = _drop_card_talk(result["answer"])
+                final_trace = list(result["trace"] or []) + [{
+                    "step": 1,
+                    "phase": "🛟 回话让他去勾/点，可这一轮没挂出卡 → 摘掉那句，换成他能照做的",
+                    "answer": _NO_CARD_TAIL.splitlines()[0],
                 }]
 
     # ★ 模型这一路出口再收一次口（判据同 `_offer_response`、同 `unsupported_period`）。
