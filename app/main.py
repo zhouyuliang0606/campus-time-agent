@@ -3787,13 +3787,26 @@ async def _chat_impl(req: Request, meta: dict, emit=None):
                     "trace": [{"step": 1, "phase": "🕘 改期未找到目标", "answer": "请学生确认名字"}],
                     "options": [], "awaiting_choice": False,
                 }
-            # unclear：新时间认不出来
+            # unclear：新时间认不出来。#81 起这一族有**两种来源**，说法要分开：
+            #   · 空改动（既没说日子也没报钟点、或报了跟旧值一样的钟点）—— 上游带着 `old_label`
+            #     和 `todos:[旧条目]`，学生要的是"把现状念给他，再问他要哪天几点"；
+            #   · 挑不出空档 / 钟点不合法 —— `todos` 是空的，**没有 title 可念**，照旧那句"没听清"。
+            #   别为了"一句话接住两种情况"把第二种也写成念旧值（那是编出来的现状，施工单 §五.3）。
+            _rt_old = (_rt.get("todos") or [{}])[0]
+            _rt_old_label = (_rt.get("old_label") or "").strip()
+            if _rt_old_label:
+                _rt_ask = (f"🕘 「{_rt_old.get('title') or '待办'}」现在是 {_rt_old_label}。"
+                           "想改到哪天、或者几点？说一句就行（比如「挪到周五」「改到 20:00」）。")
+                _rt_why = "念出旧值，等学生给新时间"
+            else:
+                _rt_ask = "🕘 新时间我没听清——说清楚要改到哪天几点？比如「改到周五 15:00-16:00」。"
+                _rt_why = "请学生补时间"
             append_conversation(session_id, "user", message)
             append_conversation(session_id, "assistant", "改期时间没说清")
             return {
                 "module": "planner", "session_id": session_id,
-                "answer": "🕘 新时间我没听清——说清楚要改到哪天几点？比如「改到周五 15:00-16:00」。",
-                "trace": [{"step": 1, "phase": "🕘 改期新时间缺失", "answer": "请学生补时间"}],
+                "answer": _rt_ask,
+                "trace": [{"step": 1, "phase": "🕘 改期新时间缺失", "answer": _rt_why}],
                 "options": [], "awaiting_choice": False,
             }
 

@@ -5148,6 +5148,10 @@ def build_retime_existing_proposal(text: str, sem: dict | None = None,
       {"status":"many","todos":[...]}                  好几条同名，得让学生挑
       {"status":"empty","todos":[]}                    没找到那条待办
       {"status":"unclear","todos":[]}                  新时间认不出来（换天却挑不出空档等）
+      {"status":"unclear","todos":[旧条目],"old_label":...}
+                                                       #81：**新三元组与旧值全等 = 空改动**
+                                                       （既没说日子也没报钟点，或报了同样的钟点）
+                                                       —— 要的是追问，不是出一张"原地不动"的卡
 
     `hint_title`（#77）：**上文最近唯一提到的那条待办名**。学生只说「换个时间」时他指的是它，
     而这函数原先只看得到这一句 —— 名字抠不出来就把"匹配所有"当成答案，把全部待办倒给他。
@@ -5251,6 +5255,18 @@ def build_retime_existing_proposal(text: str, sem: dict | None = None,
             begin, finish = slot["start"], slot["end"]
         else:
             begin, finish = old.get("start", ""), old.get("end", "")
+    # ★ #81：上面两个"没给就沿用旧值"的兜底同时生效 ⇒ 新三元组与旧的一模一样。
+    #   这不是改期，是原地不动 —— 放它过去会出一张「从 15:00-16:00 改到 15:00-16:00」的卡，
+    #   而话术写着「旧的那段会挪走」：学生点【确认加入】= 删一条再加一条同样的，
+    #   并且提案不带 note/category（`main.py` 确认口从 body 取，没给就落成空串）⇒ 备注与分类会被抹掉。
+    #   判"结果是否相同"而不是"输入缺了哪一项"：缺项的组合有十几种，相同只有一种（施工单 §2.2）。
+    #   只判"没说日子"会漏掉「游泳改到 15:00」这种**报了同样的钟点**（实测：也是新==旧）；
+    #   只判"没报钟点"会误伤「挪到周五」（换了日子、钟点由空档挑，是有效改动）。
+    #   落进已有的 `unclear` 分支就够，不新造 status（施工单 §2.1）；
+    #   带上 `todos:[old]` 与 `old_label`：调用方要能说出"你要改的是这条、它现在是这样"。
+    if (new_date == old_date and begin == old.get("start", "")
+            and finish == old.get("end", "")):
+        return {"status": "unclear", "todos": [old], "old_label": old_label}
     if not (begin and finish) or to_minutes(finish) <= to_minutes(begin):
         return {"status": "unclear", "todos": []}
 
