@@ -115,14 +115,44 @@ def batch_a_hint():
                 repr(_recent_todo_title(sid, span=20)))
 
         # 函数级 T4/T5/T6/P4/P1
+        # ★ #81 改口：`("换个时间", hint="健身房")` 在 #77 那版是 `ok` 且**新三元组 == 旧三元组**
+        #   （既没说日子也没报钟点，两处"没给就沿用旧值"同时生效）⇒ 那是一张"原地不动"的卡，
+        #   点确认等于删一条再加一条同样的（而且提案不带 note/category，那两个字段会被抹掉）。
+        #   现在它落进 `unclear`：**追问，不出卡**。原断言的意图（"hint 接手的就是那一条"）
+        #   改由 `todos[0]` 验，不靠 proposal —— 见施工单 §3.1 T1。
         r4 = P.build_retime_existing_proposal("换个时间", hint_title="健身房")
-        p4 = r4.get("proposal") or {}
-        c.check("A8 T4 hint=健身房 → status ok、改的就是那条（10-26 19:00）",
-                r4.get("status") == "ok" and p4.get("title") == "健身房"
-                and p4.get("date") == "2026-10-26",
-                str((r4.get("status"), p4.get("title"), p4.get("date"))))
-        c.check("A8-bis 那张卡带 `old_todo_id`（改期是删旧+加新，链路不能断）",
-                bool(p4.get("old_todo_id")), repr(p4.get("old_todo_id")))
+        t4 = (r4.get("todos") or [{}])[0]
+        c.check("A8 (#81 改口) hint=健身房 + 这句没给新时间 → **unclear**，且认领的就是那条",
+                r4.get("status") == "unclear" and t4.get("title") == "健身房"
+                and t4.get("date") == "2026-10-26",
+                str((r4.get("status"), t4.get("title"), t4.get("date"))))
+        c.check("A8-bis (#81) 这个 unclear 带 `old_label`（main 那句追问要念旧值，不许自己再算一遍）"
+                " —— 与另两种 unclear 来源（挑不出空档 / 钟点不合法）的 `todos:[]` 无 `old_label` 不同",
+                (r4.get("old_label") or "").startswith("2026-10-26")
+                and "19:00-20:30" in (r4.get("old_label") or "")
+                and "proposal" not in r4,
+                repr(r4.get("old_label")))
+        c.check("A8-ter (#81 正控 T5) 报了**新钟点**就不是空改动：「健身房改到 20:00」仍 ok、日子不变",
+                (lambda p: p.get("status") == "ok" and (p.get("proposal") or {}).get("date") == "2026-10-26"
+                 and (p.get("proposal") or {}).get("start") == "20:00")(
+                    P.build_retime_existing_proposal("健身房改到 20:00")),
+                str((P.build_retime_existing_proposal("健身房改到 20:00").get("status"),)))
+        c.check("A8-quater (#81 正控 T6) **换了日子没报钟点**也不是空改动：「约会挪到周日」仍 ok、日子变"
+                "（约会本来在 10-30 周五；用「挪到周五」就是原地不动，测不到这一档）",
+                (lambda r: r.get("status") == "ok"
+                 and (r.get("proposal") or {}).get("date") != "2026-10-30")(
+                    P.build_retime_existing_proposal("约会挪到周日")),
+                str(P.build_retime_existing_proposal("约会挪到周日").get("status")))
+        c.check("A8-quinquies (#81 §2.2) 报了**跟旧值一模一样的三元组**也算空改动："
+                "「约会改到 15:40-18:40」→ unclear（这条就是判据不能放宽成「只查没说日子」的那块证据。"
+                "注意只报 start 不算：「约会改到 15:40」会把 end 补成 16:40 ≠ 旧的 18:40，那是有效改动）",
+                P.build_retime_existing_proposal("约会改到 15:40-18:40").get("status") == "unclear",
+                str(P.build_retime_existing_proposal("约会改到 15:40-18:40").get("status")))
+        c.check("A8-sexies (#81) 另一种 unclear 来源**没被本单改动**：「约会改到 16:00-16:00」"
+                "仍是 `unclear` 且**不带 `old_label`**（main 那句「没听清」照旧，别替它编现状）",
+                (lambda r: r.get("status") == "unclear" and "old_label" not in r
+                 and r.get("todos") == [])(P.build_retime_existing_proposal("约会改到 16:00-16:00")),
+                str(sorted(P.build_retime_existing_proposal("约会改到 16:00-16:00").keys())))
         r5 = P.build_retime_existing_proposal("换个时间")
         c.check("A9 T5 不传 hint → **逐字保持旧行为**：many + 四条全列（不许悄悄改成 empty/ok）",
                 r5.get("status") == "many" and len(r5.get("todos", [])) == 4,
@@ -141,10 +171,12 @@ def batch_a_hint():
                 rp1.get("status") == "ok" and pp1.get("title") == "做题",
                 str((rp1.get("status"), pp1.get("title"))))
         rh = P.build_retime_existing_proposal("换个时间", None, "  约会  ")
-        c.check("A13 hint 两边空白会被 strip 后用（传进来的形状不该影响判据），空串一律不参与",
-                (rh.get("proposal") or {}).get("title") == "约会"
-                and P.build_retime_existing_proposal("换个时间", None, "   ").get("status") == "many",
-                str(((rh.get("proposal") or {}).get("title"),
+        c.check("A13 hint 两边空白会被 strip 后用（传进来的形状不该影响判据），空串一律不参与"
+                " —— #81 之后这句是空改动，所以「用的是哪个名字」改由 `todos[0]` 验，不再靠 proposal",
+                (rh.get("status") == "unclear"
+                 and (rh.get("todos") or [{}])[0].get("title") == "约会"
+                 and P.build_retime_existing_proposal("换个时间", None, "   ").get("status") == "many"),
+                str(((rh.get("status"), (rh.get("todos") or [{}])[0].get("title")),
                      P.build_retime_existing_proposal("换个时间", None, "   ").get("status"))))
     return c.summary("A 批（上文捞名字）")
 
@@ -160,9 +192,14 @@ def batch_b_link():
         with pin_now(9, 0):
             sid = "b-e1"
             plant(sid, "健身房 价格", "会员一个月三百")
-            d = ask(cli, "换个时间", sid)
+            # ★ #81 换句（不是改期望）：原来这句「换个时间」在 #81 之后走追问、不出卡，
+            #   拿它当"上文捞名字"的端到端证据就测不到了。换句必须**句子自己不带名字**（否则
+            #   hint 不参与，A12 钉着），又要**给一个真改动**。施工单 §1.4 给的「改到 20:00」
+            #   实测**不成立**（`_pick_todo_name` 把「20:00」当名字 ⇒ hint 不参与 ⇒ status=empty），
+            #   所以这里给日子不给钟点：「挪到周日」⇒ 日子变、钟点由空档挑 ⇒ 有效改动。
+            d = ask(cli, "挪到周日", sid)
             k = cards(d)
-            c.check("B1 E1 上文只提「健身房」+ 这句「换个时间」→ 出**改期确认卡**（不再是四条清单）",
+            c.check("B1 E1 上文只提「健身房」+ 这句「挪到周日」（#81 换句）→ 出**改期确认卡**（不再是四条清单）",
                     len(k) == 1 and k[0].get("kind") == "todo_add" and k[0].get("title") == "健身房"
                     and bool(k[0].get("old_todo_id")),
                     str([(o.get("kind"), o.get("title"), o.get("old_todo_id")) for o in k])[:130])
@@ -175,6 +212,32 @@ def batch_b_link():
                     str([t.get("phase") for t in (d.get("trace") or [])])[:120])
             n0 = len(__import__("app.store", fromlist=["list_todos"]).list_todos())
             c.check("B1-d 只出提案、**一个字节都不写库**（库里还是那四条）", n0 == 4, str(n0))
+
+            # ★ #81 自己那一条：与 B1 **成对**存在。只有 B1 会漏掉空改动，只有 B1-e 会丢掉"捞名字"的验证。
+            sid1e = "b-e1-noop"
+            plant(sid1e, "健身房 价格", "会员一个月三百")
+            d1e = ask(cli, "换个时间", sid1e)
+            a1e = d1e.get("answer") or ""
+            c.check("B1-e (#81) 同样有上文、但这句没给新时间 → **不出卡**、话术里念出旧值 19:00-20:30",
+                    not cards(d1e) and "19:00-20:30" in a1e and "健身房" in a1e
+                    and "没听清" not in a1e,
+                    a1e.replace("\n", " ⏎ ")[:130])
+            c.check("B1-e-bis (#81) 这一支仍是确定性：轨迹有「🕘 改期新时间缺失」、追问不挂暂存",
+                    any("改期新时间缺失" in str(t.get("phase") or "") for t in (d1e.get("trace") or []))
+                    and d1e.get("awaiting_choice") is False,
+                    str([t.get("phase") for t in (d1e.get("trace") or [])])[:110])
+            c.check("B1-e-ter (#81) 追问之后库里仍四条、也没多出一张「原地不动」的卡",
+                    len(__import__("app.store", fromlist=["list_todos"]).list_todos()) == 4, "")
+
+            # ★ #81 的另一半：`unclear` 有**两种来源**，话术必须各说各的。
+            #   这一句是"钟点不合法"那一类（`todos:[]`、没有 `old_label`）——
+            #   它**不许**被套进"念旧值"那句（那等于替学生编一个现状）。
+            sid1f = "b-e1-unclear"
+            d1f = ask(cli, "约会改到 16:00-16:00", sid1f)
+            a1f = d1f.get("answer") or ""
+            c.check("B1-f (#81 另一来源) 钟点不合法那句仍走「没听清」，**不念旧值、不出卡**",
+                    not cards(d1f) and "没听清" in a1f and "15:40-18:40" not in a1f,
+                    a1f.replace("\n", " ⏎ ")[:110])
 
             sid2 = "b-e2"
             d2 = ask(cli, "换个时间", sid2)
@@ -249,16 +312,23 @@ def batch_c_no_regression():
             seed_todos([{"title": "约会", "date": "2026-10-30", "weekday": "周五",
                          "start": "15:40", "end": "18:40"}])
             r_only = P.build_retime_existing_proposal("换个时间")
-            c.check("C2-bis 库里**只有一条**时不必名字就直接改它（`len(pool) > 1` 才 many）—— "
-                    "这是 #77 之前就有的行为、本单一个字没动；钉住是让以后把它改成"
-                    "「没点名就追问」的人先看到一条红，而不是悄悄改完",
-                    r_only.get("status") == "ok"
-                    and (r_only.get("proposal") or {}).get("title") == "约会",
-                    str((r_only.get("status"), (r_only.get("proposal") or {}).get("title"))))
+            c.check("C2-bis (#81 改口) 库里**只有一条** + 这句没给新时间 → 追问，不出那张「原地不动」的卡。"
+                    "（#77 之前这里是 `ok` 且新值==旧值 —— 那条注释说的「让改成追问的人先看到一条红」"
+                    "现在兑现了：红的是期望本身，不是判据坏了）",
+                    r_only.get("status") == "unclear"
+                    and (r_only.get("todos") or [{}])[0].get("title") == "约会"
+                    and "proposal" not in r_only,
+                    str((r_only.get("status"), (r_only.get("todos") or [{}])[0].get("title"))))
             r = P.build_retime_existing_proposal("换个时间", hint_title="约会")
-            c.check("C3 库里就一条 + hint=约会 → status ok 且改的是约会",
-                    r.get("status") == "ok" and (r.get("proposal") or {}).get("title") == "约会",
-                    str((r.get("status"), (r.get("proposal") or {}).get("title"))))
+            c.check("C3 (#81 改口) 库里就一条 + hint=约会 → 仍是 unclear，认领的是约会",
+                    r.get("status") == "unclear"
+                    and (r.get("todos") or [{}])[0].get("title") == "约会",
+                    str((r.get("status"), (r.get("todos") or [{}])[0].get("title"))))
+            c.check("C3-bis (#81 正控) 库里就一条、这句**报了新钟点** → 仍 ok（判据不许把有效改动拦掉）",
+                    (lambda x: x.get("status") == "ok"
+                     and (x.get("proposal") or {}).get("start") == "20:00")(
+                        P.build_retime_existing_proposal("约会改到 20:00")),
+                    str(P.build_retime_existing_proposal("约会改到 20:00").get("status")))
             c.check("C4 残渣一族没被本单改坏：「改一下时间」仍回没找到那一族（hint 救不到，见快照挂账）",
                     P.build_retime_existing_proposal("改一下时间").get("status") == "empty",
                     str(P.build_retime_existing_proposal("改一下时间").get("status")))
