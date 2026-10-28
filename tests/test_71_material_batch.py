@@ -163,7 +163,7 @@ def batch_a_extract():
         c.check("A5 整段没日期 → items 空、missing 非空（G8 的一半：**不许编一个今天**）",
                 it5 == [] and len(miss5) >= 1, f"{it5}｜{miss5}")
 
-        two = "10月28日 09:00-10:00 新生体检\n10月29日 14:00-15:00 体测补测\n"
+        two = _md(0) + " 09:00-10:00 新生体检\n" + _md(1) + " 14:00-15:00 体测补测\n"
         it6, _ = M.extract_deterministic(two)
         c.check("A9 两行带日期的清单也算材料（「多行」从两行起 —— 要求三行起就把最常见的清单漏了）",
                 M.looks_like_material(two) is True and len(_titles({"items": it6})) == 2,
@@ -344,10 +344,10 @@ def batch_b_end_to_end():
         # ── #33 那一幕：写完刷新又点一次（出卡 → 点 → 再点）
         #    刻意用一份本文件里**没写过**的料：上面 G5/G6 已经把 概率论答疑 等几条落库了，
         #    复用同一件事的话第二笔会被"去重"先挡掉，量的就不再是销卡那一档了。
-        FRESH = "10月28日 09:00-10:00 新生体检\n10月29日 14:00-15:00 体测补测\n"
+        FRESH = _md(0) + " 09:00-10:00 新生体检\n" + _md(1) + " 14:00-15:00 体测补测\n"
         d11, _, _ = _say(cli, FRESH, sid="t71-g11")
         c11 = _card(d11)
-        row11 = {"title": "新生体检", "date": "2026-10-28", "start": "09:00", "end": "10:00"}
+        row11 = {"title": "新生体检", "date": _iso(0), "start": "09:00", "end": "10:00"}
         r11a = cli.post("/api/todos/items_add", json={
             "session_id": "t71-g11", "from_card": True, "items": [row11]})
         r11 = cli.post("/api/todos/items_add", json={
