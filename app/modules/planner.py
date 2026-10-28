@@ -5134,7 +5134,8 @@ def parse_remove_todo(text: str) -> dict | None:
     return res.get("proposal") if res.get("status") == "ok" else None
 
 
-def build_retime_existing_proposal(text: str, sem: dict | None = None) -> dict:
+def build_retime_existing_proposal(text: str, sem: dict | None = None,
+                                   hint_title: str = "") -> dict:
     """把"把周四那个健身挪到周五"解析成一张**改期提案**（人话：已排进日程的待办想换时间）。
 
     跟 `retime_todo_proposal` 的区别：那条是"学生嫌**待确认卡**的点不合适、
@@ -5147,6 +5148,11 @@ def build_retime_existing_proposal(text: str, sem: dict | None = None) -> dict:
       {"status":"many","todos":[...]}                  好几条同名，得让学生挑
       {"status":"empty","todos":[]}                    没找到那条待办
       {"status":"unclear","todos":[]}                  新时间认不出来（换天却挑不出空档等）
+
+    `hint_title`（#77）：**上文最近唯一提到的那条待办名**。学生只说「换个时间」时他指的是它，
+    而这函数原先只看得到这一句 —— 名字抠不出来就把"匹配所有"当成答案，把全部待办倒给他。
+    只在 `name` 为空/占位符时接手；`name` 有值时它**完全不参与**。调用方给的必须已是
+    "唯一匹配"那一份（判据在 `main._recent_todo_title`），多条或零条一律传空串。
 
     只读，一个字节都不写库——执行权永远在"学生点头"之后。
     """
@@ -5164,6 +5170,14 @@ def build_retime_existing_proposal(text: str, sem: dict | None = None) -> dict:
             name = _pick_todo_name(t_clean)
     else:
         name = _pick_todo_name(t_clean)
+
+    # ★ #77：这句里没点名 → 接上文最近唯一提到的那条（学生说「换个时间」指的就是它）。
+    #   只有 `name` 抠不出东西时才走到这儿接手，所以带名字的「把周四的游泳挪到周五」
+    #   照旧按名字走，hint 一个字都不参与（P1 钉这一条）。
+    #   猜错的代价 = 把 A 改成 B，而改期是"删旧 + 加新"，回退要两次；
+    #   多问一句的代价 = 他多打五个字。⇒ 上游必须只传"唯一匹配"，宁可空着。
+    if not name or name in ("", "待办", "日程", "事项"):
+        name = (hint_title or "").strip()
 
     # 候选池：按名字在**全部**待办里找（话里既可能有旧日期也可能有新日期，
     # 不能拿 _pick_date 去缩池，否则容易把"周五"当成定位条件反而不匹配）。

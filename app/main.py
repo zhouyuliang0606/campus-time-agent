@@ -713,6 +713,31 @@ def _recent_add_request(session_id: str, span: int = 8) -> str:
         "")
 
 
+def _recent_todo_title(session_id: str, span: int = 8) -> str:
+    """上文最近提到的那条待办名（人话：学生说「换个时间」时，得知道他指的是哪条）。
+
+    **只在唯一匹配时返回**：命中两个以上、或一条都没命中 → 空串，照旧列候选让他挑。
+    这条 `!= 1` 是本函数唯一的安全阀（#76 同一条纪律：宁可漏、不可冤）。
+
+    为什么按 **title 去重**、不按命中条数：上文说「健身房」、库里正好有两条同名卡 ⇒
+    这里返回「健身房」是对的，下游按名字过滤命中 2 条 → 走 many 列出**那两条同名的**，
+    那时"好几条都叫健身房"这句才是真的。同一个函数两种输入走两条路，话术各自诚实。
+
+    跟 `_recent_add_request` 同一个思路（"加待办"那条路早就知道回头捞上文，改期这条路一直没捞），
+    但两件事不是一回事，**不合并**：那边捞的是"他原本要加什么"，这边捞的是"他指的是哪条"。
+    """
+    texts = [(m.get("content") or "") for m in get_conversation(session_id)[-span:]]
+    if not any(texts):
+        return ""
+    hit_titles = {(x.get("title") or "").strip() for x in list_todos()}
+    hit_titles = {t for t in hit_titles
+                  if t and t not in ("", "待办", "日程", "事项")
+                  and any(t in tx for tx in texts)}
+    if len(hit_titles) != 1:
+        return ""
+    return next(iter(hit_titles))
+
+
 # 「不去了」「算了」「取消」——删除/取消**动作**词。抠出的"标题"擦掉这些还
 # 剩不下东西 = 学生根本没点名（「不去了删了吧」抠出来的是「不去了删」这种残渣）。
 # ⚠️ 这张表擦的是**标题形**的动作词（`todo_title_of` 已经把句末那个「了」吃掉了），
@@ -3651,8 +3676,10 @@ async def _chat_impl(req: Request, meta: dict, emit=None):
         if (((wants_retime_todo(message) and not _rule_veto)
                 or _sem_intent == INTENT_RETIME) and not held_add and not _patch73_freq):
             from app.modules.planner import build_retime_existing_proposal, _weekday_name as _wd2
+            # ★ #77：这句没点名时，把**上文最近唯一提到的那条**递进去（判据见 `_recent_todo_title`）。
             _rt = build_retime_existing_proposal(
-                message, _sem if _sem_intent == INTENT_RETIME else None)
+                message, _sem if _sem_intent == INTENT_RETIME else None,
+                hint_title=_recent_todo_title(session_id))
             _rt_status = _rt.get("status")
             if _rt_status == "ok":
                 _rt_prop = _rt["proposal"]
@@ -3679,6 +3706,12 @@ async def _chat_impl(req: Request, meta: dict, emit=None):
                      f"回一句「确认」也一样。"),
                     "🕘 改期提案（系统判定）")
             if _rt_status == "many":
+                # 命中集合只有一个名字 = 真同名多条；否则是"他没点名、我们只好全列出来"
+                _rt_titles = {(x.get("title") or "").strip() for x in _rt.get("todos", [])}
+                if len(_rt_titles) == 1:
+                    _rt_lead = f"🕘 日程里有好几条都叫「{next(iter(_rt_titles))}」，你要改哪一条？\n\n"
+                else:
+                    _rt_lead = "🕘 你要改的是哪一条？\n\n"
                 _rt_lines = "\n".join(
                     f"· **{x.get('title', '')}**｜{x.get('date', '')}"
                     f"（{_wd2(x.get('date', ''))}）"
@@ -3688,8 +3721,10 @@ async def _chat_impl(req: Request, meta: dict, emit=None):
                 append_conversation(session_id, "assistant", "改期缺细节")
                 return {
                     "module": "planner", "session_id": session_id,
-                    "answer": ("🕘 你想改的是哪一条？我找到好几条同名的：\n\n"
-                               f"{_rt_lines}\n\n回我一个（比如「周四那条」），我帮你改。"),
+                    # ★ #77：`many` 有**两种来源**，话术必须分开。原先这一句写死"好几条同名的"，
+                    #   而实测「换个时间」在四条**各不相同名**的待办上也会走到这儿（他压根没说名字），
+                    #   那句是在骗人 —— 学生听完只会觉得系统没听懂上文。
+                    "answer": (_rt_lead + f"{_rt_lines}\n\n回我一个（比如「周四那条」），我帮你改。"),
                     "trace": [{"step": 1, "phase": "🕘 改期遇到多条同名（不猜）",
                                "answer": "等学生点名"}],
                     "options": [], "awaiting_choice": False,
