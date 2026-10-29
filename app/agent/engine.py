@@ -127,13 +127,20 @@ class AgentEngine:
         # 最多思考 6 轮，防止模型死循环（人话：想太久就停下，给个兜底回答）
         max_steps = 6
         for step in range(1, max_steps + 1):
-            await self._trace({"step": step, "phase": "🤔 思考"})
-
             # 2) 让模型基于当前历史回一句（可能含 tool_calls）
             msg = await self._ask(messages)
 
             # 3) 如果模型想调用工具
             if msg.get("tool_calls"):
+                # ★ #86：「🤔 思考」这一行从 `_ask` **之前**搬到了之后 —— 为的是带上模型这一轮
+                #   自己先说的那句话。实测（副本数据 + 真实 Key，两句各走了一轮工具）：
+                #     「我先看一下你的课表和待办，确认是哪一条冲突了。」（23 字）
+                #     「我先看一下这周的课表。」（11 字）
+                #   改前这里是个**空标记**，前端把空行过滤掉 ⇒ 学生看到的是"它没说要看什么就查出东西了"。
+                #   "思考轨迹看不全"的根**不在界面**，是这句话在源头就被丢了（护栏 test_97 E 批钉这一句）。
+                #   那一轮没有 content 时照旧是空行（`answer: ""`）—— 形状与改前一致、仍旧被前端过滤，不编造。
+                await self._trace({"step": step, "phase": "🤔 思考",
+                                   "answer": str(msg.get("content") or "").strip()})
                 # 把模型"我想调工具"这句原样存进历史（DeepSeek 要求工具结果要对应上）
                 messages.append(msg)
                 for tc in msg["tool_calls"]:
