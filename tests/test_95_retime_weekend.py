@@ -10,12 +10,14 @@
   · 单据 T2 写的形状（`hint_title="游泳"`）**走不通** —— 那句的 `_pick_todo_name` 抠出的是残渣
     「你帮我想一个时间改改过去」（非空、非占位名）⇒ #77 的 hint 一个字都不接手。A3 把这个「救不到」
     钉成口径，不是漏测（要救得动那张词表 = 已挂账的事名残渣族）。
-  · 截图那句**规则层不认**（`_RETIME_WORDS` 没有「改改」），它进改期那一支靠的是语义层判成
-    retime_todo（单据自己那行轨迹就写着「依据：语义层」）⇒ 端到端必须换一句规则认得的（「周末改一下」）。
+  · 截图那句**当初规则层不认**（`_RETIME_WORDS` 里没有「改改」），全靠语义层判成 retime_todo 才进这一支
+    （单据那行轨迹就写着「依据：语义层」）⇒ 端到端当时用的是「周末改一下」。**#82 追记 §1.1 补了「改改」**，
+    但只稳住**判定**、稳不住**事名**（F5/F6 钉住：三行残渣一个字没变）；两条路各留一条（D2 规则层、D6 只有语义层）。
   · 候选日里可能出现**今天**，而 `pick_free_slot` 不传 `not_before` 时实测挑得出「今天 08:00-09:30」
     这种**已经过去**的段（B 批）。这一刀不只修周末：「把游泳挪到今天」同一支、同一个洞。
-  · 全排不下那一支**不能**沿用 #81 那句追问（那就是本单要治的病本身）⇒ 函数返回带 `weekend_full`，
-    main 换一句「如实说排不下」（E3 把契约两端成对钉住）。
+  · 全排不下那一支**不能**沿用 #81 那句追问（那就是本单要治的病本身）。当时新长了一个 `weekend_full`，
+    **#82 追记 §1.3 把它并进 `reason`**：`no_slot`（说了日子、那天满了）与 `no_time`（没有可用的新时间）
+    一套机制、四个出口**都要标**（F4），main 按 `reason` 选话术（E3 把契约两端成对钉住）。
   · `_pick_date` 的正则**一个字没改**（E1 钉着）：它二十几处调用方把返回值当「确定的一天」用。
 
 ⚠️ 自省三条：正控句子一律按夹具真实值挑（C6 最初写成「约会挪到周五」而约会就在周五，自己就是空改动）；
@@ -31,7 +33,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from _harness import (Checker, make_client, pin_now, sandbox,   # noqa: E402
+from _harness import (Checker, make_client, patch_llm, pin_now, sandbox,   # noqa: E402
                       seed_todos, write_timetable)
 
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
@@ -155,11 +157,13 @@ def batch_a_weekend():
 
         seed_todos([swim()] + [blocker(sat(o)) for o in (0, 1, 7, 8)])
         r6 = P.build_retime_existing_proposal("帮我把游泳改到周末")
-        c.check("A6 T3 四个候选周末全排不下 → unclear + `weekend_full=True` + 带着那条旧待办"
-                "（如实说排不下：不许硬凑一段，更不许退回「想改到哪天」）",
-                r6.get("status") == "unclear" and r6.get("weekend_full") is True
+        c.check("A6 T3 四个候选周末全排不下 → unclear + `reason=no_slot` + `slot_label` 说的是周末"
+                " + 带着那条旧待办（#82 追记 §1.3：`weekend_full` 已并进 `no_slot`，不许两套机制）",
+                r6.get("status") == "unclear" and r6.get("reason") == "no_slot"
+                and "weekend_full" not in r6
+                and "周六" in (r6.get("slot_label") or "")
                 and (r6.get("todos") or [{}])[0].get("title") == "游泳",
-                str((r6.get("status"), r6.get("weekend_full"),
+                str((r6.get("status"), r6.get("reason"), r6.get("slot_label"),
                      [x.get("title") for x in (r6.get("todos") or [])])))
 
         seed_todos([swim(), blocker(sat(0)), blocker(sat(1))])
@@ -174,14 +178,16 @@ def batch_a_weekend():
                 (r8.get("proposal") or {}).get("date") == sat(1),
                 str(((r8.get("proposal") or {}).get("date"), sat(1))))
 
+        # ★ 这条原本是"口径登记"（单据 §1.2 的裁决把它改了）：那条待办本来就排在周六、
+        #   再说「改到周末」⇒ 旧日期**排到最后**而不是删掉 ⇒ 优先换到周日，周日满了才回周六换个时段。
         seed_todos([swim(date=sat(0))])
         r9 = P.build_retime_existing_proposal("把游泳改到周末")
-        c.check("A9 口径登记：那条待办**本来就排在周六** + 说「改到周末」→ 走 #81 的空改动那一档"
-                "（不带 `weekend_full`）。周末里要换天还是换点没定 ⇒ 照实拦下来；"
-                "以后要让它出卡是**改口径**，要新单据",
-                r9.get("status") == "unclear" and not r9.get("weekend_full")
-                and bool(r9.get("old_label")),
-                str((r9.get("status"), r9.get("weekend_full"), r9.get("old_label"))))
+        p9 = r9.get("proposal") or {}
+        c.check("A9（#82 追记 §1.2 改口）待办本来就在周六 + 说「改到周末」→ 出**周日**的卡"
+                "（旧日期不优先，但没被删掉）",
+                r9.get("status") == "ok" and p9.get("date") == sat(1)
+                and p9.get("start") != swim(date=sat(0))["start"],
+                str((r9.get("status"), p9.get("date"), sat(1), p9.get("start"))))
 
         today = datetime.date.today()
         sun = today + datetime.timedelta(days=(6 - today.weekday()) % 7)
@@ -283,16 +289,18 @@ def batch_c_positive():
 
         seed_todos([swim()])
         r4 = P.build_retime_existing_proposal("换个时间", None, "游泳")
-        c.check("P4 空改动（#81）仍走 unclear、**没有** `weekend_full` —— 本单不许碰 #81 那一档",
-                r4.get("status") == "unclear" and not r4.get("weekend_full")
+        c.check("P4 空改动（#81）仍走 unclear + `reason=no_time`、带着 old_label —— 本单不许碰 #81 那一档"
+                "（⚠️ 原来钉的是\"没有 weekend_full\"，那键并掉之后就永远为真 = 空判据）",
+                r4.get("status") == "unclear" and r4.get("reason") == "no_time"
                 and bool(r4.get("old_label")),
-                str((r4.get("status"), r4.get("weekend_full"))))
+                str((r4.get("status"), r4.get("reason"))))
 
         r5 = P.build_retime_existing_proposal("把游泳改到下午")
-        c.check("C6 口径登记：只报**偏好**（下午）、没报日子也没报钟点 → 现在仍算空改动。"
-                "他要的其实是「同一天换个点」，这一档归 A9 同一族挂账（本单没扩）",
-                r5.get("status") == "unclear" and not r5.get("weekend_full"),
-                str((r5.get("status"), r5.get("weekend_full"))))
+        c.check("C6 口径登记（#82 追记 §2.1 拍板：**不做**）：只报偏好（下午）→ 仍算空改动、"
+                "`reason=no_time`。判据是\"会不会死循环\"——追问「几点」他答得出「下午三点」，"
+                "而追问「哪天」他只能再说一遍周末",
+                r5.get("status") == "unclear" and r5.get("reason") == "no_time",
+                str((r5.get("status"), r5.get("reason"))))
 
         seed_todos([])
         write_timetable(COURSE)
@@ -343,8 +351,8 @@ def batch_d_e2e():
                     not cards(d3) and "排不下" in ans3, ans3.replace("\n", " ⏎ ")[:120])
             c.check("D3-bis 这一支不许把 #81 那句「想改到哪天」搬过来（同一句问两遍就是本单的病）",
                     "想改到哪天" not in ans3, ans3.replace("\n", " ⏎ ")[:100])
-            c.check("D3-c 轨迹 phase 是「改期的周末排不下」，且不写库、不挂暂存",
-                    any("周末排不下" in str(t.get("phase") or "") for t in (d3.get("trace") or []))
+            c.check("D3-c 轨迹 phase 是「改期：目标日子排不下」（#82 追记并了周末那一套），且不写库、不挂暂存",
+                    any("目标日子排不下" in str(t.get("phase") or "") for t in (d3.get("trace") or []))
                     and d3.get("awaiting_choice") is False and count_title("游泳") == 1,
                     str([t.get("phase") for t in (d3.get("trace") or [])])[:110])
 
@@ -357,6 +365,39 @@ def batch_d_e2e():
                     "改期新时间缺失" in str([t.get("phase") for t in (d4.get("trace") or [])])
                     and "想改到哪天" in ans4 and "排不下" not in ans4,
                     str([t.get("phase") for t in (d4.get("trace") or [])])[:110])
+            # ★ #82 追记 §1.3 的屏幕证据：说了日子、那天满了 ⇒ 不许再说「没听清」
+            seed_todos([swim(date=_iso(0)), blocker(_iso(1))])
+            d5 = ask(cli, "把游泳改到明天", "b82-d5")
+            ans5 = d5.get("answer") or ""
+            c.check("D5 §1.3 「把游泳改到明天」而明天满 → 话术说「排不下」，"
+                    "**不许**出现「没听清」（他说了日子，那句是当众说错话）",
+                    not cards(d5) and "排不下" in ans5 and "没听清" not in ans5,
+                    ans5.replace("\n", " ⏎ ")[:120])
+            c.check("D5-bis 这一支仍是确定性（不挂卡、不写库），phase 是「改期：目标日子排不下」",
+                    d5.get("awaiting_choice") is False and count_title("游泳") == 1
+                    and any("目标日子排不下" in str(x.get("phase") or "")
+                            for x in (d5.get("trace") or [])),
+                    str([x.get("phase") for x in (d5.get("trace") or [])])[:110])
+
+            # ★ 单据 §四.1：规则层认得的、与**只有语义层认得**的，两条链路各要有一条
+            import json as _json
+            seed_todos([swim(date=_iso(0))])
+            msg6 = "周六的时间不太合适"
+            from app.modules.planner import wants_retime_todo as _wrt
+            c.check("D6-a 前置条件先钉住：这句话**规则层不认**（否则 D6 测的就不是语义层那条路）",
+                    _wrt(msg6) is False, str(_wrt(msg6)))
+            restore = patch_llm(_json.dumps(
+                {"intent": "retime_todo", "module": "planner", "title": "游泳",
+                 "confidence": 0.92}, ensure_ascii=False))
+            try:
+                d6 = ask(cli, msg6, "b82-d6")
+                k6 = cards(d6)
+                c.check("D6 §四.1 只有语义层认得（判成 retime_todo 并给了事名）也走得通 → 出周末的卡",
+                        len(k6) == 1 and k6[0].get("title") == "游泳"
+                        and wd(k6[0].get("date", "")) in WEEKEND,
+                        str([(x.get("title"), x.get("date")) for x in k6])[:110])
+            finally:
+                restore()
     return c.summary("D 批（端到端）")
 
 
@@ -384,11 +425,38 @@ def batch_e_static():
             "（AST 取体，不是「文件里有这几个字」）",
             i_word > 0 and body.startswith("def build_retime_existing_proposal"), str(i_word))
 
-    n_pl = len(re.findall(r'"weekend_full":\s*True', body))
-    n_mn = len(re.findall(r'get\("weekend_full"\)', mn))
-    c.check("E3 契约两端一起钉（#62 那条）：planner 里恰**一处**带 `weekend_full` 返回、"
-            "main 里恰**一处**读它 —— 只钉一头，换一种坏法照样上线",
-            n_pl == 1 and n_mn == 1, str((n_pl, n_mn)))
+    tree = ast.parse(body)
+    # ★ unclear 出口按 AST 数，不按子串数：函数 docstring 里就写着 status: unclear 那种形状，
+    #   子串判据会随它带不带空格漂（计数判据被下一个合法改动顶成假红那一族）。
+    def _ret_dict(nd):
+        if isinstance(nd, ast.Return) and isinstance(nd.value, ast.Dict):
+            return {(k.value if isinstance(k, ast.Constant) else "?"):
+                    (v.value if isinstance(v, ast.Constant) else "<expr>")
+                    for k, v in zip(nd.value.keys, nd.value.values)}
+        return {}
+    exits = [d for d in (_ret_dict(n) for n in ast.walk(tree)) if d.get("status") == "unclear"]
+    n_exit = len(exits)
+    n_slot = sum(1 for d in exits if d.get("reason") == "no_slot")
+    n_time = sum(1 for d in exits if d.get("reason") == "no_time")
+    n_mn = len(re.findall(r'get\("reason"\)', mn))
+    c.check("E3 契约两端一起钉（#62 那条）：planner 的**四个 unclear 出口全部带 reason**"
+            "（no_slot 两处 = 换天无空档 / 周末全满；no_time 两处 = 空改动 / 钟点不合法），"
+            "main 里恰**一处**读它 —— 单据 §1.3 技术要求 1：不许只给新来源标、老来源留空。"
+            "reason 的数与**出口总数**一起钉：只数 reason 挡不住「新加一个没标 reason 的出口」",
+            n_slot == 2 and n_time == 2 and n_slot + n_time == n_exit == 4 and n_mn == 1,
+            str((n_slot, n_time, n_exit, n_mn)))
+    c.check("E3-bis 老调用方拿不到 reason 时不许 KeyError：main 那行必须写成带默认值的取法"
+            "（单据 §1.3 技术要求 2）",
+            '_rt.get("reason") or "no_time"' in mn,
+            str('_rt.get("reason") or "no_time"' in mn))
+    c.check("E3-c 别再长第二套：四个 unclear 出口里**没有任何一个**还带 weekend_full 这个键，"
+            "main 里也不许出现这个名字（追记 §1.3：它就是 no_slot 的一个特例）"
+            "⚠️ 原来钉的是「planner 函数体里没有 weekend_full 这几个字」—— 机制并掉之后 "
+            "docstring 里的历史说明照样含这几个字，那条判据从此看打字脸色；"
+            "判据要钉在**返回键**上，并带 len(exits)==4 这根轴防自己变空判据",
+            all("weekend_full" not in d for d in exits) and "weekend_full" not in mn
+            and n_exit == 4,
+            str((n_exit, sorted({k for d in exits for k in d}, ), "weekend_full" in mn)))
 
     c.check("E4 词表不许抄第二份：周末档判的是 `_WEEKEND_WORDS`，函数体里不许出现「周末」的字面量元组"
             "（与 #75 的 S2c 同族；以后加一颗「礼拜末」只该改一处）",
@@ -398,8 +466,7 @@ def batch_e_static():
             len(re.findall(r"^_WEEKEND_WORDS\s*=", pl, re.M)) == 1,
             str(len(re.findall(r"^_WEEKEND_WORDS\s*=", pl, re.M))))
 
-    tree = ast.parse(body)
-    pfs = [n for n in ast.walk(tree)
+    pfs = [n for n in ast.walk(tree)      # tree 在 E3 那里就解析好了（同一份 AST 两处用）
            if isinstance(n, ast.Call) and getattr(n.func, "id", "") == "pick_free_slot"]
     nb = [n for n in pfs if any(k.arg == "not_before" for k in n.keywords)]
     c.check("E5 这一函数里两处 `pick_free_slot` **都**得带 `not_before`（挑日子那一次 + 定时刻那一次）："
@@ -419,24 +486,103 @@ def batch_e_static():
             "（否则 E6 只是永远为真的空判据）",
             bool(bare.search("x = timedelta(days=1)")), "正则本身是活的")
 
-    head = mn.find('if _rt.get("weekend_full"):')
+    head = mn.find('if _rt_reason == "no_slot":')
     nxt = mn.find("            elif", head)
     blk = mn[head:nxt] if head >= 0 and nxt > head else ""
-    c.check("E7 main 那一支的说法：念旧值 + 明说排不下，且**不许**出现「没听清」"
-            "（那是「你压根没说」的暗示，而他说了周末）",
-            head >= 0 and bool(blk) and "排不下" in blk and "没听清" not in blk,
-            blk.replace("\n", " ⏎ ")[:110])
+    blk_ask = blk.split("_rt_why")[0]
+    c.check("E7 main 的 no_slot 那一支：**贴学生的那两句**（_rt_ask 两种形状）都说「排不下」，"
+            "且那一段里**不许**出现「没听清」（那是「你压根没说」的暗示，而他说了日子）。"
+            "⚠️ 判据范围切到 _rt_why **之前**：那一行是写给施工者看的自律话（内容正是「不许说没听清」），"
+            "拿整支做范围会让这条永远为红 —— 范围为什么这么切见 E7-ter",
+            head >= 0 and bool(blk) and blk_ask.count("排不下") >= 2 and "没听清" not in blk_ask,
+            blk_ask.replace("\n", " ⏎ ")[:110])
+    c.check("E7-ter 正控：整支（含 _rt_why 那行自律话）**确实**含「没听清」"
+            "—— 证明 E7 的切分是有意义的范围限制，不是把判据悄悄放宽到永远为真",
+            bool(blk) and "没听清" in blk and "没听清" not in blk_ask,
+            str(("没听清" in blk, "没听清" in blk_ask)))
+    c.check("E7-bis 话术里的日子来自 `slot_label`（函数知道自己试了哪些天，main 不许自己再拼一遍）",
+            "slot_label" in blk and "_rt.get(\"slot_label\")" in blk, blk[:0] or "见上一行")
 
     zone = mn[mn.find("wants_retime_todo(message)"):]
     zone = zone[:zone.find("# 3c-ter)")]
     c.check("E8 三条 unclear 说法都不写库、也不挂暂存：这一族里 `save_pending` 只许出现一次"
             "（只在 ok 那一支挂卡）",
             zone.count("save_pending(") == 1, str(zone.count("save_pending(")))
-    c.check("E8-bis 这一族里三个分支各有自己的 phase（不许合并成一条）："
-            "「改期新时间缺失」与「改期的周末排不下」都在",
-            "改期新时间缺失" in zone and "改期的周末排不下" in zone,
-            str(["改期新时间缺失" in zone, "改期的周末排不下" in zone]))
+    c.check("E8-bis 这一族里三个分支**各设各的 phase**，且 no_slot 那句不许和 no_time 共用一条"
+            "（轨迹那行是给评委看的解释：行为对了它也能当众说错话）—— "
+            "「改期新时间缺失」与「改期：目标日子排不下」都在，_rt_phase 赋值恰三处，"
+            "trace 里用的是变量不是又一份字面量",
+            "改期新时间缺失" in zone and "改期：目标日子排不下" in zone
+            and zone.count('_rt_phase = "') == 3 and '"phase": _rt_phase' in zone,
+            str([zone.count('_rt_phase = "'), "改期新时间缺失" in zone,
+                 "改期：目标日子排不下" in zone, '"phase": _rt_phase' in zone]))
     return c.summary("E 批（静态接线）")
+
+
+
+# ------------------------------------------------- F 批（#82 追记三条拍板）
+def batch_f_verdicts():
+    print("\n=== F 批 · #82 追记：旧日期排到最后 / reason 对上来源 / 「改改」只稳判定 ===")
+    c = Checker()
+    from app.modules import planner as P
+    real = datetime.date.today()
+    sat_date = real + datetime.timedelta(days=(5 - real.weekday()) % 7)
+    sun_date = sat_date + datetime.timedelta(days=1)
+    sd, nd = sat_date.isoformat(), sun_date.isoformat()
+
+    with sandbox(), pin_now(9, 0):
+        # ---- §1.2 旧日期**排到最后**（不是删掉）----
+        seed_todos([swim(date=sd)])
+        r1 = stub_today(sat_date, lambda: P.build_retime_existing_proposal("把游泳改到周末"))
+        p1 = r1.get("proposal") or {}
+        c.check("F1 §1.2 今天=周六、待办就在周六、周日空着 → 出**周日**的卡"
+                "（旧日期排到最后；把那段排序删掉，第一颗候选就是今天=旧日期 ⇒ 空改动、又一句追问）",
+                r1.get("status") == "ok" and p1.get("date") == nd,
+                str((r1.get("status"), p1.get("date"), nd)))
+
+        seed_todos([swim(date=sd), blocker(nd), blocker(sat(7)), blocker(sat(8))])
+        r2 = stub_today(sat_date, lambda: P.build_retime_existing_proposal("把游泳改到周末"))
+        p2 = r2.get("proposal") or {}
+        c.check("F2 §1.2 的另一半：周日 + 下周末全满、周六另有空档 → 回**周六换个时段**"
+                "（不是「那几天都满了」）。这条要的是定时刻那一步也认周末档 —— 光排序做不到："
+                "`new_date != old_date or _from_weekend` 少半边就落回旧时刻 ⇒ 空改动",
+                r2.get("status") == "ok" and p2.get("date") == sd
+                and p2.get("start") not in ("", "15:00"),
+                str((r2.get("status"), p2.get("date"), p2.get("start"))))
+
+        # ---- §1.3 说了日子、那天满了：reason / slot_label 要对上来源 ----
+        seed_todos([swim(date=_iso(0)), blocker(_iso(1))])
+        r3 = P.build_retime_existing_proposal("把游泳改到明天")
+        c.check("F3 §1.3 「把游泳改到明天」而明天满 → `reason=no_slot` + `slot_label` 就是那个日子"
+                "（以前是光秃秃一个 unclear `todos:[]` ⇒ main 只能说「没听清」= 当众说错话）",
+                r3.get("status") == "unclear" and r3.get("reason") == "no_slot"
+                and _iso(1) in (r3.get("slot_label") or ""),
+                str((r3.get("reason"), r3.get("slot_label"))))
+
+        # ---- §1.1 「改改」：稳住判定，稳不住事名 ----
+        c.check("F4 §1.1 加词后规则层认得「改改时间」——而它**照样**抠不出事名（还是残渣「改改时间」）"
+                " ⇒ 这条钉的是「加词只解决判定，别以为修好了」（单据 §1.1 那张表）",
+                P.wants_retime_todo("改改时间") is True
+                and P._pick_todo_name("改改时间") == "改改时间",
+                str((P.wants_retime_todo("改改时间"), P._pick_todo_name("改改时间"))))
+        c.check("F4-bis 单据 §1.1 要的正控：「改改错别字」也 True —— **这是有意的**，"
+                "词表只判「这句是不是改期」，不负责区分语义；别在测试里把它写成「不误伤」",
+                P.wants_retime_todo("改改错别字") is True, str(P.wants_retime_todo("改改错别字")))
+        seed_todos([swim(date=_iso(0))])
+        r5 = P.build_retime_existing_proposal("周末改改", None, "游泳")
+        c.check("F5 §1.1 的诚实出口：「周末改改」+ hint=游泳 → 仍 **empty**"
+                "（name 抠出残渣「改改」非空 ⇒ hint 不接手）。单据写死的「不是修好，是让失败方式变稳变诚实」"
+                "就在这一条上；要救得动 `_pick_todo_name` 那张词表（事名残渣族，另单）",
+                r5.get("status") == "empty",
+                str((r5.get("status"), P._pick_todo_name("周末改改"))))
+
+        # 加词只动判定：三行残渣一个字没变（单据 §1.1 那三行，本轮复跑）
+        c.check("F6 加词前后**事名一个字没变**（证明这次改的确实只有判定这一维）",
+                P._pick_todo_name("你帮我想一个时间改改过去") == "你帮我想一个时间改改过去"
+                and P._pick_todo_name("游泳时间撞了改时间") == "游泳时间撞了改时间",
+                str((P._pick_todo_name("你帮我想一个时间改改过去"),
+                     P._pick_todo_name("游泳时间撞了改时间"))))
+    return c.summary("F 批（三条拍板）")
 
 
 def main():
@@ -444,7 +590,8 @@ def main():
                ("B 批（今天的缓冲）", batch_b_today_buffer),
                ("C 批（正控）", batch_c_positive),
                ("D 批（端到端）", batch_d_e2e),
-               ("E 批（静态接线）", batch_e_static))
+               ("E 批（静态接线）", batch_e_static),
+               ("F 批（三条拍板）", batch_f_verdicts))
     code = 0
     ran = 0
     for label, fn in batches:
