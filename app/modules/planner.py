@@ -4104,7 +4104,10 @@ def has_concrete_span(text: str) -> bool:
 #    诊断页/日志里出现工具名是正常的，别一看到名字就把回话换掉。
 _TOOL_ECHO_RE = re.compile(
     r"(propose_todo_mode_tool|propose_todo_slots_tool|propose_todo_tool"
-    r"|propose_todo_remove|propose_todo_done|propose_slots)"
+    r"|propose_todo_remove|propose_todo_done|propose_slots"
+    # ★ #86：新工具也进来。只加这一处还不够 —— 下面 `textual_tool_card` 那张按名字派发的表
+    #   也得认它，否则"模型把调用打成字"这一族对新工具**静默不执行**（文本撤掉了、事没办）。
+    r"|propose_todo_change)"
     r"\s*[:：]?\s*(\{.*?\})", re.S)
 
 
@@ -4136,7 +4139,9 @@ def textual_tool_card(text: str) -> dict | None:
     name, payload = m.group(1), m.group(2)
     fn = {"propose_todo_tool": propose_todo_tool,
           "propose_todo_mode_tool": propose_todo_mode_tool,
-          "propose_todo_slots_tool": propose_todo_slots_tool}.get(name)
+          "propose_todo_slots_tool": propose_todo_slots_tool,
+          # ★ #86：回显派发与上面那份正则**必须同时改**（只改正则=撤掉文本、不执行；只改这里=认不出形状）
+          "propose_todo_change": propose_todo_change_tool}.get(name)
     if fn is None:
         return None
     try:
@@ -5135,7 +5140,7 @@ def parse_remove_todo(text: str) -> dict | None:
 
 
 def build_retime_existing_proposal(text: str, sem: dict | None = None,
-                                   hint_title: str = "") -> dict:
+                                   hint_title: str = "", auto_slot: bool = False) -> dict:
     """把"把周四那个健身挪到周五"解析成一张**改期提案**（人话：已排进日程的待办想换时间）。
 
     跟 `retime_todo_proposal` 的区别：那条是"学生嫌**待确认卡**的点不合适、
@@ -5166,6 +5171,16 @@ def build_retime_existing_proposal(text: str, sem: dict | None = None,
     而这函数原先只看得到这一句 —— 名字抠不出来就把"匹配所有"当成答案，把全部待办倒给他。
     只在 `name` 为空/占位符时接手；`name` 有值时它**完全不参与**。调用方给的必须已是
     "唯一匹配"那一份（判据在 `main._recent_todo_title`），多条或零条一律传空串。
+
+    `auto_slot`（#86）：**只给引擎那一路用**（`propose_todo_change_tool`），默认 `False`。
+      · `False` = 现有行为**逐字不变**：什么新时间都没给 ⇒ 沿用旧时刻 ⇒ 被 #81 的空改动判据拦成
+        `unclear/no_time`，由确定性分支追问一句（快、稳，学生补一句就办了）；
+      · `True` = **替他挑一段**（`pick_free_slot`，往后最多试 3 天），挑不出 ⇒ `unclear/reason=no_slot`。
+      为什么同一份函数要两种策略：确定性分支手上只有"这句没给时间"这个事实，追问是对的；
+      引擎那一头已经查过课表和待办、知道撞了谁，他要的是"帮我想个时间"（学生原话
+      「没有帮我想时间，是我问了才说的」）。**用参数分开，不在函数里猜"现在是谁在调我"。**
+      真正新增的只有"什么都没给"那一档 —— 实测「挪到 2026-11-02」（只换日子）本来就会挑空档出卡，
+      两档共用下面那一次 `pick_free_slot`，所以默认值一改，普通模式立刻开始自作主张（E4 钉这个）。
 
     只读，一个字节都不写库——执行权永远在"学生点头"之后。
     """
@@ -5306,6 +5321,23 @@ def build_retime_existing_proposal(text: str, sem: dict | None = None,
                         "reason": "no_slot",
                         "slot_label": f"{new_date}（{_weekday_name(new_date)}）"}
             begin, finish = slot["start"], slot["end"]
+        elif auto_slot:
+            # ★ #86：引擎那一路**不许反问"你想改到几点"** —— 替他挑一段。
+            #   从目标那天开始往后最多试 3 天（`pick_free_slot` 本身就避开课与已排的事）；
+            #   今天要留 30 分钟缓冲（同一份 `not_before` 约定，#82 那笔老洞就在这里堵着）。
+            #   挑不出不硬凑旧时刻，退成 `unclear/no_slot` 让工具说"这几天排不下"。
+            base_d = datetime.date.fromisoformat(new_date or clock.today().isoformat())
+            for _off in (0, 1, 2):
+                _d = (base_d + datetime.timedelta(days=_off)).isoformat()
+                _nb2 = (_now_minutes() + 30) if _d == clock.today().isoformat() else None
+                _s = pick_free_slot(_d, prefer=t, not_before=_nb2)
+                if _s:
+                    new_date, begin, finish = _d, _s["start"], _s["end"]
+                    break
+            if not begin:
+                return {"status": "unclear", "todos": [old], "old_label": old_label,
+                        "reason": "no_slot",
+                        "slot_label": f"{base_d.isoformat()} 起三个日子"}
         else:
             begin, finish = old.get("start", ""), old.get("end", "")
     # ★ #81：上面两个"没给就沿用旧值"的兜底同时生效 ⇒ 新三元组与旧的一模一样。
@@ -5345,6 +5377,59 @@ def build_retime_existing_proposal(text: str, sem: dict | None = None,
         "summary": f"{title}｜{new_date}（{wd}）{begin}-{finish}",
     }
     return {"status": "ok", "proposal": proposal, "old_label": old_label}
+
+
+def propose_todo_change_tool(op: str = "retime", title: str = "",
+                             new_date: str = "", new_start: str = "",
+                             new_end: str = "") -> str:
+    """改一条**已经写进日程**的待办的时间（改期）。只出提案，不写库。
+
+    ⚠️ 它**不新建**：要往日程里加新的事，用 `propose_todo_tool` / `propose_todo_slots_tool`。
+    存在的意义就一格：引擎查得出"哪条撞了哪节课"，可过去手里没有能改的那只手，
+    只能反问"你说的是哪一条、想改到几点"（#84 之后实测 4 句全是这个形状）。
+
+    走的是确定性分支**同一个** `build_retime_existing_proposal`（`auto_slot=True`）：
+    避开课与已排的事、不会挑已经过去的点、挑不出来就说"排不下" —— 能由代码定死的都不交给模型。
+    """
+    if (op or "").strip() != "retime":
+        # 只支持 retime。**不许静默当 retime 处理**：op=rename 悄悄改了时间是最坏的一种坏
+        return json.dumps({"ok": False,
+                           "error": f"op={op} 还没做，目前只支持 retime（改时间）"},
+                          ensure_ascii=False)
+    hint = (title or "").strip()
+    if not hint:
+        return json.dumps({"ok": False, "error": "至少要给 title（改哪一条）"},
+                          ensure_ascii=False)
+    parts = [hint]
+    nd, ns, ne = (new_date or "").strip(), (new_start or "").strip(), (new_end or "").strip()
+    if nd:
+        parts.append("挪到 " + nd)
+    if ns:
+        parts.append(ns + ("-" + ne if ne else ""))
+    # 名字走 `sem` 递进去：模型已经把名字当结构化参数传来了，那是全链路里最准的一份，
+    # 不必再靠 `_pick_todo_name` 从拼出来的串里抠。**但这是保险、不是判据** —— 实测
+    # `sem=None` 时抠出来的名字（含「游泳18001900」那种残渣）靠包容式匹配仍命中、
+    # 卡上标题取的也是库里那条（`old.get("title")`），九例全过 ⇒ 别把这句写成"修掉了一个 bug"。
+    res = build_retime_existing_proposal(" ".join(parts), {"title": hint},
+                                        hint_title=hint, auto_slot=True)
+    st = res.get("status")
+    if st == "ok":
+        return json.dumps({"__proposal__": res.get("proposal") or {}}, ensure_ascii=False)
+    if st == "many":
+        # 命中不止一条：照清单原样列出来、问"是下面哪一条"，然后停（与 done/remove 同一套规矩）
+        return json.dumps({"ok": False, "need_pick": True,
+                           "todos": [{"title": x.get("title"), "date": x.get("date"),
+                                      "start": x.get("start"), "end": x.get("end")}
+                                     for x in (res.get("todos") or [])][:6]},
+                          ensure_ascii=False)
+    if st == "empty":
+        # 库里有东西、只是没对上名字 ⇒ 不许说"没有这条"（#83/#84 同一条口径），带上池子条数
+        return json.dumps({"ok": False, "not_found": True,
+                           "pool_n": res.get("pool_n") or 0}, ensure_ascii=False)
+    # unclear：两种来源分开（#82 追记 §1.3 那套 `reason`）。auto_slot 之下 no_time 基本不该出现，
+    # 真出现也只说"没排出合适的时段"，**不许反问学生要几点**。
+    return json.dumps({"ok": False, "reason": res.get("reason") or "no_time",
+                       "slot_label": res.get("slot_label") or ""}, ensure_ascii=False)
 
 
 def _todo_line(item: dict, idx: int | None = None) -> str:
@@ -6537,7 +6622,46 @@ def build_scheduling_tools() -> dict[str, Tool]:
     picked["propose_todo_mode_tool"] = propose_todo_mode_tool_tool()
     picked["propose_todo_tool"] = propose_todo_tool_tool()
     picked["propose_todo_slots_tool"] = propose_todo_slots_tool_tool()
+    # ★ #86：排程这一族里一直缺"改"这一格（课表侧有 propose_course_change，待办侧一只改的都没有）
+    picked["propose_todo_change"] = propose_todo_change_tool_tool()
     return picked
+
+
+def propose_todo_change_tool_tool() -> Tool:
+    """把 `propose_todo_change_tool` 包成 Agent 工具（#86：引擎第一只能改待办的手）。"""
+    return Tool(
+        name="propose_todo_change",
+        description=(
+            "**改一条已经在日程里的待办的时间**（改期）。只出提案，不写库。\n"
+            "title 传学生说的那条待办名（必填）；new_date / new_start / new_end 只在学生**说了**新时间时才填，"
+            "格式 '2026-10-31' / '16:00'。\n"
+            "⚠️ 学生只说「撞了/换一个时间」、没说新时间时，**这三样一个都别填** —— "
+            "系统自己挑一段排得下的（避开课和已排的事、不会挑已经过去的点），"
+            "⛔ 不要反问『你想改到几点』（学生投诉原话：「没有帮我想时间，是我问了才说的」）。\n"
+            "⛔ **它不会新建待办**：学生要往日程里加新的事，用 propose_todo_tool / propose_todo_slots_tool。\n"
+            "⚠️ 它返回 need_pick + 候选清单时（命中不止一条）—— **照清单原样列给学生、问「是下面哪一条」，然后停**，"
+            "不许猜一条，更不许说『已经改好了』。\n"
+            "调用成功界面上会挂出【确认加入】按钮，学生点了才真改（旧的那段被挪走）；"
+            "没调用这个工具就不要说『已经帮你改好时间』。"
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "op": {"type": "string",
+                       "description": "只支持 retime（改时间）；不填即 retime", "default": "retime"},
+                "title": {"type": "string", "description": "要改的那条待办名（学生说的那个）"},
+                "new_date": {"type": "string",
+                             "description": "学生说了新日子才填：'2026-10-31' 或 '周五'；可空",
+                             "default": ""},
+                "new_start": {"type": "string", "description": "学生说了新钟点才填：'18:00'；可空",
+                              "default": ""},
+                "new_end": {"type": "string", "description": "学生说了结束钟点才填：'19:00'；可空",
+                            "default": ""},
+            },
+            "required": ["title"],
+        },
+        func=propose_todo_change_tool,
+    )
 
 
 def propose_todo_tool_tool() -> Tool:

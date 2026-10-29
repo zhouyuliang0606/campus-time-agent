@@ -40,6 +40,8 @@ WRITE_TOOL_NAMES: frozenset[str] = frozenset({
     "submit_work_order",
     "propose_slots", "propose_todo_tool", "propose_todo_mode_tool",
     "propose_todo_slots_tool", "propose_todo_remove", "propose_todo_done",
+    # ★ #86：新增的写侧提案工具**必须同时登记**（这份表是反向断言的地基，漏一条=静默失去保护）
+    "propose_todo_change",
     "propose_clear_timetable", "propose_course_change", "propose_timetable_change",
     "propose_custom_record",
 })
