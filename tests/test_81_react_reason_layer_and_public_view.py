@@ -5,6 +5,12 @@
 "没看到在哪体现 ReAct"。露的只有 Act + Observe，**Reason 那半截是空的**
 （`engine.py` 的 `🤔 思考` 本来就没有内容字段，空标记又被前端过滤掉了）。
 
+> **追记（#86，2026-10-29）**：上面那句"本来就没有内容字段"**已经被实测否证并修掉了** ——
+> 模型在调工具那一轮确实先说一句要看什么（23 字 / 11 字，两句都有），是引擎没往轨迹里写。
+> #86 把它写进 `🤔 思考` 行，并拆了本文件 A11 的 240px 限高与前端 80/120 截断。
+> 本文件的 A11 因此改了口径（范围负判据 + 正控在 test_97 G3/G4），其余各批未动。
+> 判据归判据：本单当年把 Reason 那半截换成「判定层进 trace」（🧠/🧭 两行）这套做法仍然成立。
+
 施工单 §〇 的前提我逐条复算过（盘点脚本 `D:\\campustime-scratch\\inv60.py`，
 25 只工具在真实副本上各调一次），**两处与单据不一致，本单按实测钉**：
 
@@ -265,11 +271,17 @@ def batch_a_shape():
             "（限高加在 `.trace` 上会让标题跟着一起滚走）",
             stu.count('<div class="trace-body">') == 1
             and '<summary>🧠 我是这么想的</summary>' in stu)
+    # ★ A11 在 #86 被**改过口径**（改一条护栏要留两份证据）：
+    #   它原来防什么：防"只剩限高没有滚动"——那样等于把要证明的行**裁掉**（裁与藏是同一件事）。
+    #   为什么必须让位：#86 把 240px 那道限高整条拆了（限高把没滚到的行藏在滚动条里，
+    #                  而学生要的恰恰是"它到底查到了什么"）。拆掉之后 `max-height: 240px` 这个字面量
+    #                  在页面上不存在了，原断言只能永远红着——留着它=下一条假红。
+    #   牙换成了什么：范围型负判据（轨迹那一族一处 max-height 都不许有）**配一根正控**（页面别处量得到，
+    #                  否则扫描范围为空也会绿）。两条都在 test_97 G3/G4；这里留一条同族的边界钉：
     css = re.search(r"\.trace \.trace-body \{([^}]*)\}", stu)
-    c.check("A11 那条限高 CSS **两半都在**：`max-height: 240px` 与 `overflow-y: auto`"
-            "（只有限高没有滚动 = 把要证明的东西裁掉）",
-            css is not None and "max-height: 240px" in css.group(1)
-            and "overflow-y: auto" in css.group(1), (css.group(1) if css else "没找到那条规则")[:80])
+    c.check("A11 #86：`.trace .trace-body` 这条限高规则**整条不在了**（不是换成更大的数、也不是留着规则改 `none`）"
+            "—— 容器本身留着由 A10 钉，那是另一件事",
+            css is None, (css.group(1) if css else "已撤")[:60])
     trace_rule = re.search(r"\n\s*\.trace \{([^}]*)\}", stu)
     c.check("A12 `.trace` 自己**没有** max-height（限高只能加在容器上）",
             trace_rule is not None and "max-height" not in trace_rule.group(1),
