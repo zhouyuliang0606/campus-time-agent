@@ -5146,7 +5146,10 @@ def build_retime_existing_proposal(text: str, sem: dict | None = None,
     返回：
       {"status":"ok","proposal":{...},"old_label":""}  恰好一条，可出确认条
       {"status":"many","todos":[...]}                  好几条同名，得让学生挑
-      {"status":"empty","todos":[]}                    没找到那条待办
+      {"status":"empty","todos":[],"pool_n":N}          没找到那条待办 —— #84：`pool_n` 是
+                                                       **收窄之前**的全库条数：
+                                                       >0 = 我没认出来（该换那条能查的路），
+                                                       0 = 库里真没有（"没找到"是实话）
       两种 `unclear` 按 `reason` 分（#82 追记 §1.3：**话术要和来源对上**，别都算"没听清"）：
       {"status":"unclear","reason":"no_slot","slot_label":"2026-10-30（周五）","todos":[]}
                                                        他**说了日子**、是那天满了 ⇒ "那天排不下"
@@ -5207,10 +5210,16 @@ def build_retime_existing_proposal(text: str, sem: dict | None = None,
                 if fb_hits:
                     name, hits = fallback, fb_hits
         if not hits:
-            return {"status": "empty", "todos": []}
+            # ★ #84：把"库里到底有没有东西"带出去 —— 调用方要靠它分清
+            #   「我没认出来」（池子非空）和「库里真的没有」（池子空）。这两样共用一句
+            #   "没找到那条待办"就是假话（学生要改的那条就在里面）。
+            #   这里取 len(pool) 不是笔误：收窄发生在**下一行** `pool = hits`；
+            #   谁把那句提上来，test_96 A2 会当场红（它钉的是"这一处带的是全库条数"）。
+            return {"status": "empty", "todos": [], "pool_n": len(pool)}
         pool = hits
     if not pool:
-        return {"status": "empty", "todos": []}
+        # 库里真的一条都没有 ⇒ pool_n=0，调用方那句"没找到、你先加进日程"在这一档是实话
+        return {"status": "empty", "todos": [], "pool_n": 0}
     if len(pool) > 1:
         return {"status": "many", "todos": pool}
 

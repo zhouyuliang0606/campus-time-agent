@@ -3779,6 +3779,31 @@ async def _chat_impl(req: Request, meta: dict, emit=None):
                     "options": [], "awaiting_choice": False,
                 }
             if _rt_status == "empty":
+                # ★ #84：**库里有东西、只是这一支没认出是哪条** —— 那不该由我断定"没有这条"。
+                #   切的不是一句更好的话术，是**另一条能查的路**（#61 抽出来的那个引擎）。
+                #   判据只有一条：`pool_n` = planner 在把候选池收窄**之前**数出来的全库条数。
+                #   ⚠️ 这里**不判有没有 Key**：那道闸在 `_run_agent_loop:2054`（没 Key 它自己
+                #      降级到 mock 并 return），在这儿再写一遍 = 同一个判据两份（单据 §2.4）。
+                _pn = _rt.get("pool_n") or 0
+                if _pn:
+                    log_intent_gap(why="改期：库里没一条对得上它的名字", text=message,
+                                   session_id=session_id)
+                    _up = await _run_agent_loop(
+                        module_key=module_key, session_id=session_id, message=message,
+                        prompt=prompt, tools=tools, persona_key=persona_key,
+                        model_config=model_config, emit=emit,
+                    )
+                    # 让渡不是白让：#76 那处只记了流水账（intent_gaps.jsonl，学生端不读它），
+                    # 引擎自己的轨迹里也没有"这句为什么换了条路" ⇒ 照本文件 :2213 那两处
+                    # 复核行的形状（step=1、往 trace 后面 append）补一条。
+                    _up["trace"] = list(_up.get("trace") or []) + [{
+                        "step": 1,
+                        "phase": "🕘 改期这一支没认出是哪条 → 交给能查的那条路",
+                        "answer": f"库里有 {_pn} 条待办，没一条对得上它说的名字",
+                    }]
+                    return _up
+                # 池子**真空** —— 这句是实话，不许被上面那一支顺手带掉（单据 §3.1 T3：
+                # 它就在改动点正下方，而演示时库里永远有数据，没有任何一场会碰到它）。
                 append_conversation(session_id, "user", message)
                 append_conversation(session_id, "assistant", "没找到要改的待办")
                 return {
