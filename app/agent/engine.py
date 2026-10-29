@@ -71,8 +71,12 @@ class AgentEngine:
     async def _ask(self, messages: list[dict]) -> dict:
         """问模型一次：挂了回调就走流式（正文字一块块推出去），否则照旧整段拿。
 
-        ⚠️ 只有**最后一步**才有 content —— 前面几步模型都在调工具，那些步一个正文块
-           都不会吐（test_49 A 批专门钉过这条），所以不会出现"流了半句又去调工具"。
+        ℹ️ #86 把这里原来那句「只有最后一步才有 content、前面几步一个正文块都不会吐」**否证了**：
+           实测（副本数据 + 真实 Key、走 `on_event` 的流式那一路）调工具那一轮
+           吐了 14 个 token 块、组装完的 `content` 有 23 字 —— 就是「我先看一下你的课表和待办，
+           确认是哪一条冲突了。」那句话。所以"流了半句又去调工具"**是会发生的**，
+           而那句半截话今天先流进气泡、`done` 一到就被权威答案重建掉 —— 引擎这一头把它
+           写进 `🤔 思考` 行，它才不会说完就消失（本单的主修，护栏 test_97 E 批）。
         """
         if self._on_event is None:
             return await self.llm.chat(messages, tools=self._schemas(),
