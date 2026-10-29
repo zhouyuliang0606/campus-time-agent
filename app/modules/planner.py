@@ -4227,7 +4227,7 @@ def is_add_todo_answer(text: str) -> bool:
 
 
 # 学生嫌系统挑的点不合适、要求换时间的说法（人话："改成七点""挪到周六"）
-_RETIME_WORDS = ("改成", "改到", "换成", "换到", "换个时间", "换个点", "挪到",
+_RETIME_WORDS = ("改成", "改到", "换成", "换到", "换个时间", "换个点", "挪到", "改改",
                  "调整到", "调到", "重排", "改一下", "重来")
 
 
@@ -5147,13 +5147,17 @@ def build_retime_existing_proposal(text: str, sem: dict | None = None,
       {"status":"ok","proposal":{...},"old_label":""}  恰好一条，可出确认条
       {"status":"many","todos":[...]}                  好几条同名，得让学生挑
       {"status":"empty","todos":[]}                    没找到那条待办
-      {"status":"unclear","todos":[]}                  新时间认不出来（换天却挑不出空档等）
-      {"status":"unclear","todos":[旧条目],"old_label":...}
-                                                       #81：**新三元组与旧值全等 = 空改动**
-                                                       （既没说日子也没报钟点，或报了同样的钟点）
-                                                       —— 要的是追问，不是出一张"原地不动"的卡
-                                                       #82：这一族里「周末/双休」几个候选日**全排不下**时再带 `weekend_full:True`
-                                                       （调用方要换成"如实说排不下"，不许再问一遍哪天）
+      两种 `unclear` 按 `reason` 分（#82 追记 §1.3：**话术要和来源对上**，别都算"没听清"）：
+      {"status":"unclear","reason":"no_slot","slot_label":"2026-10-30（周五）","todos":[]}
+                                                       他**说了日子**、是那天满了 ⇒ "那天排不下"
+      {"status":"unclear","reason":"no_slot","slot_label":"最近的几个周六周日",
+       "todos":[旧条目],"old_label":...}
+                                                       #82 的周末档全排不下 = 同一个 `no_slot`，
+                                                       不再单长一套 `weekend_full`
+      {"status":"unclear","reason":"no_time","todos":[旧条目],"old_label":...}
+                                                       #81：新三元组与旧值全等 = 空改动 ⇒ 追问（念现状）
+      {"status":"unclear","reason":"no_time","todos":[]}
+                                                       钟点不合法（给了但认不出）= 同一句"没听清"
 
     `hint_title`（#77）：**上文最近唯一提到的那条待办名**。学生只说「换个时间」时他指的是它，
     而这函数原先只看得到这一句 —— 名字抠不出来就把"匹配所有"当成答案，把全部待办倒给他。
@@ -5235,6 +5239,7 @@ def build_retime_existing_proposal(text: str, sem: dict | None = None,
                     tail = t[idx + len(w):]
                     break
             new_date = _pick_date(tail) or _pick_date(t)
+    _from_weekend = False   # ★ #82 追记 §1.2 的另一半：见下面 `if new_date != old_date or _from_weekend`
     # ★ #82：说了「周末 / 双休」却没落到具体哪天 —— `_pick_date` 不认它（那张正则要「周|星期|礼拜 + 一二三四五六日天1234567」，实测 `_pick_date('周末') is None`，
     #   :528 那条注释自证）。不接这一档就掉进下面那句"沿用旧日期"，再被 #81 的空改动判据拦住 ⇒
     #   追问「想改到哪天」，而学生**刚刚说过**。词表用 #75 那份 `_WEEKEND_WORDS`，**不动 `_pick_date` 的正则**：
@@ -5248,18 +5253,24 @@ def build_retime_existing_proposal(text: str, sem: dict | None = None,
         sat0 = base + datetime.timedelta(days=(5 - base.weekday()) % 7)
         cand += [(sat0 + datetime.timedelta(days=off)).isoformat() for off in (0, 1, 7, 8)]
         cand = list(dict.fromkeys(cand))   # 今天是周六时 sat0 就是今天，去重
+        # ★ #82 追记 §1.2：他已经在周末里再说「改到周末」，多半是想**换到另一天** ⇒ 旧日期排到最后
+        #   （**不是删掉**：另一天满时，"这一天里换个时段"仍比"那几天都满了"有用）。
+        _old_d = old.get("date", "")
+        if _old_d in cand:
+            cand = [d for d in cand if d != _old_d] + [_old_d]
         for _cd in cand:
             # 今天要留出缓冲（与本文件 :1267 `list_slots` 同一个约定）：实测 23:30 不传 not_before 时
             # 它能挑出"今天 08:00-09:30"——一张已经过去的卡，学生刷新永远点不到它。
             _nb = (_now_minutes() + 30) if _cd == base.isoformat() else None
             if pick_free_slot(_cd, prefer=t, not_before=_nb):
                 new_date = _cd
+                _from_weekend = True   # 这一段的"排得下"已经算过 ⇒ 定时刻那一步不许再用旧时刻顶回去
                 break
         if not new_date:
             # 候选的周末全排不下 → **如实说排不下**，不能退回 #81 那句"想改到哪天"（他刚说了周末，再问一遍
             #   就是本单要治的病）。带一个自己的标记，让调用方换句话；不新造 status。
             return {"status": "unclear", "todos": [old], "old_label": old_label,
-                    "weekend_full": True}
+                    "reason": "no_slot", "slot_label": "最近的几个周六周日"}
     if not new_date:
         new_date = old_date
 
@@ -5275,13 +5286,16 @@ def build_retime_existing_proposal(text: str, sem: dict | None = None,
     if begin and not finish:
         finish = to_hhmm(to_minutes(begin) + 60)
     if not begin:
-        if new_date != old_date:
+        if new_date != old_date or _from_weekend:
             # 今天要留出缓冲（与本文件 :1267 `list_slots` 同一个约定）。不传 `not_before` 时实测挑得出"今天 08:00-09:30"
             # 这种**已经过去**的段（09:00 问「挪到今天」、#82 之后周末候选里也常有今天）——卡片挂出来却没人点得到。
             _nb = (_now_minutes() + 30) if new_date == clock.today().isoformat() else None
             slot = pick_free_slot(new_date, prefer=t, not_before=_nb)
             if not slot:
-                return {"status": "unclear", "todos": []}
+                # ★ #82 追记 §1.3：他**说了日子**、是那天满了 —— 说「新时间我没听清」是当众说错话。
+                return {"status": "unclear", "todos": [],
+                        "reason": "no_slot",
+                        "slot_label": f"{new_date}（{_weekday_name(new_date)}）"}
             begin, finish = slot["start"], slot["end"]
         else:
             begin, finish = old.get("start", ""), old.get("end", "")
@@ -5296,9 +5310,11 @@ def build_retime_existing_proposal(text: str, sem: dict | None = None,
     #   带上 `todos:[old]` 与 `old_label`：调用方要能说出"你要改的是这条、它现在是这样"。
     if (new_date == old_date and begin == old.get("start", "")
             and finish == old.get("end", "")):
-        return {"status": "unclear", "todos": [old], "old_label": old_label}
+        return {"status": "unclear", "todos": [old], "old_label": old_label,
+                "reason": "no_time"}
     if not (begin and finish) or to_minutes(finish) <= to_minutes(begin):
-        return {"status": "unclear", "todos": []}
+        # reason=no_time：这一族统一叫"没有可用的新时间"（给了但认不出 = 压根没说，同一句话术）。
+        return {"status": "unclear", "todos": [], "reason": "no_time"}
 
     title = old.get("title") or "待办"
     wd = _weekday_name(new_date)
