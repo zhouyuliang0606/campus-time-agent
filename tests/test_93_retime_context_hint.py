@@ -10,6 +10,10 @@
   · hint 不许盖掉**这句话自己带的名字**（单据 §五.1，P1 那一条在链路级也钉一遍）。
   · 新 helper 与 `_recent_add_request` **不许合并**（单据 §四.4：那边捞"要加什么"，这边捞"指哪条"）。
   · 那句骗人的「我找到好几条同名的」要**反向钉住**（`app/` 里出现即红），防止有人手滑改回去。
+  · **#86 追记**：S4 原来钉的是「签名恰好三个参数 `[text, sem, hint_title]`、默认值 2 个」，
+    #86 给这一函数加了第四个参数（`auto_slot`）⇒ 总数被合法改动顶红，改口成
+    「**前三个的位置与名字不许动** + **除 `text` 外每个参数都带默认值**」—— 那才是这条本来要防的事
+    （老调用点按位置传、不许因为新参数炸），而且以后加第五个参数不会再红一次。
 
 ⚠️ 三条自省（都栽过）：
   1. 每条"不许继承"的负向断言都配一句"它照旧列候选/照旧改对的那条"的正控，否则把 hint 整个删掉也全绿。
@@ -367,8 +371,13 @@ def batch_s_static():
     lf = next((n for n in ast.walk(pt) if isinstance(n, ast.FunctionDef)
                and n.name == "build_retime_existing_proposal"), None)
     argnames = [a.arg for a in lf.args.args]
-    c.check("S4 第三个参数就叫 `hint_title` 且带默认值（老调用点不许因为新参数炸）",
-            argnames == ["text", "sem", "hint_title"] and len(lf.args.defaults) == 2,
+    c.check("S4 前三个参数仍叫 `text` / `sem` / `hint_title`、顺序没动（老调用点按位置传，"
+            "改名或换序会炸），且除 `text` 外每个参数都带默认值 —— 后来加的参数"
+            "（#77 的 hint_title、#86 的 auto_slot）都不许把老调用点炸掉。"
+            "⚠️ #86 改口：原来钉 `argnames == [text, sem, hint_title]` 且 `defaults == 2`，"
+            "签名合法长了第四个参数 ⇒ 钉**前三个的位置与名字** + **默认值覆盖率**，不钉参数总数",
+            argnames[:3] == ["text", "sem", "hint_title"]
+            and len(lf.args.defaults) == len(argnames) - 1,
             str((argnames, len(lf.args.defaults))))
     lseg = ast.get_source_segment(pn, lf) or ""
     c.check("S5 接手那一行有前置条件（`not name or name in (...)`）：hint 永远不许盖掉这句话自带的名字",

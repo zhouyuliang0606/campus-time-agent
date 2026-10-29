@@ -17,7 +17,10 @@
     这种**已经过去**的段（B 批）。这一刀不只修周末：「把游泳挪到今天」同一支、同一个洞。
   · 全排不下那一支**不能**沿用 #81 那句追问（那就是本单要治的病本身）。当时新长了一个 `weekend_full`，
     **#82 追记 §1.3 把它并进 `reason`**：`no_slot`（说了日子、那天满了）与 `no_time`（没有可用的新时间）
-    一套机制、四个出口**都要标**（F4），main 按 `reason` 选话术（E3 把契约两端成对钉住）。
+    一套机制、**每一处**出口都要标（F4），main 按 `reason` 选话术（E3 把契约两端成对钉住）。
+    **#86 追记**：`auto_slot` 挑不出时段时又长了第五处 `no_slot` ⇒ E3 / E3-c / E5 那三根钉死的
+    "四个出口 / 两处调用"总数全被合法改动顶红，已按「换性质不换更大的数」改口（每条注释里写了
+    原来钉什么、现在拦什么、以及换成性质之后还剩哪根轴防空判据）。
   · `_pick_date` 的正则**一个字没改**（E1 钉着）：它二十几处调用方把返回值当「确定的一天」用。
 
 ⚠️ 自省三条：正控句子一律按夹具真实值挑（C6 最初写成「约会挪到周五」而约会就在周五，自己就是空改动）；
@@ -439,24 +442,32 @@ def batch_e_static():
     n_slot = sum(1 for d in exits if d.get("reason") == "no_slot")
     n_time = sum(1 for d in exits if d.get("reason") == "no_time")
     n_mn = len(re.findall(r'get\("reason"\)', mn))
-    c.check("E3 契约两端一起钉（#62 那条）：planner 的**四个 unclear 出口全部带 reason**"
-            "（no_slot 两处 = 换天无空档 / 周末全满；no_time 两处 = 空改动 / 钟点不合法），"
-            "main 里恰**一处**读它 —— 单据 §1.3 技术要求 1：不许只给新来源标、老来源留空。"
-            "reason 的数与**出口总数**一起钉：只数 reason 挡不住「新加一个没标 reason 的出口」",
-            n_slot == 2 and n_time == 2 and n_slot + n_time == n_exit == 4 and n_mn == 1,
+    c.check("E3 契约两端一起钉（#62 那条）：planner 的**每一处** unclear 出口都带 reason、"
+            "且 reason 只有 no_slot / no_time 两种取值（no_slot = 说了日子、那几天排不下；"
+            "no_time = 没有可用的新时间），main 里恰**一处**读它 —— 单据 §1.3 技术要求 1："
+            "不许只给新来源标、老来源留空。"
+            "⚠️ #86 改口：原来钉的是「四个出口 = no_slot 2 + no_time 2」，#86 给 `auto_slot` "
+            "挑不出时段又加了第五处 no_slot ⇒ 那个总数被合法改动顶红。换成性质"
+            "「标了 reason 的两类之和 == 出口总数」：它照样拦『新加一处没标 reason 的出口』"
+            "（那会让左边少于右边），也不拦下一位施工者加第六处。"
+            "`>= 2` 是下限轴（防『出口被删到看不见、等式两边同为零而空过』），不是上限",
+            n_slot >= 2 and n_time >= 2 and n_slot + n_time == n_exit and n_mn == 1,
             str((n_slot, n_time, n_exit, n_mn)))
     c.check("E3-bis 老调用方拿不到 reason 时不许 KeyError：main 那行必须写成带默认值的取法"
             "（单据 §1.3 技术要求 2）",
             '_rt.get("reason") or "no_time"' in mn,
             str('_rt.get("reason") or "no_time"' in mn))
-    c.check("E3-c 别再长第二套：四个 unclear 出口里**没有任何一个**还带 weekend_full 这个键，"
+    planted = {"status": "unclear", "weekend_full": "<expr>"}   # E3-c 的正控样本，见那条注释
+    c.check("E3-c 别再长第二套：所有 unclear 出口里**没有任何一个**带 weekend_full 这个键，"
             "main 里也不许出现这个名字（追记 §1.3：它就是 no_slot 的一个特例）"
             "⚠️ 原来钉的是「planner 函数体里没有 weekend_full 这几个字」—— 机制并掉之后 "
-            "docstring 里的历史说明照样含这几个字，那条判据从此看打字脸色；"
-            "判据要钉在**返回键**上，并带 len(exits)==4 这根轴防自己变空判据",
+            "docstring 里的历史说明照样含这几个字，那条判据从此看打字脸色；判据要钉在**返回键**上，"
+            "并带 `len(exits)==4` 这根轴防自己变空判据。#86 把第五处出口加进来顶红了那根轴 ⇒ "
+            "换成一只**正控**：同一句判据喂一棵故意长着 weekend_full 的树必须判 False —— "
+            "「扫得到这个键」从此是被证明的，不再借出口总数",
             all("weekend_full" not in d for d in exits) and "weekend_full" not in mn
-            and n_exit == 4,
-            str((n_exit, sorted({k for d in exits for k in d}, ), "weekend_full" in mn)))
+            and bool(exits) and not all("weekend_full" not in d for d in [planted]),
+            str((len(exits), sorted({k for d in exits for k in d}), "weekend_full" in mn)))
 
     c.check("E4 词表不许抄第二份：周末档判的是 `_WEEKEND_WORDS`，函数体里不许出现「周末」的字面量元组"
             "（与 #75 的 S2c 同族；以后加一颗「礼拜末」只该改一处）",
@@ -469,9 +480,12 @@ def batch_e_static():
     pfs = [n for n in ast.walk(tree)      # tree 在 E3 那里就解析好了（同一份 AST 两处用）
            if isinstance(n, ast.Call) and getattr(n.func, "id", "") == "pick_free_slot"]
     nb = [n for n in pfs if any(k.arg == "not_before" for k in n.keywords)]
-    c.check("E5 这一函数里两处 `pick_free_slot` **都**得带 `not_before`（挑日子那一次 + 定时刻那一次）："
-            "少任何一处都会出「今天 08:00」那种过去的卡",
-            len(pfs) == 2 and len(nb) == 2, str((len(pfs), len(nb))))
+    c.check("E5 这一函数里**每一处** `pick_free_slot` 都得带 `not_before`"
+            "（挑日子那次 + 定时刻那次 + #86 的 `auto_slot` 那次）：少任何一处都会出「今天 08:00」"
+            "那种过去的卡。⚠️ #86 改口：原来钉 `调用数 == 2 且带 not_before == 2`，"
+            "新分支合法加了第三处 ⇒ 换成「带 not_before 的处数 == 调用总数」+ 一根 `>= 2` 下限轴"
+            "（下限只拦『调用点被删到看不见』，不拦以后加第四处）",
+            len(nb) == len(pfs) and len(pfs) >= 2, str((len(pfs), len(nb))))
 
     bare = re.compile(r"(?<![\w.])timedelta\(")
     c.check("E6 写法判据（按函数体算，不按全文算）：`build_retime_existing_proposal` 里"
