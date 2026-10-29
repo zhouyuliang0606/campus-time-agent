@@ -45,13 +45,21 @@ RO16 = ["find_free_slots", "get_by_code", "get_day_courses", "get_order", "get_w
         "list_todos_range", "search_docs", "search_kb"]
 
 # 写侧：#61 一条都不许跨栏挂出去（`_schedule_tools_allowed` 那道判据不动）
-WRITE11 = ["propose_clear_timetable", "propose_course_change", "propose_slots",
+# ★ #86 加了一只 `propose_todo_change`（改期待办）⇒ 名单 11 → 12。这份表是 A6/B2-bis 的**反向断言地基**：
+#   新增写侧工具不登记进来，那两条就静默失去保护（症状是"什么都没红"，而护栏已经不再覆盖这一只）。
+WRITE12 = ["propose_clear_timetable", "propose_course_change", "propose_slots",
            "propose_timetable_change", "propose_todo_done", "propose_todo_mode_tool",
            "propose_todo_remove", "propose_todo_slots_tool", "propose_todo_tool",
+           "propose_todo_change",
            "propose_custom_record", "submit_work_order"]
 
 # 实测的"每栏模型拿到几只手"（Agent 模式强制进引擎后取的数；数字变了就是挂载清单变了）
-COUNTS = {"faq": 16, "schedule": 19, "express": 17, "takeout": 17, "planner": 25}
+# ★ #86：planner 25 → **26**（`build_scheduling_tools()` 里多了 `propose_todo_change`，单据 §3.3 那处）。
+#   另外四栏的数**没动** —— 不是漏钉：faq/express/takeout 的样本句没开 `_schedule_tools_allowed` 那道闸，
+#   schedule 那三只 `propose_todo_*` 来自它**自己的**工具箱（实测 B1 五行里只有 planner 这一行会变）。
+#   ⇒ 施工单 §3.3 预测的 `test_31` A3「13→14」**不会红**：那只工具没进 `planner.build_tools()`，
+#     那张账（13 只）钉的是"没有第二个人顺手往里塞"，本单塞的那一处不在这本账上（test_98 W1 两头各钉一条）。
+COUNTS = {"faq": 16, "schedule": 19, "express": 17, "takeout": 17, "planner": 26}
 import datetime as _dt
 _mon = _dt.date.today() + _dt.timedelta(days=(7 - _dt.date.today().weekday()) % 7 or 7)
 _NEXT_MONDAY = _mon.isoformat()
@@ -150,8 +158,8 @@ def batch_a_shape():
     c.check("A1 READONLY_SPEC 就是那 16 只（名单逐字钉住，不是钉数量 —— 数量对了名单错了等于没钉）",
             sorted(spec or []) == sorted(RO16), f"实际 {sorted(spec or [])}")
     c.check("A2 反向断言：写侧那 11 只一只都不许在账本里（M1 的靶子）",
-            not (set(spec or {}) & set(WRITE11)),
-            f"混进来的：{sorted(set(spec or {}) & set(WRITE11))}")
+            not (set(spec or {}) & set(WRITE12)),
+            f"混进来的：{sorted(set(spec or {}) & set(WRITE12))}")
     c.check("A3 `get_by_code` 的来源写死 express（驿站那份同名不同实现，M2 的靶子）",
             (spec or {}).get("get_by_code") == "express", f"来源写的是 {(spec or {}).get('get_by_code')}")
     c.check("A4 账本里不许有 `list_pending_by_student`（它是店员口径，既不算只读池也不该跨栏）",
@@ -163,7 +171,7 @@ def batch_a_shape():
     c.check("A5 16 只全都能从各自模块取到（缺一只就是静默跳过，症状是「那一栏查不到」，最难查）",
             len(pool) == len(READONLY_SPEC), f"取到 {len(pool)} / 账本 {len(READONLY_SPEC)}")
     c.check("A6 WRITE_TOOL_NAMES 与实测的写侧名单一致（这份表是反向断言的依据，它漏了 M1 就白设）",
-            sorted(WRITE_TOOL_NAMES) == sorted(WRITE11), sorted(WRITE_TOOL_NAMES))
+            sorted(WRITE_TOOL_NAMES) == sorted(WRITE12), sorted(WRITE_TOOL_NAMES))
     c.check("A7 `files` 不在 REGISTRY 这一事实被处理了（照抄 `REGISTRY[mod][1]` 会 KeyError→静默少 3 只）",
             '"files"' in ro_src and "files_build_tools" in ro_src, "")
 
@@ -296,7 +304,7 @@ def batch_b_mount():
                         "（多出来一只就是本单越界，M1 的靶子）",
                         set(added) <= set(RO16), f"账本之外的收获：{added}")
                 c.check(f"B2-bis {mod} 栏跨栏补进来的没有一只是写侧（写侧仍只走 _schedule_tools_allowed 那道判据）",
-                        not (set(added) & set(WRITE11)), f"混进来的写侧：{sorted(set(added) & set(WRITE11))}")
+                        not (set(added) & set(WRITE12)), f"混进来的写侧：{sorted(set(added) & set(WRITE12))}")
             # 驿站端：一只都不许多挂（那 16 只里 10 只是学生个人数据）
             box.clear()
             cli.post("/api/chat", json={"message": "我的代办", "session_id": "b61-station",
@@ -449,8 +457,9 @@ def batch_c_agent_mode():
                     " 💡 那一行 + 清空提案那句消失。#86：`🤔` 不再能当「进过引擎」的证据 —— 理由见上）",
                     len(eng_on) > 0 and any("\U0001f4a1" in p for p in ph_on)
                     and not any("生成清空提案" in p for p in ph_on), ph_on[:4])
-            c.check("C2-bis 开着时模型手里确实有工具（跳过快路 ≠ 空转 —— 引擎拿到了跨栏那 24 只）",
-                    len(eng_on) == 25, f"{len(eng_on)} 只")
+            c.check("C2-bis 开着时模型手里确实有一整箱工具（跳过快路 ≠ 空转）——"
+                    "数字与 COUNTS['planner'] 同源，#86 之后是 26 只（多的是 `propose_todo_change`）",
+                    len(eng_on) == COUNTS["planner"], f"{len(eng_on)} 只")
 
             # 2) 3c 加待办报了准点：同样被跳过
             d2_off, ph2_off, _ = ask("帮我加个游泳 周三19:00到20:30", "planner", False, "c61-add-off")
