@@ -277,17 +277,34 @@ def batch_c_shape():
             "（`_chat_impl` 里出现一处就是复制了一份引擎代码去各改各的）",
             bool(runs_in_loop) and not runs_in_impl,
             f"`_run_agent_loop` {len(runs_in_loop)} 处 / `_chat_impl` {len(runs_in_impl)} 处")
-    c.check("C5-bis2 全文件 `_run_agent_loop` 的定义恰好一处、调用点恰好三处"
-            "（★ #76 把这一条从 2 改口成 3，是**改口不是放宽**：委托那两处（短路 + 尾部）+ #76 让渡点一处。"
-            "原话『出现第三次就是有人复制了参数形状』现在由 C5-bis3 的**名分**和 `test_82` A16/A17 的"
-            "**形状一致**两把更硬的尺子接着管；这里的数只挡『有人把让渡点写成不 return 的半接管』）",
-            code.count("async def _run_agent_loop(") == 1
-            and code.count("await _run_agent_loop(") == 3
-            and code.count("return await _run_agent_loop(") == 3,
-            f"定义 {code.count('async def _run_agent_loop(')} / 调用 {code.count('await _run_agent_loop(')}"
-            f" / 带 return {code.count('return await _run_agent_loop(')}")
     calls = [n for n in ast.walk(fn) if isinstance(n, ast.Call)
              and getattr(n.func, "id", "") == "_run_agent_loop"]
+    lines = src.split(chr(10))   # ★ 用原文：_code_only 把注释行去掉了，行号与 AST 的 lineno 对不上（第一版就栽在这）
+
+    def _takes_over(call):
+        """这一处调用**接管**了吗：要么自己就是 `return await _run_agent_loop(`，
+        要么先把返回值存进变量、同一段里紧接着 `return 那个变量`。
+        ⚠️ #84 那处是后一种（要先拿到 dict 才补得上那行让渡说明）——
+        原来那条 `return await` 子串判据把它当成"半接管"，那是**看字面不看行为**。"""
+        head = lines[call.lineno - 1].strip()
+        if head.startswith("return await _run_agent_loop("):
+            return True
+        m = re.match(r"(\w+) = await _run_agent_loop\($", head)
+        if not m:
+            return False
+        tail = [s.strip() for s in lines[call.lineno:call.lineno + 24]]
+        return f"return {m.group(1)}" in tail
+
+    c.check("C5-bis2 定义恰好一处；调用点**每一处都必须接管**（不许有『算了一半又交回确定性分支』的半接管）。"
+            "（★ #76 把这一条从 2 改口成 3；★ #84 再改口成 4，并**把『数几个』整个换掉** —— "
+            "原来那半句 `code.count('return await _run_agent_loop(') == 3` 管的是字面写法，"
+            "#84 那处合法地写成『先取值、补一行 trace、再 return』就被它误判成半接管。"
+            "现在管的是性质：每一处都得真的把这一轮接管走。"
+            "『出现没名分的新调用』仍由 C5-bis3 管，『参数形状被复制走样』仍由 test_82 A16/A17 管）",
+            code.count("async def _run_agent_loop(") == 1
+            and len(calls) >= 3 and all(_takes_over(n) for n in calls),
+            f"定义 {code.count('async def _run_agent_loop(')} / 调用 {len(calls)}"
+            f" / 接管 {sum(1 for n in calls if _takes_over(n))}")
     inside = [n.lineno for n in calls if span[0] < n.lineno <= span[1]]
     after = [n.lineno for n in calls if n.lineno > span[1]]
     before = [n.lineno for n in calls if n.lineno <= span[0]]
@@ -305,20 +322,26 @@ def batch_c_shape():
             return "尾部"
         if any(isinstance(x, ast.Call) and getattr(x.func, "id", "") == "log_intent_gap"
                for x in ast.walk(i)):
-            return "让渡"          # #76：让渡那一支的入口，体内先记一笔缺口账
+            # #76 与 #84 两处都先记账再交给引擎，光看 `log_intent_gap` 会把它们并成一名；
+            # 分开靠的是形状：#84 那处先取返回值、往 trace 补一行说明，才 return。
+            up = ast.unparse(i)   # unparse 会把双引号换成单引号，别拿字面量去比
+            return "改期让渡" if ("_up" in up and "trace" in up) else "让渡"
         return "短路" if "_agent_mode" in ast.unparse(i.test) else "别的"
 
     named = {}
     for n in calls:
         named.setdefault(_tagged(n), []).append(n.lineno)
-    c.check("C5-bis3 三处调用点各有名分、位置也钉死：短路点在闸门圈内且排在让渡点之前"
-            "（#61-C 的 Agent 模式短路，驿站端走不到它）、让渡点也在圈内但排在闸门之后（#76 让渡口，"
-            "所以驿站端与 Agent 模式开着的请求都到不了它）、尾部那处两端共用且必须排在闸门圈外；"
-            "闸门之前出现一处就是把引擎提到了端边界前面，冒出『别的』这一类就是有人新加了一处没名分的调用",
-            len(inside) == 2 and len(after) == 1 and not before
-            and set(named) == {"短路", "让渡", "尾部"}
-            and len(named["短路"]) == len(named["让渡"]) == len(named["尾部"]) == 1
-            and named["短路"][0] < named["让渡"][0] < span[1] < named["尾部"][0],
+    c.check("C5-bis3 四处调用点各有名分、位置也钉死：短路点在闸门圈内且排在两处让渡点之前（#61-C）、"
+            "改期让渡点与 #76 让渡点都在圈内且排在闸门之后（驿站端与 Agent 模式开着的请求都到不了它们）、"
+            "尾部那处两端共用且必须排在闸门圈外；闸门之前出现一处就是把引擎提到了端边界前面，"
+            "冒出『别的』这一类就是有人新加了一处没名分的调用。"
+            "★ #84 新增的那一名分叫『改期让渡』——判据是体内先取返回值再往 trace 补一行"
+            "（`_up[\"trace\"]`），这个形状只有这一处有，所以不会与 #76 那处混成一名",
+            len(inside) == 3 and len(after) == 1 and not before
+            and set(named) == {"短路", "改期让渡", "让渡", "尾部"}
+            and all(len(v) == 1 for v in named.values())
+            and named["短路"][0] < named["改期让渡"][0] < named["让渡"][0]
+            < span[1] < named["尾部"][0],
             f"圈内 {sorted(inside)} / 圈后 {sorted(after)} / 圈前 {sorted(before)} / {named}")
 
     c.check("C6 驿站端拿不到排程工具：`if not _station_surface and _schedule_tools_allowed(` 恰好 1 处",

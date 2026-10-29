@@ -281,9 +281,24 @@ def batch_d_ledger():
             st._gaps_path = saved
         c.check("D4 目录不存在也**不许抛**（把 try/except 摘掉这一条就红 —— 它是那层壳的牙）",
                 ok and len(gap_rows()) == 3, f"抛={not ok}")
-        c.check("D5 `log_intent_gap` 只有 main 那一个调用点（别处再写一遍就是第二本账）",
-                read("app/main.py").count("log_intent_gap(") == 1,
-                str(read("app/main.py").count("log_intent_gap(")))
+        mn5 = read("app/main.py")
+        idx5, at = [], 0
+        while True:                          # 这份文件没 import re，用 find 走一遍
+            at = mn5.find("log_intent_gap(", at)
+            if at < 0:
+                break
+            idx5.append(at)
+            at += 1
+        paired = all("await _run_agent_loop(" in mn5[i:i + 700] for i in idx5)
+        others = sum(read(f).count("log_intent_gap(") for f in
+                     ("app/modules/planner.py", "app/agent/engine.py", "app/config.py"))
+        c.check("D5 `log_intent_gap` 的调用点**只许在 main 这一侧**，且每一处都紧贴一次引擎接管。"
+                "（原话「只有一个调用点」管的是「别处再写一遍就是第二本账」；★ #84 在 main 里加了"
+                "第二处让渡点，于是把「数 1」换成三条不数数的性质：① 除 store 的定义外别的模块一处"
+                "都没有；② main 里至少一处；③ 每一处往后 700 字内必须出现一次 `await _run_agent_loop(`"
+                " —— 记账与让渡**成对**，单独记一笔就是假账）",
+                others == 0 and len(idx5) >= 1 and paired,
+                f"main {len(idx5)} 处 / 别的模块 {others} 处 / 都紧贴引擎 {paired}")
     return c.summary("D 批（记账）")
 
 
@@ -295,9 +310,15 @@ def batch_s_static():
     seg = mn[i:i + 12000]      # 一整支加待办的分支（约 230 行），四个出口都在里头
     c.check("S1 让渡点**恰好一处**（这一支里只出现一次 `_run_agent_loop`）",
             seg.count("_run_agent_loop(") == 1, str(seg.count("_run_agent_loop(")))
-    c.check("S2 参数形状与既有两个调用点逐字一致（#61 那条「不许复制第二份」的纪律）",
+    c.check("S2 每一处引擎调用点的参数形状逐字一致（#61 那条「不许复制第二份」的纪律）。"
+            "★ 原来钉的是『== 3』这个数，#84 加了第四处就把它顶红了 —— 换成两条不数数的："
+            "① 两行参数各自出现次数**相等**（有一处只写了一半就是走样）；"
+            "② 这个次数**等于调用点总数**（每一处都带着这两行，没有一处是裸调用）",
             mn.count("module_key=module_key, session_id=session_id, message=message,")
-            == mn.count("prompt=prompt, tools=tools, persona_key=persona_key,") == 3, "")
+            == mn.count("prompt=prompt, tools=tools, persona_key=persona_key,")
+            == mn.count("await _run_agent_loop("),
+            f"参数行 {mn.count('module_key=module_key, session_id=session_id, message=message,')}"
+            f" / 调用点 {mn.count('await _run_agent_loop(')}")
     c.check("S3 挂在入口闸**之后**、四个出口之前：`_gap76` 这一行在 `proposal = None` 前面",
             0 < seg.find("_gap76 =") < seg.find("proposal = None"),
             f"gap={seg.find('_gap76 =')} proposal={seg.find('proposal = None')}")
