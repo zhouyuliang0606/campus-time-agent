@@ -180,6 +180,14 @@ def batch_w_wiring():
             first_if is not None and "op" in ast.dump(first_if.test)
             and bool(early) and bool(call_site) and min(e.lineno for e in early) < call_site[0].lineno,
             str([type(s).__name__ for s in fn.body[:4]]))
+    # W9：#82 那笔老洞（不传 `not_before` ⇒ 挑得出"今天 08:00"这种已经过去的卡，学生点不到）。
+    #      行为级在这一档测不出来（夹具里那节课占掉了早段，挑到的自然是晚段），所以钉**写法**：
+    #      `auto_slot` 那个分支里对 `pick_free_slot` 的唯一一次调用必须带着 `not_before=`。
+    i = src.index("        elif auto_slot:")
+    blk = src[i:src.index("        else:", i)]
+    c.check("W9 `auto_slot` 分支里那次 `pick_free_slot` 必须传 `not_before`（#82 同一处调用点的老洞一起堵）",
+            blk.count("pick_free_slot(") == 1 and "not_before=_nb2" in blk,
+            f"{blk.count('pick_free_slot(')} 次调用 / not_before {'在' if 'not_before=_nb2' in blk else '缺席'}")
     return c.summary("W 批（接线）")
 
 
