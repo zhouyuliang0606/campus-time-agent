@@ -43,6 +43,19 @@
        没挂卡那条链）。写成期望就是**一条断言了不存在行为的红**，所以 R4 改成钉现状 + 缺口 X3。
   · 条数：单据说补 18 条、总账应到 5526（那是**干净副本**口径）。我这边多一条 C6-bis ⇒
     本机 5512 → **5531**，副本 5508 → **5527**；差值仍是那笔长期项（`test_86` C 批 6↔2）。
+
+**#87 追记（2026-10-30 夜，施工单 `87_改期两条硬伤…drop-in.md`）**：本文件多了 **P 批 22 条**（同名出口 7 +
+  过去钟点闸 9 + 写法 6），R 批多 **2 条**（R1-bis 真同名两轮回流 + 它的话术反向钉），W3 改口（5 键 → 6 键）。
+  52 → **76 条**。两处按实测与单据不同，都写在判据里：
+  ① §1.2 那道闸的位置：单据把条件写成拿模型传来的 `new_date` 字面串比 ISO。实测两处错 ——
+     `new_date="今天"`（自然语言）**漏拦**、出的就是那张过去的卡；而"待办本来就在明天、只补一个钟点"
+     **被误拦**（`_d = nd or 今天` 把明天 16:00 当今天）。闸因此挪到提案生成之后、比**卡片真要落的那一天**
+     （P9/P10/P14 就是这两格的证据，另加 P22 钉位置不许漂）。
+  ② §1.3 的 `list_todos_range` 描述判据要从 `build_tools()` 取（那 13 只里有它），从
+     `build_scheduling_tools()` 取会 KeyError —— P21 里写死了这句，免得下一个人再撞。
+  还有两处我自己的输入形状错了、改完才绿：P14/P15 起初拿 `顶层 dict.get("date")` 判（提案在
+  `__proposal__` 里，恒为 None ⇒ 一条真红把我自己的判据暴露出来）；P22 那种"源码写法"判据
+  必须连**旧写法不许回来**一起钉，不然只钉新写法存在=删掉旧的也没人红。
 """
 import ast
 import datetime
@@ -168,10 +181,17 @@ def batch_w_wiring():
         c.check("W2 说明书里那三句关键话一句都不能少：不新建 / 别反问几点 / need_pick 就列清单然后停",
                 all(k in (t.description or "") for k in ("不会新建", "不要反问", "是下面哪一条")),
                 (t.description or "")[:80])
-        c.check("W3 参数 schema：只有 `title` 必填（其余留空 = 让系统替他挑）",
+        # #87 把参数表从 5 键改到 6 键（多的那格 `todo_date` = 同名时挑哪一条）。
+        #   为什么这算"改口"而不是"计数被合法新增顶红"（#84 那条纪律）：原判据钉的是**这一个工具此刻的入参集合**，
+        #   加一格可选参数正是要修的功能本身 ⇒ 换性质不换更大的数：**键集合必须逐字等于这张表**（多一格少一格都红），
+        #   且 `required` 仍然只有 `title`（可选性才是"确定性分支一个字没改"的那道命门）。
+        #   牙由变异 V5 量：把 `todo_date` 从 properties 里删掉 ⇒ W3 与 P17 一起红。
+        c.check("W3 参数 schema（#87 后）：键集合逐字等于这 6 格、`required` 仍然只有 `title`"
+                "（`todo_date` 必须可选 —— 确定性分支与老调用方都没这一格）",
                 t.parameters.get("required") == ["title"]
-                and set(t.parameters.get("properties") or {}) == {"op", "title", "new_date", "new_start", "new_end"},
-                str(t.parameters.get("required")))
+                and set(t.parameters.get("properties") or {}) == {"op", "title", "todo_date",
+                                                                  "new_date", "new_start", "new_end"},
+                str(sorted(t.parameters.get("properties") or {})))
         c.check("W4 它登记的写侧名字与 `readonly.WRITE_TOOL_NAMES` 对得上（漏一条=那张反向断言的表静默失守）",
                 NEW in __import__("app.agent.readonly", fromlist=["x"]).WRITE_TOOL_NAMES)
 
@@ -531,6 +551,7 @@ def batch_r_routes():
     c = Checker()
     title("R. 86测 补的缺口：挑完再回来的那一步 / 新工具不许抢确定性分支 / 无 Key / 有卡时的话术")
     st = int(datetime.datetime.now().timestamp())
+    tmr_b = (TODAY + datetime.timedelta(days=1)).isoformat()
     with sandbox(), pin_now(9, 0):
         from app.modules import planner as P
         write_timetable(COURSE)
@@ -548,6 +569,33 @@ def batch_r_routes():
                 not cards_of(o1) and bool(cards_of(o2))
                 and cards_of(o2)[0].get("old_todo_id") == "t98-游泳",
                 str((len(cards_of(o1)), len(cards_of(o2)))))
+
+        # R1-bis 真同名那条路（86测 §三 R1 只覆盖了"名字能分开"，真同名是它 §二 G11 自己标着"未测"的一格）
+        def pair2():
+            return [dict(row("游泳", 0, "08:00", "09:40"), id="t98-A"),
+                    dict(row("游泳", 1, "10:00", "11:00"), id="t98-B")]
+        seed_todos(pair2())
+        sid_b = f"t98r1b-{st}"
+        b1 = engine_turn([tc(NEW, {"title": "游泳"}), plain("有两条都叫游泳，你说的是哪天那条？")],
+                         "游泳撞课了，帮我换一个时间", sid=sid_b)
+        b2 = engine_turn([tc(NEW, {"title": "游泳", "todo_date": tmr_b}),
+                          plain("好，把 11 月那条挪开一点，点确认就改。")],
+                         "改 " + tmr_b + " 那天那个", sid=sid_b)
+        cb1, cb2 = cards_of(b1), cards_of(b2)
+        c.check("R1-bis 真同名 + **报了日子**的两轮：第 1 轮列清单不出卡，第 2 轮（模型把日子填进 "
+                "`todo_date`）**必须出卡**，且 `old_todo_id` 是他指的那一条。"
+                "这就是本单唯一要证的端到端结果：真机上一度是三次调用三次同一张 need_pick",
+                not cb1 and bool(cb2) and cb2[0].get("retimed") is True
+                and cb2[0].get("old_todo_id") == "t98-B",
+                str((len(cb1), len(cb2), [x.get("old_todo_id") for x in cb2])))
+        c.check("R1-bis-2 第 2 轮的卡上**不许**出现「已经改好了 / 已改到」（提案不是执行），"
+                "也不许说「确认条已经挂出来了」而屏上没卡 —— 这一轮屏上真有卡，所以那句该跟着卡走",
+                all(k not in str(b2.get("answer") or "") for k in ("已经改好了", "已改到")),
+                str(b2.get("answer") or "")[:70])
+        # 恢复 R 批后面的共用夹具，并重算 ids_before（R4 拿它证"库里一个字没改"；
+        # 不重算就会被我这轮的 pair2 顶成一条假红 —— 承 #82「计数/状态判据被合法新增顶红」那一族）
+        seed_todos(three())
+        ids_before = {x.get("id") for x in P.list_todos()}
 
         # R2 新工具最大的风险：**抢走原本好的那条路**（E4 只证了"加待办"不被抢）
         import app.agent.engine as E
@@ -611,6 +659,162 @@ def batch_r_routes():
     return c.summary("R 批（86测：回流 / 路由 / 无 Key / 话术）")
 
 
+
+# --------------------------------------------------------------- P 批（#87：同名出口 + 过去钟点闸）
+def batch_p_exit_and_gate():
+    c = Checker()
+    title("P. #87 两条硬伤：同名要有一个出口（`todo_date`）/ 今天过去的钟点要有闸")
+    tmr = (TODAY + datetime.timedelta(days=1)).isoformat()
+    d3 = (TODAY + datetime.timedelta(days=3)).isoformat()
+    d4 = (TODAY + datetime.timedelta(days=4)).isoformat()
+    iso = TODAY.isoformat()
+
+    def swim(off, s, e, rid):
+        # 两条同名时 `row()` 那种「id = 按名字拼」会把两条做成**同一个 id**，
+        # 而本批的命门正是「改的是哪一条」⇒ id 必须分开造，不然 P2 的判据写不出来。
+        return dict(row("游泳", off, s, e), id=rid)
+
+    PAIR = [swim(0, "08:00", "09:40", "t98-A"), swim(1, "10:00", "11:00", "t98-B")]
+
+    with sandbox(), pin_now(9, 0):
+        from app.modules import planner as P
+        write_timetable([day_course(0, "08:00", "09:40")])
+        seed_todos(PAIR)
+        ids_before = {x.get("id") for x in P.list_todos()}
+
+        r1 = call(P, title="游泳")
+        c.check("P1 反向钉（与 #86 逐字一致）：两条同名、**不给 `todo_date`** ⇒ 还是 need_pick 两条、"
+                "一张卡都不出。出口不能反过来吃掉这一格：不填就该问，不许猜一条",
+                r1.get("need_pick") is True and len(r1.get("todos") or []) == 2
+                and "__proposal__" not in r1,
+                str((r1.get("need_pick"), len(r1.get("todos") or []))))
+
+        r2 = call(P, title="游泳", todo_date=tmr)
+        p2 = r2.get("__proposal__") or {}
+        c.check("P2 出口成立：`todo_date=明天` ⇒ 收窄到**明天那一条**、出卡，`old_todo_id` 就是它"
+                "（真机 C3 三次调用三次同两条候选，缺的正是这一格）",
+                p2.get("old_todo_id") == "t98-B" and "need_pick" not in r2,
+                str((p2.get("old_todo_id"), p2.get("date"), r2.get("need_pick"))))
+
+        r3 = call(P, title="游泳", todo_date=tmr, new_date=d4, new_start="18:00", new_end="19:00")
+        p3 = r3.get("__proposal__") or {}
+        c.check("P3 两个维度各管各的：`todo_date` 决定挑哪一条(=t98-B)、`new_date` 决定改去哪天(=+4 天) "
+                "⇒ 卡落在那天 18:00。**不许**因为传了 todo_date 就把目标日也钉成明天",
+                p3.get("old_todo_id") == "t98-B" and (p3.get("date"), p3.get("start")) == (d4, "18:00"),
+                str((p3.get("old_todo_id"), p3.get("date"), p3.get("start"))))
+
+        r4 = call(P, title="游泳", todo_date=d3)
+        c.check("P4 收窄**落空必须原样退回**：说的那天其实没这条 ⇒ 仍 need_pick 两条，"
+                "⛔ 不许变成 not_found（那就是 #84 花一整张单修掉的「库里没这条」假话；V2 就钉这一格）",
+                r4.get("need_pick") is True and len(r4.get("todos") or []) == 2
+                and not r4.get("not_found"), str(sorted(r4.keys())))
+
+        r5 = call(P, title="待办", todo_date=tmr)
+        c.check("P5 收窄只作用在**名字命中之后**那一份池子上：占位名 + `todo_date` ⇒ 仍 need_pick。"
+                "拿日子去缩全库池 =「那天随便哪一条都算答案」，那是 X1 那格假命中的放大版",
+                r5.get("need_pick") is True and "__proposal__" not in r5, str(sorted(r5.keys())))
+
+        c.check("P6 这一段一个字节都没写库（只出提案，执行权在学生点【确认加入】之后）",
+                {x.get("id") for x in P.list_todos()} == ids_before, str(sorted(ids_before)))
+
+        seed_todos([swim(0, "08:00", "09:40", "t98-A")])
+        r7 = call(P, title="游泳", todo_date=d3)
+        c.check("P7 只有一条时那段收窄整块跳过（`len(pool) > 1` 不成立）⇒ `todo_date` 填了也不影响，照旧出卡",
+                bool(r7.get("__proposal__")), str(sorted(r7.keys())))
+
+    with sandbox(), pin_now(18, 2):
+        from app.modules import planner as P
+        write_timetable([day_course(0, "10:00", "11:40", "实验课")])
+        seed_todos([swim(0, "10:30", "11:30", "t98-T")])
+
+        g1 = call(P, title="游泳", new_date=iso, new_start="16:00", new_end="17:00")
+        c.check("P8 闸（ISO 的今天）：18:02 说「改到今天 16:00」⇒ `past_slot`、**一张卡都不出**，"
+                "并把 now 一起带回（模型要靠它说人话；V3 钉这一格）",
+                g1.get("ok") is False and g1.get("past_slot") is True and g1.get("now") == "18:02"
+                and g1.get("wanted") == "16:00" and "__proposal__" not in g1,
+                json.dumps(g1, ensure_ascii=False)[:130])
+
+        g2 = call(P, title="游泳", new_date="今天", new_start="16:00", new_end="17:00")
+        c.check("P9 同一格换成**自然语言**『今天』⇒ 照样拦。⚠️ 单据 §1.2 那条件写的是 "
+                "`_d == clock.today().isoformat()`（拿模型传来的字面串比 ISO）⇒ 这一格**实测漏拦**、"
+                "出的就是那张 16:00 的过去卡。闸要比的是「这张卡真要落的那一天」，不是「他传了什么字符串」",
+                g2.get("past_slot") is True and "__proposal__" not in g2, json.dumps(g2, ensure_ascii=False)[:130])
+
+        g3 = call(P, title="游泳", new_date="今日", new_start="16:00", new_end="17:00")
+        c.check("P10 日子**根本解析不出来**（『今日』`_pick_date` 实测回 None）时也拦得住 —— "
+                "这一支落回旧日期（就在今天），所以判「卡片落在哪天」才兜得住",
+                g3.get("past_slot") is True and "__proposal__" not in g3, json.dumps(g3, ensure_ascii=False)[:130])
+
+        g4 = call(P, title="游泳", new_start="16:00")
+        c.check("P11 不给日子、只给一个过去的钟点（旧条就在今天）⇒ 拦",
+                g4.get("past_slot") is True and "__proposal__" not in g4, json.dumps(g4, ensure_ascii=False)[:130])
+
+        ok1 = call(P, title="游泳", new_date=iso, new_start="19:00", new_end="20:00")
+        c.check("P12 正控：今天 19:00（now 之后）**必须照样出卡** —— 闸写宽了就是把学生合法的要求顶回去",
+                bool(ok1.get("__proposal__")) and not ok1.get("past_slot"), str(sorted(ok1.keys())))
+
+        e1 = call(P, title="游泳", new_start="18:05", new_end="19:00")
+        e2 = call(P, title="游泳", new_start="18:15", new_end="19:00")
+        c.check("P13 缓冲边界成对钉（10 分钟）：18:05 拦、18:15 放（now=18:02 ⇒ 闸口在 18:12）。"
+                "只钉一头 = 把阈值改成 0 或改成 600 都没人红",
+                e1.get("past_slot") is True and bool(e2.get("__proposal__")),
+                str((bool(e1.get("past_slot")), bool(e2.get("__proposal__")))))
+
+        seed_todos([swim(1, "10:00", "11:00", "t98-M")])
+        ok2 = call(P, title="游泳", new_start="16:00", new_end="17:00")
+        pr2 = ok2.get("__proposal__") or {}
+        c.check("P14 **不误拦**（这一格是单据那条件的反例）：待办本来就在**明天**、学生只补钟点"
+                "（「往后挪到 16:00」）⇒ 明天 16:00 完全合法。照 §1.2 的 `_d = nd or 今天` 写，"
+                "实测 18:02 会被判成 past_slot 顶回去 —— 挪到卡片日期上判才不拦",
+                bool(pr2) and pr2.get("date") == tmr and not ok2.get("past_slot"),
+                json.dumps(pr2, ensure_ascii=False)[:130])
+
+        ok3 = call(P, title="游泳", new_date=tmr, new_start="08:00", new_end="09:00")
+        pr3 = ok3.get("__proposal__") or {}
+        c.check("P15 明天的 08:00 不许被拦（单据 T6 那一格，闸只对「今天」生效）",
+                bool(pr3), str((pr3.get("date"), pr3.get("start"))))
+
+        ok4 = call(P, title="游泳")
+        c.check("P16 闸只管**模型填钟点**那一支：什么都没给、让 auto_slot 自己挑 ⇒ 不许被这道闸多拦一次"
+                "（auto_slot 那支的 `not_before` 由 W9 钉着，两处各管各的，别并成一把）",
+                bool(ok4.get("__proposal__")) and not ok4.get("past_slot"), str(sorted(ok4.keys())))
+
+    src_pl = read(PL)
+    from app.modules import planner as _P2  # 只为拿工具箱，不在沙箱外调任何读写
+    tools = _P2.build_scheduling_tools()
+    t = tools.get(NEW)
+    props = set((t.parameters or {}).get("properties") or {})
+    c.check("P17 接线：#87 之后 schema 是 6 个键（多的那格叫 `todo_date`），`required` 仍然只有 `title`"
+            "（它是可选的 ⇒ 老调用方与确定性分支一个字都不用改）",
+            (t.parameters or {}).get("required") == ["title"]
+            and props == {"op", "title", "todo_date", "new_date", "new_start", "new_end"},
+            str(sorted(props)))
+    d_todo = ((t.parameters or {}).get("properties") or {}).get("todo_date") or {}
+    c.check("P18 `todo_date` 的说明书里两句关键话一句都不能少：「在哪天」＋「不是改去哪天」"
+            "（两个语义混了，下一轮就是拿定位条件去改日子）",
+            "在哪天" in (d_todo.get("description") or "")
+            and "改去哪天" in (d_todo.get("description") or ""),
+            (d_todo.get("description") or "")[:80])
+    c.check("P19 闸与描述**成对**：说明书里有 `past_slot` 那一句（§五.3 —— 只加闸不加描述，"
+            "模型收到一个没见过的出口就会把同一个过去的点再传一遍）",
+            "past_slot" in (t.description or ""), str((t.description or "")[:60]))
+    own_pl = _P2.build_tools()
+    c.check("P20 §1.3 那两行在 `propose_todo_tool` 的说明书里：加课别用我（指向 op=add）/ 不支持重复"
+            "（Agent 模式下确定性加课分支**走不到**，这句是那一路上唯一的优先闸）",
+            "propose_course_change" in (tools["propose_todo_tool"].description or "")
+            and "不支持重复" in (tools["propose_todo_tool"].description or ""),
+            (tools["propose_todo_tool"].description or "")[-90:])
+    c.check("P21 `list_todos_range` 说明书里有「放宽再查一次」（治 C2 那套视野：查空了别直接回「没有」）"
+            "⚠️ 这只工具在 planner **自己**那 13 只里（`build_tools()`），不在 scheduling 那 8 只里 —— "
+            "拿错工具箱就是 KeyError（我自己撞了一次）",
+            "放宽再查一次" in (own_pl["list_todos_range"].description or ""),
+            (own_pl["list_todos_range"].description or "")[-70:])
+    c.check("P22 闸的位置写在源码里、不许漂：判的是卡上的 `date`（卡片真要落的那一天），"
+            "不是拿模型传来的 `new_date` 字面串比 ISO（那两种错我都实测过：漏拦『今天』、误拦明天的钟点）",
+            'prop.get("date") == clock.today().isoformat()' in src_pl
+            and "_d = nd or clock.today().isoformat()" not in src_pl, "")
+    return c.summary("P 批（#87：同名出口 + 过去钟点闸）")
+
 def main():
     code = 0
     ran = 0
@@ -619,7 +823,8 @@ def main():
                ("A 批（默认值命门）", batch_a_default),
                ("E 批（端到端）", batch_e_e2e),
                ("C 批（86测 能力边界）", batch_c_boundaries),
-               ("R 批（86测 回流与路由）", batch_r_routes))
+               ("R 批（86测 回流与路由）", batch_r_routes),
+               ("P 批（#87：同名出口 + 过去钟点闸）", batch_p_exit_and_gate))
     for label, fn in batches:
         ran += 1
         try:
