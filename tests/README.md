@@ -20,6 +20,11 @@ python tests/test_01_basic.py
 （这个数字是**每个文件里每一批**加起来的总数。早先这里是覆盖式统计、只算最后一批，
 数字一直偏小，2026-09-25 修好了。）
 
+本机现值（**2026-10-30 实测**）：`通过 5555 项，失败 0 项（共 99 批）`。
+「99 批」= 98 个 `test_*.py` + 1 道 JS 语法闸（`run_all.py:119`）；
+**没装 node 时那道闸被跳过、不计批** ⇒ 你跑出来是 98 批，不是少跑了一批。
+这个数随开发增长，以你跑出来的那行为准；每轮的实测值记在 `ai-prompts/` 当轮快照里。
+
 ## 这些测试在测什么
 
 | 文件 | 人话 |
@@ -34,6 +39,107 @@ python tests/test_01_basic.py
 | `test_23_timetable_import_rescue.py` | **课表导入的出卡兜底**（2026-10-03 报障：上传课表文件后管家只在文字里发清单、「确认修改」卡不来，甚至把话术里的「确认修改」当任务名挂出假待办卡）六批 43 项 → **七批 53 项 → **66 项 / 8 批**（补 4 项自然语言探测：「上传了课表」「读取一下这份课表」「解析一下这份课表」都要识别，避免中间带"了"/"并"等字就被漏进待办补条）**（第三轮加 3-ter 批）——① 探测器（认出导入课表的请求，闲聊/下单不拖进来）；② 解析器 `timetable_courses_from_reply`（markdown 表/纯文本行/全角冒号/en dash 都能抠回课程清单，整句话术抠不出就如实说 None）；③ 主链路：导入请求 + 模型只发文字 → 系统补出正经「确认修改」卡且没点确认周表零变化；3-bis **文件原文兜底**（学生原话「解析出来了，卡没出来……可以弹是否更改课表的卡」：模型只念了 3 门 → 卡上补齐到 5 门取更全的文件原文、「晚上 19:00 大学英语」也要在卡上、**没点名《文件名》时绝不拿"最近那份文件"瞎猜** → 零卡）；④ 反向三连（截图那幕的假待办卡绝迹 / 抠不出清单时如实说明不挂假卡 / 老的待办补条不被误伤）；⑤ 前端模板点名 `propose_timetable_change`、误导句「先不要写入周表」已删；**3-ter「只弹是否修改、不许逐门念课」**（学生原话「如果是上传课表就弹是否修改就行，不用每门课单独拎出来」——模型自己出了卡但文字里把课念了一遍时，回话必须换成一句「要不要用这份课表替换现在的周表」、课名一个都不许出现，课程清单只留在卡里供写库；反向：普通加课请求不许被换成导入话术）。**⑥ 出卡环节诊断**：在 trace「我是这么想的」面板里把卡在哪一档逐档讲清（探测命中/逃过正则、回话抠出几门、文件原文抠出几门、最终为何没出卡），即使没出卡也能定位到底是探测漏了还是抠不出课。⚠️ 解析器是**一行多门课**（学生文件与模型回话都是"一天一行、用；串起来"），改回"一行一门"会静默吞掉整张表；⚠️ 本文件必须喂**假配置**（`app.main.get_llm_config` 是导入时绑定，只改 `app.config` 看不见），否则 planner 在 `mock_planner` 提前返回、根本到不了出卡兜底 |
 | `test_24_confirm_render.py` | **确认条渲染竞态回归**：守住「后端出了 timetable_change 卡、前端却没弹卡」的真实 bug。根因 `confirm.html` 在 `/api/pending` 取不到提案（timetable_change 不进暂存）时同步 `tellParent("empty")` → 父页面撤掉 iframe、而真卡正要靠 `postMessage` 递过来 → 卡消失。5 项断言守住：① inFrame 空提案显示「加载中」而非立即撤条；② `tellParent("empty")` 被 `setTimeout` 延迟且门控 `!fromParent`；③ 独立打开分支仍立即 `tellParent("empty")`（原行为不变） |
 | `test_25_todos_panel_and_nav.py` | **待办面板字段 + 「上传文件」栏删除回归**：① 钉住 `loadTodosView` 用 `t.id` 而非 `t.todo_id`（`/api/todos` 主键是 `id`，用错会让勾选/删除打 `/api/todos/undefined` 全 404）。⚠️ **提案卡**上的 `todo_id` 是对字段（`planner.py` 造的 `"todo_id": item.get("id")`），`confirm.html` / `main.py` 那些**绝不能动**，别一刀切全局替换；② 「上传文件」独立栏 6 处已删净（`loadUploadView`/`data-nav="upload"`/`navUpload`/`upInput`/`upDrop`/`upList` 全无命中）；③ 「上传课表」三件套（`uploadTtPanel`/`ttFilePanel`/`handleFile`）必须保留。11 项 |
+
+
+## 其余批次（2026-10-30 补齐；上面那张表只写到 test_25）
+
+上一张表停在 2026-09 下旬，实际已有 **98 个测试文件**。下面这一张按编号一行一批，
+说明取自**每个文件自己 docstring 的第一句**（不另行创作，所以与代码同源；改了 docstring 就该改这里）。
+
+| 文件 | 一句话 |
+| --- | --- |
+| `test_07_todo_intent.py` | 「代办」三类口语的意图接住回归（人话：学生用口语说待办，不能掉给模型编答案）。 |
+| `test_08_intent_fallback.py` | 第八批测试：意图兜底层（样本库 + 语义层），Req G。 |
+| `test_09_crud_selfcheck.py` | 增删查改 对话流程自测（人话：把"加 / 删 / 查 / 改"四条学生待办链路各跑一遍， 规则认得的、规则接不住（语义层兜底）的两种说法都测，逐条断言真写库 / 真删除 / 真改期）。 |
+| `test_10_mark_done.py` | 「标记完成」改成系统接管 + 问答栏「前往我的日程」按钮 + 删待办回归。 |
+| `test_11_todo_target.py` | 定位待办：中文数字日期 + 「撞时间的」筛选 + 盲删守卫。 |
+| `test_12_batch_todo.py` | 批量待办：学生对着清单说「都删了 / 全部删掉 / 一起删了吧」= 一次全办。 |
+| `test_13_guess_evidence.py` | 证据判决：系统什么时候可以**替他挑一条**，什么时候必须列清单。 |
+| `test_14_semantic_priority.py` | 上下文优先序：正在等「删待办」的回复时，语义层的弱信号不许把话抢走。 |
+| `test_15_oral_samples.py` | 口语样例回归：学生**真会说出口**的那批话（去重 / 全删 / 单条 / 纠正 / 模糊 / 省略 / 错别字）+ RAG 知识库问答。 |
+| `test_16_typo_trace.py` | 第十六批测试：**错别字** 与 **思考过程**（学生 2026-09-30 报障的那两条）。 |
+| `test_17_tool_question_guard.py` | 第十七批测试：堵死"模型直调工具把问句/废话弄成待办卡"的残留缺口（收口误判·任务一）。 |
+| `test_18_faq_no_spurious_todo_card.py` | 第十八批测试：堵死"非排程模块（如校园问答）被乱挂待办确认卡"（收口误判·任务二 / Item B）。 |
+| `test_19_time_fragment_title.py` | 第十九批测试：时间碎片不能当待办名挂卡（"明天中午12" → 不应出"12"的确认卡）。 |
+| `test_20_polish.py` | 第二十批测试：架构升级 · 模型提案 → 系统裁决（试点 1 = 3d 读待办，试点 2 = 3c 加待办）。 |
+| `test_21_chitchat_persona_redline.py` | 第二十一批测试：闲聊出口与人设红线（"闲聊兜不住，聊日常会被转到待办"）。 |
+| `test_22_model_gateway_usage.py` | 第二十二批测试：自研模型网关 + 用量统计（唯一出口 / 跨厂商标准化 / 记账） |
+| `test_26_upload_card_channel.py` | 上传课表的「出卡通道」：每一条自己打 /api/chat 的前端路径，都必须把卡渲染出来。 |
+| `test_27_express_lost_report_card.py` | 快递/外卖丢失破损 → 出「确认上报」卡（上报工单不再被判成问事、不再没卡）。 |
+| `test_28_saturday_slots_wrong_day.py` | 「周六早上去图书馆」被摊成周三等多天的空档 —— 回归测试。 |
+| `test_29_schedule_panel_and_todo_api.py` | 学生端「我的日程」周视图 = 逐日明细列表 + /api/todos 读写通路。 |
+| `test_30_requirements_bom.py` | `requirements.txt` 的 UTF-8 BOM —— 中文 Windows 复现护栏（test_30）。 |
+| `test_31_no_write_tool_for_model.py` | 模型侧写权限收口：工具箱里一个能落库的工具都不许有（test_31）。 |
+| `test_32_admin_token_gate.py` | 管理接口那道门（test_32）：口令挡住了谁、又放行了谁。 |
+| `test_33_escape_single_source.py` | 转义只有一份，而且那份要管得住属性位置（test_33）。 |
+| `test_34_api_key_not_stored.py` | 学生自带的 API Key：会上传是事实，但**不能落盘**（test_34）。 |
+| `test_35_weekly_frequency_todo.py` | 「一周三次」这类频次待办：认出次数 → 一次排 N 段 → 前 N 段替他勾上。 |
+| `test_36_pending_card_restore.py` | 刷新 / 切模块之后，上一轮没确认的那张卡要能自己回到聊天流里。 |
+| `test_37_base_url_ssrf_gate.py` | base_url 的 SSRF 闸门：请求方可以自带连接目标，但**必须真过闸**，且不外泄地址。 |
+| `test_38_student_no_tech_leak.py` | 学生看得见的那段文字里，不许出现技术内脏（模型 / 厂商 / 密钥 / 后台入口）。 |
+| `test_39_weekly_recurring_todo.py` | 每周重复待办（「每个周天都写作业」）专项护栏。 |
+| `test_40_time_spec.py` | 时间解析收口：一句话只解析**一次**成 TimeSpec，下游要么整体用、要么整体不用。 |
+| `test_42_period_veto_and_title_carry.py` | 两条 2026-10-11 真机复现的收口：**不支持的周期不许单独接单**、**事名不许串味**。 |
+| `test_43_live_batch_findings.py` | 2026-10-11 那批真机句子打出来的四个缺口，一处一个判据钉住。 |
+| `test_44_glass_ui_and_bg.py` | 玻璃质感层与背景偏好（test_44）。 |
+| `test_45_ask_what_to_do.py` | 「今晚安排点啥」这族：他在问『该做什么』，不是报一件要做的事 —— 不许建卡，但要给一句实在的建议。 |
+| `test_46_polish_off_critical_path.py` | 第一刀 B：润色不许站在关键路径上白等（实测 97 次里 20 次吃满 4.0s 拿回的却是模板）。 |
+| `test_47_shared_async_client.py` | 刀 2：共享 AsyncClient —— 同一进程内复用 TCP/TLS 连接，别再每次调用重握手。 |
+| `test_48_classify_budget.py` | 刀 3（A + B）：`max_tokens` 一路透传到判定层，并给判定装一根**会落地的**保险丝。 |
+| `test_49_streaming_sse.py` | 07 号流式（SSE）的护栏：传输层真流、出口按 Accept 协商、**done 必须晚于守卫**。 |
+| `test_50_usage_ledger_isolation.py` | #47：测试的模型记账不许写进真实账本，但**生产侧的记账必须照样写**。 |
+| `test_51_report_dual_write.py` | #18 单子 1：学生工单上报时"工单 + 学生消息"**双写**，让管理端两个视图都看得见。 |
+| `test_52_station_workorders.py` | #18 单子 2：学生报的快递/外卖问题**流到驿站** —— 接口、文案、以及新增免鉴权面的边界。 |
+| `test_53_lowcode_service.py` | #18 单子 3：驿站低代码新增服务（创新点那块饼要能落地，也得能被守住）。 |
+| `test_54_custom_service_intent.py` | #22 单子 4：低代码服务接进判定层 —— 学生一句「我丢了饭卡」走到确认卡，点了才落库。 |
+| `test_55_bad_body_400.py` | #22 单子 5：请求体坏掉时，接口该回一句人话，不该甩堆栈。 |
+| `test_56_station_shell.py` | #25 单子 S1：驿站端三栏外壳 + 【清空】（只改 station.html，所以护栏只能钉形状与顺序）。 |
+| `test_57_admin_shell.py` | #25 的后续：管理控制台也改成三栏（左栏点档、正文只在中间滚、口令条常驻顶栏）。 |
+| `test_58_ledger_archive.py` | #29：工单与学生消息的**归档**（软删）。 |
+| `test_59_student_identity.py` | #32：学生身份 = 学号（演示级、不设密码），个人库**按学号分目录**，同一台机器换账号不共用。 |
+| `test_60_card_close.py` | #33：点卡片确认 → 写库**必须销卡**，否则刷新后卡复活、再点就重复写入。 |
+| `test_61_surface_boundary.py` | #34（P0）：驿站端不许读、也不许写**学生个人数据** —— 端边界缺失的护栏。 |
+| `test_62_express_owner.py` | #36：演示台账带「归属人」—— 学生只看自己的件，驿站看全店但**按学号分组**。 |
+| `test_63_my_workorders.py` | #37：工单要有归属、学生要看得见**真**进度、快递/外卖那两栏要真点得开。 |
+| `test_64_accounts.py` | #38：只开放名录里的学号（+ 签名 cookie 两层）—— 护栏。 |
+| `test_65_delete_gaps.py` | #39：四处「只增不删」缺口的护栏（驿站服务 / 登记记录 / 已处理历史 / 管理端通知）。 |
+| `test_66_doc_chunks.py` | #40：知识库长文档「分块 + 检索 + 文档管理」的护栏。 |
+| `test_67_kb_docs_merged.py` | #40 补2：`search_kb` 一次查全（问答条目 + 上传文档）的护栏。 |
+| `test_68_demo_polish.py` | #41 的护栏：演示前三处收口（直答文案 / 查空口径 / 坏文件 400）。 |
+| `test_69_calendar_fact.py` | #42-A 的护栏：「啥时候放假」不许被回成「我该做什么」，也不许被回成「你的日程里没有」。 |
+| `test_70_multi_doc_merge.py` | #42-B 的护栏：**几份文档拼起来才完整**的答案，不许只答一半。 |
+| `test_71_material_batch.py` | #43 的护栏：粘进来的一段材料 → 提取多条待办 → 学生勾选 → 系统批量写。 |
+| `test_72_data_isolation.py` | #45 的护栏：学生个人数据必须**按人**分（P0，评委开两个账号点两下就能撞见）。 |
+| `test_73_kb_management.py` | #46 的护栏：知识库「加了却查不到」这条链要闭环（条目匹配原文 + 面板不静默 + 能自己试查）。 |
+| `test_74_probe_and_material.py` | #50 的护栏：意图诊断面板关不掉 + 材料轨迹说假话 + 全角标点读不出时间。 |
+| `test_75_dept_routing.py` | #54 的护栏：分流（服务归谁）+ 驿站限权 + 台账认人 + 进度带时间 + 两侧新口。 |
+| `test_76_kb_split_words.py` | #55 的护栏：知识库关键词三件事（A 认派生词 / C 清残渣 / B 让模型按句意拆）+ D 管理端那颗按钮。 |
+| `test_77_clock_and_gate.py` | #56 的护栏：时区收口（`app/clock.py`）+ JS 语法闸并进收口 + 挂账 #69 的日期清零 + test_39 起始态。 |
+| `test_78_kb_query_expand.py` | #57 的护栏：知识库检索前的「查询改写」——只动输入、只在查不到时才问、失败静默回退。 |
+| `test_79_trace_rendered.py` | #58 的护栏：`renderTrace` 必须认 `action`/`args`/`result`，否则 ReAct 在界面上是隐形的。 |
+| `test_80_pending_aux_not_a_card.py` | #59 的护栏：暂存里的「候选清单」不许被当成卡恢复出来。 |
+| `test_81_react_reason_layer_and_public_view.py` | #60 的护栏：轨迹要**读起来是 ReAct**（判定层进 trace + 结果收在写侧 + Observation 折单行限高）。 |
+| `test_82_readonly_pool_and_agent_mode.py` | #61 的护栏：只读工具跨栏挂载（A）+ 判定进轨迹的验收（B）+ Agent 模式开关（C）。 |
+| `test_83_agent_mode_state_dimension.py` | #62 的护栏：Agent 模式的短路判据补上**状态**这一维（手上有卡 / 有材料 ⇒ 不许交给模型）。 |
+| `test_84_todo_range_tool_granularity.py` | #63 的护栏：只读工具的**粒度**要跟学生的提问粒度对齐（查一段用一把工具，别逐日点）。 |
+| `test_85_trace_log_admin_workflow.py` | #64 的护栏：管理端「Agent 工作流」—— 每一轮的推理链落盘并画出来（只读可观测性）。 |
+| `test_86_course_ask_not_todo.py` | #65 的护栏：一句「我今天有什么课」怎么走到"答成待办"，又被哪几道闸拦回来。 |
+| `test_87_todo_public_shape.py` | #66 的护栏：待办对外形状缺键时怎么办 —— 读侧兜底，但 `id` 缺了整条不出。 |
+| `test_88_public_view_note_count_and_page_routes.py` | #66 追记的护栏：`public_view` 别把说明行当条目数；页面那两路也要滤缺 id。 |
+| `test_89_facility_repair_wording_and_takeover.py` | #71 的护栏：设施报修**屏幕上那句话与栏目**必须跟着算出来的类型走；触发词硬信号必须真接管。 |
+| `test_90_patch_not_reguess.py` | #73 的护栏：补充/纠正句必须"只补明说的几项"，不许再整句重猜。 |
+| `test_91_weekend_and_collapse.py` | #75 的护栏：「周末」要认得，同名多张 `todo_add` 不许叠成两张卡。 |
+| `test_92_rule_yield.py` | #76 的护栏：规则层接不住的那一句，要**交出去**并**记一笔**，不许硬算也不许装没听见。 |
+| `test_93_retime_context_hint.py` | #77 的护栏：改期时这句话没点名，就去看上文那一条 —— 但**只有唯一匹配才许看**。 |
+| `test_94_no_card_talk.py` | #80 护栏：屏幕上没卡，回话就不许说「去勾 / 去点」（test_94）。 |
+| `test_95_retime_weekend.py` | #82 的护栏：改期认「周末 / 双休」—— 他说了范围，就不许再把「想改到哪天」问第二遍。 |
+| `test_96_retime_yield.py` | #84 的护栏：改期这一支**兜不住就换那条能查的路**（#76 那扇门多开一处）。 |
+| `test_97_trace_full_display.py` | #86 的护栏：思考轨迹**一条都不藏** —— 引擎那头别丢话、界面这头别剪行也别限高。 |
+| `test_98_todo_change_tool.py` | #86 的护栏：给引擎一只**能改待办时间**的手（`propose_todo_change(op=retime)`）。 |
+| `test_intent_classify.py` | 第二十批测试：意图抽取 / 路由的**只读**接口 `POST /classify`。 |
+
+> 编号里没有 `test_41`（跳号，不是删掉的 —— `git log --diff-filter=D` 查不到这个文件）。
+> `test_intent_classify.py` 不带数字号，它守的是判定层的诊断口 `/classify`。
 
 ## 端到端 / 截图（真开浏览器，可选，需要 Playwright）
 
