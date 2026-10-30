@@ -5140,7 +5140,8 @@ def parse_remove_todo(text: str) -> dict | None:
 
 
 def build_retime_existing_proposal(text: str, sem: dict | None = None,
-                                   hint_title: str = "", auto_slot: bool = False) -> dict:
+                                   hint_title: str = "", auto_slot: bool = False,
+                                   anchor_date: str = "") -> dict:
     """把"把周四那个健身挪到周五"解析成一张**改期提案**（人话：已排进日程的待办想换时间）。
 
     跟 `retime_todo_proposal` 的区别：那条是"学生嫌**待确认卡**的点不合适、
@@ -5181,6 +5182,14 @@ def build_retime_existing_proposal(text: str, sem: dict | None = None,
       「没有帮我想时间，是我问了才说的」）。**用参数分开，不在函数里猜"现在是谁在调我"。**
       真正新增的只有"什么都没给"那一档 —— 实测「挪到 2026-11-02」（只换日子）本来就会挑空档出卡，
       两档共用下面那一次 `pick_free_slot`，所以默认值一改，普通模式立刻开始自作主张（E4 钉这个）。
+
+    `anchor_date`（#87）：**只在"按名字命中不止一条"时用来收窄的第二维**（学生原话
+    「改 2026-11-09 那天那个」里的那个日子）。默认 `""` ⇒ 既有语义逐字不变。
+      · 它**不是"改去哪天"**（那是 `new_date` 的事），也**不是定位条件**（不拿来筛旧日期）；
+      · 收窄**落空就原样退回**（`if _hit:`）—— 学生说的那天其实没这条，不许因此变成
+        "没找到"，那是 #84 花一整张单修掉的假话；
+      · 只作用在**名字命中之后**那一份池子上。占位名（「待办/日程/事项」）那一支不缩，
+        否则「改 11-09 那天那个」会把那天的**任何一条**当成答案 —— 那是 X1 那格假命中的放大版。
 
     只读，一个字节都不写库——执行权永远在"学生点头"之后。
     """
@@ -5232,6 +5241,16 @@ def build_retime_existing_proposal(text: str, sem: dict | None = None,
             #   谁把那句提上来，test_96 A2 会当场红（它钉的是"这一处带的是全库条数"）。
             return {"status": "empty", "todos": [], "pool_n": len(pool)}
         pool = hits
+        # ★ #87：库里真有两条同名时，"名字"这一维已经用尽 —— 模型下一轮**还是只能传同一个
+        #   title**，于是 `many → need_pick → many` 无限循环（真机实测三次调用三次同两条候选）。
+        #   学生原话「改 2026-11-09 那天那个」里的日子就是第二维，从这里切一刀。
+        #   ⚠️ 只**收窄**、不判"改去哪天"（那是 new_date 的语义，两者不许混）；
+        #   `if _hit:` 那句是命门：收窄落空必须**原样退回**，否则"那天没有这条"会被说成
+        #   "库里没找到" —— 正是 #84 花一整张单修掉的那句假话。
+        if anchor_date and len(pool) > 1:
+            _hit = [x for x in pool if x.get("date") == anchor_date]
+            if _hit:
+                pool = _hit
     if not pool:
         # 库里真的一条都没有 ⇒ pool_n=0，调用方那句"没找到、你先加进日程"在这一档是实话
         return {"status": "empty", "todos": [], "pool_n": 0}
@@ -5381,7 +5400,7 @@ def build_retime_existing_proposal(text: str, sem: dict | None = None,
 
 def propose_todo_change_tool(op: str = "retime", title: str = "",
                              new_date: str = "", new_start: str = "",
-                             new_end: str = "") -> str:
+                             new_end: str = "", todo_date: str = "") -> str:
     """改一条**已经写进日程**的待办的时间（改期）。只出提案，不写库。
 
     ⚠️ 它**不新建**：要往日程里加新的事，用 `propose_todo_tool` / `propose_todo_slots_tool`。
@@ -5389,7 +5408,11 @@ def propose_todo_change_tool(op: str = "retime", title: str = "",
     只能反问"你说的是哪一条、想改到几点"（#84 之后实测 4 句全是这个形状）。
 
     走的是确定性分支**同一个** `build_retime_existing_proposal`（`auto_slot=True`）：
-    避开课与已排的事、不会挑已经过去的点、挑不出来就说"排不下" —— 能由代码定死的都不交给模型。
+    避开课与已排的事、挑不出来就说"排不下" —— 能由代码定死的都不交给模型。
+    #87 在这一只手上补了两样，都是真机量出来的缺口：
+      · `todo_date`：两条同名时唯一的出口（学生报"哪天那条"，模型从 `need_pick` 的候选里抄得到）；
+      · 过去钟点的闸：**模型自己填** `new_start` 那一支原先没有闸（实测 18:02 它挑了"今天 16:00"，
+        卡出了、点了真落库）—— `find_free_slots` 是只读查询、不认识 now，闸要放在"动作"上。
     """
     if (op or "").strip() != "retime":
         # 只支持 retime。**不许静默当 retime 处理**：op=rename 悄悄改了时间是最坏的一种坏
@@ -5411,10 +5434,29 @@ def propose_todo_change_tool(op: str = "retime", title: str = "",
     # `sem=None` 时抠出来的名字（含「游泳18001900」那种残渣）靠包容式匹配仍命中、
     # 卡上标题取的也是库里那条（`old.get("title")`），九例全过 ⇒ 别把这句写成"修掉了一个 bug"。
     res = build_retime_existing_proposal(" ".join(parts), {"title": hint},
-                                        hint_title=hint, auto_slot=True)
+                                         hint_title=hint, auto_slot=True,
+                                         anchor_date=(todo_date or "").strip())
     st = res.get("status")
     if st == "ok":
-        return json.dumps({"__proposal__": res.get("proposal") or {}}, ensure_ascii=False)
+        prop = res.get("proposal") or {}
+        # ★ #87：模型自己填的钟点原先**没有任何闸** —— 真机 18:02 它拿 `find_free_slots(今天)`
+        #   得到「07:00-10:00 / 11:40-22:00」两个整段都在过去的窗口，填了 new_start=16:00，
+        #   卡照样出、点确认**真落库**（#82 那道 `not_before` 只管 auto_slot 自己挑那一支）。
+        #   不去改 `find_free_slots`：它是只读查询，答"今天 07:00 空着"并没有错，
+        #   错的是"把 07:00 写成日程"这个动作 ⇒ **闸放在动作上、不放在读数上**。
+        #   ⚠️ 位置与单据不同（照抄会两处错，实测各撞一次，见快照 §一.2）：判"这张卡真要落的那一天"，
+        #   而不是判"模型传没传 new_date" ——
+        #     · 漏拦：`new_date` 是自然语言（"今天"/"今日"）时字面串对不上 ISO，过去的点照样出卡；
+        #     · 误拦：待办本来就在**明天**、学生只补钟点（「往后挪到 16:00」）⇒ 单据那句
+        #       `_d = nd or 今天` 把"明天 16:00"当今天拦下（实测 18:02 回 past_slot）。
+        #   只看 `ns` 非空那一支：auto_slot 挑的段本来就带 `not_before`（W9 钉着），不重复管。
+        #   留 10 分钟缓冲（比 auto_slot 那 30 分钟松一档：这是学生自己报的点，卡上还要他看一眼）。
+        if ns and prop.get("start") and prop.get("date") == clock.today().isoformat() \
+                and to_minutes(prop["start"]) < _now_minutes() + 10:
+            return json.dumps({"ok": False, "past_slot": True, "reason": "past",
+                               "date": prop.get("date"), "wanted": prop.get("start"),
+                               "now": to_hhmm(_now_minutes())}, ensure_ascii=False)
+        return json.dumps({"__proposal__": prop}, ensure_ascii=False)
     if st == "many":
         # 命中不止一条：照清单原样列出来、问"是下面哪一条"，然后停（与 done/remove 同一套规矩）
         return json.dumps({"ok": False, "need_pick": True,
@@ -6453,7 +6495,12 @@ def build_tools() -> dict[str, Tool]:
                 "行里的 `dates` 是它在这段里出现的具体日子（重复的事不会变成好几行）。"
                 "学生问「这周 / 这个月有什么安排」「周三到周五有没有事」时用**这一个**，"
                 "不要一天一天调 `list_day_todos`。"
-                "入参 start、end 都是日期，格式如 2026-10-25；说反了会自动换过来。"
+                "入参 start、end 都是日期，格式如 2026-10-25；说反了会自动换过来。\n"
+                "⚠️ **区间由你决定**，所以先想清楚学生问的是哪一段：他说「这周」就取本周一到周日，"
+                "别自己收窄成两三天。区间里没查到、而学生坚持有这件事 —— "
+                "把区间**放宽再查一次**（学生说「下周那件事」你却只查了本周，回「没有」就是错的）。"
+                "⚠️ 这条只适用于「查有没有」；**要改期**（propose_todo_change）不用先查 —— "
+                "它按名字在全库里找，你查空了它照样改得动（两边各自都对、合起来看着矛盾，别因此回一句「没这条」）。"
             ),
             parameters={
                 "type": "object",
@@ -6641,6 +6688,12 @@ def propose_todo_change_tool_tool() -> Tool:
             "⛔ **它不会新建待办**：学生要往日程里加新的事，用 propose_todo_tool / propose_todo_slots_tool。\n"
             "⚠️ 它返回 need_pick + 候选清单时（命中不止一条）—— **照清单原样列给学生、问「是下面哪一条」，然后停**，"
             "不许猜一条，更不许说『已经改好了』。\n"
+            "⚠️ 学生回话里带了**日子**（「就 11-09 那条」「改 2026-11-09 那天那个」）时，把那个日子填进 "
+            "`todo_date`（**它只是「挑哪一条」，不是「改去哪天」** —— 改去哪天仍是 new_date）。"
+            "两条同名时这是唯一的出口：不填它，下一轮还是同一个 title、还是 need_pick，学生会听你问第三遍。\n"
+            "⚠️ 学生报的钟点如果已经过去（说的就是今天、而那个点已经过了），工具会回 `past_slot` —— "
+            "这时**如实告诉他「那个点已经过了，现在 X 点」**，然后按「他没说时间」处理、让系统挑一段，"
+            "⛔ 不要把同一个过去的点再传一遍（传了只会每次都拦下来，学生看见同一句「过点了」重复出现）。\n"
             "调用成功界面上会挂出【确认加入】按钮，学生点了才真改（旧的那段被挪走）；"
             "没调用这个工具就不要说『已经帮你改好时间』。"
         ),
@@ -6650,6 +6703,11 @@ def propose_todo_change_tool_tool() -> Tool:
                 "op": {"type": "string",
                        "description": "只支持 retime（改时间）；不填即 retime", "default": "retime"},
                 "title": {"type": "string", "description": "要改的那条待办名（学生说的那个）"},
+                "todo_date": {"type": "string",
+                              "description": "要改的那条**在哪天**：'2026-11-09'。"
+                                             "只在命中不止一条、需要区分时才填；"
+                                             "⚠️ 它是「挑哪一条」，**不是「改去哪天」**（那是 new_date）；可空",
+                              "default": ""},
                 "new_date": {"type": "string",
                              "description": "学生说了新日子才填：'2026-10-31' 或 '周五'；可空",
                              "default": ""},
@@ -6682,6 +6740,12 @@ def propose_todo_tool_tool() -> Tool:
             "他要的就是'哪天哪会儿空着'这件事本身。"
             "⚠️ 但它只出**一段**时间。学生没说定要哪个点时，优先用 propose_todo_slots_tool "
             "**一次列几段让他自己打勾**；只有在学生已经报了准点、或者只需要一个建议时才用它。"
+            "⛔ 学生说的是往**周表**里加一门**课**（话里有「加一节 / 加门课」这类词）时**不要用本工具** —— "
+            "用 propose_course_change(op=add)。用错了的结果是：课表一个字没变、日程里多出一条事，"
+            "而他明明是要排课。（实测：Agent 模式下这句话确定性加课分支**根本走不到** —— "
+            "`main.py:3340` 那道闸门先短路进引擎，所以「加课优先于加待办」在这一路只有这句描述在守。）"
+            "⛔ 学生说的那件事**每周/每天重复**时，本工具**不支持重复**（入参里没有 repeat）："
+            "如实说明这一限制，不要默默加成一次性 —— 那会把每天的习惯改成只这一天。"
             "调用成功界面上会挂出【确认加入】按钮，学生点了才写库；"
             "没调用这个工具就不要说'提案已发给你'。"
         ),
