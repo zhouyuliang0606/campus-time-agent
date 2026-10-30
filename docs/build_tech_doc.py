@@ -605,7 +605,7 @@ story += [H1("附录 B：数据文件"),
     H2("B.1 种子数据（有意入库，管理台可零代码增改删）"),
     table([
         ["文件", "内容"],
-        ["app/data/courses.json", "示例课表，旗舰模块的演示数据"],
+        ["app/data/courses.json", "<b>示例课表 12 节，产品已不读它</b>：周表实际来自 student/&lt;学号&gt;/timetable.json（store.py:1180），45-A 起 schedule.py 也不读了，现在只有测试拿它当种子（tests/_e2e_env.py 的 demo_courses_from_json，test_05/test_06 与几份 e2e/截图脚本都从它还原周表）；里面的 semester 字段全代码零引用。<b>别按它判断演示机上看到的课表</b>，那份在个人库里。"],
         ["app/data/kb.json", "校园知识库（图书馆/食堂/校车/校医院/宿舍/奖学金…）"],
         ["app/data/express.json", "演示快递台账（含一件「滞留 5 天」件，用于预警演示）"],
         ["app/data/takeout.json", "演示外卖订单（制作中/配送中/待取）"],
