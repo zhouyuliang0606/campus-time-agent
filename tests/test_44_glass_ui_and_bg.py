@@ -313,6 +313,163 @@ def batch_reply_text_untouched(ck):
     ck.check("完整日程入口的 href 未动（test_04 钉着）", 'href="/plan"' in src)
 
 
+
+# ============ G 批：玻璃档下"换了底色就必须换字色"（2026-10-31，问答 chip 看不见那一条） ============
+# 判据不是"某个 token 对比度够不够"，而是**这颗按钮实际用的那一对 color/background 够不够** ——
+# 第一版写成前者，变异 M2（把字色换回写死的深字）当场只红 G2 不红 G3，等于量化闸是空的。
+def _css_split(text):
+    """剔掉注释后按 `html.gx-glass {` 切成基线段与玻璃段两半。"""
+    text = re.sub(r"/\*.*?\*/", "", text, flags=re.S)
+    style = text[:text.index("</style>")]
+    gi = style.index("html.gx-glass {")
+    return style[:gi], style[gi:]
+
+
+def _css_rules(css):
+    out = {}
+    for sel, body in re.findall(r"([^{}]+)\{([^{}]*)\}", css):
+        key = " ".join(sel.split())
+        if not key or key.startswith("@"):
+            continue
+        out.setdefault(key, []).append(body)
+    return out
+
+
+def _decl(bodies, prop):
+    return any(re.search(r"(^|;)\s*%s\s*:" % prop, b) for b in bodies)
+
+
+def _plain(sel):
+    return sel.replace("html.gx-glass ", "").strip()
+
+
+def _glass_tokens(text):
+    """玻璃段那 12 行变量表 → {token 名: 值}（值可能是 #hex，也可能是 rgba(...)）。"""
+    _, glass = _css_split(text)
+    blk = glass[:glass.index("}")]
+    return dict(re.findall(r"(--[\w-]+):\s*([^;]+);", blk))
+
+
+def _resolve(val, tokens):
+    """把声明值翻成一个可算的颜色：('hex', '#rrggbb') 或 ('rgba', (r,g,b,a))；解不出 → None。"""
+    val = val.strip()
+    m = re.match(r"var\((--[\w-]+)\)", val)
+    if m:
+        val = tokens.get(m.group(1), "").strip()
+    m = re.match(r"rgba\((\d+),\s*(\d+),\s*(\d+),\s*(1|0?\.\d+)\)", val)
+    if m:
+        return ("rgba", tuple(int(m.group(i)) for i in (1, 2, 3)) + (float(m.group(4)),))
+    m = re.match(r"#[0-9a-fA-F]{6}$", val)
+    if m:
+        return ("hex", val)
+    return None
+
+
+def _over(fg, hex_bg):
+    """rgba 叠在纯色上合成 #rrggbb；已经是 hex 的原样返回。"""
+    if fg[0] == "hex":
+        return fg[1]
+    r, g, b, a = fg[1]
+    base = [int(hex_bg.lstrip("#")[i:i + 2], 16) for i in (0, 2, 4)]
+    return "#%02x%02x%02x" % tuple(round(c * a + bb * (1 - a)) for c, bb in zip((r, g, b), base))
+
+
+def _lum(hexc):
+    h = hexc.lstrip("#")
+    ch = [int(h[i:i + 2], 16) / 255 for i in (0, 2, 4)]
+    f = lambda c: c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4
+    return 0.2126 * f(ch[0]) + 0.7152 * f(ch[1]) + 0.0722 * f(ch[2])
+
+
+def _ratio(a, b):
+    la, lb = _lum(a), _lum(b)
+    return (max(la, lb) + 0.05) / (min(la, lb) + 0.05)
+
+
+def _pair_ratio(text, selector, hover=False):
+    """这颗按钮**实际用的那一对**颜色算出来的对比度。
+
+    返回 (玻璃档下的对比度, 基线字色压在玻璃档底色上的对比度)；后者就是"改之前"的读数。
+    底色是半透明的，先合成到 --bg 再算 —— 不合成会把 .52 的 alpha 当成 52 用（第一版踩过）。
+       ⚠️ 这里只合成**一层**（判据偏乐观约 0.4）：真机上这颗按钮套在 .view 里，两层同色半透明底叠加，
+       副本 8061 的 getComputedStyle 实测 color=rgb(185,207,194)、合成底 #0e2019 = 10.30:1；
+       把星空图按中位/亮部/极亮三档亮度代入重算落在 7.51~10.30:1，全都 ≥ 4.5；
+       旧字色 #1f2733 在同四种背景上是 1.02~1.22:1 —— 这就是截图里"看不见"的量化值。
+    """
+    base, glass = _css_split(text)
+    tokens = _glass_tokens(text)
+    bg = _resolve("var(--bg)", tokens)
+    rules = _css_rules(glass)
+    key = selector + (":hover" if hover else "")
+    decls = " ".join(rules.get(key, []))
+    m_bg = re.search(r"background:\s*([^;]+)", decls)
+    m_fg = re.search(r"(?:^|;)\s*color:\s*([^;]+)", ";" + decls)
+    if not m_bg or not m_fg:
+        return None, None
+    bcol = _resolve(m_bg.group(1), tokens)
+    fcol = _resolve(m_fg.group(1), tokens)
+    if bcol is None or fcol is None:
+        return None, None
+    eff = _over(bcol, bg[1])
+    r_now = _ratio(fcol[1], eff) if fcol[0] == "hex" else None
+    # 基线字色（同一选择器在基线段里写的那个值）压在玻璃档底色上 = 改之前的读数
+    base_decls = " ".join(_css_rules(base).get(selector, []))
+    m_base = re.search(r"(?:^|;)\s*color:\s*([^;]+)", ";" + base_decls)
+    r_old = None
+    if m_base:
+        bc = _resolve(m_base.group(1), tokens)
+        if bc and bc[0] == "hex":
+            r_old = _ratio(bc[1], eff)
+    return r_now, r_old
+
+
+def _bg_without_fg(text):
+    """玻璃段里改了 background、却没在任何一层给这个选择器设 color 的那些。
+
+    为什么这是判据：基线段的配色是"近白底 + 深字"（`.faq-btn` 自己写着 color:#1f2733），
+    玻璃段把底换成 --surface（深色半透明）之后，深字**不会**自动翻 —— CSS 不报错、
+    页面照样开，只是那行字压在深色上看不见。:622 那条"凡把 --brand 当底色的地方文字跟着翻"
+    是同一个规矩，只是当时漏了用 --surface 当底的这两颗。
+    """
+    base, glass = _css_split(text)
+    B, G = _css_rules(base), _css_rules(glass)
+    has_base_color = {_plain(s) for s, bs in B.items() if _decl(bs, "color")}
+    has_glass_color = {_plain(s) for s, gs in G.items() if _decl(gs, "color")}
+    bad = set()
+    for s, gs in G.items():
+        if not _decl(gs, "background"):
+            continue
+        k = _plain(s)
+        if k in has_base_color and k not in has_glass_color:
+            bad.add(k)
+    return sorted(bad)
+
+
+def batch_glass_contrast(ck):
+    title("G. 玻璃档换了底色必须同时换字色（问答 chip 看不见那一条的形状）")
+    src = read(STUDENT)
+    bad = _bg_without_fg(src)
+    ck.check("G1 玻璃段里没有\"换了 background 却没换 color\"的选择器（违规：%s）" % (bad or "无"),
+             not bad, str(bad))
+    glass = _css_split(src)[1]
+    btn = re.search(r"\.faq-btn\s*\{([^}]*)\}", glass)
+    body = btn.group(1) if btn else ""
+    ck.check("G2 .faq-btn 在玻璃段里 background 与 color 成对（旧写法不许回来）",
+             "background: var(--surface)" in body and re.search(r"color:\s*var\(--", body) is not None,
+             body.strip()[:96])
+    r_now, r_old = _pair_ratio(src, ".faq-btn")
+    ck.check("G3 这颗 chip 实际用的那对颜色：对比度 %.2f:1 ≥ 4.5（WCAG AA）" % (r_now or -1),
+             r_now is not None and r_now >= 4.5, "%.2f" % (r_now or -1))
+    ck.check("G4 同一颗按钮换回基线那句深字只有 %.2f:1（< 1.5 ⇒ 上面那个阈值分得出好坏）" % (r_old or -1),
+             r_old is not None and r_old < 1.5, "%.2f" % (r_old or -1))
+    r_hov, _ = _pair_ratio(src, ".faq-btn", hover=True)
+    ck.check("G5 hover 态那一对也算了：对比度 %.2f:1 ≥ 4.5" % (r_hov or -1),
+             r_hov is not None and r_hov >= 4.5, "%.2f" % (r_hov or -1))
+    pr_now, pr_old = _pair_ratio(src, ".probe-out")
+    ck.check("G6 同形第二处 .probe-out（诊断面板）也过：现在 %.2f:1、改之前 %.2f:1" % (pr_now or -1, pr_old or -1),
+             pr_now is not None and pr_now >= 4.5 and pr_old is not None and pr_old < 2.5,
+             "%.2f / %.2f" % (pr_now or -1, pr_old or -1))
+
 def main():
     ck = Checker()
     batch_structure(ck)
@@ -322,6 +479,7 @@ def main():
     batch_gate(ck)
     batch_http(ck)
     batch_notice(ck)
+    batch_glass_contrast(ck)
     batch_reply_text_untouched(ck)
     return ck.summary("test_44 玻璃层与背景偏好")
 
