@@ -572,7 +572,12 @@
   .opt-card { padding: 12px 16px; border-radius: var(--radius); border: 1px solid var(--line); background: var(--brand-soft-2); }
   .opt-card.checked { border-color: var(--brand); background: var(--brand-soft); }
   .opt-card .info { line-height: 1.6; }
-  .faq-btn { border: 1px solid var(--line); background: var(--surface); border-radius: var(--radius); padding: 14px 12px; }
+  /* ★ 玻璃档下这颗按钮换了深色底，**必须同时把字色翻过来**：基线那句 `color:#1f2733`
+     是写死在近白底上的深色，压在 --surface 上实测对比度只有 1.2:1（等于看不见）。
+     玻璃关掉时这行连同 var() 一起失效，退回基线的深字浅底 —— 与 :622 那句「凡把 --brand
+     当底色的地方文字跟着翻」是同一条规矩，只是这颗用的是 --surface，当时没列进去。 */
+  .faq-btn { border: 1px solid var(--line); background: var(--surface); color: var(--text-2);
+             border-radius: var(--radius); padding: 14px 12px; }
   .faq-btn:hover { border-color: var(--brand); background: var(--brand-soft); color: var(--brand); }
 
   /* —— ③ 配色：主色降饱和、文字分三级、边框弱化 —— */
@@ -608,7 +613,9 @@
   .sb-more { border-top: 1px solid var(--line); }
   .up-drop { border-color: var(--line-strong); }
   .up-drop.over { border-color: var(--brand); background: var(--brand-soft); }
-  .probe-out { border-color: var(--line); background: var(--brand-soft-2); }
+  /* 同一个形状的第二处（新加的 G1 闸当场抓出来的）：基线 :413 给这块面板写了 color:#3f4a63，
+     玻璃档换底之后那句深字压在合成底上实测只有 1.76:1 —— 与问答 chip 一起翻。 */
+  .probe-out { border-color: var(--line); background: var(--brand-soft-2); color: var(--text-2); }
   .row .code, .opt-card .info b { color: var(--brand); }
   .st.cook { background: var(--brand); }
 
