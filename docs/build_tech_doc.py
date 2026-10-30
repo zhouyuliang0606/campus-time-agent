@@ -2,13 +2,15 @@
 """生成《校园时间管家 CampusTime 技术文档》PDF（≤30 页，中文）。
 
 运行：<managed python> docs/build_tech_doc.py
-依赖：reportlab（managed python 已自带 5.0.1），中文用内置 Adobe CJK 字体 STSong-Light，无需外部字体文件。
+依赖：reportlab——只有重新生成本 PDF 才需要它（requirements.txt 里没有，跑产品不必装；本机 .venv 实装 5.1.0）。中文用内置 Adobe CJK 字体 STSong-Light，无需外部字体文件。
 输出：docs/技术文档.pdf
 
-版本：2026-09-30（同步判定层 / 执行层分离、类型判定重做、提交身份重写、
-        错别字纠正与思考过程透明化；253 提交 / 1406 项测试）
+版本：2026-10-30（同步判定层 / 执行层分离、类型判定重做、提交身份重写、
+        错别字纠正与思考过程透明化，其后至 10-30 再推进两次架构级迭代；970 提交 / 5555 项测试）
 """
+import io
 import os
+import re
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import mm
 from reportlab.lib import colors
@@ -26,6 +28,14 @@ FONT = "STSong-Light"
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 OUT = os.path.join(BASE, "技术文档.pdf")
+# 路由条数现读 app/main.py，附录 A 的行数与它对账（手抄的数会过期，对账不会）
+_MAIN_PY = os.path.join(os.path.dirname(BASE), "app", "main.py")
+_SRC = io.open(_MAIN_PY, encoding="utf-8", errors="replace").read()
+ROUTE_COUNT = len(re.findall(r"^@app\.(?:get|post|put|delete|patch)\(", _SRC, re.M))
+PAGE_COUNT = len([l for l in re.findall(r"^@app\.get\(.*$", _SRC, re.M)
+                  if "response_class=HTMLResponse" in l])
+API_COUNT = ROUTE_COUNT - PAGE_COUNT
+
 
 styles = getSampleStyleSheet()
 def S(name, **kw):
@@ -88,9 +98,9 @@ meta = [
     ["定位", "校园 AI 服务助手（学生活端 / 驿站商户侧 / 管理控制台）"],
     ["技术栈", "Python + FastAPI + 原生 HTML/JS + 自写轻量 ReAct Agent + DeepSeek"],
     ["仓库", "github.com/zhouyuliang0606/campus-time-agent（Public）"],
-    ["规模", "7 个页面 / 39 个 API / 258 个细粒度 commit（截至 2026-09-30） / 30 份 Prompt 快照"],
-    ["自检", "tests/run_all.py 全绿：通过 1406 项，失败 0 项（共 17 批）"],
-    ["文档版本", "2026-09-30"],
+    ["规模", "74 个 API + 7 个页面（共 81 条路由） / 970 个细粒度 commit（截至 2026-10-30） / 153 份 Prompt 快照 + 43 份施工单原件"],
+    ["自检", "tests/run_all.py 全绿：通过 5555 项，失败 0 项（共 99 批）"],
+    ["文档版本", "2026-10-30"],
 ]
 story += [table([[P(k, cellb_st), P(v, cell_st)] for k,v in meta], [30*mm, 125*mm], header=False),
           PageBreak()]
@@ -107,14 +117,14 @@ story += [H1("摘要"),
         "判定层（样本库 → 语义层 → 关键词兜底）负责把一句话听懂并归类，可以换、可以兜底、可以交给大模型；"
         "执行层（查空档、排期、出卡、写库）由系统独占，模型永远碰不到写入接口。",
     ]),
-    P("本文档说明系统架构、这两条核心设计的成因与落地、2026-09-26 / 09-27 / 09-30 三次架构级迭代，"
+    P("本文档说明系统架构、这两条核心设计的成因与落地、2026-09-26 起至 10-30 的五次架构级迭代，"
       "以及 AI 协同开发与交付流程。全部代码以细粒度 commit 提交，开发对话以 Prompt 快照形式随代码入库，"
       "可逐提交还原协同过程。"),
     H2("提交清单对照"),
     table([
         ["比赛要求", "本项目落地情况"],
-        ["Public 仓库 + 细粒度提交历史", "GitHub Public，258 个独立 commit（截至 2026-09-30），禁止一次性打包"],
-        ["AI 对话历史 Prompt 快照", "ai-prompts/ 目录，30 份快照 + 索引，与代码分开提交"],
+        ["Public 仓库 + 细粒度提交历史", "GitHub Public，970 个独立 commit（截至 2026-10-30），禁止一次性打包"],
+        ["AI 对话历史 Prompt 快照", "ai-prompts/ 共 197 个 .md = 153 份 Prompt 快照 + 43 份施工单原件/节选 + 1 份索引，与代码分开提交"],
         ["README 复现指南", "仓库根 README.md（环境 / Key 两种配法 / 启动 / 自检 / 演示话术）"],
         ["5-8 分钟演示视频（含 AI 协同）", "docs/演示视频分镜.md（逐镜 + 解说词，本地录屏）"],
         ["技术文档 PDF ≤30 页", "本文件"],
@@ -151,7 +161,7 @@ story += [H1("2. 技术栈与运行环境"),
          "cp .env.example .env   # 填入 DEEPSEEK_API_KEY（或启动后在 /admin 在线填，免重启）\n"
          "uvicorn app.main:app --reload\n"
          "# 浏览器打开 http://127.0.0.1:8000\n"
-         "python tests/run_all.py   # 全量自检：通过 1406 项，失败 0 项（共 17 批）"),
+         "python tests/run_all.py   # 全量自检：通过 5555 项，失败 0 项（共 99 批）"),
 ]
 
 # ===== 3 架构 =====
@@ -268,7 +278,10 @@ story += [H1("6. 确定性意图路由（/api/chat）"),
 ]
 
 # ===== 7 关键迭代 =====
-story += [H1("7. 关键迭代：三次架构级改动（2026-09-26 / 09-27 / 09-30）"),
+story += [H1("7. 关键迭代：五次架构级改动（2026-09-26 → 10-30）"),
+    P("这里挑的是<b>改变「判定层 / 执行层」边界</b>的那五次；其余较大的功能与工程改动"
+      "（知识库分块检索 #40、流式 #07、时区收口 #56、可观测性 #64）"
+      "在第 8/10 节与 ai-prompts/ 索引里逐单可查。"),
     H2("7.1 第一次：引入判定层（09-26）"),
     P("问题：学生反馈「很多的字都是接不住的，你现在能接住的都是我测试给的」。"
       "研判确认 planner.py 已堆 30 多张词表、router 里 50 多个硬编码词，"
@@ -345,11 +358,35 @@ story += [H1("7. 关键迭代：三次架构级改动（2026-09-26 / 09-27 / 09-
       "修法：把原来只给「自填时间」用的 span_only_proposal 对外，语义层加待办分支在解析失败时再试它一次；"
       "<b>只在语义层这一路兜，规则层故意不动</b>（那里的钟点未必是这件事的时间）。"
       "这也印证了一条验收习惯：<b>「全绿」不等于「做对了」，一定要用报障原话在真机再走一遍</b>。"),
-    H2("7.4 验证"),
+    H2("7.4 第四次：规则层学会「交出去」（10-28，#76 / #77）"),
+    P("<b>起因</b>：规则层的词表越堆越厚，但有一类句子它<b>永远堆不完</b>——"
+      "确定性分支算不出来的说法，它要么硬判出一个错的分类，要么装没听见直接掉进模型。"),
+    P("<b>#76 让渡口</b>：先盘清「系统会什么」（能力清单），落在<b>缺口</b>上的句子才交给引擎去查，不再硬判；"
+      "顺手把不会的那些记进缺口账（intent_gaps.jsonl）。"
+      "关键取向：<b>让渡的前提是知道自己不会什么</b>——没有能力清单的让渡，等于把所有句子都推给模型。"),
+    P("<b>#77 改期接上文</b>：学生只说「换个时间」时不报事名。"
+      "修法是从上文<b>最近且唯一</b>提到的那条待办接住名字；名字抠不出来就<b>不把全部待办摊开</b>——"
+      "列二十条让他自己挑，是把选择成本丢回给他。"),
+    H2("7.5 第五次：改期从「说假话」到「能办事」（10-28 ~ 10-30，#80 / #81 / #82 / #84 / #86 / #87）"),
+    P("这一族是<b>同一个问题的六个截面</b>：学生说要改期，系统要么编一句「已经帮你改好了」，"
+      "要么沉默，要么真去改却改坏。六张单按「先说实话、再办成事」的顺序推："),
+    table([
+        ["单", "症状", "修法"],
+        ["#80", "没出确认卡却让学生「去勾选」", "提示词拆条 + 出口兜底；判据挂在<b>模型原文</b>上，不挂在最终布尔值上"],
+        ["#81", "新值等于旧值的「空改动」也出卡", "改判「结果三元组是否相同」，并进已有的 unclear 分支，不另造状态"],
+        ["#82", "「周末」说了等于没说", "接 _WEEKEND_WORDS 生成候选日；不动 _pick_date（它有 34 处调用方）"],
+        ["#84", "改不动就沉默", "empty 出口带 pool_n，把「我没认出来」和「库里真没有」分开说"],
+        ["#86", "引擎手上没有能改待办的手", "新增 propose_todo_change(op=retime)；auto_slot 默认 False"],
+        ["#87", "同名两条没有出口 / 过去的钟点没有闸", "todo_date <b>只收窄不覆盖</b>；工具层拦 past_slot"],
+    ], [12*mm, 45*mm, 78*mm]),
+    P("这一节的价值不在「修了六个 bug」，在于它把「<b>说假话 → 说真话 → 能办事</b>」这段推进留在了记录里："
+      "#80 / #81 / #82 / #84 全在把「系统以为自己办到了」改成「如实说办没办到」，"
+      "#86 / #87 才是真去办。<b>顺序反了，多出来的能力只会让假话说得更像。</b>"),
+    H2("7.6 验证"),
     bullets([
         "新增/扩充回归：第八批覆盖类型判定重做（问句识别、语义压过关键词、有/无 Key 双路、端到端不出卡）。",
         "把学生截图里那两句原话（「我要去哪里取凯迪」「我要去哪里取快递」）<b>钉成永久回归</b>，防止复发。",
-        "全量 tests/run_all.py：<b>通过 1406 项，失败 0 项（共 17 批）</b>。",
+        "全量 tests/run_all.py：<b>通过 5555 项，失败 0 项（共 99 批）</b>。",
     ]),
 ]
 
@@ -384,18 +421,18 @@ story += [H1("8. 测试策略"),
         "现在跑测试前后给几个运行时文件算 md5 对比，必须一字不变。",
     ]),
     CODE("python tests/run_all.py\n"
-         "# 总账：通过 1406 项，失败 0 项（共 17 批）全部通过 "),
+         "# 总账：通过 5555 项，失败 0 项（共 99 批）全部通过 "),
 ]
 
 # ===== 9 AI 协同 =====
 story += [H1("9. AI 协同开发与交付流程"),
     P("本项目全程在人与 AI 协同下完成。为满足「细粒度提交 + Prompt 快照」要求，约定："),
     bullets([
-        "每做一步逻辑改动就<b>单独 commit</b>，绝不在最后一次性打包（本文档版本日为 <b>258 个</b>，此后持续增加）。",
+        "每做一步逻辑改动就<b>单独 commit</b>，绝不在最后一次性打包（本文档版本日为 <b>970 个</b>，此后持续增加）。",
         "每次开发会话写一份 <b>Prompt 快照</b>（ai-prompts/YYYY-MM-DD-&lt;主题&gt;.md），"
         "记录「<b>用户 Prompt → AI 研判 → 改动 → 验证</b>」四段。",
         "快照文件<b>与代码分开提交</b>（单独 commit），评审把任意快照与其 commit 对照即可还原那一步协同过程。",
-        "当前共 <b>30 份快照</b>，索引见 ai-prompts/README.md。",
+        "当前 <b>153 份快照</b>（另有 43 份施工单原件/节选，ai-prompts/ 合计 197 个 .md），索引见 ai-prompts/README.md。",
     ]),
     H2("9.1 交付链路本身也被记录"),
     P("仓库推送到 GitHub 的过程同样留了快照（ai-prompts/2026-09-27-github-push-and-contributor-identity.md）："
@@ -420,7 +457,7 @@ story += [H1("10. 复现指南（README 摘要）"),
         "② cp .env.example .env 填入 DEEPSEEK_API_KEY。settings.json 已在 .gitignore 排除。",
         "<b>没配 Key 也能跑</b>：自动切到确定性 Mock 模式，排程交互、卡片渲染、知识库问答等离线链路照常演示。",
         "启动：uvicorn app.main:app --reload，打开 http://127.0.0.1:8000。",
-        "自检：python tests/run_all.py（临时数据副本，不碰演示数据），预期 1406 项全绿。",
+        "自检：python tests/run_all.py（临时数据副本，不碰演示数据），预期 5555 项全绿。",
     ]),
     H2("演示话术（都能直接试）"),
     table([
@@ -437,61 +474,130 @@ story += [H1("10. 复现指南（README 摘要）"),
 story += [H1("11. 局限与后续"),
     bullets([
         "<b>图片/扫描件读不出字</b>：需要接 OCR；目前只支持 txt / pdf / docx / xlsx / pptx 的文字层。",
-        "<b>没有真正的账号体系</b>：演示级身份切换，无密码；app/data/student/ 是「一个人的」个人库，未按学号隔离。",
-        "<b>长资料会被截断</b>：单次最多给模型 6000 字，未做分块检索。",
-        "<b>周期性/跨天待办未做</b>：现在一条待办只属于某一个日期。",
+        "<b>账号体系是演示级</b>：个人库已按学号分目录（app/data/student/&lt;学号&gt;/），"
+        "但仍然没有密码与鉴权——身份靠登录时选学号，兜底分支不许删。",
+        "<b>长资料走检索而不是整篇直读</b>：上传文档会切块并建 BM25 索引，问答只带命中的块；"
+        "整篇直读仍有 6000 字上限，超过就改走 search_docs（不是悄悄截断）。",
         "<b>确定性覆盖面仍可扩大</b>：判定层的语义闸门偏保守（宁漏不误），个别口语说法仍会掉回模型反问。",
+        "<b>未配大模型密钥时的降级路径会说错话</b>：离线 mock 对部分输入给出与事实不符的回答"
+        "（实测「改期办不成」那句被回成「你周表还是空的」）。演示机已配 Key，正常路径不经过它。",
+        "<b>改期不携带备注与分类</b>：改期是「删旧 + 加新」，确认后原待办的 note / category 会丢。",
+        "<b>「加一节 ×× 课」在个别句式上会落到加待办</b>：规则判据 wants_add_course 实测为真，"
+        "问题出在分支先后顺序（已知缺陷，未在本版修）。",
+        "<b>加待办工具不收 repeat</b>：propose_todo_tool 无法一次创建「每周/每天」的重复待办"
+        "（重复待办要用候选卡那条路）。",
+        "<b>只读工具的查询区间由模型自定</b>：跨周提问时可能只查了一段就答「没有」，"
+        "与改期工具的全库视野不完全一致。",
         "<b>演示视频需本地录屏</b>：逐镜脚本见 docs/演示视频分镜.md。",
     ]),
     P("模型仅在开放问答时启用；高可靠操作（写 / 删 / 改）一律系统执行，这条边界不会为了效果而放松。"),
 ]
 
 # ===== 附录 A =====
-story += [H1("附录 A：接口清单（39 个 API）"),
-    P("7 个页面路由：/（登录）、/student、/plan、/settings、/confirm、/admin、/station。"
-      "全部接口如下（<b>只读接口绝不写库</b>；写库接口全部要求携带系统侧的确认动作）。"),
-    table([
-        ["接口", "作用"],
-        ["GET /api/health", "健康检查"],
-        ["POST /api/chat", "主对话入口：判定层 + 确定性分支 + 模型兜底"],
-        ["POST /api/chat/reset", "重置某个会话的历史"],
-        ["GET /api/conversation/{sid}", "读会话历史（前端刷新后恢复聊天记录）"],
-        ["GET /api/pending/{sid}", "读待确认提案――前端据此渲染确认卡，<b>只读不执行</b>"],
-        ["GET /api/timetable", "读学生周表"],
-        ["POST /api/timetable/apply", "应用课表（整表替换，需先经过预览确认）"],
-        ["POST /api/timetable/clear", "清空课表"],
-        ["GET /api/todos", "读待办列表"],
-        ["GET /api/todos/month", "月表聚合视图"],
-        ["POST /api/todos", "新增待办（确认后）"],
-        ["POST /api/todos/batch", "批量写入待办"],
-        ["PUT /api/todos/{tid}", "修改待办"],
-        ["DELETE /api/todos/{tid}", "删除待办（确认后）"],
-        ["POST /api/todos/mode", "保存日程展示模式"],
-        ["GET /api/express", "快递只读视图（含实时状态标签），供卡片面板用"],
-        ["GET /api/takeout", "外卖只读视图，供卡片面板用"],
-        ["GET /api/student-personas", "三套学生助手性格预设"],
-        ["POST /api/student-message", "学生每轮对话上报（管理员收件箱数据源）"],
-        ["GET /api/notices", "学生端读通知"],
-        ["POST /api/upload", "上传文件并提取文字"],
-        ["GET /api/uploads", "上传文件列表"],
-        ["GET /api/uploads/{fid}", "读某个文件的提取文字（AI read_uploaded_file 走这里）"],
-        ["GET /api/uploads/{fid}/download", "下载上传原件"],
-        ["GET /api/workorders", "读学生工单"],
-        ["POST /api/workorders", "提交工单（学生确认上报后才生成）"],
-        ["POST /api/workorders/{wo_id}/status", "修改工单状态（管理端）"],
-        ["GET /api/persona", "读驿站客服人格"],
-        ["POST /api/persona", "写驿站客服人格"],
-        ["GET /api/admin/kb", "列出知识库"],
-        ["POST /api/admin/kb", "新增知识库条目（零代码维护）"],
-        ["PUT /api/admin/kb/{index}", "修改知识库条目"],
-        ["DELETE /api/admin/kb/{index}", "删除知识库条目"],
-        ["GET /api/admin/settings", "读大模型配置（<b>密钥掩码输出</b>）"],
-        ["POST /api/admin/settings", "写大模型配置（<b>掩码串防呆</b>，不覆盖真密钥）"],
-        ["POST /api/admin/settings/test", "在线连通自检"],
-        ["POST /api/admin/notify", "发布通知（支持附件）"],
-        ["GET /api/admin/messages", "学生消息收件箱"],
-        ["POST /classify", "判定层诊断口（<b>只读</b>）：摊开 is_question / module / intent / confidence / 是哪一档判的"],
-    ], [62*mm, 93*mm]),
+# 附录 A 的行名单独成表：条数是判据，不是散文（见下面的 assert）
+ROUTES = [
+    ["接口", "作用"],
+    ["GET /api/health", "健康检查"],
+    ["POST /api/chat", "主对话入口：判定层 + 确定性分支 + 模型兜底"],
+    ["POST /api/chat/reset", "重置某个会话的历史"],
+    ["GET /api/conversation/{sid}", "读会话历史（前端刷新后恢复聊天记录）"],
+    ["GET /api/pending/{sid}", "读待确认提案――前端据此渲染确认卡，<b>只读不执行</b>"],
+    ["GET /api/timetable", "读学生周表"],
+    ["POST /api/timetable/apply", "应用课表（整表替换，需先经过预览确认）"],
+    ["POST /api/timetable/clear", "清空课表"],
+    ["GET /api/todos", "读待办列表"],
+    ["GET /api/todos/month", "月表聚合视图"],
+    ["POST /api/todos", "新增待办（确认后）"],
+    ["POST /api/todos/batch", "批量写入待办"],
+    ["PUT /api/todos/{tid}", "修改待办"],
+    ["DELETE /api/todos/{tid}", "删除待办（确认后）"],
+    ["POST /api/todos/mode", "保存日程展示模式"],
+    ["GET /api/express", "快递只读视图（含实时状态标签），供卡片面板用"],
+    ["GET /api/takeout", "外卖只读视图，供卡片面板用"],
+    ["GET /api/student-personas", "三套学生助手性格预设"],
+    ["POST /api/student-message", "学生每轮对话上报（管理员收件箱数据源）"],
+    ["GET /api/notices", "学生端读通知"],
+    ["POST /api/upload", "上传文件并提取文字"],
+    ["GET /api/uploads", "上传文件列表"],
+    ["GET /api/uploads/{fid}", "读某个文件的提取文字（AI read_uploaded_file 走这里）"],
+    ["GET /api/uploads/{fid}/download", "下载上传原件"],
+    ["GET /api/workorders", "读学生工单"],
+    ["POST /api/workorders", "提交工单（学生确认上报后才生成）"],
+    ["POST /api/workorders/{wo_id}/status", "修改工单状态（管理端）"],
+    ["GET /api/persona", "读驿站客服人格"],
+    ["POST /api/persona", "写驿站客服人格"],
+    ["GET /api/admin/kb", "列出知识库"],
+    ["POST /api/admin/kb", "新增知识库条目（零代码维护）"],
+    ["PUT /api/admin/kb/{index}", "修改知识库条目"],
+    ["DELETE /api/admin/kb/{index}", "删除知识库条目"],
+    ["GET /api/admin/settings", "读大模型配置（<b>密钥掩码输出</b>）"],
+    ["POST /api/admin/settings", "写大模型配置（<b>掩码串防呆</b>，不覆盖真密钥）"],
+    ["POST /api/admin/settings/test", "在线连通自检"],
+    ["POST /api/admin/notify", "发布通知（支持附件）"],
+    ["GET /api/admin/messages", "学生消息收件箱"],
+    ["POST /classify", "判定层诊断口（<b>只读</b>）：摊开 is_question / module / intent / confidence / 是哪一档判的"],
+    # —— 身份与登录 ——
+    ["POST /api/login", "学生登录：只认 accounts.json 名单里的学号，没有密码"],
+    ["POST /api/logout", "退出登录：只把标签摘掉，不清任何数据（下次登进来课表待办都还在）"],
+    ["GET /api/whoami", "当前身份：刷新后仍知道「这是谁的库」，不靠前端那份显示用副本"],
+    ["GET /api/upstream", "学生端要显示的那一句话：你的请求会被送到哪台服务器"],
+    # —— 学生自己的上报 ——
+    ["GET /api/my/workorders", "学生查自己报过的工单（快递面板那块「我提交过的工单」进度的唯一来源）"],
+    ["GET /api/my/reports", "工单 + 自建服务登记合成一张表，附进度（#54）"],
+    # —— 归档（软删，#29）——
+    ["POST /api/workorders/{wo_id}/archive", "归档 / 放回一条工单：台账一个字节不少，只多/摘 archived"],
+    ["POST /api/admin/messages/{mid}/archive", "归档 / 放回一条学生消息（软删，要口令）"],
+    # —— 驿站与后勤（#54 分流 / #39 可删）——
+    ["GET /api/station/workorders", "驿站看到的报障列表（倒序，最新在前）"],
+    ["GET /api/station/workorders/archived", "驿站「已处理 N 条」点开后的明细（只有读，没有写）"],
+    ["POST /api/station/workorders/{wo_id}/status", "驿站处理完改状态——与管理端同一个 store 函数，两个视图不会各说各话"],
+    ["GET /api/station/services", "驿站端服务列表：只列归驿站的（后勤的报修不进驿站台账，反之亦然）"],
+    ["POST /api/station/services", "一句话 → 服务定义 → 过白名单 → 落库成为可用服务"],
+    ["DELETE /api/station/services/{sid}", "删一份服务定义（#39-A：低代码只能一句句长，建错了得能收）"],
+    ["GET /api/station/services/{sid}/records", "某服务已登记的记录（服务不存在回 404，不返回空列表装「什么都没发生」）"],
+    ["POST /api/station/services/{sid}/records", "登记一条：按服务定义把字段存进台账"],
+    ["POST /api/station/services/{sid}/records/{rid}/status", "把一条登记记录标成处理中 / 已解决"],
+    ["DELETE /api/station/services/{sid}/records/{rid}", "删一条登记记录（#39-B，真删——台账里那条就没了）"],
+    ["POST /api/custom/records", "学生点了确认卡后，<b>系统</b>把这条登记写进自建服务台账"],
+    ["GET /api/admin/service-records", "自建服务的登记台账（管理端「后勤报修」那一档的数据源）"],
+    ["POST /api/admin/service-records/{sid}", "后勤自己登记一条（电话报修、巡楼看到的坏点，没有学生参与）"],
+    ["POST /api/admin/service-records/{sid}/{rid}/status", "后勤改状态：与驿站那个口同一份实现"],
+    ["POST /api/admin/services", "管理端建服务：一律归后勤（#54 分流的下半场）"],
+    # —— 通知可撤回 ——
+    ["DELETE /api/admin/notices/{nid}", "撤回一条已发通知（#39-D：发错字、发错人群，以前只能眼看着挂着）"],
+    # —— 知识库与文档（#40 / #46 / #55）——
+    ["POST /api/admin/kb/probe", "试检索探针：管理员自己验「这句话学生问得到答案吗」"],
+    ["POST /api/admin/kb/split", "一句话 → 模型按句意拆出的检索关键词（只产建议，不写库）"],
+    ["GET /api/admin/docs", "知识文档列表：文件名 / 字数 / 块数 / 索引状态 / 时间"],
+    ["POST /api/admin/docs/{fid}/reindex", "按已经存下来的文字重新切块、给老文档补建索引"],
+    ["DELETE /api/admin/docs/{fid}", "删一份知识文档，连带它的分块索引"],
+    # —— 用量与轨迹（#64）——
+    ["GET /api/admin/usage", "用量汇总（管理台那张「用量统计」卡片的数据源）"],
+    ["POST /api/admin/usage/clear", "清空用量流水（演示前想从零计数）"],
+    ["GET /api/admin/trace", "Agent 工作流列表（只读，不含完整轨迹，点开才取）"],
+    ["GET /api/admin/trace/{row_id}", "取某一轮的完整轨迹（只读）"],
+    ["POST /api/admin/trace/clear", "清空轨迹流水：只清这本旁路日志，不碰任何业务数据"],
+    # —— 待办 ——
+    ["POST /api/todos/items_add", "学生在多选材料卡上勾完、点【加入日程】的落库口（#43）"],
+    # —— 页面路由（HTML）——
+    ["GET /", "登录页：选择身份（学生 / 管理员）"],
+    ["GET /student", "学生端主页（四模块）"],
+    ["GET /plan", "学生个人日程（周表看课程与待办，月表看哪天有几件事）"],
+    ["GET /settings", "学生助手设置页：改助手名字、挑聊天性格、返回登录"],
+    ["GET /confirm", "<b>独立的变更确认页面</b>（确认 UI 本身就是一个单独的页面）"],
+    ["GET /admin", "管理员端（通知 + 学生消息 + 知识库 + 人格 + 用量 + 轨迹）"],
+    ["GET /station", "驿站 / 商户端"],
+]
+assert len(ROUTES) - 1 == ROUTE_COUNT, \
+    "附录 A 列了 %d 条，app/main.py 实际有 %d 条路由" % (len(ROUTES) - 1, ROUTE_COUNT)
+
+story += [H1("附录 A：路由与接口清单（%d 条 = %d 个 API + %d 个页面路由）" % (ROUTE_COUNT, API_COUNT, PAGE_COUNT)),
+    P("下表逐条列出全部路由（<b>只读接口绝不写库</b>；写库接口都要求携带系统侧的确认动作）。"
+      "条数由本脚本现读 app/main.py 的路由装饰器得到，与本表行数当场对账——手抄的数会过期，对账不会。"),
+    # 说明列用 Paragraph（原来塞裸字符串：实测 10 行超出列宽，最长 117mm > 93mm，
+    # 表格里会被裁掉 / 压到隔壁列）⇒ 让它自己折行，路径列 58mm、说明列 111mm（页面正文宽 170mm）
+    table([ROUTES[0]] + [[P(x, cell_st) for x in r] for r in ROUTES[1:]],
+          [58*mm, 111*mm]),
 ]
 
 # ===== 附录 B =====
@@ -503,6 +609,7 @@ story += [H1("附录 B：数据文件"),
         ["app/data/kb.json", "校园知识库（图书馆/食堂/校车/校医院/宿舍/奖学金…）"],
         ["app/data/express.json", "演示快递台账（含一件「滞留 5 天」件，用于预警演示）"],
         ["app/data/takeout.json", "演示外卖订单（制作中/配送中/待取）"],
+        ["app/data/accounts.json", "开放的学生账号名单（#38：只认名单、没有密码）"],
     ], [52*mm, 103*mm]),
     H2("B.2 运行时数据（<b>不入库</b>，已在 .gitignore 设防）"),
     table([
@@ -515,9 +622,14 @@ story += [H1("附录 B：数据文件"),
         ["workorders.json", "学生工单", "含隐私"],
         ["pending.json", "待确认提案暂存（TTL 3 小时）", "运行时状态"],
         ["intent_samples.json", "判定层样本库（累积的成功判定样本）", "运行时数据"],
-        ["student/timetable.json", "学生周表", "个人数据"],
-        ["student/todos.json", "学生待办", "个人数据"],
-        ["student/sessions.json", "会话历史（最多 20 条）", "个人数据"],
+        ["intent_gaps.jsonl", "判定层的缺口账（#76：让渡给引擎时记下的原话）", "运行时数据"],
+        ["services.json", "低代码自建服务的定义（内置种子写在 store.py）", "运行时数据"],
+        ["custom/", "自建服务的登记台账", "含隐私"],
+        ["llm_usage.jsonl", "每次大模型调用的用量流水", "里面写着会话 id，属隐私"],
+        ["trace_log.jsonl", "Agent 工作流轨迹（#64）", "含会话 id，比用量账更敏感"],
+        ["student/&lt;学号&gt;/timetable.json", "该学生的周表（#32 之后按学号分库）", "个人数据"],
+        ["student/&lt;学号&gt;/todos.json", "该学生的待办", "个人数据"],
+        ["student/&lt;学号&gt;/sessions.json", "该学生的会话历史（最多 20 条）", "个人数据"],
     ], [42*mm, 68*mm, 45*mm]),
     P("数据目录可用环境变量 <b>CAMPUSTIME_DATA_DIR</b> 指向别处――这正是自动化测试的数据沙箱开关："
       "测试把 app/data 复制到临时目录再跑，跑完删掉，真实演示数据一个字节都不动。"),
