@@ -1128,7 +1128,11 @@ html.gx-glass[data-gx-refine="on"] .composer, html.gx-glass[data-gx-refine="on"]
       if (!rows.length) return "";
       // #60-C：行装进 `.trace-body` 这个**容器**里限高（`max-height` 加在容器上、不加在 `.trace` 上 ——
       // 加在外层的话 summary 会跟着一起滚，学生滚两下就找不到"我是这么想的"那行标题了）。
-      return '<details class="trace" open><summary>🧠 我是这么想的</summary>' +
+      // 2026-10-31 改：原来写死 `open`（默认摊开），实测一句话就能把气泡撑到半屏，
+      // 连着问几轮之后**正文反而找不到了**（截图：问校车那次，六行工具轨迹把回答挤到屏幕外）。
+      // 改回默认收起 —— `<details>` 的 summary 本身就是那个开关，点一下展开、再点收回，
+      // "它把话听成了什么"照样看得到，只是不再喧宾夺主。
+      return '<details class="trace"><summary>🧠 我是这么想的</summary>' +
         '<div class="trace-body">' + rows.join("") + "</div></details>";
     }
 
