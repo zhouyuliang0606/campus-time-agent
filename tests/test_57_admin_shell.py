@@ -166,6 +166,10 @@ def batch_d_token_bar():
             "const _poll = (fn) => () => { if (!adminLocked) fn().catch(() => {}); };" in st, "")
     c.check("#inbox 原来那句 max-height:360px 整族删净（外壳自带滚动，两处都限就是套两层滚动条）",
             "max-height: 360px" not in st, "")
+    c.check("口令条的提示与 403 那句都指向「两个来源」（服务端设的环境变量 / 启动横幅那串），"
+            "不许再只指 .env —— .env 被 .gitignore 收了、云上部署根本没有这个文件（#94 就是把这句纠掉的）",
+            "启动横幅" in bar and "[管理口令]" in st and "在 .env 加一行" not in st,
+            "bar 含横幅=%s ｜全页 .env 加一行残留=%s" % ("启动横幅" in bar, "在 .env 加一行" in st))
     return c
 
 

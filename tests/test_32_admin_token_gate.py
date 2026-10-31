@@ -13,11 +13,18 @@
 学生侧整条线当场废掉，而管理台演示时又只看得到「后台还能用」。
 所以这份护栏一半的项数在验「谁没被挡住」，跟验「谁被挡住了」同样重要。
 
-⚠️ 没配口令时是**锁死**（403）而不是放行，专门有一批（C）钉这件事：
-「没配就敞开」是新克隆的人最容易踩到的默认值——照着 README 启动，
-那个状态恰好就是「没配」。
+⚠️ 没配口令时**不是敞开**，也不再是"谁也进不去的 403"：2026-10-08 起是锁死（403），
+2026-11-01（#94）改成**现场自举一个随机口令 + 打在服务启动横幅上**——因为 `.env` 不进仓库，
+"照 README 启动"恰好就是"没配"，旧做法等于把新克隆的人一起锁在外面（他填什么都没用，
+服务器那侧压根没有可比对的口令）。C 批整批就是钉这个新默认值的：
+门照旧挡没拿到那串的人（401），但**横幅那串必须真能进**（正控），
+且设了环境变量就以它为准、不自举也不回显。
 """
+import contextlib
+import inspect
+import io
 import os
+import subprocess
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -158,17 +165,64 @@ def batch_student_open(c):
 
 
 def batch_fail_closed(c):
-    title("C. 服务器没配口令 → 管理接口锁死，不是当没这回事放行")
+    title("C. 服务器没配口令 → 自举一串随机口令：门还在，但钥匙打在启动横幅上（#94 改口）")
     cl = _client(None, None)
     r = _hit(cl, "GET", "/api/admin/kb", None)
-    c.check("C1 没配口令时，请求**带了随便一串**也进不去",
-            r.status_code == 403, f"HTTP {r.status_code}")
-    c.check("C2 回话里直接告诉人去配哪个变量（别让人对着 403 猜）",
-            "CAMPUSTIME_ADMIN_TOKEN" in str(r.json()), str(r.json())[:80])
-    c.check("C3 服务器没配、请求带了口令 → 仍是 403（不是「口令对不上」那种蒙混）",
-            _hit(_client(None, "whatever"), "GET", "/api/admin/usage", None).status_code == 403)
+    c.check("C1 没配口令时，请求**带了随便一串**照样进不去"
+            "（⚠️ 旧行为是 403「未配置」；自举之后走的是「口令对不上」那条 401 —— 语义变了，性质没变）",
+            r.status_code == 401, f"HTTP {r.status_code}")
+    c.check("C2 回话还是人话：说清要带哪个头（别让人对着状态码猜）",
+            "X-Admin-Token" in str(r.json()), str(r.json())[:80])
+    # 正控（本轮最值钱的一条）：横幅给的那串**必须真能进**，否则「克隆的人能用」这句话就是空的
+    from app.config import announce_admin_token, bootstrapped_admin_token, get_admin_token
+    banner_key = get_admin_token()
+    c.check("C3 拿启动横幅那串（= get_admin_token() 自举值）真的进得去 —— 新克隆的人 10 分钟能复现",
+            _hit(_client(None, banner_key), "GET", "/api/admin/kb", None).status_code == 200
+            and len(banner_key) >= 12, f"长度 {len(banner_key)}")
     c.check("C4 而学生侧在这种什么都没配的环境里完全不受影响",
             _hit(cl, "GET", "/api/todos", None).status_code == 200)
+    os.environ["CAMPUSTIME_ADMIN_TOKEN"] = SERVER_TOKEN          # 先假装部署者设过
+    _ = get_admin_token()
+    os.environ.pop("CAMPUSTIME_ADMIN_TOKEN", None)               # 再撤掉
+    c.check("C5 自举值是**进程内固定**的：设过又撤掉环境变量，仍回到最初那串"
+            "（横幅打的与门里比对必须是同一串，否则人照横幅填还是进不去）",
+            get_admin_token() == banner_key and bootstrapped_admin_token() == banner_key,
+            "撤掉后 = %s…（长度 %d）" % (get_admin_token()[:4], len(get_admin_token())))
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        announce_admin_token()
+    out = buf.getvalue()
+    c.check("C6 没配口令时才喊横幅，且喊出来的那串 == 门里那串",
+            "[管理口令]" in out and banner_key in out and out.count(banner_key) == 1,
+            "横幅含那串=%s ｜读数打码 %s…（长度 %d）" % (banner_key in out, banner_key[:4], len(banner_key)))
+    os.environ["CAMPUSTIME_ADMIN_TOKEN"] = SERVER_TOKEN
+    try:
+        buf2 = io.StringIO()
+        with contextlib.redirect_stdout(buf2):
+            announce_admin_token()
+        c.check("C7 设了环境变量就以它为准：口令换成 env 的值、横幅闭嘴（不把部署者的口令打到日志里）",
+                get_admin_token() == SERVER_TOKEN and buf2.getvalue() == "",
+                "env 生效=%s ｜横幅输出=%r" % (get_admin_token() == SERVER_TOKEN, buf2.getvalue()[:40]))
+    finally:
+        os.environ.pop("CAMPUSTIME_ADMIN_TOKEN", None)
+    # 跨进程换一个：拿 subprocess 起两个解释器问，别在本进程 reload 模块（会把 app.admin_guard 留成旧引用）
+    probe = ("import os;os.environ['CAMPUSTIME_ADMIN_TOKEN']='';"
+             "import app.config as k;print(k.get_admin_token())")
+    vals = []
+    for _ in range(2):
+        rr = subprocess.run([sys.executable, "-c", probe], cwd=PROJ_DIR, capture_output=True,
+                            text=True, encoding="utf-8", errors="replace",
+                            env={k: v for k, v in os.environ.items() if k != "CAMPUSTIME_ADMIN_TOKEN"})
+        vals.append((rr.stdout or "").strip())
+    c.check("C8 换一次进程就换一个值（旧行为：没配 = 永远进不去；现在：没配 = 每次一串、别人猜不到）",
+            len(vals[0]) >= 12 and len(vals[1]) >= 12 and vals[0] != vals[1],
+            "两次长度 %d/%d、是否相同 = %s" % (len(vals[0]), len(vals[1]), vals[0] == vals[1]))
+    # C9 钉"横幅看得见"这件事本身：真机踩到过 —— 把 stdout 重定向进文件时是块缓冲的，
+    # 这四行会压在缓冲区里，直到下一条访问日志把缓冲区顶出来才落盘，
+    # 于是"照启动横幅填口令"的人在最初几十秒里对着一个不含口令的日志文件。
+    tail = inspect.getsource(announce_admin_token).rstrip().rsplit("print(", 1)[-1]
+    c.check("C9 横幅最后一条 print 带 flush=True（口令要在读日志的第一刻就在里面；位置判据，不数 print 条数）",
+            "flush=True" in tail, "最后一条 print 里有没有 = %s" % ("flush=True" in tail))
 
 
 def batch_write_really_blocked(c):
@@ -304,6 +358,13 @@ def batch_wiring(c):
     ex = open(os.path.join(PROJ_DIR, ".env.example"), encoding="utf-8").read()
     c.check("E10 .env.example 里留了这一项（新克隆的人照着填就知道要配）",
             "CAMPUSTIME_ADMIN_TOKEN" in ex)
+    # 这句话在 #94 之前是"不填 = 全锁（403）"，那是**错的说明书**：.env 不进仓库，
+    # 照 README 启动的人恰好都落在"没配"那一支，看到 403 又读到这句就会认定"口令没用"。
+    c.check("E11 .env.example 的两行说法与门的实际行为一致（说得出「不填也能跑 + 钥匙在横幅」，"
+            "且旧那句「不填 = 全锁（403）」不许留下来）",
+            "不填也能跑" in ex and "[管理口令]" in ex and "全锁（403）" not in ex,
+            "不填也能跑=%s｜横幅=%s｜旧说法还在=%s" % (
+                "不填也能跑" in ex, "[管理口令]" in ex, "全锁（403）" in ex))
 
 
 def main():
