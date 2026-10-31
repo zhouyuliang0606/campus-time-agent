@@ -1,0 +1,23 @@
+# 二进制文件不做行尾转换。
+#
+# 为什么要有这个文件：本机 core.autocrlf=true，而 Git 对没有属性声明的文件
+# 会按"文本"处理 —— checkout 时把裸 LF 换成 CRLF，提交时再换回来。
+# 对源码是对的，对二进制是**毁文件**：
+#
+#   docs/技术文档.pdf  实测 53663 字节，其中裸 LF 正好 324 个、CRLF 0 个。
+#   clone 出来会变成 53987 字节（+324），PDF 的 xref 偏移全部错位，打开即损坏。
+#
+# 加这行之后 `git check-attr -a` 会显示 text: unset，checkout 原样落盘。
+# 已存在的 blob 本身是好的（add 时没有 CRLF 可换），所以不需要 renormalize。
+*.pdf  -text
+*.xlsx -text
+*.docx -text
+*.pptx -text
+*.zip  -text
+*.jpg  -text
+*.jpeg -text
+*.png  -text
+*.gif  -text
+*.ico  -text
+*.woff -text
+*.woff2 -text
