@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh-CN" class="tk-rain">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -203,14 +203,104 @@
       .sb-item { justify-content: center; position: relative; }
       .sb-num.show { display: inline-block; position: absolute; top: 3px; right: 2px; margin-left: 0; }
     }
+    /* ============ 玻璃档（2026-10-31 #93）：表面透明 + 一层暗纱 + 字翻浅色 ============
+       与学生页、日程页同一套口径（#92 定稿那一版：白磨砂被他否掉，这版按他要的透明做）。
+       ⚠️ 这页通体是**深字压浅底**（body #1f2733 / #f4f6fb，另有 46 处写死的 color）。
+       表面一透明，深字就压在星空图上 —— 就是 #89 那个病：CSS 不报错、页面照开、只是读不出字。
+       所以**换底必须同时换字**，这一版把 42 条不透明表面逐条接管、写死的深字逐条翻浅。
+       三条这页特有的账，别当成冗余：
+       ① 三个输入框（.inputbar input / .svcAdd input / .svc form input）基线**没写 background 也没写 color**
+          ⇒ 浏览器的 UA 默认是"白底黑字"，透明之后黑字压在暗底上读不出 —— 必须两个都补。
+       ② 强调色保留这页自己的青（#17b8a6 / #0e8f80）的**亮档** #6fe3cf：只提亮、不改色相，
+          不然驿站端一开玻璃就变成和学生页同一套黄绿，两端的身份感没了。
+       ③ 弹窗（.mask + .dlg）不跟着全透明：浮层要能和照片拉开，垫一层深色面（用 --fill-rgb，不是白）。
+       「设置 → 背景 → 不用图」摘掉 html.gx-glass 总闸 ⇒ 下面整段失效，页面回到浅色原样。 */
+    html.gx-glass { --gx-scrim:.42; --gx-vm:.46; }
+    html.gx-glass body { background: transparent; color: var(--theme-fg); }
+    /* 外壳三层：透明 + 一条边撑住结构 */
+    html.gx-glass .sidebar { background: transparent; border-right: 1px solid var(--theme-border); }
+    html.gx-glass .topbar { background: rgba(var(--veil-rgb),.62); border-bottom: 1px solid var(--theme-border); }
+    html.gx-glass .topbar .t { color: var(--theme-fg); }
+    html.gx-glass .composer { background: transparent; border-top: 1px solid var(--theme-border); }
+    html.gx-glass .stage, html.gx-glass #log { background: transparent; }
+    /* 左栏 */
+    html.gx-glass .sb-brand { background: linear-gradient(135deg, rgba(23,184,166,.34), rgba(47,158,111,.34)); color: var(--theme-fg); }
+    html.gx-glass .sb-item { color: var(--theme-fg2); }
+    html.gx-glass .sb-item:hover { background: rgba(255,255,255,.05); }
+    html.gx-glass .sb-item.active { background: rgba(23,184,166,.20); color: #6fe3cf; }
+    html.gx-glass .sb-num { background: rgba(232,85,85,.22); color: #ffb3b3; }
+    html.gx-glass .sb-foot { color: var(--theme-muted-fg); }
+    /* 顶栏那颗返回 */
+    html.gx-glass .tb-link { background: rgba(23,184,166,.16); color: #6fe3cf; }
+    html.gx-glass .tb-link:hover { background: rgba(23,184,166,.26); }
+    /* 人设卡 / 快捷芯片 */
+    html.gx-glass .persona { background: transparent; border: 1px solid var(--theme-border); }
+    html.gx-glass .persona .rl, html.gx-glass .persona a { color: var(--theme-muted-fg); }
+    html.gx-glass .persona .tm { color: var(--theme-fg2); }
+    html.gx-glass .persona .tm b { color: #6fe3cf; }
+    html.gx-glass .hint { color: var(--theme-muted-fg); }
+    html.gx-glass .chip { background: rgba(255,255,255,.06); color: #6fe3cf; }
+    html.gx-glass .chip:hover { background: rgba(23,184,166,.22); }
+    html.gx-glass .chip.warn { color: #f7ddb2; }
+    html.gx-glass .chip.warn:hover { background: rgba(242,180,92,.18); }
+    html.gx-glass .refresh { background: rgba(255,255,255,.06); color: #6fe3cf; }
+    html.gx-glass .refresh:hover { background: rgba(23,184,166,.22); }
+    /* 对话流：气泡的底和字**成对**改（#89 的教训就是这个"对"字） */
+    html.gx-glass .msg .who { color: var(--theme-muted-fg); }
+    html.gx-glass .user .bubble { background: rgba(23,184,166,.30); color: #eafaf6; }
+    html.gx-glass .bot .bubble { background: rgba(255,255,255,.06); color: var(--theme-fg); }
+    html.gx-glass .sys .bubble { background: rgba(242,180,92,.14); color: #f7ddb2; }
+    html.gx-glass .trace { background: rgba(255,255,255,.04); color: var(--theme-muted-fg); }
+    html.gx-glass .tag { background: rgba(23,184,166,.18); color: #6fe3cf; }
+    /* 输入区三个框：基线没写底也没写字 ⇒ 两个都得补（漏一个就是白底黑字压在暗页上） */
+    html.gx-glass .inputbar input, html.gx-glass .svcAdd input, html.gx-glass .svc form input {
+      background: rgba(255,255,255,.06); border-color: var(--theme-border2); color: var(--theme-fg); }
+    html.gx-glass .inputbar button { background: rgba(23,184,166,.30); color: #eafaf6; }
+    html.gx-glass .attach { background: rgba(255,255,255,.06); color: #6fe3cf; }
+    html.gx-glass .attach:hover { background: rgba(23,184,166,.22); }
+    html.gx-glass .clear { background: rgba(255,255,255,.06); color: #f7ddb2; }
+    html.gx-glass .clear:hover { background: rgba(242,180,92,.18); }
+    /* 工单列表（中间那栏） */
+    html.gx-glass .wo { background: transparent; border: 1px solid var(--theme-border); }
+    html.gx-glass .woHead { color: var(--theme-fg); }
+    html.gx-glass .woHead .cnt, html.gx-glass .woEmpty { color: var(--theme-muted-fg); }
+    html.gx-glass .woItem { border-bottom-color: var(--theme-border); }
+    html.gx-glass .woItem .meta { color: var(--theme-muted-fg); }
+    html.gx-glass .woItem .who { color: #6fe3cf; }
+    html.gx-glass .woItem .st { background: rgba(232,85,85,.20); color: #ffb3b3; }
+    html.gx-glass .woItem .st.doing { background: rgba(242,180,92,.16); color: #f7ddb2; }
+    html.gx-glass .woItem .st.done { background: rgba(125,196,138,.18); color: #b9e2c2; }
+    html.gx-glass .woItem button { background: rgba(255,255,255,.06); color: #6fe3cf; }
+    html.gx-glass .woItem button:hover { background: rgba(23,184,166,.22); }
+    /* 自建服务（低代码那栏） */
+    html.gx-glass .svcAdd button { background: rgba(23,184,166,.30); color: #eafaf6; }
+    html.gx-glass .svc .pill { background: rgba(23,184,166,.18); color: #6fe3cf; }
+    html.gx-glass .svc .tb, html.gx-glass .svc .recHead { color: var(--theme-muted-fg); }
+    html.gx-glass .svc .recRow { background: rgba(255,255,255,.04); }
+    html.gx-glass .svc .recs { color: var(--theme-fg); }
+    html.gx-glass .svc .last { color: #b9e2c2; }
+    html.gx-glass .svc form button { background: rgba(23,184,166,.30); color: #eafaf6; }
+    /* 弹窗：浮层要能和照片拉开，所以**不跟着全透明**（垫深色面 + 字跟着翻浅） */
+    html.gx-glass .mask { background: rgba(4,10,8,.62); }
+    html.gx-glass .dlg { background: rgba(var(--fill-rgb),.88); border: 1px solid var(--theme-border2); }
+    html.gx-glass .dlg-head { color: var(--theme-fg); border-bottom-color: var(--theme-border); }
+    html.gx-glass .dlg-body { color: var(--theme-fg2); }
+    html.gx-glass .dlg-warn { background: rgba(242,180,92,.14); color: #f7ddb2; }
+    html.gx-glass .dlg-btn.ghost { background: rgba(255,255,255,.06); color: var(--theme-fg2); }
+    html.gx-glass .dlg-btn.danger { background: rgba(226,75,74,.26); color: #ffd7d7; border-color: rgba(226,75,74,.5); }
   </style>
+  <!-- 玻璃质感层与背景图（2026-10-31 #93）。必须排在上面的 <style> **之后**：
+       同为特异度 0,1,1 的两条规则，后写的赢 —— 排前面这段玻璃就白写了（test_44 的 J2 钉这个顺序）。 -->
+  <link rel="stylesheet" href="/static/glass.css" />
 </head>
 <body>
+  <img class="gx-backdrop" id="gxBg" alt="" aria-hidden="true" />
+  <div class="gx-veil" aria-hidden="true"></div>
   <!-- 三栏外壳（#25）：左栏点开哪块、中间只显示哪块；正文只在中间滚，输入框钉在底下。
        ⚠️ 里面这些 id 一个都不许改 —— 后端逻辑是 getElementById 硬绑的，改 id 等于把功能删了：
        #personaBox #refreshPersona #woList #woCount #refreshWo #svcList #svcCount #refreshSvc
        #svcIdea #svcGo #chips #log #file #attach #text #send -->
-  <div class="shell">
+  <div class="shell gx-root">
     <aside class="sidebar" id="sidebar">
       <div class="sb-brand">
         <span style="font-size:18px;">🏪</span>
@@ -331,8 +421,24 @@
     </div>
   </div>
 
+  <script src="/static/bg.js"></script>
   <script src="/static/esc.js"></script>
   <script>
+    // —— 背景图（2026-10-31 #93）：与学生页 / 日程页读同一个 localStorage 键 ct_bg，图路径来自 /static/bg.js。
+    //    只认表里有的 key，认不出回落 forest（**不拼路径**：撤过的 park/space 会拼出 404 白屏）。
+    //    「不用图」= 摘掉 html.gx-glass 总闸 ⇒ 上面那整段玻璃规则全部失效，页面回到浅色原样。
+    function applyStationBackdrop() {
+      const root = document.documentElement, img = document.getElementById('gxBg');
+      let key = 'forest';
+      try { key = localStorage.getItem('ct_bg') || 'forest'; } catch (e) { /* 隐私模式读不到就用默认 */ }
+      const on = (key !== 'none') && window.CT_BG_SRC && window.CT_BG_SRC[key];
+      root.classList.toggle('gx-glass', !!on);
+      if (img) {
+        if (on) { const src = window.CT_BG_SRC[key]; if (img.getAttribute('src') !== src) img.setAttribute('src', src); }
+        else img.removeAttribute('src');
+      }
+    }
+    applyStationBackdrop();
     // 快捷操作：前两个是"主动推送"，后面是常见咨询
     // 提示词都故意写成让 Agent 去调工具，这样页面上能看到它真的读了台账
     const CHIPS = [
