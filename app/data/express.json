@@ -1,11 +1,13 @@
 {
   "student": "多人演示数据（按 owner 分成 admin1 / admin2 / demo 三份）",
   "packages": [
-    { "id": "P1", "owner": "admin1", "item": "《算法导论》图书", "station": "菜鸟驿站-北区", "pickup_code": "A-1234", "arrived_at": "2026-10-15", "status": "待取" },
-    { "id": "P2", "owner": "admin1", "item": "运动鞋一双",       "station": "菜鸟驿站-北区", "pickup_code": "B-5678", "arrived_at": "2026-09-19", "status": "待取" },
-    { "id": "P3", "owner": "admin1", "item": "台灯",             "station": "妈妈寄顺丰",     "pickup_code": "C-9012", "arrived_at": "2026-09-07", "status": "已取" },
-    { "id": "P4", "owner": "admin2", "item": "机械键盘",         "station": "京东自提点",     "pickup_code": "D-3344", "arrived_at": "2026-10-16", "status": "待取" },
-    { "id": "P5", "owner": "admin2", "item": "妈妈寄的护肤品",   "station": "妈妈寄顺丰",     "pickup_code": "E-7788", "arrived_at": "2026-09-23", "status": "待取" },
-    { "id": "P6", "owner": "demo",   "item": "演示件（无身份时用）", "station": "菜鸟驿站-南区", "pickup_code": "F-0001", "arrived_at": "2026-10-14", "status": "待取" }
+    { "id": "P1", "owner": "admin1", "item": "《算法导论》图书", "station": "菜鸟驿站-北区 · A2 货架", "pickup_code": "A-1234", "arrived_at": "2026-10-15", "status": "待取" },
+    { "id": "P2", "owner": "admin1", "item": "运动鞋一双",       "station": "菜鸟驿站-北区 · B1 货架", "pickup_code": "B-5678", "arrived_at": "2026-09-19", "status": "待取" },
+    { "id": "P3", "owner": "admin1", "item": "台灯",             "station": "顺丰快递柜 · 东门 1 号柜", "pickup_code": "C-9012", "arrived_at": "2026-09-07", "status": "已取" },
+    { "id": "P4", "owner": "admin2", "item": "机械键盘",         "station": "京东自提点 · 3 号柜",     "pickup_code": "D-3344", "arrived_at": "2026-10-16", "status": "待取" },
+    { "id": "P5", "owner": "admin2", "item": "妈妈寄的护肤品",   "station": "顺丰快递柜 · 东门 2 号柜", "pickup_code": "E-7788", "arrived_at": "2026-09-23", "status": "待取" },
+    { "id": "P6", "owner": "demo",   "item": "演示件（无身份时用）", "station": "菜鸟驿站-南区 · C 区货架", "pickup_code": "F-0001", "arrived_at": "2026-10-14", "status": "待取" },
+    { "id": "P7", "owner": "admin1", "item": "保温杯",           "station": "菜鸟驿站-北区 · A1 货架", "pickup_code": "G-2468", "arrived_at": "2026-10-30", "status": "待取" },
+    { "id": "P8", "owner": "admin2", "item": "《线性代数》教材", "station": "京东自提点 · 1 号柜",     "pickup_code": "H-1357", "arrived_at": "2026-10-31", "status": "待取" }
   ]
 }
