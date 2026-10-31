@@ -1,6 +1,7 @@
 """配置模块（人话：统一从 .env 读取密钥和开关，全项目都来这里拿，代码里不写死任何密码）。"""
 import ipaddress
 import os
+import secrets
 import re
 import socket
 import time
@@ -30,13 +31,49 @@ ADMIN_TOKEN_ENV = "CAMPUSTIME_ADMIN_TOKEN"
 
 
 def get_admin_token() -> str:
-    """管理接口的口令（人话：从 .env / 环境变量读，没配就是空串 = 管理接口全锁）。
+    """管理接口的口令：环境变量优先；**没配就现场自举一个随机口令**（2026-11-01 #94）。
 
     为什么每次现读而不是像上面那样定成常量：
       · 测试要在同一个进程里换口令、试"没配口令"那条路（改了 .env 得重启才生效很难用）；
-      · 读一次环境变量的开销可以忽略，但"没配 = 不开门"这个默认值必须随时算得出来。
+      · 环境变量一旦设上就压过自举值 —— 正式部署的人说了才算。
+
+    为什么把"没配 = 全锁"改成"没配 = 自举 + 横幅给钥匙"：
+      旧行为对新克隆的人是死路 —— `.env` 被 .gitignore 收了、根本不进仓库，
+      所以"照着 README 启动"恰好就是"没配口令"，管理端一律 403，
+      而他输入的口令再对也没用（服务器那侧压根没有可比对的口令）。
+      自举之后：门还在（没拿到那串照样 401），但钥匙是**这次启动独有的随机值**，
+      不是仓库里人人可读的默认口令 —— 公网裸跑也猜不到，也不会因为"忘了配"就把后台敞开。
     """
-    return (os.getenv(ADMIN_TOKEN_ENV) or "").strip()
+    v = (os.getenv(ADMIN_TOKEN_ENV) or "").strip()
+    return v or bootstrapped_admin_token()
+
+
+# 自举值：**进程内只生成一次**，横幅打的与门里比对的必须是同一个（否则人照横幅填还是进不去）
+_BOOT_ADMIN_TOKEN = ""
+
+
+def bootstrapped_admin_token() -> str:
+    global _BOOT_ADMIN_TOKEN
+    if not _BOOT_ADMIN_TOKEN:
+        _BOOT_ADMIN_TOKEN = secrets.token_urlsafe(12)
+    return _BOOT_ADMIN_TOKEN
+
+
+def announce_admin_token() -> None:
+    """启动时喊一句"管理口令是哪串"（和下面 check_config() 里那句 [配置提醒] 同一种机制）。
+
+    只在自举那种情形喊：设了环境变量的人不需要我们把口令打进日志；
+    口令只走 stdout，不落台账、不落仓库 —— 想让它出现在别处的人请自己设环境变量。
+    """
+    if (os.getenv(ADMIN_TOKEN_ENV) or "").strip():
+        return
+    print("[管理口令] 服务器没配 " + ADMIN_TOKEN_ENV + "，本次启动已自动生成随机口令：")
+    print("          " + bootstrapped_admin_token())
+    print("          管理端顶栏那格填这串即可；重启会换一个。")
+    # flush=True：stdout 被重定向到文件时是块缓冲的，这几行会压在缓冲区里，
+    # 直到下一条访问日志把缓冲区顶出来才落盘 —— 那时"照启动横幅填口令"的人已经卡在门口了。
+    print("          要固定或公网部署：设 " + ADMIN_TOKEN_ENV + " 环境变量（口令别提交进仓库）。",
+          flush=True)
 
 
 # ============ base_url 的 SSRF 闸门（全项目唯一一处判"能不能连这里"）============
@@ -270,3 +307,5 @@ def check_config() -> None:
         print("          1) 复制 .env.example 为 .env，在里面填 DEEPSEEK_API_KEY")
         print("          2) 启动后进管理控制台的「API 配置」卡片在线填（不用重启）")
         print("[配置提醒] 没有 Key 时，接口会返回友好提示，不会崩溃。")
+    # 管理口令的"启动喊话"挂在这里：与上面同一处、同一个时机（应用一 import 就跑一次）。
+    announce_admin_token()

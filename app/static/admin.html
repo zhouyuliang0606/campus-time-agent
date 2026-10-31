@@ -250,7 +250,7 @@
              换一台电脑打开控制台会重新问一次——这正是要的效果。 -->
         <div class="tb-token">
           <span>🔒</span>
-          <input id="adminToken" type="password" placeholder=".env 里的 CAMPUSTIME_ADMIN_TOKEN" />
+          <input id="adminToken" type="password" placeholder="管理口令：服务端设了的那个；没设就用启动横幅里那串 [管理口令]" />
           <button id="saveToken">用这个口令</button>
           <span id="tokenStatus">还没填口令，管理类接口都是锁着的</span>
         </div>
@@ -574,7 +574,7 @@
         // 服务端那句 detail 已经写清了该干什么，原样递给人看
         const body = await resp.json().catch(() => ({}));
         setTokenStatus(resp.status === 403
-          ? "🔒 服务器没设口令：在 .env 加一行 CAMPUSTIME_ADMIN_TOKEN 再重启服务"
+          ? "🔒 被服务端拒绝（403）：这台服务器没设管理口令——它启动时会在控制台打一行 [管理口令] 加一串随机值，填那串；要固定就设环境变量 CAMPUSTIME_ADMIN_TOKEN"
           : "🔒 口令不对（401）" + (body.detail ? "：" + body.detail : ""), true);
         throw new Error("管理口令未通过");
       }
