@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh-CN" class="tk-rain">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -122,12 +122,41 @@
     }
     .mini.danger { color: #e0414a; border-color: #f3c2c5; }
     #status { font-size: 12px; color: #4a5366; margin-left: 8px; }
+
+    /* ============ 玻璃档（2026-10-31）：让这页也吃到学生端那张背景图 ============
+       口径与学生端一致：**整段只挂在 html.gx-glass 上**。「设置 → 背景 → 不用图」把总闸一摘，
+       下面全部失效，页面回到上面那套浅色原样 —— 关掉即还原，不养第二套样式。
+       ⚠️ 这页是**浅色页**（深字 #1f2733），所以这里做的是"浅色磨砂"，不是学生端那层深色玻璃：
+       只把不透明白底换成半透明白 + 模糊，**一个字色都不动**（底色仍是亮的，
+       "换底必须换字"那族 bug 在这里的适用方式就是"不换底到深色"）。*/
+    html.gx-glass body { background: transparent; }
+    html.gx-glass header { background: linear-gradient(135deg, rgba(52,84,200,.94), rgba(74,62,196,.94)); backdrop-filter: blur(8px); }
+    html.gx-glass .card { background: rgba(255,255,255,.86); backdrop-filter: blur(8px); box-shadow: 0 6px 22px rgba(6,10,24,.30); }
+    html.gx-glass .tab { background: rgba(255,255,255,.80); border-color: rgba(255,255,255,.55); color: #4a5366; }
+    html.gx-glass .tab.active { background: rgba(79,124,255,.92); color: #fff; border-color: transparent; }
+    html.gx-glass .btn { background: rgba(79,124,255,.92); }
+    html.gx-glass .btn.ghost { background: rgba(238,242,255,.86); }
+    html.gx-glass .week-head { background: rgba(255,255,255,.90); }
+    html.gx-glass .col.today { background: rgba(247,250,255,.70); }
+    html.gx-glass .day { background: rgba(255,255,255,.80); }
+    html.gx-glass .day.today { background: rgba(247,250,255,.78); }
+    html.gx-glass .day.sel { background: rgba(238,242,255,.80); }
+    html.gx-glass .blk.course, html.gx-glass .mevt.course { background: rgba(234,241,255,.88); }
+    html.gx-glass .blk.todo, html.gx-glass .mevt.todo { background: rgba(255,245,230,.88); }
+    html.gx-glass .blk.done, html.gx-glass .mevt.todo.done { background: rgba(238,247,239,.95); }
+    html.gx-glass .titem { background: rgba(255,255,255,.78); border-color: rgba(255,255,255,.5); }
+    html.gx-glass .titem .mini { background: rgba(255,255,255,.84); }
+    /* 那两块确认区是**内联样式**，类规则压不动，只能 !important（学生端 LEAK 那条同一招）。 */
+    html.gx-glass #ttConfirm { background: rgba(255,248,239,.92) !important; }
   </style>
 </head>
+  <link rel="stylesheet" href="/static/glass.css" />
+  <script src="/static/bg.js"></script>
 <body>
+  <img class="gx-backdrop" id="gxBg" alt="" aria-hidden="true" />
   <header>
     <h1>我的日程
-      <a href="/">← 登录</a>
+      <a href="/">换个身份</a>
       <a href="/student">去问 AI →</a>
     </h1>
     <p>周表照课表排，待办插在课程之间；月表一眼看见哪天有几件事</p>
@@ -196,6 +225,22 @@
 
   <script src="/static/esc.js"></script>
   <script>
+
+    // —— 背景图（2026-10-31）：与学生端读同一个 localStorage 键 ct_bg，图路径来自 /static/bg.js。
+    //    只认表里有的 key，认不出回落 forest（**不拼路径**：撤过的 park/space 会拼出 404 白屏）。
+    //    「不用图」= 摘掉 html.gx-glass 总闸 ⇒ 上面那整段玻璃规则全部失效，页面回到浅色原样。
+    function applyPlanBackdrop() {
+      const root = document.documentElement, img = document.getElementById('gxBg');
+      let key = 'forest';
+      try { key = localStorage.getItem('ct_bg') || 'forest'; } catch (e) { /* 隐私模式读不到就用默认 */ }
+      const on = (key !== 'none') && window.CT_BG_SRC && window.CT_BG_SRC[key];
+      root.classList.toggle('gx-glass', !!on);
+      if (img) {
+        if (on) { const src = window.CT_BG_SRC[key]; if (img.getAttribute('src') !== src) img.setAttribute('src', src); }
+        else img.removeAttribute('src');
+      }
+    }
+    applyPlanBackdrop();
     // ---------- 共用小工具 ----------
     const DAY_START = 7 * 60;   // 07:00
     const DAY_END = 22 * 60;    // 22:00

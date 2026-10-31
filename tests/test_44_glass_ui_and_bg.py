@@ -301,6 +301,117 @@ def batch_notice(ck):
                  "文件还在（备份在仓库外，别放回来）")
 
 
+# ============ I 批：/plan 也吃背景图（2026-10-31，用户截图「这个学生的页面没有吃到背景图」）============
+# 这页是**浅色页**（深字 #1f2733），所以玻璃档做的是"浅色磨砂"：只把不透明白底换成半透明白，
+# 字色一个都不动。判据因此不是 G 批那条"换底必须换字"，而是两条新的：
+#   ① **每一条不透明的表面都必须被接管**（漏一条就是一块白板浮在照片上，比看不见更难解释）；
+#   ② 接管之后**字仍要读得出来** —— 半透明白压在照片暗部与亮部两种底上都算 ≥4.5。
+# ⚠️ 对比度是从 plan.html 的 CSS 里**现读现算**的，不在测试里重抄一遍色值（重抄=第二本账）。
+PLAN = os.path.join(STATIC, "plan.html")
+BGJS = os.path.join(STATIC, "bg.js")
+PHOTO_DARK = "#0e2019"    # 副本 8061 实测：照片压在两层半透明底上的合成色（暗部）
+PHOTO_BRIGHT = "#6f7d55"  # 同一张图的极亮档（与 G 批同一把尺子）
+
+
+def _plan_pairs(text):
+    """plan.html → (基线规则表, 玻璃段规则表)，键都按展开逗号后的选择器归一。"""
+    head = text[:text.index("</style>")]
+    head = re.sub(r"/\*.*?\*/", "", head, flags=re.S)
+    base, glass = {}, {}
+    for sel, body in re.findall(r"([^{}]+)\{([^{}]*)\}", head):
+        for s in sel.split(","):
+            s = " ".join(s.split())
+            if not s or s.startswith("@"):
+                continue
+            (glass if s.startswith("html.gx-glass") else base).setdefault(
+                s.replace("html.gx-glass ", "").strip(), []).append(body)
+    return base, glass
+
+
+def _plan_ratio(text, selector, bg_photo=PHOTO_DARK):
+    """这个表面在玻璃档下的实际对比度：现读它的 background 与生效字色，半透明先合成到照片上。"""
+    base, glass = _plan_pairs(text)
+    gbody = " ".join(glass.get(selector, []))
+    m = re.search(r"background:\s*(?:linear-gradient\([^,]+,\s*)?(rgba\([^)]+\)|#[0-9a-fA-F]{6})", gbody)
+    if not m:
+        return None, None
+    tokens = {}
+    fill = _resolve(m.group(1), tokens)
+    if fill is None:
+        return None, None
+    eff = _over(fill, bg_photo)
+    # 字色：这条规则自己写的 > 基线同选择器写的 > body 那句全局色。⚠️ 必须认 3 位缩写：header 写的是 color: #fff，只认 6 位会漏成"这页没写字色"，
+    #    然后退回 body 的深字 ⇒ 把"白字压深蓝"算成"深字压深蓝"，方向整个反（第一版就这么误判了 header 那条）。
+    for src in (gbody, " ".join(base.get(selector, [])), " ".join(base.get("body", []))):
+        mm = re.search(r"(?:^|;)\s*color:\s*(#[0-9a-fA-F]{3,6})\b", ";" + src)
+        if mm:
+            return _ratio(_hex6(mm.group(1)), eff), eff
+    return None, None
+
+
+def _hex6(c):
+    """#fff → #ffffff（_lum/_ratio 只吃 6 位）。"""
+    c = c.lstrip("#")
+    return "#" + ("".join(x * 2 for x in c) if len(c) == 3 else c)
+
+
+
+def batch_plan_glass(ck):
+    title("I. /plan 的背景图接线（浅色磨砂：接管完整 + 字还读得出来）")
+    src = read(PLAN)
+    js = read(BGJS)
+    st = read(STUDENT)
+
+    ck.check("I1 plan.html 引用了 glass.css 与 bg.js，且 <link> 排在内联样式之后",
+             'href="/static/glass.css"' in src and 'src="/static/bg.js"' in src
+             and src.index("</style>") < src.index('/static/glass.css"'))
+    ck.check("I2 背景图节点 #gxBg 紧跟 <body>、带 aria-hidden（装饰图不进朗读顺序）",
+             src.index("<body>") < src.index('id="gxBg"') < src.index("<header>")
+             and 'class="gx-backdrop" id="gxBg"' in src and 'aria-hidden="true"' in src)
+
+    base, glass = _plan_pairs(src)
+    opaque = {s for s, bs in base.items()
+              if any(re.search(r"background:\s*(#[0-9a-fA-F]{3,6}|linear-gradient)", b) for b in bs)}
+    missed = sorted(s for s in opaque if s not in glass)
+    ck.check("I3 基线每一条不透明表面都被玻璃段接管（漏 %d 条：%s）" % (len(missed), missed[:6]),
+             not missed, "不透明面 %d 条 / 接管 %d 条" % (len(opaque), len(opaque) - len(missed)))
+    ck.check("I3-bis 正控：这条判据不是空转（基线确实有 ≥12 条不透明表面）",
+             len(opaque) >= 12, "%d 条" % len(opaque))
+
+    for sel, label in ((".card", "卡片正文"), (".day", "周表格子"), (".tab", "页签文字"),
+                       (".blk.course", "课程条"), (".blk.todo", "待办条"), (".blk.done", "已完成条"),
+                       ("header", "顶栏标题（白字压在蓝色半透明渐变上）")):
+        r_dark, eff_d = _plan_ratio(src, sel, PHOTO_DARK)
+        r_bright, eff_b = _plan_ratio(src, sel, PHOTO_BRIGHT)
+        ck.check("I4 %s %-34s 暗部 %.2f:1 / 亮部 %.2f:1 都 ≥ 4.5" % (label, sel, r_dark or -1, r_bright or -1),
+                 r_dark is not None and r_bright is not None and r_dark >= 4.5 and r_bright >= 4.5,
+                 "%s / %s" % (eff_d, eff_b))
+
+    # 反向对照：这页为什么不跟学生端共用那层深色玻璃 —— 深字压在 --surface 上就是 G 批那个病。
+    dark_eff = _over(("rgba", (16, 36, 28, .52)), PHOTO_DARK)
+    r_wrong = _ratio("#1f2733", dark_eff)
+    ck.check("I5 反控：把卡片底换成学生端那层深色 --surface，同一句深字只有 %.2f:1（< 1.5 ⇒ 上面那阈值分得出好坏）" % r_wrong,
+             r_wrong < 1.5, "%s → %.2f:1" % (dark_eff, r_wrong))
+
+    ck.check("I6 「不用图」是摘总闸不是黑底（classList.toggle('gx-glass', …)）",
+             "root.classList.toggle('gx-glass', !!on)" in src)
+    ck.check("I6-bis 关掉总闸这页就是原来那套浅色（基线 body 底色没被动）",
+             "background: #f4f6fb" in " ".join(base.get("body", [])))
+    ck.check("I7 背景表两处逐项相等（bg.js ↔ student.html 的 GX_BGS，谁也不许拼路径）",
+             sorted(re.findall(r'^\s*(\w+):\s*"(/static/bg/[\w.]+)"', js, re.M))
+             == sorted(re.findall(r'(\w+):\s*\{[^}]*?src:"(/static/bg/[\w.]+)"', st))
+             and len(re.findall(r'^\s*(\w+):\s*"', js, re.M)) == 4,
+             "bg.js 四条 / GX_BGS 引用 %d 条" % len(re.findall(r'src:"/static/bg/', st)))
+    # 这页没有学生端那 12 行 token 表（那在 student.html 的内联样式里），所以玻璃段里
+    # 一旦写 var(--surface)/var(--bg)，在这页就是**未定义变量** ⇒ 整条声明失效、表面变透明板。
+    gsec = " ".join(" ".join(bs) for bs in _plan_pairs(src)[1].values())
+    ck.check("I8 右上角不再写「← 登录」（人已经登录了还写着登录）、两个入口的 href 没动",
+             "← 登录" not in src and "换个身份" in src
+             and 'href="/"' in src and 'href="/student"' in src)
+    ck.check("I9 玻璃段没引用这页没有的 token（var( 出现 %d 次）" % gsec.count("var("),
+             "var(" not in gsec, gsec[:90])
+
+
 def batch_reply_text_untouched(ck):
     title("F. 反向：回话文本里的 emoji 是文案，本次不该被顺手删")
     src = read(STUDENT)
@@ -480,6 +591,7 @@ def main():
     batch_http(ck)
     batch_notice(ck)
     batch_glass_contrast(ck)
+    batch_plan_glass(ck)
     batch_reply_text_untouched(ck)
     return ck.summary("test_44 玻璃层与背景偏好")
 
