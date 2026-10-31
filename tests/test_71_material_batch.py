@@ -259,13 +259,13 @@ def batch_b_end_to_end():
         # ── G2 上文污染：先在同一会话里留下一轮**带日期时段**的回话（列待办），再粘材料。
         #    （第一版拿"图书馆几点闭馆"当上文，变异 M2 把历史拼进提取都测不出红 ——
         #      那句回话里没有可被当成待办的字段；上文里必须**有可漏的东西**，这条才不是空跑。）
-        seed_todos([{"title": "高数作业", "date": "2026-10-30", "start": "09:00", "end": "10:00"}])
+        seed_todos([{"title": "高数作业", "date": _iso(0), "start": "09:00", "end": "10:00"}])
         d0, a0, _ = _say(cli, "我有哪些待办", module="planner", sid="t71-g2")
         d2, a2, _ = _say(cli, TABLE, sid="t71-g2")
         card2 = _card(d2)
         from app.modules.faq import search_kb
         c.check("G2-bis 见证：上一轮那条回话里**确实有一件带日期时段的事**（这才是可漏的上文）",
-                "高数作业" in a0 and "2026-10-30" in a0, a0[:80])
+                "高数作业" in a0 and _iso(0) in a0, a0[:80])
         c.check("G2 上文在列待办、再粘考试通知 → 卡里只有考试（历史那条不许混进来）",
                 _titles(card2) == ["离散数学考试"], str(_titles(card2)))
         c.check("G2-三 文档里那句闭馆事实是真的存在（知识库里查得到），但这条气泡里没有它",
@@ -360,7 +360,7 @@ def batch_b_end_to_end():
                 c11.get("kind") == "todo_add_batch" and "新生体检" in _titles(c11), str(_titles(c11)))
         r12 = cli.post("/api/todos/items_add", json={
             "session_id": "t71-g12x", "items": [
-                {"title": "图书馆读书会上午场", "date": "2026-10-30", "start": "10:00", "end": "11:00"}]})
+                {"title": "图书馆读书会上午场", "date": _iso(0), "start": "10:00", "end": "11:00"}]})
         c.check("B4 不带 from_card 的调用（面板/自动化直接打接口）照常写 —— 销卡闸只认卡片那一路",
                 r12.status_code == 200 and r12.json().get("count") == 1,
                 json.dumps(r12.json(), ensure_ascii=False)[:110])

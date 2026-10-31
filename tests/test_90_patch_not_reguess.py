@@ -21,6 +21,7 @@
   3. A 批依赖沙箱那个空周表学生；断言全部写成**性质**（times/preselect/minutes/title），
      不写死段数 —— 段数会随库里的课和待办漂。
 """
+import datetime
 import io
 import os
 import re
@@ -33,6 +34,17 @@ from _harness import Checker, make_client, sandbox  # noqa: E402
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 
 c = Checker()
+
+
+def _next_sat() -> str:
+    """今天**之后**的下一个周六（不含今天）。
+
+    「改成周六」的解析基准是今天：今天周三就取本周六，今天正好周六就取下一周。
+    以前这里把期望写死成 `"2026-10-31"`，走到那天（2026-10-31 恰好是周六）就永久红 ——
+    断言不该知道日历停在哪一页。`% 7 or 7` 就是"本周六已过/正是当天 ⇒ 取下一周"。
+    """
+    t = datetime.date.today()
+    return (t + datetime.timedelta(days=(5 - t.weekday()) % 7 or 7)).strftime("%Y-%m-%d")
 
 
 def read(rel):
@@ -143,7 +155,7 @@ with sandbox():
     c.check("B4 T5：只换日子、没说几点 → 长度**沿用卡上那条 60**（以前落到 90，"
             "学生改的是日子、长度被系统顺手加长了 30 分钟）",
             r5 is not None and r5.get("minutes") == 60 and r5.get("title") == "健身"
-            and r5.get("date") == "2026-10-31",
+            and r5.get("date") == _next_sat(),
             "r=%s" % (r5 and {k: r5.get(k) for k in ("title", "date", "start", "end",
                                                      "minutes")}))
     r5b = P.retime_todo_proposal(card60, "改成周六 21:00-22:30")
