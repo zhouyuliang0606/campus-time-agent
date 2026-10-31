@@ -28,6 +28,7 @@ from _harness import PROJ_DIR, Checker, title  # noqa: E402
 
 STATIC = os.path.join(PROJ_DIR, "app", "static")
 STUDENT = os.path.join(STATIC, "student.html")
+STATION = os.path.join(STATIC, "station.html")
 GLASS = os.path.join(STATIC, "glass.css")
 BG_DIR = os.path.join(STATIC, "bg")
 
@@ -323,7 +324,7 @@ def _tk_rain():
     return dict(re.findall(r"(--[\w-]+):\s*([^;]+);", blk))
 
 
-def _plan_pairs(text):
+def _css_pairs(text):
     """plan.html → (基线规则表, 玻璃段规则表)，键都按展开逗号后的选择器归一。"""
     head = re.sub(r"/\*.*?\*/", "", text[:text.index("</style>")], flags=re.S)
     base, glass = {}, {}
@@ -379,7 +380,7 @@ def _veil_of(text):
     return one("--gx-scrim"), one("--gx-vm")
 
 
-def _plan_photo(text, photo_hex, tk):
+def _veiled_photo(text, photo_hex, tk):
     """照片先过这页自己那层纱（公共层 .gx-veil 用的是同一个 --veil-rgb），得到"字真正压着的底"。"""
     scrim, vm = _veil_of(text)
     # --veil-rgb 的值是**裸三元组**「7,19,13」，不是 var()/hex/rgba 那三种写法 ⇒ 单独取数。
@@ -403,13 +404,13 @@ def _decl(body, prop):
     return None
 
 
-def _plan_ratio(text, selector, photo_hex, tk):
+def _glass_ratio(text, selector, photo_hex, tk):
     """这个选择器在玻璃档下的实际对比度：现读它的 background 与生效字色，逐层合成到"照片 + 纱"上。
 
     没写 background 的就是透明（卡片、格子那一族）⇒ 底就是"照片 + 纱"本身；
     渐变取第一个色标（顶栏那条是 linear-gradient(135deg, rgba(...), rgba(...))）。
     """
-    base, glass = _plan_pairs(text)
+    base, glass = _css_pairs(text)
     gbody = " ".join(glass.get(selector, []))
     bg = _decl(gbody, "background")
     if bg and bg.startswith("linear-gradient"):
@@ -418,7 +419,7 @@ def _plan_ratio(text, selector, photo_hex, tk):
     fill = _col(bg, tk) if bg else None
     if fill == "BAD":
         return None, None
-    veiled, _, _ = _plan_photo(text, photo_hex, tk)
+    veiled, _, _ = _veiled_photo(text, photo_hex, tk)
     eff = _over(fill, veiled) if fill else veiled
     for src in (gbody, " ".join(base.get(selector, [])), " ".join(glass.get("body", [])),
                 " ".join(base.get("body", []))):
@@ -439,9 +440,10 @@ def batch_plan_glass(ck):
     st = read(STUDENT)
     tk = _tk_rain()
 
-    ck.check("I1 plan.html 引用了 glass.css 与 bg.js，且 <link> 排在内联样式之后",
+    ck.check("I1 plan.html 引用了 glass.css 与 bg.js，且 <link> 排在内联样式之后"
+             "（#93 把 index() 换成 find() —— 上一轮 Q7 抓到 I2 同一个病：链接被摘掉时判据自己崩，不给读数）",
              'href="/static/glass.css"' in src and 'src="/static/bg.js"' in src
-             and src.index("</style>") < src.index('/static/glass.css"'))
+             and 0 <= src.find("</style>") < src.find('href="/static/glass.css"'))
     pos = [(s, src.find(s)) for s in ("<body>", 'id="gxBg"', 'class="gx-veil"', "<header")]
     idx = [v for _k, v in pos]
     ck.check("I2 背景图与暗纱两个节点都在 <body> 开头、都在 <header> 之前（缺节点报 -1，不许崩）",
@@ -452,7 +454,7 @@ def batch_plan_glass(ck):
              and src.count('class="gx-veil" aria-hidden="true"') == 1
              and 'header class="gx-root"' in src and 'class="wrap gx-root"' in src)
 
-    base, glass = _plan_pairs(src)
+    base, glass = _css_pairs(src)
     opaque = {s for s, bs in base.items()
               if any(re.search(r"background:\s*(#[0-9a-fA-F]{3,6}|linear-gradient)", b) for b in bs)}
     # 「被接管」= 玻璃段真的给它声明了 background（只写 border-color 的那条不算 —— 变异 Q6 抓到过这个弱判据）
@@ -469,14 +471,14 @@ def batch_plan_glass(ck):
                        (".blk.course", "课程条"), (".blk.todo", "待办条"), (".blk.done", "已完成条"),
                        (".mevt.course", "月表课程条"), (".titem .tt", "明细标题"),
                        (".small", "辅助小字"), ("header", "顶栏")):
-        r_d, eff_d = _plan_ratio(src, sel, PHOTO_DARK, tk)
-        r_b, eff_b = _plan_ratio(src, sel, PHOTO_BRIGHT, tk)
+        r_d, eff_d = _glass_ratio(src, sel, PHOTO_DARK, tk)
+        r_b, eff_b = _glass_ratio(src, sel, PHOTO_BRIGHT, tk)
         ck.check("I4 %-8s %-16s 暗部 %s:1 / 亮部 %s:1 都 ≥ 4.5" % (
                  label, sel, ("%.2f" % r_d) if r_d else "—", ("%.2f" % r_b) if r_b else "—"),
                  r_d is not None and r_b is not None and r_d >= 4.5 and r_b >= 4.5,
                  "%s / %s" % (eff_d, eff_b))
 
-    veiled_bright, scrim, vm = _plan_photo(src, PHOTO_BRIGHT, tk)
+    veiled_bright, scrim, vm = _veiled_photo(src, PHOTO_BRIGHT, tk)
     r_dark_text = _ratio("#1f2733", veiled_bright)
     ck.check("I5 反控：基线那句深字压在「照片 + 纱」上只有 %.2f:1（< 1.5 ⇒ 表面透明就必须翻字色，且上面那阈值分得出好坏）" % r_dark_text,
              r_dark_text < 1.5, "%s → %.2f:1" % (veiled_bright, r_dark_text))
@@ -688,6 +690,99 @@ def batch_glass_contrast(ck):
              pr_now is not None and pr_now >= 4.5 and pr_old is not None and pr_old < 2.5,
              "%.2f / %.2f" % (pr_now or -1, pr_old or -1))
 
+def batch_station_glass(ck):
+    title("J. /station 的玻璃档：表面透明 + 一层暗纱 + 浅字（#93 照 #92 那一版接）")
+    src = read(STATION)
+    tk = _tk_rain()
+    base, glass = _css_pairs(src)
+
+    at_style, at_glass = src.find("</style>"), src.find('href="/static/glass.css"')
+    at_bgjs, at_ct = src.find('src="/static/bg.js"'), src.find("window.CT_BG_SRC")
+    ck.check("J1 接线顺序：glass.css 排在 </style> **之后**、bg.js 排在用到 CT_BG_SRC 的那段之前（反了玻璃就白写；用 find 不用 index，缺节点报 -1 不许崩）",
+             at_glass >= 0 and at_bgjs >= 0 and at_style >= 0 and at_ct >= 0
+             and at_style < at_glass and at_bgjs < at_ct,
+             "style@%s glass@%s bgjs@%s ctbg@%s" % (at_style, at_glass, at_bgjs, at_ct))
+    pos = [(s, src.find(s)) for s in ("<body>", 'id="gxBg"', 'class="gx-veil"', 'class="shell gx-root"')]
+    idx = [v for _k, v in pos]
+    ck.check("J2 照片与暗纱都在 <body> 开头、都在内容层之前，两个都标 aria-hidden、内容层抬到 gx-root（缺节点报 -1，不许崩）",
+             all(v >= 0 for v in idx) and idx == sorted(idx)
+             and src.count('class="gx-backdrop" id="gxBg" alt="" aria-hidden="true"') == 1
+             and src.count('class="gx-veil" aria-hidden="true"') == 1, str(pos))
+
+    opaque = {s for s, bs in base.items()
+              if any(re.search(r"background:\s*(#[0-9a-fA-F]{3,6}|linear-gradient)", b) for b in bs)}
+    missed = sorted(s for s in opaque if not any(
+        re.search(r"(^|;)\s*background\s*:", b) for b in glass.get(s, [])))
+    ck.check("J3 基线每一条不透明表面都被玻璃段接管（漏 %d 条：%s）" % (len(missed), missed[:8]),
+             not missed, "不透明面 %d 条 / 接管 %d 条" % (len(opaque), len(opaque) - len(missed)))
+    ck.check("J3-bis 正控：这条不是空转（这页基线确实有 ≥30 条不透明表面）",
+             len(opaque) >= 30, "%d 条" % len(opaque))
+
+    # 扫描闸（#89 那条 G1 的同形判据）：玻璃段改了底、基线写过**写死的** color、玻璃段却没写字 ⇒ 就是"换底没换字"
+    leak = sorted(s for s, bs in glass.items()
+                  if re.search(r"(^|;)\s*background\s*:", " ".join(bs))
+                  and not re.search(r"(^|;)\s*color\s*:", " ".join(bs))
+                  and any(re.search(r"(^|;)\s*color\s*:\s*#", b) for b in base.get(s, [])))
+    ck.check("J4 改了底就必须写字：玻璃段带 background、基线那句 color 是写死的、这段却没写字 ⇒ 深字压暗底（漏 %d 处：%s）"
+             % (len(leak), leak[:8]), not leak)
+
+    # 三个输入框：基线 background 与 color **都没写** ⇒ 浏览器给的是"白底黑字"，两头都得补
+    ins = [" ".join(glass.get(s, [])) for s in (".inputbar input", ".svcAdd input", ".svc form input")]
+    ck.check("J5 三个输入框在玻璃段各自声明了 background 与 color（漏一个就是白底黑字压在暗页上）",
+             all(re.search(r"(^|;)\s*background\s*:", x) and re.search(r"(^|;)\s*color\s*:", x) for x in ins),
+             " / ".join(x[:26] or "（没写）" for x in ins))
+
+    for sel, label in (("body", "正文"), (".sb-item", "左栏条目"), (".sb-item.active", "选中的左栏条目"),
+                       (".sb-num", "未处理角标"), (".topbar .t", "顶栏标题"), (".tb-link", "顶栏返回"),
+                       (".msg .who", "气泡上方的名字"), (".user .bubble", "店员自己那条"),
+                       (".bot .bubble", "回话气泡"), (".sys .bubble", "系统提示气泡"),
+                       (".trace", "思考轨迹"), (".chip", "快捷芯片"), (".chip.warn", "警示芯片"),
+                       (".tag", "标签"), (".inputbar input", "对话输入框"),
+                       (".inputbar button", "发送键"), (".woItem .st", "未处理标"),
+                       (".woItem .st.done", "已完成标"), (".woItem .who", "工单归属"),
+                       (".svc .pill", "服务标签"), (".dlg-head", "弹窗标题"),
+                       (".dlg-btn.danger", "弹窗危险键")):
+        r_d, eff_d = _glass_ratio(src, sel, PHOTO_DARK, tk)
+        r_b, eff_b = _glass_ratio(src, sel, PHOTO_BRIGHT, tk)
+        ck.check("J6 %-10s %-18s 暗部 %s:1 / 亮部 %s:1 都 ≥ 4.5" % (
+                 label, sel, ("%.2f" % r_d) if r_d else "—", ("%.2f" % r_b) if r_b else "—"),
+                 r_d is not None and r_b is not None and r_d >= 4.5 and r_b >= 4.5,
+                 "%s / %s" % (eff_d, eff_b))
+
+    veiled_bright, scrim, vm = _veiled_photo(src, PHOTO_BRIGHT, tk)
+    r_dark_text = _ratio("#1f2733", veiled_bright)
+    ck.check("J7 反控：基线那句深字 #1f2733 压在「照片 + 纱」上只有 %.2f:1（< 1.5 ⇒ 表面透明就必须翻字色）" % r_dark_text,
+             r_dark_text < 1.5, "%s → %.2f:1" % (veiled_bright, r_dark_text))
+    ck.check("J7-bis 这页确实自己选了纱（--gx-scrim / --gx-vm 两个都读得出数）",
+             scrim is not None and vm is not None, "scrim=%s vm=%s" % (scrim, vm))
+    ck.check("J8 纱的浓度在 [.30,.60]：太浅字读不出、太深等于把背景图糊没",
+             scrim is not None and vm is not None and .30 <= scrim <= .60 and .30 <= vm <= .60,
+             "scrim=%s vm=%s" % (scrim, vm))
+
+    whites = sorted({float(a) for bs in glass.values() for a in re.findall(
+        r"rgba\(255,\s*255,\s*255,\s*([\d.]+)\)", " ".join(bs))} or {0.0})
+    ck.check("J9 不许走回白磨砂：玻璃段白色填充的最大 alpha = %s（必须 ≤ .10）" % whites[-1],
+             whites[-1] <= .10, "白色 alpha 集合=%s" % whites)
+
+    used = sorted({m for bs in glass.values() for m in re.findall(r"var\((--[\w-]+)\)", " ".join(bs))})
+    undef = [v for v in used if v not in tk]
+    ck.check("J10 玻璃段引用的 token 全在 glass.css 的 .tk-rain 里有定义（用了没定义的那条声明整条失效）"
+             "｜用了 %d 个，未定义：%s" % (len(used), undef or "无"), not undef, "用了 %s" % used[:8])
+
+    ck.check("J11 「不用图」是摘总闸不是黑底（classList.toggle('gx-glass', …)）",
+             "root.classList.toggle('gx-glass', !!on)" in src)
+    ck.check("J11-bis 关掉总闸这页就是原来那套浅色（基线 body 底色与字色都没被动）",
+             "background: #f4f6fb" in " ".join(base.get("body", []))
+             and "color: #1f2733" in " ".join(base.get("body", [])))
+    ck.check("J12 这页不自己拼图片路径（只走 bg.js 那张表；撤过的 park/space 拼出来就是 404 白屏）",
+             "/static/bg/" not in src, "拼路径字样出现 %d 次" % src.count("/static/bg/"))
+    tb_at = src.find('<div class="topbar">')
+    tb = src[tb_at:tb_at + 260]
+    hrefs = re.findall(r'href="([^"]+)"', tb)
+    ck.check("J13 顶栏还是一颗返回、指向 /（#93 只动视觉层，文案与出口没顺手改）｜这片里的 href = %s" % hrefs,
+             hrefs == ["/"] and "返回登录" in tb, "href=%s" % hrefs)
+
+
 def main():
     ck = Checker()
     batch_structure(ck)
@@ -699,6 +794,7 @@ def main():
     batch_notice(ck)
     batch_glass_contrast(ck)
     batch_plan_glass(ck)
+    batch_station_glass(ck)
     batch_reply_text_untouched(ck)
     return ck.summary("test_44 玻璃层与背景偏好")
 

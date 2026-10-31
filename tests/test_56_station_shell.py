@@ -10,7 +10,8 @@
      S1 那一版「不许调 /api/chat/reset」的前提是"station 每轮都是新 session、清服务端是个谎"；
      #30（2026-10-17）把会话固定成一段之后，这个前提**反了** —— 服务端真的存着这段对话，
      于是清空必须两边一起清（见 F 批），只擦屏幕就成了"演一遍清干净"。
-  ⑤ 会话载体（F 批）：**sessionStorage**，不是学生端那个 localStorage。
+  ⑤ 会话载体（F 批）：**sessionStorage**，不是学生端那个 localStorage
+     （#93 起 ct_bg 是脚本里唯一一处 localStorage，判据逐行核过 —— 见 F 批那条改口说明）。
 """
 import pathlib
 import re
@@ -63,9 +64,16 @@ def batch_a_shell():
             {"chat", "wo", "svc", "persona"}, "")
     c.check("主色还是驿站那套青绿，没把学生端的蓝抄过来（抄错色是这类改造最常见的整族不一致）",
             "#4f7cff" not in st and "#17b8a6" in st, "")
-    c.check("没塞新依赖：只引 esc.js，没 glass.css、没 SVG 精灵、没框架",
-            st.count('<script src=') == 1 and "esc.js" in st
-            and not any(k in st for k in ("glass.css", "<symbol", "react", "vue")), "")
+    c.check("依赖（#93 改口）：这页必须引 glass.css 与 bg.js，且各有位置要求；但仍然没有 SVG 精灵、没有框架。"
+            " ⚠️ 原来这条钉的是「只引 esc.js、不许有 glass.css」—— 那个口径被 2026-10-31 那张口头单（#93 驿站端接玻璃档）推翻了；"
+            " 同时把 count('<script src=')==1 这种**计数**换成**位置**判据（计数会被下一个合法改动顶成假红）。",
+            'href="/static/glass.css"' in st and 'src="/static/bg.js"' in st
+            and st.index("</style>") < st.index('href="/static/glass.css"')
+            and st.index('src="/static/bg.js"') < st.index("window.CT_BG_SRC")
+            and "esc.js" in st and not any(k in st for k in ("<symbol", "react", "vue")),
+            "glass.css=%s bg.js=%s CT_BG_SRC=%s" % ('href="/static/glass.css"' in st,
+                                                    'src="/static/bg.js"' in st,
+                                                    "window.CT_BG_SRC" in st))
     c.check("图标用 emoji，不给学生端那套 <use> 引 symbol（引精灵 = 凭空 20 行死代码）",
             "💬" in st and "🛠️" in st and "🧩" in st and "🎭" in st, "")
     return c
@@ -197,9 +205,17 @@ def batch_f_fixed_session():
             stc.count("function stationSid()") == 1
             and "module: \"station\", session_id: stationSid()" in stc, "")
     c.check("载体必须是 **sessionStorage**（不是学生端那个 localStorage）："
-            "这台机器是店员的，关窗即「这次值班结束」；而 localStorage 同源共享会把两三个标签串成一段对话",
-            "sessionStorage.getItem(STATION_SID_KEY)" in stc and "localStorage" not in stc,
-            f"localStorage 出现 {stc.count('localStorage')} 次")
+            "这台机器是店员的，关窗即「这次值班结束」；而 localStorage 同源共享会把两三个标签串成一段对话。"
+            " ⚠️ #93 起有一处**有意的例外**：外观键 ct_bg 走 localStorage —— 它不是会话数据，是要与学生页同步的偏好"
+            "（同一台机器、同一个源）。所以这条从「脚本里不许出现 localStorage」改成两根**配对**判据："
+            " ① 值班 sid 那把键一个 localStorage 都不许碰；② 脚本里每一处 localStorage 必须与 ct_bg 同行"
+            "（多出一行不同路的，就是有人拿它存了别的东西）。",
+            "sessionStorage.getItem(STATION_SID_KEY)" in stc
+            and not re.search(r"localStorage\.[gs]etItem\(\s*STATION_SID_KEY", stc)
+            and all("ct_bg" in ln for ln in stc.splitlines() if "localStorage" in ln),
+            f"localStorage 出现 {stc.count('localStorage')} 次；非 ct_bg 那几行=%s" % [
+                ln.strip()[:56] for ln in stc.splitlines()
+                if "localStorage" in ln and "ct_bg" not in ln])
     c.check("选 sessionStorage 的理由写在注释里（不写，下一个人会「顺手统一成 localStorage」）",
             "localStorage 同源共享" in st and "值班结束" in st, "")
     c.check("新 id 的生成只有一份（前缀 st 便于在 sessions.json 里一眼分清）",
