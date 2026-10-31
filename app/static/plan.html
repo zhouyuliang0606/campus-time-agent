@@ -123,46 +123,69 @@
     .mini.danger { color: #e0414a; border-color: #f3c2c5; }
     #status { font-size: 12px; color: #4a5366; margin-left: 8px; }
 
-    /* ============ 玻璃档（2026-10-31）：让这页也吃到学生端那张背景图 ============
-       口径与学生端一致：**整段只挂在 html.gx-glass 上**。「设置 → 背景 → 不用图」把总闸一摘，
-       下面全部失效，页面回到上面那套浅色原样 —— 关掉即还原，不养第二套样式。
-       ⚠️ 这页是**浅色页**（深字 #1f2733），所以这里做的是"浅色磨砂"，不是学生端那层深色玻璃：
-       只把不透明白底换成半透明白 + 模糊，**一个字色都不动**（底色仍是亮的，
-       "换底必须换字"那族 bug 在这里的适用方式就是"不换底到深色"）。*/
-    html.gx-glass body { background: transparent; }
-    html.gx-glass header { background: linear-gradient(135deg, rgba(52,84,200,.94), rgba(74,62,196,.94)); backdrop-filter: blur(8px); }
-    html.gx-glass .card { background: rgba(255,255,255,.86); backdrop-filter: blur(8px); box-shadow: 0 6px 22px rgba(6,10,24,.30); }
-    html.gx-glass .tab { background: rgba(255,255,255,.80); border-color: rgba(255,255,255,.55); color: #4a5366; }
-    html.gx-glass .tab.active { background: rgba(79,124,255,.92); color: #fff; border-color: transparent; }
-    html.gx-glass .btn { background: rgba(79,124,255,.92); }
-    html.gx-glass .btn.ghost { background: rgba(238,242,255,.86); }
-    html.gx-glass .week-head { background: rgba(255,255,255,.90); }
-    html.gx-glass .col.today { background: rgba(247,250,255,.70); }
-    html.gx-glass .day { background: rgba(255,255,255,.80); }
-    html.gx-glass .day.today { background: rgba(247,250,255,.78); }
-    html.gx-glass .day.sel { background: rgba(238,242,255,.80); }
-    html.gx-glass .blk.course, html.gx-glass .mevt.course { background: rgba(234,241,255,.88); }
-    html.gx-glass .blk.todo, html.gx-glass .mevt.todo { background: rgba(255,245,230,.88); }
-    html.gx-glass .blk.done, html.gx-glass .mevt.todo.done { background: rgba(238,247,239,.95); }
-    html.gx-glass .titem { background: rgba(255,255,255,.78); border-color: rgba(255,255,255,.5); }
-    html.gx-glass .titem .mini { background: rgba(255,255,255,.84); }
-    /* 那两块确认区是**内联样式**，类规则压不动，只能 !important（学生端 LEAK 那条同一招）。 */
-    html.gx-glass #ttConfirm { background: rgba(255,248,239,.92) !important; }
+    /* ============ 玻璃档（2026-10-31 第二版）：表面全透明 + 一层暗纱 + 字翻浅色 ============
+       第一版做的是"白磨砂"（不透明白底换成半透明白），用户看了实物说太丑 ⇒ 这版按他要的透明做。
+       ⚠️ 透明不是只删底色：这页原来通体是**深字压浅底**，表面一透明，深字就压在星空图上 ——
+       正是 #89 上午刚修掉的那个病（CSS 不报错、页面照开、只是读不出字）。
+       所以这三件必须一起改：**表面透明 + 字色翻浅 + 页面自己垫一层暗纱**。
+       暗纱复用公共层的 .gx-veil（不在这里重抄一份遮罩实现），只把这页自己选的浓度写下来：
+       --gx-scrim .42 / --gx-vm .46 —— 比学生页按图反解的那档更沉，因为这页没有卡片底色替字垫底。
+       口径照旧：整段只挂在 html.gx-glass 上，「设置 → 背景 → 不用图」一摘总闸就回到浅色原样。 */
+    html.gx-glass { --gx-scrim:.42; --gx-vm:.46; }
+    html.gx-glass body { background: transparent; color: var(--theme-fg); }
+    html.gx-glass header { background: rgba(var(--veil-rgb),.42); color: var(--theme-fg); backdrop-filter: blur(6px); }
+    html.gx-glass header p { opacity: .82; }
+    html.gx-glass header a { color: var(--theme-fg2); }
+    html.gx-glass header a:hover { color: var(--theme-primary); }
+    /* 卡片与格子：全透明，只留一条边把结构撑住（边用公共层的 --theme-border，别自己造数） */
+    html.gx-glass .card { background: transparent; border: 1px solid var(--theme-border); box-shadow: none; }
+    html.gx-glass .week-head { background: rgba(var(--veil-rgb),.80); }
+    html.gx-glass .week-head div { color: var(--theme-fg2); }
+    html.gx-glass .week-head div.today { color: var(--theme-primary); }
+    html.gx-glass .col.today, html.gx-glass .day, html.gx-glass .day.today, html.gx-glass .day.sel { background: transparent; }
+    html.gx-glass .day { border-color: var(--theme-border); }
+    html.gx-glass .day.today { box-shadow: inset 0 0 0 1px rgba(var(--primary-rgb),.5); }
+    html.gx-glass .day .num { color: var(--theme-fg); }
+    html.gx-glass .day .num .wd { color: var(--theme-fg2); }
+    html.gx-glass .day .num .tdy { color: var(--theme-primary); }
+    html.gx-glass .gutter, html.gx-glass .gutter div { color: var(--theme-muted-fg); }
+    /* 三条色块：亮色低饱和填充 + 亮字（数值与学生页 .evt.* 同一档，两页看着是一套东西） */
+    html.gx-glass .blk.course, html.gx-glass .mevt.course { background: rgba(var(--primary-rgb),.14); border-color: rgba(var(--primary-rgb),.42); color: var(--theme-fg); }
+    html.gx-glass .blk.todo, html.gx-glass .mevt.todo { background: rgba(242,180,92,.14); border-color: rgba(242,180,92,.45); color: #f7ddb2; }
+    html.gx-glass .blk.done, html.gx-glass .mevt.todo.done { background: rgba(125,196,138,.14); border-color: #7dc48a; color: #b9e2c2; }
+    html.gx-glass .blk .t, html.gx-glass .mevt { color: inherit; }
+    html.gx-glass .tab { background: rgba(255,255,255,.06); border-color: var(--theme-border2); color: var(--theme-fg2); }
+    html.gx-glass .tab.active { background: rgba(var(--primary-rgb),.20); border-color: rgba(var(--primary-rgb),.5); color: var(--theme-primary); }
+    html.gx-glass .btn { background: rgba(var(--primary-rgb),.18); border: 1px solid rgba(var(--primary-rgb),.42); color: var(--theme-primary); }
+    html.gx-glass .btn.ghost { background: rgba(255,255,255,.05); border: 1px solid var(--theme-border2); color: var(--theme-fg2); }
+    html.gx-glass .small, html.gx-glass .legend, html.gx-glass .more, html.gx-glass #status, html.gx-glass .empty { color: var(--theme-muted-fg); }
+    html.gx-glass .titem { background: rgba(255,255,255,.04); border-color: var(--theme-border); }
+    html.gx-glass .titem .tm { color: var(--theme-muted-fg); }
+    html.gx-glass .titem .tt { color: var(--theme-fg); }
+    html.gx-glass .titem.done .tt { color: var(--theme-muted-fg); }
+    html.gx-glass .titem .mini { background: rgba(255,255,255,.06); border-color: var(--theme-border2); color: var(--theme-fg2); }
+    html.gx-glass .mini.danger { color: #ffc9c9; border-color: rgba(232,85,85,.4); }
+    html.gx-glass .detail { border-top-color: var(--theme-border); }
+    /* 内联样式那几处：类规则压不动，只能 !important（学生端 LEAK 那条同一招）。 */
+    html.gx-glass #ttConfirm { background: rgba(242,180,92,.10) !important; border-color: rgba(242,180,92,.45) !important; color: #f7ddb2; }
+    html.gx-glass .legend i[style*="#eaf1ff"] { background: rgba(var(--primary-rgb),.14) !important; border-left-color: rgba(var(--primary-rgb),.42) !important; }
+    html.gx-glass .legend i[style*="#fff5e6"] { background: rgba(242,180,92,.14) !important; border-left-color: rgba(242,180,92,.45) !important; }
+    html.gx-glass .legend i[style*="#eef7ef"] { background: rgba(125,196,138,.14) !important; border-left-color: #7dc48a !important; }
   </style>
 </head>
   <link rel="stylesheet" href="/static/glass.css" />
   <script src="/static/bg.js"></script>
 <body>
   <img class="gx-backdrop" id="gxBg" alt="" aria-hidden="true" />
-  <header>
+  <div class="gx-veil" aria-hidden="true"></div>
+  <header class="gx-root">
     <h1>我的日程
-      <a href="/">换个身份</a>
-      <a href="/student">去问 AI →</a>
+      <a href="/student">← 返回</a>
     </h1>
     <p>周表照课表排，待办插在课程之间；月表一眼看见哪天有几件事</p>
   </header>
 
-  <div class="wrap">
+  <div class="wrap gx-root">
     <div class="tabs">
       <button class="tab active" id="tabWeek">周表</button>
       <button class="tab" id="tabMonth">月表</button>
