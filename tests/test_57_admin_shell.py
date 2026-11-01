@@ -166,8 +166,9 @@ def batch_d_token_bar():
             "const _poll = (fn) => () => { if (!adminLocked) fn().catch(() => {}); };" in st, "")
     c.check("#inbox 原来那句 max-height:360px 整族删净（外壳自带滚动，两处都限就是套两层滚动条）",
             "max-height: 360px" not in st, "")
-    c.check("口令条的提示与 403 那句都指向「两个来源」（服务端设的环境变量 / 启动横幅那串），"
-            "不许再只指 .env —— .env 被 .gitignore 收了、云上部署根本没有这个文件（#94 就是把这句纠掉的）",
+    c.check("口令条的提示指向「两个来源」（服务端设的环境变量 / 启动横幅那串），"
+            "不许再只指 .env —— .env 被 .gitignore 收了、云上部署根本没有这个文件（#94 就是把这句纠掉的；"
+            "#99 把原来同在这句话里的 403 那支删了，见下面 P3）",
             "启动横幅" in bar and "[管理口令]" in st and "在 .env 加一行" not in st,
             "bar 含横幅=%s ｜全页 .env 加一行残留=%s" % ("启动横幅" in bar, "在 .env 加一行" in st))
     # #96 的两条：窄屏不许"失明"，且被拒/成功两根轴各要有一非文字反馈。
@@ -198,6 +199,60 @@ def batch_d_token_bar():
     clear = st.count('getElementById("adminToken").style.borderColor = ""')
     c.check("被拒与成功**两支各有一根**不依赖文字的反馈（少第一根=窄屏被拒毫无反应，少第二根=进去了框还红着）",
             red == 1 and clear == 1, "拒绝那支=%d 处｜恢复那支=%d 处" % (red, clear))
+
+    # ---- #99：口令对了，状态条必须说"成功" ----
+    # ⚠️ 票面 P1 写的是「『正在重新拉取』的**同一函数内**必须有成功文案」——实测在 L0 修法下**不成立**：
+    #    pending 那句在 initTokenBar 的 click handler 里，成功文案在 adminFetch 里，是两个函数。
+    #    §一 自己也解释了为什么不能放同一个：点按钮那一刻七个 loader 还没回，放那儿就是"定时报成功"（M1/M5）。
+    #    所以判据拆成两端各钉一次：pending 还在（正控）+ 成功文案只在 adminFetch + click handler 不许抢先宣布。
+    def _fn_body(src, head):
+        i = src.index(head)
+        j = src.index(") {", i) + 2   # 参数表里可能有 `opts = {}`，不能取第一个 `{`
+        depth = 0
+        while j < len(src):
+            if src[j] == "{":
+                depth += 1
+            elif src[j] == "}":
+                depth -= 1
+                if depth == 0:
+                    return src[i:j + 1]
+            j += 1
+        return ""
+
+    js = code_of(st)
+    bar_fn = _fn_body(st, "function initTokenBar")
+    fetch_fn = _fn_body(st, "async function adminFetch")
+    pending = "正在重新拉取"
+    # 「有效 / 生效」两个词是票面验收口径（状态里要含其一）；在 click handler 里出现它 = 还没回包就宣布成功
+    claims = ("有效", "生效")
+    c.check("P1 状态条两端各钉一次：pending 那句仍在 click handler 里（**正控**：它不在=判据对着空气转），"
+            "成功文案在 adminFetch 里，而 click handler 自己一个字都不许提「有效 / 生效」"
+            "（M1 的定时报成功、M5 的直接改文案都死在这一条上）",
+            pending in bar_fn and any(k in fetch_fn for k in claims)
+            and not any(k in bar_fn for k in claims),
+            "handler 含 pending=%s｜adminFetch 含成功词=%s｜handler 抢先宣布成功=%s"
+            % (pending in bar_fn, [k for k in claims if k in fetch_fn],
+               [k for k in claims if k in bar_fn]))
+    i_gate = fetch_fn.find("if (resp.status === 401")
+    i_http = fetch_fn.find('throw new Error("HTTP "')
+    i_ok = fetch_fn.find('if (getAdminToken()) setTokenStatus("✅ 口令有效')
+    i_ret = fetch_fn.find("return resp;")
+    i_first = fetch_fn.find("setTokenStatus(")
+    c.check("P2 回写落在**成功路径**上：401/403 那支之后、非 2xx 抛异常之后、return 之前，"
+            "且自带 getAdminToken() 那道保险（没填口令时不许出现「口令有效」）；"
+            "整个封装里**第一次** setTokenStatus 也得在闸之后（M2 那种「进门先报成功」就死在这半句）",
+            -1 < i_gate < i_http < i_ok < i_ret and i_gate < i_first,
+            "401@%d http@%d 成功回写@%d return@%d｜首个 setTokenStatus@%d"
+            % (i_gate, i_http, i_ok, i_ret, i_first))
+    dead = "没设管理口令"
+    c.check("P3 那支走不到的 403 话术连它的错误解释一起删净（admin_guard 自 #94 起只回 401；"
+            "而那句把『没配口令』说成服务端坏了，现在是错的）—— 负向判据自己带一个 must-hit 样本",
+            dead not in js and "被服务端拒绝" not in js and "口令不对" in js and (dead in (js + dead)),
+            "JS（剔注释）里 403 那句=%d 处｜401 那句=%d 处" % (js.count(dead), js.count("口令不对")))
+    c.check("话术里的状态码跟着实际响应走（那道闸 401/403 都收，硬写『（401）』就会把 403 说成 401）",
+            "resp.status === 403" not in js or '口令不对（" + resp.status' in js,
+            "闸收 403=%s｜话术用 resp.status=%s" % ("resp.status === 403" in js,
+                                                  '口令不对（" + resp.status' in js))
     return c
 
 

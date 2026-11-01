@@ -308,7 +308,7 @@ def batch_e_honest_failure():
     iok = adm.find("if (!resp.ok)")
     itext = adm.find("resp.text()")
     c.check("非 2xx 在 adminFetch 这一处变成异常，而且排在 401/403 那支**之后**"
-            "（顺序倒了就把「服务器没设口令 / 口令不对」那句专属话术盖掉了，人不知道该干什么）",
+            "（顺序倒了就把「口令不对」那句专属话术盖掉了，人不知道该干什么）",
             i401 >= 0 and iok > i401 and 'throw new Error("HTTP " + resp.status' in adm,
             f"401@{i401} ok@{iok}")
     c.check("404 那句要把最可能的原因说出来（这次的真相就是服务还在跑旧代码），"
