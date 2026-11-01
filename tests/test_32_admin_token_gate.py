@@ -58,6 +58,10 @@ ADMIN_ENDPOINTS = [
     ("POST", "/api/admin/service-records/nosvc", {"fields": {"楼栋": "3"}}),
     ("POST", "/api/admin/service-records/nosuch/norec/status", {"status": "已解决"}),
     ("POST", "/api/admin/services", {"description": "门测：加一项服务"}),
+    # 2026-11-02 #106：改 / 删服务定义那一对。对象不存在时业务回 404 / 400 ——
+    # 这一批只问"门挡不挡"，参数不对不等于门没挂（同 kb / docs 那几条的理由）。
+    ("PUT", "/api/admin/services/nosvc", {"triggers": ["门测的词"]}),
+    ("DELETE", "/api/admin/services/nosvc", None),
     # 2026-10-22 #55-B：知识库拆词（只产建议、不写库，但它吃口令 ⇒ 也得挂门）
     ("POST", "/api/admin/kb/split", {"question": "门测：游泳馆价格"}),
     # 2026-10-25 #64：Agent 工作流那三条。前两条只读、第三条会真清 —— 但沙箱里清的是沙箱那份
@@ -365,6 +369,9 @@ def batch_wiring(c):
         "GET /api/admin/trace",
         "GET /api/admin/trace/{row_id}",
         "POST /api/admin/trace/clear",   # 26→29
+        # 2026-11-02 #106：改 / 删服务定义。29→31 是**承认过的**涨项 ——
+        # 删定义会让"学生说哪句话归谁"当场变，和建服务同一条理由，必须挂门。
+        "PUT /api/admin/services/{sid}", "DELETE /api/admin/services/{sid}",
     }
     got = _guarded_routes()
     # 名字里的数字改成从清单自己算：以前写死"这 20 个"，加一条就得改两处（计数式判据自己咬自己那一族）

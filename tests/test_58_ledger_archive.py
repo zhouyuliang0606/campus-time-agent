@@ -376,11 +376,12 @@ def batch_e_honest_failure():
                 ok, extra)
     # 5 → 9（#39 实测数出来的）：新增的四处都是**同一形状**的守门（删除服务 / 删除登记 /
     # 已处理历史 fetch / 放回那次状态口），一处一个 `!resp.ok`，仍然没有抽 stationFetch。
-    # 这条钉子真正防的是"顺手抽一层公共 fetch 封装"（施工单 §3 明确不许），不是数数不许涨；
-    # 所以数字跟着涨、"没有包装函数"那半句一个字没放松。
-    c.check("这一处守门只算原因、不改请求怎么发：全页 9 处 !resp.ok（#39 加了四处同形的），"
+    # 9 → 10（#106）：服务卡上的「编辑触发词」也是同一形状的一处（PUT 失败要把原因写回行上，
+    # 不是静默失效）。仍然没有包装函数 —— 这条钉子防的是"顺手抽一层公共 fetch 封装"
+    # （施工单 §3 明确不许），不是数数不许涨；所以数字跟着涨、"没有包装函数"那半句一个字没放松。
+    c.check("这一处守门只算原因、不改请求怎么发：全页 10 处 !resp.ok（#39 加四处、#106 加一处同形的），"
             "且没有新增 fetch 包装函数（施工单 §3 明确不许顺手抽公共层）",
-            stn.count("!resp.ok") == 9 and "function httpFailReason(" in stn
+            stn.count("!resp.ok") == 10 and "function httpFailReason(" in stn
             and "async function stationFetch" not in stn, f"!resp.ok={stn.count('!resp.ok')}")
 
     # ---- 单子 2：措辞不许把服务端的事推给网线 ----

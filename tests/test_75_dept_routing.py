@@ -121,8 +121,19 @@ def batch_f_dept_station_gate():
                 "（能读 = 驿站给自己开后勤的台账，那七个口的 403 就白拦了）",
                 r.status_code == 200 and got.get("dept") == "驿站",
                 json.dumps(got, ensure_ascii=False)[:90])
-        c.check("F8 部门判据不许被抄进界面之外的那些地方：main 里比较 dept 的只有一处（`_dept_guard`）",
-                _code(_read(MAIN)).count('dept_of(svc) != "驿站"') == 1, "")
+        # #106 把 `_dept_guard` 的"哪一档"从写死的 "驿站" 放宽成参数 `want`（管理端写口传「后勤」），
+        # 于是原来钉字面 `dept_of(svc) != "驿站"` 的判据会变成永远 0 —— 那钉的是**写法**，不是性质。
+        # 性质是"比较的地点只有一处、拒绝的话术只产自那一处"，所以改成：那段函数体里恰好一次比较，
+        # 且全文件只有 `_dept_guard` 在拼「归…处理」的 403。`_repair_groups` 里那句 `dept_of(svc) != want`
+        # 是**展示过滤**（不拒绝人），不在本判据的范围内 —— 它也不会产出这句人话。
+        _guarded = _code(_read(MAIN))
+        _g0 = _guarded.find("def _dept_guard(")
+        _g1 = _guarded.find("\ndef ", _g0 + 1)
+        _gbody = _guarded[_g0:_g1 if _g1 > 0 else len(_guarded)]
+        c.check("F8 部门判据不许被抄进界面之外的那些地方：main 里判 dept 的守卫只有 `_dept_guard` 一处"
+                "（#106 加 `want` 参数后有驿站/后勤两档，但比较与话术仍然只在这一处）",
+                _gbody.count("dept_of(svc) !=") == 1
+                and _guarded.count("归{dept_of(svc)}处理") == 1, "")
     return c
 
 
