@@ -42,7 +42,7 @@ from app.modules.schedule import (SYSTEM_PROMPT as SCHEDULE_PROMPT, build_tools 
                                   looks_like_course_ask)
 from app.store import (
     add_message, list_messages, add_notice, list_notices,
-    list_services, get_service, validate_service_def, add_service,
+    list_services, get_service, validate_service_def, add_service, update_service, SERVICE_FIELDS,
     dept_of, dept_of_record, is_builtin_service, trail_of,
     list_custom_records, add_custom_record, service_of_module,
     update_custom_record_status,
@@ -5411,11 +5411,15 @@ async def _draft_service(idea: str):
     return clean, None
 
 
-def _dept_guard(svc: dict):
-    """归不归驿站管的那道判据（403），`_station_only` 与删服务那口共用（判据只写一处）。"""
-    if dept_of(svc) != "驿站":
+def _dept_guard(svc: dict, want: str = "驿站"):
+    """归不归这一端管的那道判据（403），`_station_only` 与几个写口共用（判据只写一处）。
+
+    :param want: 调用端能管哪一档。驿站那五个调用点不传参 = 原来的行为（连文案都逐字不变）；
+        #106 的管理端写口传「后勤」。只加参数、不改默认值。
+    """
+    if dept_of(svc) != want:
         return JSONResponse(
-            {"error": f"「{svc.get('name')}」归{dept_of(svc)}处理，驿站这边不能改。"},
+            {"error": f"「{svc.get('name')}」归{dept_of(svc)}处理，{want}这边不能改。"},
             status_code=403)
     return None
 
@@ -5488,6 +5492,16 @@ async def station_service_delete(sid: str):
     if not delete_service(sid):
         return JSONResponse({"error": "删不掉：内置服务不许删，或者这项服务不存在"}, status_code=400)
     return {"ok": True}
+
+
+@app.put("/api/station/services/{sid}")
+async def station_service_update(sid: str, req: Request):
+    """改一项归驿站的服务定义（#106）。不挂管理口令 —— 与同族那几个口同一个口子（#18）。"""
+    body = await req.json()
+    svc, err = await _apply_service_edit(sid, body if isinstance(body, dict) else {}, "驿站")
+    if err:
+        return err
+    return {"ok": True, "service": svc}
 
 
 @app.get("/api/station/services/{sid}/records")
@@ -5787,6 +5801,67 @@ async def admin_service_create(req: Request):
     if err:
         return err
     return {"ok": True, "service": add_service(clean, dept="后勤")}
+
+
+async def _apply_service_edit(sid: str, body: dict, dept_scope: str):
+    """改一份服务定义 —— 管理端与驿站端**共用这一份**（判据只写一次）。
+
+    :param dept_scope: 调用端能管哪一档。管理端传 "后勤"，驿站端传 "驿站"。
+        **不匹配就 403** —— 判据走 `_dept_guard` 那一处，不在本函数里再比一次
+        （test_75 F8 钉的正是"main 里比 dept 的只有一处"）。
+    :return: (service, None) 或 (None, JSONResponse)
+    """
+    svc = get_service(sid)
+    if not svc:
+        return None, JSONResponse({"error": "这项服务不存在（可能已经被删了）"}, status_code=404)
+    err = _dept_guard(svc, dept_scope)
+    if err:
+        return None, err
+    if is_builtin_service(svc):
+        return None, JSONResponse({"error": "内置那项不能改"}, status_code=400)
+    # ⚠️ 候选定义只能取 `SERVICE_FIELDS` 那五个键。直接 `dict(svc)` 会把 `dept` /
+    #    `created_at` 一起带进去，而 `validate_service_def` 把白名单外的键一律当"不认识的字段"
+    #    拒掉 —— 实测报 `有不认识的字段：created_at、dept`，PUT 永远 400、说的还是句误导人的话。
+    draft = {k: svc.get(k) for k in SERVICE_FIELDS}
+    for k in SERVICE_FIELDS:
+        if k in body:
+            draft[k] = body[k]
+    draft["id"] = str(sid)          # 白名单允许 id（台账靠它对上），但不跟着请求体走
+    clean, why = validate_service_def(draft, exclude_id=str(sid))
+    if not clean:
+        return None, JSONResponse({"error": f"改不了：{why}"}, status_code=400)
+    updated = update_service(str(sid), clean)
+    if not updated:
+        return None, JSONResponse({"error": "这项服务不存在（可能已经被删了）"}, status_code=404)
+    return updated, None
+
+
+@app.put("/api/admin/services/{sid}", dependencies=[Depends(verify_admin)])
+async def admin_service_update(sid: str, req: Request):
+    """改一项归后勤的服务定义（#106）。**改的是定义，不动 `custom/<sid>.json` 的台账。**"""
+    body = await req.json()
+    svc, err = await _apply_service_edit(sid, body if isinstance(body, dict) else {}, "后勤")
+    if err:
+        return err
+    return {"ok": True, "service": svc}
+
+
+@app.delete("/api/admin/services/{sid}", dependencies=[Depends(verify_admin)])
+async def admin_service_delete(sid: str):
+    """删一项归后勤的服务定义（#106）。
+
+    口径与驿站端那口**逐字一致**（#39-A 定的）：只删定义、不动 `custom/<sid>.json`；
+    内置那项硬拒；不存在回 400 + 一句人话（不是 404 —— 建错了再点一次，该看到"它已经没了"）。
+    """
+    svc = get_service(sid)
+    if svc:
+        err = _dept_guard(svc, "后勤")
+        if err:
+            return err
+    if not delete_service(sid):
+        return JSONResponse({"error": "删不掉：内置服务不许删，或者这项服务不存在"},
+                            status_code=400)
+    return {"ok": True}
 
 
 # ============ 管理控制台：知识库零代码维护 ============
