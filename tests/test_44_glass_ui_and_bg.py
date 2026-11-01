@@ -151,8 +151,13 @@ def batch_pref(ck):
              and "ct_gx_scrim','ct_gx_vm','ct_gx_bd','ct_gx_core','ct_gx_fx" in src)
     ck.check("reduced-motion 下连节点都不生成",
              "prefers-reduced-motion" in src and "buildGxFx" in src)
-    ck.check("启动时先套背景再绘制（applyBackdrop 在引导段里）",
-             src.index("applyBackdrop();") > src.index("function applyBackdrop"))
+    # 这条说的是「引导段里有一处顶层调用」。早先写成「第一处出现的 applyBackdrop();」——
+    # #98 在 gxSetSid（缩进 6 空格）里加了一处调用、位置在定义之前，就把它顶红了；
+    # 那是取锚点的老毛病（#96），不是引导段没了。改成按缩进认顶层调用（4 空格）。
+    top_calls = [m.start() for m in re.finditer(r"\n {4}applyBackdrop\(\);", src)]
+    ck.check("启动时先套背景再绘制（引导段里有一处顶层 applyBackdrop 调用，且在定义之后）",
+             bool(top_calls) and min(top_calls) > src.index("function applyBackdrop"),
+             str(top_calls))
     # 鸟不能用 <use>：shadow 树里选不中 .wg，会得到一只不动的鸟
     ck.check("鸟是内联画的（不是 <use> 引 symbol）",
              'GX_BIRD' in src and '<use href="#gi-bird"' not in src)
