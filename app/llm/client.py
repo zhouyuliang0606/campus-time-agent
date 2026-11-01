@@ -50,7 +50,7 @@ async def _get_client() -> httpx.AsyncClient:
             client = _loop_clients.get(loop)
             if client is None or client.is_closed:
                 client = httpx.AsyncClient(
-                    timeout=httpx.Timeout(30.0, connect=3.0),
+                    timeout=httpx.Timeout(30.0, connect=8.0),
                     limits=httpx.Limits(max_connections=20,
                                         max_keepalive_connections=10,
                                         keepalive_expiry=30.0),
@@ -176,38 +176,59 @@ class DeepSeekClient:
 
         # 发请求：2026-10-14 刀 2 起用**进程内共享 client**（连接池 + keep-alive），
         # 不再每次新建、每次重握手（理由与实测数字在文件头 `_get_client` 上面）。
-        # 超时值原样搬过去：connect 3 秒足够判断"这台机器连不连得上那个地址"，
-        # 而 SSRF 探测的代价主要就在 connect（连不上要等 60 秒 = 一次探测慢到没人愿意扫）；
+        # 超时值：connect 8 秒（2026-11-01 从 3 秒放宽）。冷连接 = TCP 三次握手 + TLS 两个来回，
+        # 而 TCP 丢一个包不是加几十毫秒、是退避重传（200/400/800/1600ms）—— 那天 12 次
+        # "连不上"的耗时全部落在 3018~3048ms，一条不差，就是 3 秒预算被重传吃光，不是没网。
         # read 留 30 秒是因为带工具的长回答真的会慢（17 门课那种），一刀切几秒会误杀正常对话。
-        try:
-            # ⚠️ 不能写成 `async with await _get_client() as client:` —— `async with` 退出时
-            #    会把这个共享实例关掉，keep-alive 当场失效（test_47 数的是服务端看到几条
-            #    连接，一退化就从 1 条变回 2 条）。
-            client = await _get_client()
-            resp = await client.post(
-                f"{base_url}/chat/completions",
-                json=payload,
-                headers=headers,
-            )
-            # 状态码不是 2xx 就抛异常（401 = Key 有问题，429 = 额度或限流）
-            resp.raise_for_status()
-            data = resp.json()
-        except httpx.HTTPStatusError as e:
-            code = e.response.status_code
-            # ⚠️ 不把 `e` 原样拼进消息：httpx 的这句里带着**完整 URL**，
-            # 而这句话会回到请求方眼前。等于告诉他"你塞进来的地址我们连到了、回了 404"。
-            if code in (401, 403):
-                raise LLMError(f"大模型拒绝了请求（HTTP {code}）：API Key 无效或已过期，请检查你填的密钥。",
-                                 kind="auth") from e
-            if code == 429:
-                raise LLMError(f"大模型限流了（HTTP 429）：请求太密或额度用尽，稍等一会儿再试。",
-                                 kind="rate_limited") from e
-            raise LLMError(f"大模型接口出错（HTTP {code}）。", kind="upstream") from e
-        except httpx.RequestError as e:
-            # 完整原因（含地址、含底层异常）只进服务端日志；回给请求方的不反射地址。
-            print(f"[LLM] 连不上上游 {base_url}：{type(e).__name__}: {e}")
-            raise LLMError("连不上大模型服务，请检查网络，或到管理控制台确认接口地址是否可用。",
-                           kind="unreachable") from e
+        #
+        # 重试：**只挂 `ConnectTimeout`、只重试一次**。冷连接第一次握手被打断，第二次往往就
+        # 走已经热起来的那条路；别的错（auth / 429 / 地址不合规 / 读超时）重试一万次也是同一个
+        # 结果，只会把"学生等 8 秒"变成"等 16 秒"。⚠️ 这一支别挪到 `RequestError` 上
+        # （test_47 D 批在数"试了几次"，挪过去读超时就会跟着重试，当场红）。
+        for attempt in range(2):
+            try:
+                # ⚠️ 不能写成 `async with await _get_client() as client:` —— `async with` 退出时
+                #    会把这个共享实例关掉，keep-alive 当场失效（test_47 数的是服务端看到几条
+                #    连接，一退化就从 1 条变回 2 条）。
+                client = await _get_client()
+                resp = await client.post(
+                    f"{base_url}/chat/completions",
+                    json=payload,
+                    headers=headers,
+                )
+                # 状态码不是 2xx 就抛异常（401 = Key 有问题，429 = 额度或限流）
+                resp.raise_for_status()
+                data = resp.json()
+                break
+            except httpx.HTTPStatusError as e:
+                code = e.response.status_code
+                # ⚠️ 不把 `e` 原样拼进消息：httpx 的这句里带着**完整 URL**，
+                # 而这句话会回到请求方眼前。等于告诉他"你塞进来的地址我们连到了、回了 404"。
+                if code in (401, 403):
+                    raise LLMError(f"大模型拒绝了请求（HTTP {code}）：API Key 无效或已过期，请检查你填的密钥。",
+                                     kind="auth") from e
+                if code == 429:
+                    raise LLMError(f"大模型限流了（HTTP 429）：请求太密或额度用尽，稍等一会儿再试。",
+                                     kind="rate_limited") from e
+                raise LLMError(f"大模型接口出错（HTTP {code}）。", kind="upstream") from e
+            except httpx.ConnectTimeout as e:
+                # 冷连接第一次握手被打断（Wi-Fi 漫游、路由器忙一下、丢包重传），第二次往往能进去。
+                if attempt == 0:
+                    print(f"[LLM] 冷连接握手超时，重试一次：{type(e).__name__}: {e}")
+                    continue
+                # 完整原因（含地址）只进服务端日志；回给请求方的消息不反射地址。
+                print(f"[LLM] 连不上上游（connect 超时，已重试一次）{base_url}：{type(e).__name__}: {e}")
+                raise LLMError("连不上大模型服务，请检查网络，或到管理控制台确认接口地址是否可用。"
+                               "[CONNECT_TIMEOUT]",
+                               kind="unreachable") from e
+            except httpx.RequestError as e:
+                # 完整原因（含地址、含底层异常）只进服务端日志；回给请求方的不反射地址。
+                # 末尾那个机器标签只给管理端看（`llm_usage.jsonl` 的 error 存的就是这句话）：
+                # 以前 connect / read 两种都长一样，事后只能靠"3 秒还是 31 秒"猜。
+                print(f"[LLM] 连不上上游 {base_url}：{type(e).__name__}: {e}")
+                tag = "[READ_TIMEOUT]" if isinstance(e, httpx.ReadTimeout) else ""
+                raise LLMError("连不上大模型服务，请检查网络，或到管理控制台确认接口地址是否可用。" + tag,
+                               kind="unreachable") from e
 
         # DeepSeek 返回结构里，回答在 choices[0].message。
         # ⚠️ 但"连上了"不等于"连到的是模型服务"：地址填错、或指到别家 API 时，
@@ -301,59 +322,73 @@ class DeepSeekClient:
         calls: dict[int, dict] = {}
         saw_chunk = False
 
-        try:
-            client = await _get_client()
-            # 流式的读超时比非流式宽（60s）：一个字一个字蹦，整段生成时间可能超过单次 30s 上限；
-            # connect 仍 3 秒 —— "这台机器连不连得上"这件事不该因为流式就变慢。
-            async with client.stream(
-                "POST", f"{base_url}/chat/completions",
-                json=payload, headers=headers,
-                timeout=httpx.Timeout(60.0, connect=3.0),
-            ) as resp:
-                resp.raise_for_status()
-                async for line in resp.aiter_lines():
-                    if not line or not line.startswith("data:"):
-                        continue        # 空行是 SSE 的分块分隔符，注释行以 ":" 开头，都跳过
-                    data = line[5:].strip()
-                    if data == "[DONE]":
-                        break
-                    try:
-                        obj = json.loads(data)
-                    except Exception:
-                        continue
-                    if obj.get("usage"):
-                        self.last_usage = obj["usage"]
-                    for ch in (obj.get("choices") or []):
-                        saw_chunk = True
-                        delta = ch.get("delta") or {}
-                        frag = delta.get("content")
-                        if frag:
-                            pieces.append(frag)
-                            yield frag
-                        for tc in (delta.get("tool_calls") or []):
-                            slot = calls.setdefault(int(tc.get("index") or 0),
-                                                    {"id": "", "name": "", "args": []})
-                            if tc.get("id"):
-                                slot["id"] = tc["id"]
-                            fn = tc.get("function") or {}
-                            if fn.get("name"):
-                                slot["name"] = fn["name"]
-                            if fn.get("arguments"):
-                                slot["args"].append(str(fn["arguments"]))
-        except httpx.HTTPStatusError as e:
-            code = e.response.status_code
-            # 与 chat() 同口径：消息里不带 URL、不反射地址（这句话会回到请求方眼前）
-            if code in (401, 403):
-                raise LLMError(f"大模型拒绝了请求（HTTP {code}）：API Key 无效或已过期，请检查你填的密钥。",
-                               kind="auth") from e
-            if code == 429:
-                raise LLMError(f"大模型限流了（HTTP 429）：请求太密或额度用尽，稍等一会儿再试。",
-                               kind="rate_limited") from e
-            raise LLMError(f"大模型接口出错（HTTP {code}）。", kind="upstream") from e
-        except httpx.RequestError as e:
-            print(f"[LLM] 连不上上游（流式）{base_url}：{type(e).__name__}: {e}")
-            raise LLMError("连不上大模型服务，请检查网络，或到管理控制台确认接口地址是否可用。",
-                           kind="unreachable") from e
+        # 重试口径与 chat() 完全一致：只挂 `ConnectTimeout`、只一次，而且只在**一个字都还没吐**
+        # 的时候（握手超时必然发生在第一个字之前；多这一道 `not pieces` 是防以后有人在循环里
+        # 挪进 mid-stream 的错，那会把同一句话在学生屏幕上放两遍）。
+        for attempt in range(2):
+            try:
+                client = await _get_client()
+                # 流式的读超时比非流式宽（60s）：一个字一个字蹦，整段生成时间可能超过单次 30s 上限；
+                # connect 8 秒，与非流式同一档（2026-11-01 放宽，理由见 chat() 上面那段）。
+                async with client.stream(
+                    "POST", f"{base_url}/chat/completions",
+                    json=payload, headers=headers,
+                    timeout=httpx.Timeout(60.0, connect=8.0),
+                ) as resp:
+                    resp.raise_for_status()
+                    async for line in resp.aiter_lines():
+                        if not line or not line.startswith("data:"):
+                            continue    # 空行是 SSE 的分块分隔符，注释行以 ":" 开头，都跳过
+                        data = line[5:].strip()
+                        if data == "[DONE]":
+                            break
+                        try:
+                            obj = json.loads(data)
+                        except Exception:
+                            continue
+                        if obj.get("usage"):
+                            self.last_usage = obj["usage"]
+                        for ch in (obj.get("choices") or []):
+                            saw_chunk = True
+                            delta = ch.get("delta") or {}
+                            frag = delta.get("content")
+                            if frag:
+                                pieces.append(frag)
+                                yield frag
+                            for tc in (delta.get("tool_calls") or []):
+                                slot = calls.setdefault(int(tc.get("index") or 0),
+                                                        {"id": "", "name": "", "args": []})
+                                if tc.get("id"):
+                                    slot["id"] = tc["id"]
+                                fn = tc.get("function") or {}
+                                if fn.get("name"):
+                                    slot["name"] = fn["name"]
+                                if fn.get("arguments"):
+                                    slot["args"].append(str(fn["arguments"]))
+                break
+            except httpx.HTTPStatusError as e:
+                code = e.response.status_code
+                # 与 chat() 同口径：消息里不带 URL、不反射地址（这句话会回到请求方眼前）
+                if code in (401, 403):
+                    raise LLMError(f"大模型拒绝了请求（HTTP {code}）：API Key 无效或已过期，请检查你填的密钥。",
+                                   kind="auth") from e
+                if code == 429:
+                    raise LLMError(f"大模型限流了（HTTP 429）：请求太密或额度用尽，稍等一会儿再试。",
+                                   kind="rate_limited") from e
+                raise LLMError(f"大模型接口出错（HTTP {code}）。", kind="upstream") from e
+            except httpx.ConnectTimeout as e:
+                if attempt == 0 and not pieces:
+                    print(f"[LLM] 冷连接握手超时（流式），重试一次：{type(e).__name__}: {e}")
+                    continue
+                print(f"[LLM] 连不上上游（流式，connect 超时，已重试一次）{base_url}：{type(e).__name__}: {e}")
+                raise LLMError("连不上大模型服务，请检查网络，或到管理控制台确认接口地址是否可用。"
+                               "[CONNECT_TIMEOUT]",
+                               kind="unreachable") from e
+            except httpx.RequestError as e:
+                print(f"[LLM] 连不上上游（流式）{base_url}：{type(e).__name__}: {e}")
+                tag = "[READ_TIMEOUT]" if isinstance(e, httpx.ReadTimeout) else ""
+                raise LLMError("连不上大模型服务，请检查网络，或到管理控制台确认接口地址是否可用。" + tag,
+                               kind="unreachable") from e
 
         if not saw_chunk:
             # 连上了、200，但一行 choices 都没有：多半是接口地址填成了不是模型服务。
