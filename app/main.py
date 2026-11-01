@@ -5376,6 +5376,31 @@ def _extract_json_obj(raw: str) -> dict | None:
     return obj if isinstance(obj, dict) else None
 
 
+def _existing_trigger_block() -> str:
+    """把**已有的说法**列给模型看 —— 不列它必然撞（#105 §1.2，这单真正的治根那一半）。
+
+    `_SERVICE_PROMPT` 全文没有一个字提到已有服务，所以模型写「空调不制冷」不是犯错，
+    是它压根不知道这个词被占了。**判据要求模型避开一个它看不见的东西，那是判据的问题。**
+    也不在这里加一句"别写跟别的服务重复的说法"——那是禁令，要它自己推理什么算重复；
+    给清单它是直接比对（#105 §2.5）。
+
+    截断规则：每项最多 5 条、总共最多 12 项 —— prompt 是要花钱的。
+    服务建到第 30 个时正确答案是去做**服务名检索**，不是把这张表扩长（单据 §五.3）。
+    """
+    lines = []
+    for s in list_services():
+        trigs = [str(x) for x in (s.get("triggers") or [])]
+        if not trigs:
+            continue
+        lines.append(f"  {s.get('name')}：{' / '.join(trigs[:5])}")
+    if not lines:
+        return ""
+    return ("\n\n【已有的服务，它们的说法已经占用了 —— 你写的 triggers **不许**跟它们重复，"
+            "也不许写成包含它们的更长句子（比如已有「空调不制冷」，就不能写「空调不制冷登记」，"
+            "因为「空调不制冷」是「空调不制冷登记」的一部分，命中哪一边要看长度）】\n"
+            + "\n".join(lines[:12]))
+
+
 async def _draft_service(idea: str):
     """那 20 行"一句话 → 一份过白名单的服务定义"，驿站端与管理端**共用一份**（#54）。
 
@@ -5394,7 +5419,7 @@ async def _draft_service(idea: str):
         gateway = ModelGateway(user="内部:低代码建服务")
         # max_tokens 上限：定义就那么点大，模型开始写散文就该硬截（同判定层那一手的用法）
         reply = await gateway.chat(
-            [{"role": "system", "content": _SERVICE_PROMPT},
+            [{"role": "system", "content": _SERVICE_PROMPT + _existing_trigger_block()},
              {"role": "user", "content": f"管理员的话：{idea}"}],
             max_tokens=400,
         )
@@ -5408,6 +5433,16 @@ async def _draft_service(idea: str):
     clean, why = validate_service_def(draft)
     if not clean:
         return None, JSONResponse({"error": f"生成的定义不合规矩：{why}"}, status_code=400)
+    # #105 §1.4：被剔掉的撞车触发词**只进日志，不进界面**。
+    #   那几句是模型编的、不是管理员说的；成功之后再念一遍"顺便你的空调不制冷没加进来"，
+    #   就是把同一个困惑再给他一次，只是这次没有红色 ❌ 提醒他哪里出错了（§2.3）。
+    #   `dropped` 不往外面传（判据形状必须保持二元组，见 store.validate_service_def 那段），
+    #   这里按"送进去的 triggers 与留下的 triggers 求差"复现它 —— 校验里只有撞车那一支会少条目，
+    #   太短那一支是直接拒，不会走到这一行。
+    raw = [str(x).strip() for x in (draft.get("triggers") or []) if str(x).strip()]
+    trimmed = [t for t in raw if t not in (clean.get("triggers") or [])]
+    if trimmed:
+        print(f"[低代码] 剔掉 {len(trimmed)} 条撞车触发词：{trimmed}")
     return clean, None
 
 
