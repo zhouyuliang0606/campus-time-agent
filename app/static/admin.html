@@ -576,10 +576,11 @@
         // 那行字在窄屏只有 11px，不一定看得见；让输入框自己也变红——不依赖文字的第二次反馈（#96）。
         document.getElementById("adminToken").style.borderColor = "#e0414a";
         // 服务端那句 detail 已经写清了该干什么，原样递给人看
+        // ⚠️ #99 删掉了原来那支 403 话术：admin_guard.py 自 #94 起只有 401 一种拒绝，那条分支永远走不到；
+        //    何况它猜的那个原因现在是**错的**——没配口令早已不是"服务端坏了"，而是自举一串打在启动横幅上。
+        //    状态码照实打印，不为将来可能出现的 403 猜原因。
         const body = await resp.json().catch(() => ({}));
-        setTokenStatus(resp.status === 403
-          ? "🔒 被服务端拒绝（403）：这台服务器没设管理口令——它启动时会在控制台打一行 [管理口令] 加一串随机值，填那串；要固定就设环境变量 CAMPUSTIME_ADMIN_TOKEN"
-          : "🔒 口令不对（401）" + (body.detail ? "：" + body.detail : ""), true);
+        setTokenStatus("🔒 口令不对（" + resp.status + "）" + (body.detail ? "：" + body.detail : ""), true);
         throw new Error("管理口令未通过");
       }
       // ⚠️ 非 2xx 一律在**这一处**变成异常。
@@ -605,8 +606,11 @@
           ? "（接口不存在 —— 多半是服务还在跑旧代码，重启一次再试）" : "";
         throw new Error("HTTP " + resp.status + (detail ? "：" + detail : "") + hint);
       }
+      // 状态条的语义 =「最后一次管理请求的结果」：成功就由这一处收尾（#99）。
+      // ⚠️ 别写进点按钮那一刻：七个 loader 是异步的，那时还不知道成没成（定时报成功 = 错口令也绿）。
       adminLocked = false;
       document.getElementById("adminToken").style.borderColor = "";
+      if (getAdminToken()) setTokenStatus("✅ 口令有效（只对本次标签页生效）", false);
       return resp;
     }
 
