@@ -11,7 +11,7 @@
      #30（2026-10-17）把会话固定成一段之后，这个前提**反了** —— 服务端真的存着这段对话，
      于是清空必须两边一起清（见 F 批），只擦屏幕就成了"演一遍清干净"。
   ⑤ 会话载体（F 批）：**sessionStorage**，不是学生端那个 localStorage
-     （#93 起 ct_bg 是脚本里唯一一处 localStorage，判据逐行核过 —— 见 F 批那条改口说明）。
+     （#93 曾为外观键 ct_bg 开过例外，#97 收回了：驿站是店员机器、学生不进这页；现在脚本里一处 localStorage 都没有）。
 """
 import pathlib
 import re
@@ -194,7 +194,12 @@ def batch_f_fixed_session():
     这一批最容易被写成"钉一句 session_id 完事"，那正好放过两种半吊子：
     ①会话固定了但【清空】还只擦屏幕（F5 全捞回来 = 清了跟没清一样）；
     ②用了 localStorage（两个标签串成一段对话，正是柜台最常见的用法）。
-    所以顺序、载体、换新 id 三样分别钉，并配一条"旧写法不许留"。
+    所以顺序、载体、换新 id 三样分别钉，并配一条「旧写法不许留」。
+
+    ⚠️ #93 曾在这里开过一个例外：外观键 ct_bg 走 localStorage，理由是「要与学生页同步」。
+       #97 把那个例外收回了 —— 驿站是**店员机器**，学生不进这页、店员也不进学生端，
+       「同一个人的两个页面」这个前提不成立（#93 是照 /plan 抄的，把前提一起抄了过来）。
+       所以判据回到严格版：**脚本里一处 localStorage 都不许有**，外观也一样。
     """
     c = Checker()
     title("F. 固定会话：sessionStorage 载体 + 清空两边一起清（#30）")
@@ -206,16 +211,26 @@ def batch_f_fixed_session():
             and "module: \"station\", session_id: stationSid()" in stc, "")
     c.check("载体必须是 **sessionStorage**（不是学生端那个 localStorage）："
             "这台机器是店员的，关窗即「这次值班结束」；而 localStorage 同源共享会把两三个标签串成一段对话。"
-            " ⚠️ #93 起有一处**有意的例外**：外观键 ct_bg 走 localStorage —— 它不是会话数据，是要与学生页同步的偏好"
-            "（同一台机器、同一个源）。所以这条从「脚本里不许出现 localStorage」改成两根**配对**判据："
-            " ① 值班 sid 那把键一个 localStorage 都不许碰；② 脚本里每一处 localStorage 必须与 ct_bg 同行"
-            "（多出一行不同路的，就是有人拿它存了别的东西）。",
+            " → 判据是**严格版**：脚本里一处 localStorage 都不许有"
+            "（#97 收回了 #93 给外观键开的例外，理由见本批 docstring）。",
             "sessionStorage.getItem(STATION_SID_KEY)" in stc
             and not re.search(r"localStorage\.[gs]etItem\(\s*STATION_SID_KEY", stc)
-            and all("ct_bg" in ln for ln in stc.splitlines() if "localStorage" in ln),
-            f"localStorage 出现 {stc.count('localStorage')} 次；非 ct_bg 那几行=%s" % [
-                ln.strip()[:56] for ln in stc.splitlines()
-                if "localStorage" in ln and "ct_bg" not in ln])
+            and "localStorage" not in stc,
+            f"localStorage 出现 {stc.count('localStorage')} 次；那几行=%s" % [
+                ln.strip()[:56] for ln in stc.splitlines() if "localStorage" in ln])
+    c.check("F-x 正控：sessionStorage 还得在用（getItem + setItem 至少两处）"
+            "—— 防的是「把整个存储层删干净」也当通过",
+            stc.count("sessionStorage") >= 2, "%d 处" % stc.count("sessionStorage"))
+    c.check("F-y 驿站端脚本里不许出现任何「外观键」（ct_bg / ct_station_bg / ct_bg_scrim）："
+            "驿站不读学生端的外观偏好（#97）。配正控：bg.js 的 <script> 还在 —— 证的是「不读键」，"
+            "不是「把 bg.js 一起删了」（删了它 test_44 的 J1 会红，那属于 L2 的选项乙）。"
+            " 第三根是这条扫描自己的正控：同一个正则喂一句必中的样本，必须能命中（防括号/转义写坏成死断言）",
+            re.search(r"ct_bg|ct_station_bg|ct_bg_scrim", stc) is None
+            and 'src="/static/bg.js"' in st
+            and re.search(r"ct_bg|ct_station_bg|ct_bg_scrim",
+                          "localStorage.getItem('ct_bg')") is not None,
+            "命中=%s bg.js=%s" % (re.findall(r"ct_bg|ct_station_bg|ct_bg_scrim", stc)[:4],
+                                 'src="/static/bg.js"' in st))
     c.check("选 sessionStorage 的理由写在注释里（不写，下一个人会「顺手统一成 localStorage」）",
             "localStorage 同源共享" in st and "值班结束" in st, "")
     c.check("新 id 的生成只有一份（前缀 st 便于在 sessions.json 里一眼分清）",
