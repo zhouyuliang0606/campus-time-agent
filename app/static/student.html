@@ -2079,7 +2079,9 @@ html.gx-glass[data-gx-refine="on"] .composer, html.gx-glass[data-gx-refine="on"]
       // 把"请求挂了"当成"没身份"会把背景打回默认，还会把下一位的键认错人。
       if (known) {
         try { if (sid) localStorage.setItem('campustime_student', sid); else localStorage.removeItem('campustime_student'); } catch (e) {}
-        gxSetSid(sid);
+        // gxSetSid 定义在下面的三栏 IIFE 里，这一层看不见它 —— 只能走窗口钩子。
+        // 直接叫名字会抛 ReferenceError，把后面标身份那几行一起带走（#98 的实机回归）。
+        if (typeof window.ctGxSetSid === "function") window.ctGxSetSid(sid);
       }
       chip.textContent = sid ? ("👤 " + sid) : "👤 未登录 · 演示公共库";
       chip.title = sid ? ("现在看到的是学号 " + sid + " 的课表与待办；退出登录可以换一个人")
@@ -3411,7 +3413,7 @@ html.gx-glass[data-gx-refine="on"] .composer, html.gx-glass[data-gx-refine="on"]
     // localStorage 是**浏览器级**的：早先 ct_bg / ct_gx_* 写的是裸键，同一台机器换账号，
     // 第二位会继承上一位的背景。现在键名带上学号（ct_bg@<学号>）。
     // 学号先取登录页写下的 campustime_student（同步可用，首屏就能套对背景）；
-    // cookie 才是权威 —— whoami 回来若不同，gxSetSid 会换键重套一次。
+    // cookie 才是权威 —— whoami 回来若不同，外面经 window.ctGxSetSid 换键重套一次。
     const GX_SID_KEYS = ['ct_bg','ct_gx_scrim','ct_gx_vm','ct_gx_bd','ct_gx_core','ct_gx_lv','ct_gx_fx','ct_gx_refine'];
     let gxSid = '';
     try { gxSid = localStorage.getItem('campustime_student') || ''; } catch (e) { gxSid = ''; }
@@ -3437,6 +3439,9 @@ html.gx-glass[data-gx-refine="on"] .composer, html.gx-glass[data-gx-refine="on"]
       gxAdopt();
       applyBackdrop();
     }
+    // 这个 IIFE 里的声明外面看不见（initStudentIdentity 在它之前的顶层）。
+    // 只露这一个钩子给 whoami 那层换键重套；别的一概不往外挂。
+    window.ctGxSetSid = gxSetSid;
     function gxVal(k, d){ const v = localStorage.getItem(gxKey(k)); return (v===null||v==='') ? d : v; }
     function buildGxFx(kind){
       const stage = document.getElementById('gxStage'); if(!stage) return;
