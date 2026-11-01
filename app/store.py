@@ -1757,6 +1757,13 @@ SERVICE_FIELDS = {
 }
 SERVICE_ITEM_MAX = 24          # 列表里每一项的字符上限
 TRIGGER_MIN_LEN = 4            # 一条触发词至少几个字（#54 §六.2，理由在 validate_service_def）
+# #105：剔掉撞车的那几条之后，**至少还剩几条**才允许这项服务建起来。
+#   为什么是 2 不是 1：只剩一条触发词的服务，学生换一种说法就唤不出来 ——
+#   那不是「建成了入口」，是「建成了一扇只能背台词才能进的门」。
+#   为什么不是 4（prompt 里写的是 3~6 条）：模型写 4 条撞 3 条的情形现实里不存在，
+#   把门槛抬高只会把本来能用的服务退回去。
+#   ⚠️ 别把它当成 `TRIGGER_MIN_LEN` 的兄弟：一个是"每条至少几个字"，一个是"留几条"，两回事。
+TRIGGER_MIN_KEEP = 2
 CUSTOM_VALUE_MAX = 60          # 一条登记里每个字段值的上限
 
 # ── 服务的承接部门（2026-10-22 #54：用户拍板"写分流 + 给驿站限制权限"）────────
@@ -1832,12 +1839,26 @@ def _bad_service_field(key: str, val) -> str:
     return ""
 
 
+def _suggest_alt(oth: str) -> str:
+    """撞车被拒时给的一句**方向**，不猜具体说法（#105）。
+
+    为什么这里不能再教人「改个更长的说法」：判据是**双向**子串（`t in oth or oth in t`），
+    加长必然把被占的那个词包进来 —— 实测系统原来建议的「空调不制冷登记」「空调不制冷怎么查」
+    **两个都还撞**。那句建议是一个永远给不出结果的建议：照着改，改一百次也是 400。
+    所以这里只说"换一个不含量被占的那个词眼"的说法，具体怎么说留给管理员。
+    """
+    return f"跟「{oth}」不同的地方 + 那件事怎么样了"
+
+
 def validate_service_def(obj: dict, exclude_id: str = "") -> tuple:
     """候选服务定义过白名单。返回 (规范化后的定义, 错误原因)，错误时定义是 None。
 
     为什么是"拒"而不是"尽力修好"：这份定义是**模型按驿站管理员一句话生成**的，
     它多塞字段、把整段描述塞进 name、顺手写一段 HTML，都不该被默默接受 ——
     存进去之后每一个读它的界面都要重新踩一次坑。
+    **唯一的例外是触发词撞车（#105）**：那条撞车多半是模型多写了一句废话，不是管理员说错了话，
+    所以撞的那条剔掉、剔完够 `TRIGGER_MIN_KEEP` 条就放行 —— 判据形状仍是 `(clean, why)` 二元组，
+    不许为了把 `dropped` 递出去而改签名（`test_53:239` 与 test_75 那几处都按二元组解包）。
 
     :param exclude_id: 编辑时传**这条自己的 id**（#106）。新增那条路不传。
         编辑时不传就会"自己撞自己"：自己的触发词跟自己互为子串（剔完 0 条 → 拒）、
@@ -1874,19 +1895,49 @@ def validate_service_def(obj: dict, exclude_id: str = "") -> tuple:
     #   于是一个两三个字的宽词能吸走一整族句子 —— 实测触发词「快递」把「我有个快递」
     #   「快递破了」都抢进自建服务，还顺手把内置那条"快递丢了→出工单上报卡"的链路劫持了。
     #   撞车不是"不好看"，是**这句话归谁**当场变了，而且不报错、静默变。
-    existing = rows   # 上面已经排除过自己，别再调一次 list_services()（#106）
+    existing = rows   # #106 已经排除过自己（#107 §二：这段剔撞车的循环必须坐在 rows 上，别再调一次 list_services()）
     short = [t for t in clean["triggers"] if len(t) < TRIGGER_MIN_LEN]
     if short:
         return None, (f"触发词「{short[0]}」太短了（不到 {TRIGGER_MIN_LEN} 个字）："
                       f"短词会吸走一大批不相干的句子。说得更具体一点，比如「{short[0]}丢了」这种带得上事的说法。")
-    for other in existing:
-        oname = str(other.get("name") or "")
-        for oth in [str(x) for x in (other.get("triggers") or [])]:
-            for t in clean["triggers"]:
+    # ★ #105：撞车**逐条剔**，不再一条撂倒整份定义。
+    #   实测（真实 services.json + 模型对「教室报修」的原话定义）：5 条里只有「空调不制冷」跟
+    #   「宿舍报修」重了，另外 4 条干干净净 —— 整份退回等于**因为一句本来就归错地方的废话废掉一项服务**。
+    #   ⚠️ 但剔完还要数一遍：只剩 1 条（或 0 条）时**照样拒**，否则 E8/E9 那两条既有判据就松了
+    #      （"同一句话交给两个窗口"仍然得拦 —— 见 test_75 E8/E9，这单一条都不改它们）。
+    kept, dropped = [], []
+    for t in clean["triggers"]:
+        hit = None
+        for other in existing:
+            oname = str(other.get("name") or "")
+            for oth in [str(x) for x in (other.get("triggers") or [])]:
                 if t and oth and (t in oth or oth in t):
-                    return None, (f"触发词「{t}」和已有服务「{oname}」的「{oth}」撞了"
-                                  f"（两个互为子串，命中哪一边要看长度，等于把同一句话交给两个窗口）。"
-                                  f"改个更长的说法，比如「{t}登记」「{t}怎么查」。")
+                    hit = (oname, oth)
+                    break
+            if hit:
+                break
+        if hit:
+            dropped.append((t, hit[0], hit[1]))
+        else:
+            kept.append(t)
+    # ⚠️ `dropped and` 这个前缀一个字符都不能省（M6 钉这一条）：
+    #    `SERVICE_FIELDS["triggers"] = (1, 10)` 允许只写 1 条，而"写 1 条、什么都没撞"是完全合规的老路
+    #    （实测改前就过）。裸判 `len(kept) < TRIGGER_MIN_KEEP` 会把这类定义全拒掉 —— 那不是收紧判据，是堵死一条正在用的路。
+    #    判据是「**剔过东西之后**还剩几条」，不是「一共几条」。
+    if dropped and len(kept) < TRIGGER_MIN_KEEP:
+        # 里面这一支 `if dropped` 在当前判据下看着多余 —— 它是留给"前缀被去掉"那一类改错的出口：
+        # 谁把它写成裸的 `len(kept) < TRIGGER_MIN_KEEP`（M6），"写 1 条、什么都没撞"那条合法老路就会走进来，
+        # 有这一支它回的是一句人话（于是 T7 变红），没有这一支 `dropped[0]` 直接 IndexError
+        # —— 崩溃会被 `run_all` 读成"少了一批"，而不是"这条判据有牙"。
+        if dropped:
+            t, oname, oth = dropped[0]
+            return None, (f"触发词「{t}」和已有服务「{oname}」的「{oth}」撞了，"
+                          f"剔掉它之后只剩 {len(kept)} 条，学生换种说法就找不到这项服务了。"
+                          # 施工单这句写的是 `**不含**`（那是文档里的强调写法）。这句要原样进管理员的状态行，
+                          # 而全站 `error`/`why` 那一批文案里没有一处带 markdown 星号 ⇒ 这里去掉强调、只留「不含」这个词。
+                          f"换个不含「{oth}」的说法，比如：{_suggest_alt(oth)}。")
+        return None, "这份定义一条触发词都没剩下，说说学生一般会怎么开这个口。"
+    clean["triggers"] = kept
     clean["id"] = (str(obj.get("id") or "").strip() or uuid.uuid4().hex[:8])
     clean["created_at"] = _now()
     return clean, ""
