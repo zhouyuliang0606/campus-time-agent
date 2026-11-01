@@ -26,6 +26,7 @@
 """
 import io
 import os
+import re
 
 from _harness import Checker, make_client, sandbox, title
 from app.store import set_settings
@@ -150,8 +151,15 @@ def batch_d_no_reflection():
     c = Checker()
     title("D 批 · 回给请求方的错误不反射地址")
     src = io.open(CLIENT, encoding="utf-8").read()
-    c.check("connect 超时单独收短（探测的代价主要在连不上时等多久）",
-            "httpx.Timeout(30.0, connect=3.0)" in src, "没找到拆分后的超时")
+    # ★ 2026-11-01（#102）：这条原来钉的是 `connect=3.0`。3 秒在冷连接上会被 TCP 重传
+    #   顶破（当天实测 12 次全是 3018~3048 ms 才断，学生看到的是"我联系不上负责回答的服务"），
+    #   所以 connect 放宽到 8 秒。判据换性质不换口径：仍要求"connect 单独拆出来"这件事在，
+    #   只是把那一半的数值认成 8.0；`read=30` 那一半一个字不能动（探测的代价仍由它兜着）。
+    c.check("connect 单独放宽到 8 秒（read 仍是 30 秒，别把等待整体拉长）",
+            re.search(r"Timeout\(\s*30\.0\s*,\s*connect\s*=\s*8\.0\s*\)", src) is not None
+            and "connect=3.0" not in src,
+            "没找到 Timeout(30.0, connect=8.0)" if "connect=3.0" not in src
+            else "还留着 connect=3.0")
     c.check("HTTPStatusError 的分支不再把 httpx 的原文（含 URL）拼进消息",
             '大模型接口出错（HTTP {code}）：{e}' not in src)
     c.check("RequestError 分支不出现 {base_url}",
