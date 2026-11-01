@@ -170,6 +170,34 @@ def batch_d_token_bar():
             "不许再只指 .env —— .env 被 .gitignore 收了、云上部署根本没有这个文件（#94 就是把这句纠掉的）",
             "启动横幅" in bar and "[管理口令]" in st and "在 .env 加一行" not in st,
             "bar 含横幅=%s ｜全页 .env 加一行残留=%s" % ("启动横幅" in bar, "在 .env 加一行" in st))
+    # #96 的两条：窄屏不许"失明"，且被拒/成功两根轴各要有一非文字反馈。
+    # ⚠️ 这个文件里 `@media (max-width: 720px)` 有**两处**（第 48 行是 .grid2、第 203 行是三栏外壳），
+    #    第一版取 index() 抓到了前面那处 ⇒ 报"块里没有 #tokenStatus"的假红。取最后一处，
+    #    并要求块里含 .sidebar —— 万一以后有人调换 CSS 顺序，这条会指出来而不是又去读错的块。
+    sel = "@media (max-width: 720px)"
+    i = st.rindex(sel)
+    depth, j = 0, st.index("{", i)
+    while j < len(st):
+        if st[j] == "{":
+            depth += 1
+        elif st[j] == "}":
+            depth -= 1
+            if depth == 0:
+                break
+        j += 1
+    narrow = st[i:j]
+    rule = narrow.split("#tokenStatus")[-1][:140] if "#tokenStatus" in narrow else ""
+    c.check("窄屏那档（含 .sidebar 的那一处）对口令条是**配对**的：块里必须留一条 #tokenStatus 规则"
+            "（整条删掉=手机上那行状态彻底没了），而那条规则里不许写 display:none"
+            "（#96 原来就是 none，等于让人盲填口令）—— 要收只收宽度",
+            ".sidebar" in narrow and "#tokenStatus" in narrow
+            and "display: none" not in rule and "max-width" in rule,
+            "块里有 .sidebar=%s｜有 #tokenStatus=%s｜那条规则=%r" % (
+                ".sidebar" in narrow, "#tokenStatus" in narrow, rule[:60]))
+    red = st.count('getElementById("adminToken").style.borderColor = "#e0414a"')
+    clear = st.count('getElementById("adminToken").style.borderColor = ""')
+    c.check("被拒与成功**两支各有一根**不依赖文字的反馈（少第一根=窄屏被拒毫无反应，少第二根=进去了框还红着）",
+            red == 1 and clear == 1, "拒绝那支=%d 处｜恢复那支=%d 处" % (red, clear))
     return c
 
 

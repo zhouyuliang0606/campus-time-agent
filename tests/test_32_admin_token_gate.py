@@ -225,6 +225,55 @@ def batch_fail_closed(c):
             "flush=True" in tail, "最后一条 print 里有没有 = %s" % ("flush=True" in tail))
 
 
+def batch_demo_key(c):
+    """G 批（#96 演示口令）：五档配对读数 —— 缺任何一侧，"永远放行"也能全绿。
+
+    施工单 §3.1 把这五条叫 D1~D5；这里编号让给已存在的 D 批（拦写入），映射记在快照里。
+    """
+    from app.config import (DEMO_ADMIN_TOKEN, admin_token_configured, announce_admin_token,
+                            get_admin_token)
+    title("G. 演示口令（#96）：没配环境变量时它是第三把钥匙；设了就必须当场失效")
+    reads = ("/api/admin/kb", "/api/admin/messages", "/api/workorders")
+    code = _client(None, DEMO_ADMIN_TOKEN)
+    st = [_hit(code, "GET", p, None).status_code for p in reads]
+    c.check("G1【单据 D1】没设环境变量时，演示口令真能进三个只读管理口（"
+            "评委不用从一行缩进里精确抄 16 个字符）",
+            st == [200, 200, 200] and DEMO_ADMIN_TOKEN == "campustime-demo"
+            and len(DEMO_ADMIN_TOKEN) >= 8,
+            "读数 %s｜口令 = %s（长度 %d）" % (st, DEMO_ADMIN_TOKEN, len(DEMO_ADMIN_TOKEN)))
+    other = "env-token-wins-96"
+    cl2 = _client(other, DEMO_ADMIN_TOKEN)
+    st2 = [_hit(cl2, "GET", p, None).status_code for p in reads]
+    c.check("G2【单据 D2 · 这批的正控】设了环境变量之后，演示口令必须当场失效 —— "
+            "没有这一条，把门写成永远放行也能让 G1 绿",
+            st2 == [401, 401, 401], "读数 %s" % st2)
+    cl3 = _client(other, other)
+    st3 = [_hit(cl3, "GET", p, None).status_code for p in reads]
+    c.check("G3【单据 D3】设了环境变量就用它自己那把，正常路径不受影响",
+            st3 == [200, 200, 200], "读数 %s" % st3)
+    empty = _client(None, "").get("/api/admin/kb").status_code
+    wrong = _client(None, "campustime-demo-x").get("/api/admin/kb").status_code
+    near = _client(None, "Campustime-Demo").get("/api/admin/kb").status_code
+    c.check("G4【单据 D4】没设环境变量时，空串 / 错串 / 换个大小写都照样 401（"
+            "`given and` 那一支不许省：空串一旦进到 compare_digest 之外就可能被当成"
+            "\"另一个合法值\"）",
+            (empty, wrong, near) == (401, 401, 401),
+            "空串=%s 错串=%s 大小写=%s" % (empty, wrong, near))
+    boot = get_admin_token()
+    st5 = _client(None, boot).get("/api/admin/kb").status_code
+    c.check("G5【单据 D5 · 反向正控】自举那串随机值照旧能进 —— 加演示口令不许把 #94 那条路顶掉",
+            st5 == 200 and len(boot) >= 12 and boot != DEMO_ADMIN_TOKEN,
+            "读数=%s｜自举串长度=%d" % (st5, len(boot)))
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        announce_admin_token()
+    out = buf.getvalue()
+    c.check("G6 横幅除了随机串，还要当场喊出演示口令（评委不细看日志也能进门）",
+            "[管理口令]" in out and DEMO_ADMIN_TOKEN in out
+            and "失效" in out and not admin_token_configured(),
+            "含演示口令=%s｜喊了「设了就失效」=%s" % (DEMO_ADMIN_TOKEN in out, "失效" in out))
+
+
 def batch_write_really_blocked(c):
     title("D. 门是拦写入的，不是只改个状态码（改前改后各看一眼数据）")
     from app.store import get_persona, list_kb
@@ -341,9 +390,19 @@ def batch_wiring(c):
                   ("POST /api/timetable/apply"), ("POST /api/timetable/clear"),
                   ("POST /api/chat"), ("POST /api/upload"), ("GET /api/persona")} & got),
             f"误挡：{sorted({('POST /api/todos'), ('POST /api/chat'), ('GET /api/persona')} & got)}")
-    c.check("E6 代码里没有写死的口令（只在 .env / 环境变量里）",
-            "CAMPUSTIME_ADMIN_TOKEN=" not in mn and "CAMPUSTIME_ADMIN_TOKEN=" not in guard
-            and "s3cret" not in guard)
+    # E6 原来那句"代码里没有写死的口令"在 #96 之后**不再成立**（故意加了一把公开的演示口令）。
+    # 判据改成钉"例外只有一个、且它带着自己的理由"：那把钥匙只许出现在 config 的常量里，
+    # 门与接口层不许出现 `CAMPUSTIME_ADMIN_TOKEN=` 这种赋值（把真口令写进代码才是事故）。
+    cfg = open(os.path.join(PROJ_DIR, "app", "config.py"), encoding="utf-8").read()
+    c.check("E6 唯一的口令字面量就是那把**公开的**演示口令，且它的注释写着依据（打码 / 设了 env 即失效）；"
+            "接口层与门里不许出现 `CAMPUSTIME_ADMIN_TOKEN=` 这种赋值",
+            cfg.count('DEMO_ADMIN_TOKEN = "campustime-demo"') == 1
+            and "_mask" in cfg and "打码" in cfg and "失效" in cfg
+            and "CAMPUSTIME_ADMIN_TOKEN=" not in mn and "CAMPUSTIME_ADMIN_TOKEN=" not in guard
+            and "campustime-demo" not in guard and "s3cret" not in guard,
+            "config 里定义 1 次=%s｜注释含依据=%s｜guard 里没重复定义那串=%s" % (
+                cfg.count('DEMO_ADMIN_TOKEN = "campustime-demo"') == 1,
+                "_mask" in cfg and "打码" in cfg, "campustime-demo" not in guard))
     adm = open(os.path.join(PROJ_DIR, "app", "static", "admin.html"), encoding="utf-8").read()
     c.check("E7 前端只有一份带口令的封装（adminFetch），管理接口都从它走",
             adm.count("async function adminFetch(") == 1
@@ -367,6 +426,16 @@ def batch_wiring(c):
                 "不填也能跑" in ex, "[管理口令]" in ex, "全锁（403）" in ex))
 
 
+    # 说明书第三处：演示口令这件事必须写在**评委先看的那两份**里（README / .env.example），
+    # 只写在代码注释里等于没写 —— 他不会去翻 config.py。
+    from app.config import DEMO_ADMIN_TOKEN
+    rd = open(os.path.join(PROJ_DIR, "README.md"), encoding="utf-8").read()
+    c.check("E12 README 与 .env.example 都写了演示口令那串、并写清「设了就失效」（说明书与门同一口径）",
+            DEMO_ADMIN_TOKEN in rd and DEMO_ADMIN_TOKEN in ex
+            and "失效" in rd and "失效" in ex,
+            "README 含=%s｜.env.example 含=%s" % (DEMO_ADMIN_TOKEN in rd, DEMO_ADMIN_TOKEN in ex))
+
+
 def main():
     print("===== 管理接口口令门（test_32） =====")
     c = Checker()
@@ -375,6 +444,7 @@ def main():
         batch_admin_locked(c)
         batch_student_open(c)
         batch_fail_closed(c)
+        batch_demo_key(c)
         batch_write_really_blocked(c)
         batch_wiring(c)
     os.environ.pop("CAMPUSTIME_ADMIN_TOKEN", None)
