@@ -561,6 +561,24 @@
     </div>
   </div>
 
+  <!-- #106：多行编辑框（改服务触发词）。与上面那个确认框同一套 .mask/.dlg 样式，
+       不新发明第三种弹窗；textarea 每行一条，别做动态增删 input —— 5 秒轮询下会丢焦点。 -->
+  <div id="promptMask" class="mask">
+    <div class="dlg" role="dialog" aria-modal="true">
+      <div class="dlg-head" id="pmHead"></div>
+      <div class="dlg-body">
+        <p id="pmHint" style="margin:0 0 8px;line-height:1.6;"></p>
+        <textarea id="pmInput" style="width:100%;box-sizing:border-box;min-height:150px;
+          padding:8px 10px;border:1px solid #d8def0;border-radius:8px;font-size:13px;
+          font-family:inherit;resize:vertical;"></textarea>
+      </div>
+      <div class="dlg-foot">
+        <button class="dlg-btn ghost" id="pmCancel">取消</button>
+        <button class="dlg-btn" id="pmOk" style="background:#ff7a59;color:#fff;">保存</button>
+      </div>
+    </div>
+  </div>
+
   <script src="/static/esc.js"></script>
   <script>
     const MODULE_NAMES = { schedule: "我的日程", faq: "校园问答", express: "快递", takeout: "外卖", station: "驿站客服" };
@@ -1272,6 +1290,37 @@
       }
     });
 
+    // #106：多行输入框。形状照 askConfirm（onclick 赋值，别攒监听器）；返回 Promise：
+    // 点【保存】resolve 文本（可能是空串 —— 清空触发词会被后端那道"至少 1 条"拒掉，
+    // 那正是我们要的回执），取消 / 点蒙层 / Esc 一律 resolve null。
+    const pmMask = document.getElementById("promptMask");
+    function askPrompt(opts) {
+      return new Promise(resolve => {
+        document.getElementById("pmHead").textContent = opts.title || "";
+        document.getElementById("pmHint").textContent = opts.hint || "";
+        const inp = document.getElementById("pmInput");
+        inp.value = opts.value || "";
+        document.getElementById("pmOk").textContent = opts.okText || "保存";
+        pmMask.classList.add("show");
+        inp.focus();
+        const okBtn = document.getElementById("pmOk");
+        const cancelBtn = document.getElementById("pmCancel");
+        const done = (v) => {
+          pmMask.classList.remove("show");
+          okBtn.onclick = null; cancelBtn.onclick = null; pmMask.onclick = null;
+          resolve(v);
+        };
+        okBtn.onclick = () => done(inp.value);
+        cancelBtn.onclick = () => done(null);
+        pmMask.onclick = (e) => { if (e.target === pmMask) done(null); };
+      });
+    }
+    document.addEventListener("keydown", e => {
+      if (e.key === "Escape" && pmMask.classList.contains("show")) {
+        document.getElementById("pmCancel").click();
+      }
+    });
+
     function bindArchButtons(box, urlPrefix, reload, describeFn, warnText, statusId, alsoReload) {
       box.querySelectorAll("[data-arch]").forEach(b => b.addEventListener("click", async () => {
         const undo = b.dataset.undo === "1";
@@ -1410,6 +1459,7 @@
     // 数据源是 `/api/admin/service-records?dept=后勤`，与驿站读的是**同一份文件**
     // （`custom/<服务id>.json`）—— 一份数据两个投影，不需要同步接口，也不需要谁去对账。
     let showRpDone = false;    // 「已处理 N 条」那一块开没开（与工单的 showArchWo 同一个形状）
+    let rpGroups = [];         // 最近一次 loadRepair 读到的分组 —— 编辑/删除的弹窗要按 id 回查（#106）
 
     function paintRepairBadge(open) {
       const num = document.getElementById("repairNum");
@@ -1465,6 +1515,7 @@
         return;
       }
       const groups = data.groups || [];
+      rpGroups = groups;
       const sum = (key) => groups.reduce((n, g) => n + (g[key] || 0), 0);
       paintRepairBadge(sum("open"));
       if (head) head.textContent = "共 " + groups.length + " 项服务 · 未结 " + sum("open")
@@ -1486,6 +1537,14 @@
         return '<div class="rpSvc" data-svc="' + esc(String(g.id)) + '">'
           + "<h3>" + esc(g.name) + '<span class="rpDept">归' + esc(g.dept) + "</span>"
           + '<span class="small">未结 ' + (g.open || 0) + " / 累计 " + (g.total || 0) + "</span></h3>"
+          // #106：定义建完就锁死，后勤的既不能改也不能删（用户点名那一件）。
+          // 编辑只开「触发词」（见 rpEdit）；删除只删定义、不动台账（口径与驿站端逐字一致）。
+          + '<div style="margin:2px 0 6px;">'
+          + '<button class="btn" data-rp-edit="' + esc(String(g.id)) + '"'
+          + ' style="margin:0 6px 0 0;padding:4px 10px;font-size:12px;">编辑触发词</button>'
+          + '<button class="btn" data-rp-del="' + esc(String(g.id)) + '"'
+          + ' style="margin:0;padding:4px 10px;font-size:12px;color:#cf1322;">删除服务</button>'
+          + "</div>"
           + "<div>" + pills + "</div>"
           + '<div class="rpForm">' + inputs
           + '<button class="btn" data-rp-add="' + esc(String(g.id)) + '">登记一条</button></div>'
@@ -1503,6 +1562,38 @@
     function rpSay(text, bad) {
       const st = document.getElementById("repairStatus");
       if (st) { st.textContent = text; st.style.color = bad ? "#d94b68" : "#8a93a6"; }
+    }
+
+    // #106：编辑只开「触发词」一项，每行一条。name 与 table 不开放：name 改了要重过重名闸、
+    // table 是台账归类，两者都不是"改错字"能解释的。后端 PUT 接得住五样，界面只暴露这一样 ——
+    // 收集字段/回复模板真要开放，得先想清老记录按旧字段名存着这件事（#106 §2.4），另开一单。
+    // ⚠️ 提示语与 station.html 的 stEditSvc 一字不差（两个 html 不共享 JS，改一处记得改两处）。
+    async function rpEdit(id) {
+      const cur = rpGroups.find(g => String(g.id) === String(id));
+      if (!cur) return;
+      const trig = await askPrompt({
+        title: "编辑「" + (cur.name || "") + "」的触发词",
+        hint: "一行一条。学生说到这些话时，这句话就归这项服务。"
+            + "疑问句（「报修要多久」这种）不要写进来 —— 那是问事，写进来会把提问接成报修登记。",
+        value: (cur.triggers || []).join("\n"),
+        okText: "保存触发词",
+      });
+      if (trig === null) return;
+      let d = {};
+      try {
+        const resp = await adminFetch("/api/admin/services/" + encodeURIComponent(id), {
+          method: "PUT", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ triggers: trig.split("\n").map(s => s.trim()).filter(Boolean) }),
+        });
+        d = await resp.json();
+      } catch (e) {
+        rpSay("❌ 没改成：" + e.message, true);
+        return;
+      }
+      const svc = d.service || {};
+      rpSay("已改「" + (svc.name || cur.name) + "」，触发词 "
+        + ((svc.triggers || []).length) + " 条。");
+      loadRepair();
     }
 
     function bindRepair(box) {
@@ -1557,6 +1648,33 @@
 
       box.querySelectorAll("[data-rp-toggle]").forEach(b => b.addEventListener("click", () => {
         showRpDone = !showRpDone;
+        loadRepair();
+      }));
+
+      // #106：两个按钮共用上面的 askPrompt / askConfirm，不另写第三套弹窗。
+      box.querySelectorAll("[data-rp-edit]").forEach(b => b.addEventListener("click", () => {
+        rpEdit(b.dataset.rpEdit);
+      }));
+
+      box.querySelectorAll("[data-rp-del]").forEach(b => b.addEventListener("click", async () => {
+        const cur = rpGroups.find(g => String(g.id) === String(b.dataset.rpDel));
+        if (!await askConfirm({
+          title: "删除服务「" + ((cur && cur.name) || "") + "」？",
+          body: "只删服务定义。它名下已登记的记录留在台账里，不受影响。",
+          warn: "定义删了只能用那句话重新生成一份；已登记的记录不会跟着走，但新服务也接不上旧记录。",
+          okText: "删除服务",
+        })) return;
+        b.disabled = true;
+        try {
+          const resp = await adminFetch("/api/admin/services/"
+            + encodeURIComponent(b.dataset.rpDel), { method: "DELETE" });
+          await resp.json();
+        } catch (e) {
+          b.disabled = false;
+          rpSay("❌ 没删成：" + e.message, true);
+          return;
+        }
+        rpSay("已删除服务，台账未动。");
         loadRepair();
       }));
     }

@@ -422,6 +422,23 @@
     </div>
   </div>
 
+  <!-- #106：多行编辑框（改服务触发词）。与上面那个确认框同一套 .mask/.dlg 样式。 -->
+  <div id="promptMask" class="mask">
+    <div class="dlg" role="dialog" aria-modal="true">
+      <div class="dlg-head" id="pmHead"></div>
+      <div class="dlg-body">
+        <p id="pmHint" style="margin:0 0 8px;line-height:1.6;"></p>
+        <textarea id="pmInput" style="width:100%;box-sizing:border-box;min-height:150px;
+          padding:8px 10px;border:1px solid #d8def0;border-radius:8px;font-size:13px;
+          font-family:inherit;resize:vertical;"></textarea>
+      </div>
+      <div class="dlg-foot">
+        <button class="dlg-btn ghost" id="pmCancel">取消</button>
+        <button class="dlg-btn" id="pmOk" style="background:#17b8a6;color:#fff;">保存</button>
+      </div>
+    </div>
+  </div>
+
   <script src="/static/bg.js"></script>
   <script src="/static/esc.js"></script>
   <script>
@@ -769,6 +786,36 @@
       });
     }
 
+    // #106：多行输入框，形状照 stConfirm（onclick 赋值，弹窗反复打开不攒监听器）。
+    // 返回 Promise：点【保存】resolve 文本，取消 / 点蒙层 / Esc 一律 resolve null。
+    const pmMask = document.getElementById("promptMask");
+    function stPrompt(opts) {
+      return new Promise(resolve => {
+        document.getElementById("pmHead").textContent = opts.title || "";
+        document.getElementById("pmHint").textContent = opts.hint || "";
+        const inp = document.getElementById("pmInput");
+        inp.value = opts.value || "";
+        document.getElementById("pmOk").textContent = opts.okText || "保存";
+        pmMask.classList.add("show");
+        inp.focus();
+        const okBtn = document.getElementById("pmOk");
+        const cancelBtn = document.getElementById("pmCancel");
+        const done = (v) => {
+          pmMask.classList.remove("show");
+          okBtn.onclick = null; cancelBtn.onclick = null; pmMask.onclick = null;
+          resolve(v);
+        };
+        okBtn.onclick = () => done(inp.value);
+        cancelBtn.onclick = () => done(null);
+        pmMask.onclick = (e) => { if (e.target === pmMask) done(null); };
+      });
+    }
+    document.addEventListener("keydown", e => {
+      if (e.key === "Escape" && pmMask.classList.contains("show")) {
+        document.getElementById("pmCancel").click();
+      }
+    });
+
     async function loadServices(force) {
       const box = document.getElementById("svcList");
       const cnt = document.getElementById("svcCount");
@@ -844,6 +891,44 @@
           //    前端这一道只是让人不必去点一个注定失败的按钮。
           //    删的只是**服务定义**：`custom/<id>.json` 里已登记的记录一条不动，确认框里就这么说。
           if (String(s.table || "") !== "workorders") {
+            // #106：触发词建完就锁死，想改只能删了重建（重建换 id、老记录跟新服务脱钩）——
+            // 用户点名那一件。编辑只开触发词一项；提示语与 admin.html 的 rpEdit 一字不差
+            // （两个 html 不共享 JS，改一处记得改两处）。
+            const edit = document.createElement("button");
+            edit.textContent = "编辑触发词";
+            edit.setAttribute("data-svc-edit", String(s.id || ""));
+            edit.style.cssText = "margin:0 0 6px 6px;";
+            edit.addEventListener("click", async () => {
+              const trig = await stPrompt({
+                title: "编辑「" + (s.name || "") + "」的触发词",
+                hint: "一行一条。学生说到这些话时，这句话就归这项服务。"
+                    + "疑问句（「报修要多久」这种）不要写进来 —— 那是问事，写进来会把提问接成报修登记。",
+                value: (s.triggers || []).join("\n"),
+                okText: "保存触发词",
+              });
+              if (trig === null) return;
+              const list = trig.split("\n").map(x => x.trim()).filter(Boolean);
+              edit.disabled = true;
+              try {
+                const resp = await fetch("/api/station/services/"
+                  + encodeURIComponent(String(s.id || "")), {
+                  method: "PUT", headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ triggers: list }),
+                });
+                const r = await resp.json().catch(() => ({}));
+                if (!resp.ok) { last.style.color = "#cf1322"; last.textContent = "没改成：" + httpFailReason(resp, r); edit.disabled = false; return; }
+                if (r.error) { last.style.color = "#cf1322"; last.textContent = "没改成：" + r.error; edit.disabled = false; return; }
+                // 成功那句进聊天流：下面 loadServices(true) 会把这一整块（连同 last 那行）重建掉。
+                addMsg("系统", "已改服务「" + (s.name || "") + "」的触发词："
+                  + (((r.service || {}).triggers) || []).length + " 条", "sys");
+                await loadServices(true);   // force：不 force 就是"改掉了但屏幕上还是旧的"
+              } catch (e) {
+                last.style.color = "#cf1322";
+                last.textContent = "没改成：" + e.message;
+                edit.disabled = false;
+              }
+            });
+            el.appendChild(edit);
             const del = document.createElement("button");
             del.textContent = "删除服务";
             del.style.cssText = "margin:0 0 6px 6px;";
