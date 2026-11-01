@@ -266,6 +266,78 @@ def batch_c_shape():
 #   「有啥安排」         → 列表档（这条是对的，作对照记在这儿）
 
 
+# #103 §1.1 那张验收表：前八条是**要挡的**（问能力），后四条是**反控**（同主语、同疑问代词，
+# 只差一个「能」和一个动词 —— 它们决定这段判据有没有牙）。
+CAP_FALSE = ["你好，你能做啥", "你好你能干嘛", "你能做什么", "你会什么",
+             "你会干啥", "你能帮我做什么", "您能做点什么", "你都能干啥呀"]
+CAP_TRUE = ["我该做什么", "今天干点啥好呢",          # ★ 原来那族的两条正控
+            "晚上不知道干啥",                        # ★ 无主语，别误伤
+            "你帮我安排点啥"]                        # ★ 有「你」没「能/会」⇒ 是让人出主意
+
+
+def batch_d_capability():
+    """D 批 · #103：「你能做什么」是问能力，不是问该做什么 —— 第五道排除 + 一句不花模型的答复。"""
+    c = Checker()
+    title("D. #103 问能力这一族：判据 14 行 + 固定话术 + 顺序")
+    with sandbox():
+        import app.main as M
+        from app import upload
+        from app.modules import planner as P
+        from app.store import list_todos
+        cli = make_client()
+
+        for msg in CAP_FALSE:
+            c.check(f"「{msg}」不再被『该做什么』那档接走（改前实测是 True）",
+                    P._asking_what_to_do(msg) is False, str(P._asking_what_to_do(msg)))
+        for msg in CAP_TRUE:
+            c.check(f"反控：「{msg}」照旧算『该做什么』（把它弄红等于没修好）",
+                    P._asking_what_to_do(msg) is True, str(P._asking_what_to_do(msg)))
+
+        # 单据 §1.1 把这行写成"期望 True"，实测**改前就是 False**（②那道裸串判据不放行）：
+        # 一道只加排除的判据不可能把 False 变成 True。所以它真正要钉的是"两档都不许接走这句"。
+        c.check("「你能帮我安排点啥吗」两档都不接（`_asking_what_to_do` 与 `asks_capability` 都 False）"
+                " —— 单据这行写的期望 True 是**改前也做不到**的，实测登记在这里",
+                P._asking_what_to_do("你能帮我安排点啥吗") is False
+                and P.asks_capability("你能帮我安排点啥吗") is False,
+                f"{P._asking_what_to_do('你能帮我安排点啥吗')}/{P.asks_capability('你能帮我安排点啥吗')}")
+        c.check("「你能帮我把周三的课挪到周五吗」不许被新判据抢走（它带「能」，动词却是"
+                "「挪」= 明确的改期指令，#87 刚修好那条路）",
+                P.asks_capability("你能帮我把周三的课挪到周五吗") is False, "")
+
+        c.check("空判据守卫·正控：喂「你能做什么」`asks_capability` 必须 True"
+                "（不然上面那八条绿的是别的东西）",
+                P.asks_capability("你能做什么") is True, "")
+        c.check("空判据守卫·反控：喂「我该做什么」必须 False",
+                P.asks_capability("我该做什么") is False, "")
+
+        d = cli.post("/api/chat", json={"message": "你好，你能做啥", "module": "planner",
+                                        "session_id": "t45-cap-1"}).json()
+        ans = d.get("answer") or ""
+        c.check("端到端：这句不再回「我不替你决定 / 这几段是空着的 / 说个名字」"
+                "（三句里出现任何一句都算没修好）",
+                not any(w in ans for w in ("我不替你决定", "这几段是空着的", "说个名字")),
+                ans.replace("\n", " ")[:70])
+        c.check("端到端：答复里必须有「课表」和「问答」—— 证明走的是能力介绍而不是空档清单",
+                "课表" in ans and "问答" in ans, ans.replace("\n", " ")[:70])
+        c.check("能力介绍**不摊候选卡**（它不是待办；摊卡=把自我介绍排进日程）",
+                (d.get("options") or []) == [], str(d.get("options"))[:60])
+        c.check("trace 里看得出走的是这一档（与 `what_to_do_suggestion` 同一套路，不新造字段）",
+                any("你能做什么" in str(t.get("phase", "")) for t in (d.get("trace") or [])),
+                str([t.get("phase") for t in (d.get("trace") or [])])[:80])
+        c.check("答完一句也不许写库、不改日程", len(list_todos()) == 0, f"{len(list_todos())} 条")
+
+        src = inspect.getsource(M._chat_impl)
+        i_cap = src.find("asks_capability(message)")
+        i_what = src.find("_asking_what_to_do(message)")
+        c.check("顺序是真的：`asks_capability` 那道判据排在 `_asking_what_to_do` **之前**"
+                "（两族共用疑问代词，判反了这句又会被空档档抢走 —— M5 打的就是这一条）",
+                0 < i_what and 0 <= i_cap < i_what, f"cap@{i_cap} what@{i_what}")
+        c.check("文案里的『能传什么文件』现取 `upload.supported_desc()`，**不是在这里抄第二份**"
+                "（上传那边扩了格式，这段话术不能还停在三样）",
+                upload.supported_desc() in P.capability_intro(), "")
+    return c
+
+
 def main():
     global code
     print("\n" + "=" * 60)
@@ -274,6 +346,7 @@ def main():
     code |= batch_a_judge().summary("A 批（判据）")
     code |= batch_b_no_card().summary("B 批（端到端不建卡）")
     code |= batch_c_shape().summary("C 批（代码形状）")
+    code |= batch_d_capability().summary("D 批（#103 问能力）")
     return code
 
 
