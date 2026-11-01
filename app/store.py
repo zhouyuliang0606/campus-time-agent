@@ -1832,12 +1832,17 @@ def _bad_service_field(key: str, val) -> str:
     return ""
 
 
-def validate_service_def(obj: dict) -> tuple:
+def validate_service_def(obj: dict, exclude_id: str = "") -> tuple:
     """候选服务定义过白名单。返回 (规范化后的定义, 错误原因)，错误时定义是 None。
 
     为什么是"拒"而不是"尽力修好"：这份定义是**模型按驿站管理员一句话生成**的，
     它多塞字段、把整段描述塞进 name、顺手写一段 HTML，都不该被默默接受 ——
     存进去之后每一个读它的界面都要重新踩一次坑。
+
+    :param exclude_id: 编辑时传**这条自己的 id**（#106）。新增那条路不传。
+        编辑时不传就会"自己撞自己"：自己的触发词跟自己互为子串（剔完 0 条 → 拒）、
+        自己的名字跟自己重名（→ 说「已经有一个叫…的服务了」）。
+        **判据只有这一个参数在变，别为编辑再写一份校验。**
     """
     if not isinstance(obj, dict):
         return None, "服务定义得是一个对象"
@@ -1856,6 +1861,11 @@ def validate_service_def(obj: dict) -> tuple:
             return None, why
         clean[key] = val
     rows = list_services()
+    # #106：编辑自己时把自己从"已被占用"里拿掉 —— 否则下面两道闸都在跟它自己较劲。
+    # ⚠️ 重名闸（taken）与撞车闸（existing）**必须用同一份 rows**：原来这里是两次
+    #    `list_services()`，只排除一处就只修好一半（重名过了、撞车还拒，报错还是「撞了」）。
+    if exclude_id:
+        rows = [s for s in rows if str(s.get("id")) != str(exclude_id)]
     taken = {str(s.get("name") or "") for s in rows}
     if clean["name"] in taken:
         return None, f"已经有一个叫「{clean['name']}」的服务了，换个名字或先删掉它"
@@ -1864,7 +1874,7 @@ def validate_service_def(obj: dict) -> tuple:
     #   于是一个两三个字的宽词能吸走一整族句子 —— 实测触发词「快递」把「我有个快递」
     #   「快递破了」都抢进自建服务，还顺手把内置那条"快递丢了→出工单上报卡"的链路劫持了。
     #   撞车不是"不好看"，是**这句话归谁**当场变了，而且不报错、静默变。
-    existing = list_services()
+    existing = rows   # 上面已经排除过自己，别再调一次 list_services()（#106）
     short = [t for t in clean["triggers"] if len(t) < TRIGGER_MIN_LEN]
     if short:
         return None, (f"触发词「{short[0]}」太短了（不到 {TRIGGER_MIN_LEN} 个字）："
@@ -1926,6 +1936,28 @@ def delete_service(sid: str) -> bool:
         return False
     _write(SERVICES_FILE, kept)
     return True
+
+
+def update_service(sid: str, patch: dict) -> dict | None:
+    """就地改一份**已经过校验**的服务定义，保留 id / created_at / dept（#106）。
+
+    为什么不复用 `add_service`：那是 append，会多出一条同名服务，而旧的那条还在。
+    `id` 与 `dept` 一律**不跟着 patch 走**：id 是台账 `custom/<id>.json` 对上的那把钥匙
+    （换了 id 等于把已登记的记录甩掉），dept 是建它的人那一刻定死的归属 ——
+    改触发词不该顺手改部门（那是越权）。
+    `created_at` 同理保留原值：它记的是这个服务**被建出来**的时刻，不是最后一次改动。
+    只并 `SERVICE_FIELDS` 里的键：patch 里混进 dept / id / 不认识的字段都被丢掉，
+    免得调用方漏了一道过滤就把归属写坏。
+    """
+    rows = list_services()
+    for i, s in enumerate(rows):
+        if str(s.get("id")) != str(sid):
+            continue
+        merged = {**s, **{k: v for k, v in patch.items() if k in SERVICE_FIELDS}}
+        rows[i] = merged
+        _write(SERVICES_FILE, rows)
+        return merged
+    return None
 
 
 # ── 低代码服务在学生端的"名字"（#22 单子 4：接进判定层）───────────────────
