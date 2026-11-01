@@ -14,7 +14,10 @@
      静态写法对、行为不对（比如 gxKey 写了但 gxVal 不调它）也能抓住。
 
 ⚠️ C 批抽的是**当前工作副本**（不是 git 里的版本），所以 A/B 写法的变异也会打到 C 的行为上。
-⚠️ 没有 node 时 C 批打印跳过说明并返回 0（那 15 项不计入 run_all 的总账）。
+⚠️ C 批抽出来单独 eval —— **看不见作用域**：一段代码引用另一段里的名字（跨 IIFE 直呼）
+   在这里照样能跑，在浏览器里却是 ReferenceError（#98 实机就是这么翻的）。那条由 A11b
+   的括号配平判据兜着，C 批不冒充它。
+⚠️ 没有 node 时 C 批打印跳过说明并返回 0（那批不计入 run_all 的总账）。
 """
 import io
 import json
@@ -67,6 +70,43 @@ def _slice(src, start, end, keep_end=True):
     return src[i:j + len(end)] if keep_end else src[i:j]
 
 
+SHELL_MARK = "// ================= 三栏外壳交互（新增） ================="
+
+
+def _shell_span(src):
+    """三栏外壳那层 IIFE 的 {...} 区间（起点取它之后第一个 `{`）。
+
+    括号配平是**朴素版**（不跳字符串/注释）：这个文件的字符串里没有落单的花括号，
+    真出现漂移时 `_stray_gxset_calls` 的尾部校验（必须紧跟 `)();`）会把它暴露成红，
+    而不是悄悄算错范围。
+    """
+    i = src.find(SHELL_MARK)
+    if i < 0:
+        return None
+    j = src.find("{", i)
+    depth = 0
+    for k in range(j, len(src)):
+        if src[k] == "{":
+            depth += 1
+        elif src[k] == "}":
+            depth -= 1
+            if depth == 0:
+                return (j, k)
+    return None
+
+
+def _stray_gxset_calls(src):
+    """外壳**之外**的 `gxSetSid(` 次数；`window.ctGxSetSid(` 不算（词边界挡掉）。
+
+    返回 None 表示连壳都没认出来（判据要按红处理，不能当 0）。
+    """
+    sp = _shell_span(src)
+    if sp is None or src[sp[1] + 1:sp[1] + 5] != ")();":
+        return None
+    return sum(1 for m in re.finditer(r"(?<![\w.$])gxSetSid\(", src)
+               if not (sp[0] < m.start() < sp[1]))
+
+
 def batch_a_student():
     c = Checker()
     h = read("app/static/student.html")
@@ -113,10 +153,28 @@ def batch_a_student():
     gpos = ident.find("if (known) {")
     gend = ident.find("\n      }\n", gpos)
     inside = ident[gpos:gend] if gpos >= 0 and gend > gpos else ""
-    c.check("A11 whoami 回来才复套：`gxSetSid(sid)` 恰一处，且在 `if (known) {` 的块里"
-            "（把请求失败当没身份 = 背景被打回默认 + 认错下一位的键）",
-            ident.count("gxSetSid(sid)") == 1 and "gxSetSid(sid)" in inside,
-            "count=%d" % ident.count("gxSetSid(sid)"))
+    c.check("A11 whoami 回来才复套：换键只走窗口钩子 `window.ctGxSetSid(sid)`，恰一处，"
+            "且在 `if (known) {` 的块里（把请求失败当没身份 = 背景被打回默认 + 认错下一位的键）",
+            ident.count("window.ctGxSetSid(sid)") == 1
+            and "window.ctGxSetSid(sid)" in inside,
+            "count=%d" % ident.count("window.ctGxSetSid(sid)"))
+    # #98 实机回归：`gxSetSid` 定义在三栏 IIFE 里，`initStudentIdentity` 在它之前的顶层。
+    # 直呼名字在静态文本上毫无异样（C 批抽出来单独 eval 也没事），浏览器里却是 ReferenceError，
+    # 把后面标身份那几行一起带走（顶栏一直「正在确认身份…」）。所以钉的是**作用域**。
+    defpos = h.find("function gxSetSid(sid){")
+    sp = _shell_span(h)
+    c.check("A11b `gxSetSid` 定义在三栏 IIFE 里 ⇒ 壳外不许直呼其名（ReferenceError），"
+            "只许经 `window.ctGxSetSid`，且钩子就在定义后面",
+            sp is not None and defpos > sp[0]
+            and "window.ctGxSetSid = gxSetSid;" in h
+            and h.index("window.ctGxSetSid = gxSetSid;") > defpos
+            and _stray_gxset_calls(h) == 0,
+            "span=%s def=%d hook=%s stray=%s"
+            % (sp, defpos, "window.ctGxSetSid = gxSetSid;" in h, _stray_gxset_calls(h)))
+    c.check("A11b正控 同一支判据对「壳内定义、壳外裸叫」必须报 1（否则这条是空判据）",
+            _stray_gxset_calls(
+                SHELL_MARK + "\n(function(){\n  function gxSetSid(s){}\n})();\n"
+                "function init(){ gxSetSid('x'); }") == 1)
     c.check("A12 成功的身份也回写显示用的钥匙（否则下一位进来首屏还用老的）",
             "if (sid) localStorage.setItem('campustime_student', sid);"
             " else localStorage.removeItem('campustime_student');" in inside)
@@ -173,6 +231,7 @@ C_NAMES = [
     "C12 /plan 也认领了老键",
     "C13 /plan 首屏套的是 C 自己的图（applyPlanBackdrop 走分键）",
     "C14 /plan 没学号时读裸键",
+    "C15 窗口钩子就是 gxSetSid（壳外只能走它换键）",
 ]
 
 JS_TEMPLATE = r"""
@@ -194,6 +253,7 @@ function chk(name, cond, extra) {
 
 let applied = 0;
 globalThis.applyBackdrop = () => { applied++; };
+globalThis.window = {};
 globalThis.localStorage = fakeLS({
   campustime_student: 'A', ct_bg: 'deep', ct_gx_scrim: '.08', ct_gx_lv: '1',
 });
@@ -211,17 +271,19 @@ try {
   chk('C5 写只落到 A 的键',
       localStorage.getItem('ct_bg@A') === 'milky' && localStorage.getItem('ct_bg') === null);
   const before = applied;
-  gxSetSid('B');
+  window.ctGxSetSid('B');
   chk('C6 换 B：读不到 A 的背景（回落默认 forest）',
       gxVal('ct_bg', 'forest') === 'forest', gxVal('ct_bg', 'forest'));
   chk('C7 换人必须重套一次背景', applied === before + 1, String(applied - before));
   localStorage.setItem(gxKey('ct_bg'), 'dusk');
   chk('C8 B 写的是 B 的键，A 没被动',
       localStorage.getItem('ct_bg@B') === 'dusk' && localStorage.getItem('ct_bg@A') === 'milky');
-  gxSetSid('A');
+  window.ctGxSetSid('A');
   chk('C9 切回 A：还是 A 的银河', gxVal('ct_bg') === 'milky');
-  gxSetSid('');
+  window.ctGxSetSid('');
   chk('C10 没有学号：不读任何人的分键', gxVal('ct_bg', 'forest') === 'forest');
+  chk('C15 窗口钩子就是 gxSetSid（壳外只能走它换键）',
+      typeof window.ctGxSetSid === 'function' && window.ctGxSetSid === gxSetSid);
 } catch (e) {
   console.log('@@ERR@@student: ' + e.message);
 }
@@ -237,7 +299,7 @@ globalThis.document = {
     };
   },
 };
-globalThis.window = { CT_BG_SRC: { forest: '/static/bg/forest.jpg', dusk: '/static/bg/dusk.jpg' } };
+globalThis.window.CT_BG_SRC = { forest: '/static/bg/forest.jpg', dusk: '/static/bg/dusk.jpg' };
 globalThis.localStorage = fakeLS({ campustime_student: 'C', ct_bg: 'dusk' });
 try {
   eval(PLAN);
