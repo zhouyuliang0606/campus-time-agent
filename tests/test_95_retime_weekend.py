@@ -79,6 +79,36 @@ def blocker(date):
             "start": "07:00", "end": "22:00"}
 
 
+def weekend_days():
+    """planner 眼里「周末」能挑的那几天 —— **今天是周末就得算上今天**。
+
+    ⚠️ 2026-11-01（周日）实测踩的坑：`sat(o)` 只往**后**推周六，于是「四个候选周末」
+    永远指未来那两个周末；可周日这天打开时，**今天本身**就是一个合格的周末日子，
+    封堵漏了它 ⇒ A6 / A9 / D3 三条判据集体假红（不是产品错，是夹具错）。
+    周六更狠：那天 `sat(0)` 就是今天，本来就会重合。
+    """
+    base = datetime.date.today()
+    days = []
+    if base.weekday() >= 5:              # 今天就是周末：它是第一个候选
+        days.append(base.isoformat())
+    for off in (0, 1, 7, 8):
+        days.append(sat(off))
+    out = []
+    for d in days:                        # 去重保序（周六当天 sat(0) == 今天）
+        if d not in out:
+            out.append(d)
+    return out
+
+
+def wed_before_weekend():
+    """最近那个周六往前数三天的周三 —— 用来把「今天」钉在一个**非周末**的工作日。
+
+    只给需要「本周末到底是哪两天」的判据用（A9）：不钉的话，周日跑会挑到"今天"，
+    看起来像错，其实是合法答案。
+    """
+    return datetime.date.fromisoformat(sat(0)) - datetime.timedelta(days=3)
+
+
 def count_title(title):
     from app.store import list_todos
     return len([x for x in list_todos() if (x.get("title") or "") == title])
@@ -158,7 +188,7 @@ def batch_a_weekend():
                 and wd(p5.get("date", "")) in WEEKEND,
                 str((r5.get("status"), p5.get("title"), p5.get("date"))))
 
-        seed_todos([swim()] + [blocker(sat(o)) for o in (0, 1, 7, 8)])
+        seed_todos([swim()] + [blocker(d) for d in weekend_days()])
         r6 = P.build_retime_existing_proposal("帮我把游泳改到周末")
         c.check("A6 T3 四个候选周末全排不下 → unclear + `reason=no_slot` + `slot_label` 说的是周末"
                 " + 带着那条旧待办（#82 追记 §1.3：`weekend_full` 已并进 `no_slot`，不许两套机制）",
@@ -184,7 +214,11 @@ def batch_a_weekend():
         # ★ 这条原本是"口径登记"（单据 §1.2 的裁决把它改了）：那条待办本来就排在周六、
         #   再说「改到周末」⇒ 旧日期**排到最后**而不是删掉 ⇒ 优先换到周日，周日满了才回周六换个时段。
         seed_todos([swim(date=sat(0))])
-        r9 = P.build_retime_existing_proposal("把游泳改到周末")
+        # 「今天」钉在那周六前的周三：不在周日/周六跑时，planner 会把**今天**当成最近的
+        # 周末日（今天就是周日），于是它答"今天"——合法，但对照关系没了（要测的是
+        # 「旧的那天是周六 ⇒ 优先换到周日」）。钉死之后这条判据与星期几无关。
+        r9 = stub_today(wed_before_weekend(),
+                        lambda: P.build_retime_existing_proposal("把游泳改到周末"))
         p9 = r9.get("proposal") or {}
         c.check("A9（#82 追记 §1.2 改口）待办本来就在周六 + 说「改到周末」→ 出**周日**的卡"
                 "（旧日期不优先，但没被删掉）",
@@ -345,7 +379,7 @@ def batch_d_e2e():
             c.check("D2-c 只出提案、一个字节都不写库（库里仍是那一条游泳）",
                     count_title("游泳") == 1, str(count_title("游泳")))
 
-            seed_todos([swim()] + [blocker(sat(o)) for o in (0, 1, 7, 8)])
+            seed_todos([swim()] + [blocker(d) for d in weekend_days()])
             sid3 = "b82-d3"
             ask(cli, "游泳时间撞了，改一下时间", sid3)
             d3 = ask(cli, "周末改一下", sid3)
