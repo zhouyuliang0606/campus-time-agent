@@ -205,7 +205,9 @@
       .sb-brand .txt, .sb-item span:not(.ico):not(.sb-num):not(.sb-cnt), .sb-foot { display: none; }
       .sb-item { justify-content: center; position: relative; }
       .sb-num.show, .sb-cnt { display: inline-block; position: absolute; top: 3px; right: 2px; margin-left: 0; }
-      #tokenStatus { display: none; }
+      /* 窄屏也要看得见「进没进得去」：这句原来是 display:none，等于让人盲填口令（#96）。
+         要收只许收宽度，不许把这一行本身收掉。 */
+      #tokenStatus { max-width: 120px; white-space: normal; line-height: 1.25; font-size: 11px; }
       .tb-token input { width: 96px; }
     }
   </style>
@@ -250,7 +252,7 @@
              换一台电脑打开控制台会重新问一次——这正是要的效果。 -->
         <div class="tb-token">
           <span>🔒</span>
-          <input id="adminToken" type="password" placeholder="管理口令：服务端设了的那个；没设就用启动横幅里那串 [管理口令]" />
+          <input id="adminToken" type="password" placeholder="管理口令：服务端设了的那个；没设就用启动横幅里那串 [管理口令]，或演示口令 campustime-demo" />
           <button id="saveToken">用这个口令</button>
           <span id="tokenStatus">还没填口令，管理类接口都是锁着的</span>
         </div>
@@ -571,6 +573,8 @@
       const resp = await fetch(url, Object.assign({}, opts, { headers }));
       if (resp.status === 401 || resp.status === 403) {
         adminLocked = true;
+        // 那行字在窄屏只有 11px，不一定看得见；让输入框自己也变红——不依赖文字的第二次反馈（#96）。
+        document.getElementById("adminToken").style.borderColor = "#e0414a";
         // 服务端那句 detail 已经写清了该干什么，原样递给人看
         const body = await resp.json().catch(() => ({}));
         setTokenStatus(resp.status === 403
@@ -602,6 +606,7 @@
         throw new Error("HTTP " + resp.status + (detail ? "：" + detail : "") + hint);
       }
       adminLocked = false;
+      document.getElementById("adminToken").style.borderColor = "";
       return resp;
     }
 

@@ -26,8 +26,27 @@ DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
 DEBUG = os.getenv("DEBUG", "false").lower() in ("true", "1", "yes")
 
 # —— 管理接口口令 ——
-# 全项目只在这里拿，admin_guard 负责校验；代码里没有任何写死的口令。
+# 全项目只在这里拿，admin_guard 负责校验。真口令只走 .env / 环境变量；
+# 代码里唯一的口令字面量是下面那个**公开的**演示口令（它不是密钥，理由写在它上面）。
 ADMIN_TOKEN_ENV = "CAMPUSTIME_ADMIN_TOKEN"
+
+# 演示口令：**故意公开的**，写死在这里就是要让拿到仓库的人不翻日志也能进后台（#96）。
+# 它挡不住人，所以不能当密钥看：拿到它只能"进管理端"，
+# 而后台回显的 api_key 是**打码**的（`main.py` 的 `_mask`：只露前 6 后 4，`len<=10` 只露 1 位），
+# 最坏后果是把 Key 覆盖掉 / 把知识库和人设改坏 ⇒ 演示当场哑火，不是密钥泄漏。
+# ⚠️ 部署者一旦设了 `CAMPUSTIME_ADMIN_TOKEN`，这一把立刻失效（见 `admin_token_configured`）。
+#    实例长期挂公网、或这台机器开始接真实学生数据 ⇒ 设一个环境变量就关掉它，不用改代码。
+DEMO_ADMIN_TOKEN = "campustime-demo"
+
+
+def admin_token_configured() -> bool:
+    """部署者有没有自己设管理口令。
+
+    这件事在三个地方要判（`get_admin_token` / `announce_admin_token` / `admin_guard.verify_admin`），
+    所以收在这一处 —— 各处自己写一遍 `os.getenv(...).strip()`，迟早有一处漏了 `strip()`
+    就变成"横幅说没配、门说配了"那种对不上的账。
+    """
+    return bool((os.getenv(ADMIN_TOKEN_ENV) or "").strip())
 
 
 def get_admin_token() -> str:
@@ -65,15 +84,18 @@ def announce_admin_token() -> None:
     只在自举那种情形喊：设了环境变量的人不需要我们把口令打进日志；
     口令只走 stdout，不落台账、不落仓库 —— 想让它出现在别处的人请自己设环境变量。
     """
-    if (os.getenv(ADMIN_TOKEN_ENV) or "").strip():
+    if admin_token_configured():
         return
     print("[管理口令] 服务器没配 " + ADMIN_TOKEN_ENV + "，本次启动已自动生成随机口令：")
     print("          " + bootstrapped_admin_token())
     print("          管理端顶栏那格填这串即可；重启会换一个。")
     # flush=True：stdout 被重定向到文件时是块缓冲的，这几行会压在缓冲区里，
     # 直到下一条访问日志把缓冲区顶出来才落盘 —— 那时"照启动横幅填口令"的人已经卡在门口了。
-    print("          要固定或公网部署：设 " + ADMIN_TOKEN_ENV + " 环境变量（口令别提交进仓库）。",
-          flush=True)
+    print("          要固定或公网部署：设 " + ADMIN_TOKEN_ENV + " 环境变量（口令别提交进仓库）。")
+    # 演示口令：让拿到仓库的人不必从一行缩进里精确抄那 16 个字符（#96）。
+    # 它和上面那串是**两把钥匙**，不是替代关系：随机串那把照旧能用（test_32 的 D5 就是钉这个）。
+    print("          也可以直接用演示口令 " + DEMO_ADMIN_TOKEN +
+          "（公开的，写在 README 里；设了 " + ADMIN_TOKEN_ENV + " 它就失效）。", flush=True)
 
 
 # ============ base_url 的 SSRF 闸门（全项目唯一一处判"能不能连这里"）============
