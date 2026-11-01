@@ -36,7 +36,9 @@ ADMIN_TOKEN_ENV = "CAMPUSTIME_ADMIN_TOKEN"
 # 最坏后果是把 Key 覆盖掉 / 把知识库和人设改坏 ⇒ 演示当场哑火，不是密钥泄漏。
 # ⚠️ 部署者一旦设了 `CAMPUSTIME_ADMIN_TOKEN`，这一把立刻失效（见 `admin_token_configured`）。
 #    实例长期挂公网、或这台机器开始接真实学生数据 ⇒ 设一个环境变量就关掉它，不用改代码。
-DEMO_ADMIN_TOKEN = "campustime-demo"
+# 值之所以是 123456 而不是一串随机字符：评委要在没有日志的情况下把口令打进框里，
+# 能背下来的才叫「开箱可用」（2026-11-01 定：演示口令 = 123456）。这不代表它可以防人。
+DEMO_ADMIN_TOKEN = "123456"
 
 
 def admin_token_configured() -> bool:

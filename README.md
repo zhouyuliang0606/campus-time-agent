@@ -309,13 +309,13 @@ CampusTime/
 > **最短路径（评委 / 临时接手的人看这一段就够）**
 >
 > ```bash
-> git clone <仓库地址> && cd CampusTime
+> git clone <仓库地址> && cd campus-time-agent       # 目录名取仓库名，不是 CampusTime
 > python -m venv .venv && .venv\Scripts\activate     # macOS/Linux: source .venv/bin/activate
-> pip install -r requirements.txt
+> pip install -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple/
 > uvicorn app.main:app                                # 启动约 2 秒，不用配任何东西
 > ```
 >
-> 然后浏览器打开 `http://127.0.0.1:8000/admin`，在顶栏那格填**演示口令 `campustime-demo`**，点【用这个口令】。
+> 然后浏览器打开 `http://127.0.0.1:8000/admin`，在顶栏那格填**演示口令 `123456`**，点【用这个口令】。
 >
 > - **这一步为什么不用配**：管理端确实有一道门（后台能改模型配置、能读学生消息，不能对全世界敞开），
 >   但没设环境变量时它认两把钥匙：控制台启动横幅打出的那串随机值，**以及这把公开的演示口令**。
@@ -340,15 +340,18 @@ CampusTime/
 ### 2. 装依赖
 
 ```bash
-cd CampusTime
+cd campus-time-agent            # 上一步 git clone 出来的目录，名字跟仓库名一致
 python -m venv .venv            # 建一个独立的虚拟环境（推荐，不污染系统）
 .venv\Scripts\activate          # Windows 激活；macOS/Linux 用 source .venv/bin/activate
-pip install -r requirements.txt
+pip install -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple/
 ```
 
 > `requirements.txt` 里每一行上面都写了中文注释，说明这个库是干嘛的。
 > 其中 `pypdf` / `python-docx` / `openpyxl` / `python-pptx` 只影响**文件上传解析**，
 > 不装也能跑，只是那几种格式传不了。
+
+> 命令末尾那个 `-i https://mirrors.aliyun.com/pypi/simple/` 是**国内镜像**：
+> 直连 PyPI 在大陆经常几十 KB/s 甚至超时，换个源通常十几秒装完。装得动就把 `-i ...` 去掉。
 
 > ⚠️ **`requirements.txt` 请存成「带 BOM 的 UTF-8」，别把开头那三个看不见的字节当垃圾清掉。**
 > pip 读依赖清单时：认出 BOM 才按 UTF-8 解，**没 BOM 就按你的系统码页解**。
@@ -388,7 +391,7 @@ uvicorn app.main:app --reload
 浏览器打开 **http://127.0.0.1:8000**
 
 > **管理端口令：一行都不用配也能进，而且有两把钥匙**（学生侧完全不用配，照常聊、照常排日程）：
-> ① **演示口令 `campustime-demo`** —— 公开的、写死在 `app/config.py`，不用翻日志、不用抄字符；
+> ① **演示口令 `123456`** —— 公开的、写死在 `app/config.py`，不用翻日志、不用抄字符；
 > ② 启动横幅那串随机值 —— 控制台打出 `[管理口令] 服务器没配 CAMPUSTIME_ADMIN_TOKEN…` 后紧跟那行缩进
 > （实测从起进程到那行可读 ≈ 1.9 秒，比端口开始接受连接还早 0.2 秒；**每启动一次换一个**，别收藏）。
 > 填进 `/admin` 顶部的「🔒 管理口令」框、点【用这个口令】就进去了。

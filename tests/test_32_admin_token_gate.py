@@ -236,10 +236,17 @@ def batch_demo_key(c):
     reads = ("/api/admin/kb", "/api/admin/messages", "/api/workorders")
     code = _client(None, DEMO_ADMIN_TOKEN)
     st = [_hit(code, "GET", p, None).status_code for p in reads]
+    # 这里原先卡的是 len(DEMO_ADMIN_TOKEN) >= 8，守的是 #96 的设计前提：
+    # 「自举那串 16 位随机值，评委照横幅抄一遍就抄错，所以要给一条能背下来的」。
+    # 2026-11-01 用户拍板把演示口令换成 123456（原话：「评委复现更方便」），
+    # 前提整个反过来 —— 现在要守的是「短到能背下来、且不是空串」，所以判据是上界不是下界。
+    # 别把这条读成「防弱口令」：这是本地演示用的公开钥匙，安全性由 G2 兜
+    #（设了环境变量它当场失效），不靠长度。
+    # 「随机串够长」这件事并没有失去覆盖 —— G5 仍钉着 len(boot) >= 12。
     c.check("G1【单据 D1】没设环境变量时，演示口令真能进三个只读管理口（"
             "评委不用从一行缩进里精确抄 16 个字符）",
-            st == [200, 200, 200] and DEMO_ADMIN_TOKEN == "campustime-demo"
-            and len(DEMO_ADMIN_TOKEN) >= 8,
+            st == [200, 200, 200] and DEMO_ADMIN_TOKEN == "123456"
+            and 0 < len(DEMO_ADMIN_TOKEN) <= 8,
             "读数 %s｜口令 = %s（长度 %d）" % (st, DEMO_ADMIN_TOKEN, len(DEMO_ADMIN_TOKEN)))
     other = "env-token-wins-96"
     cl2 = _client(other, DEMO_ADMIN_TOKEN)
@@ -252,7 +259,7 @@ def batch_demo_key(c):
     c.check("G3【单据 D3】设了环境变量就用它自己那把，正常路径不受影响",
             st3 == [200, 200, 200], "读数 %s" % st3)
     empty = _client(None, "").get("/api/admin/kb").status_code
-    wrong = _client(None, "campustime-demo-x").get("/api/admin/kb").status_code
+    wrong = _client(None, "123456-x").get("/api/admin/kb").status_code
     near = _client(None, "Campustime-Demo").get("/api/admin/kb").status_code
     c.check("G4【单据 D4】没设环境变量时，空串 / 错串 / 换个大小写都照样 401（"
             "`given and` 那一支不许省：空串一旦进到 compare_digest 之外就可能被当成"
@@ -396,13 +403,13 @@ def batch_wiring(c):
     cfg = open(os.path.join(PROJ_DIR, "app", "config.py"), encoding="utf-8").read()
     c.check("E6 唯一的口令字面量就是那把**公开的**演示口令，且它的注释写着依据（打码 / 设了 env 即失效）；"
             "接口层与门里不许出现 `CAMPUSTIME_ADMIN_TOKEN=` 这种赋值",
-            cfg.count('DEMO_ADMIN_TOKEN = "campustime-demo"') == 1
+            cfg.count('DEMO_ADMIN_TOKEN = "123456"') == 1
             and "_mask" in cfg and "打码" in cfg and "失效" in cfg
             and "CAMPUSTIME_ADMIN_TOKEN=" not in mn and "CAMPUSTIME_ADMIN_TOKEN=" not in guard
-            and "campustime-demo" not in guard and "s3cret" not in guard,
+            and "123456" not in guard and "s3cret" not in guard,
             "config 里定义 1 次=%s｜注释含依据=%s｜guard 里没重复定义那串=%s" % (
-                cfg.count('DEMO_ADMIN_TOKEN = "campustime-demo"') == 1,
-                "_mask" in cfg and "打码" in cfg, "campustime-demo" not in guard))
+                cfg.count('DEMO_ADMIN_TOKEN = "123456"') == 1,
+                "_mask" in cfg and "打码" in cfg, "123456" not in guard))
     adm = open(os.path.join(PROJ_DIR, "app", "static", "admin.html"), encoding="utf-8").read()
     c.check("E7 前端只有一份带口令的封装（adminFetch），管理接口都从它走",
             adm.count("async function adminFetch(") == 1

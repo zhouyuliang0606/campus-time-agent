@@ -187,7 +187,11 @@
     .tb-token button {
       padding: 5px 10px; border: none; border-radius: 7px; background: #ff5c8a; color: #fff;
       font-size: 12px; cursor: pointer;
+      /* 375px 实测：不加这两句，flex 会把按钮压到只剩一个字的宽度，
+         「用这个口令」竖着排成五行的柱子（截图 bar-375.png 修前就是这样）。 */
+      flex: none; white-space: nowrap;
     }
+    .tb-token > span:first-child { flex: none; }
     #tokenStatus { font-size: 12px; color: #8a93a6; max-width: 260px; overflow: hidden;
                    text-overflow: ellipsis; white-space: nowrap; }
     .stage { flex: 1; overflow-y: auto; padding: 16px; min-height: 0; }
@@ -209,6 +213,11 @@
          要收只许收宽度，不许把这一行本身收掉。 */
       #tokenStatus { max-width: 120px; white-space: normal; line-height: 1.25; font-size: 11px; }
       .tb-token input { width: 96px; }
+      /* 375px 实测：顶栏塞不下时 flex 会把每一块都压到"一个字宽"，
+         「学生工单」「还没填口令」「返回登录」全变成竖排的柱子（截图 topbar-375 修前）。
+         允许换行，并让不肯断的几块保持横排——宁可占两行，不要竖排。 */
+      .topbar { flex-wrap: wrap; row-gap: 6px; }
+      .topbar .t, .tb-link { white-space: nowrap; flex: none; }
     }
   </style>
 </head>
@@ -252,7 +261,12 @@
              换一台电脑打开控制台会重新问一次——这正是要的效果。 -->
         <div class="tb-token">
           <span>🔒</span>
-          <input id="adminToken" type="password" placeholder="管理口令：服务端设了的那个；没设就用启动横幅里那串 [管理口令]，或演示口令 campustime-demo" />
+          <!-- placeholder 只能写 180px 装得下的那半句：原来那句 60 字的提示在这一格里
+               永远被裁在「服务端设了的那个；」就断了，后面的「或演示口令 xxx」一次都没露过面
+               （2026-11-01 截图实测，1440px 屏幕也一样）。所以长句搬到 title，框里只留口令本身；
+               悬停能看到全句，触屏至少能看见那 6 个数字。 -->
+          <input id="adminToken" type="password" placeholder="管理口令（演示口令 123456）"
+                 title="管理口令：服务端设了 CAMPUSTIME_ADMIN_TOKEN 就用那个；没设就用启动横幅里那串 [管理口令]，或直接用演示口令 123456（一旦设了环境变量，演示口令当场失效）。" />
           <button id="saveToken">用这个口令</button>
           <span id="tokenStatus">还没填口令，管理类接口都是锁着的</span>
         </div>
@@ -573,6 +587,14 @@
       const resp = await fetch(url, Object.assign({}, opts, { headers }));
       if (resp.status === 401 || resp.status === 403) {
         adminLocked = true;
+        // 开场那七个 loader 一定先撞 401 —— 这时标签页里根本还没有口令（t 是空串）。
+        // 对着一个还没动手的人写「口令不对」是冤枉他：他一个字都没填就先看见一行红的。
+        // 照实说「还没填」，也不描红（红是"你填错了"的意思，不能挪用）。
+        if (!t) {
+          // 这行只有 260px（窄屏 120px），别往里塞口令 —— 口令在 placeholder 里，塞这儿会被省略号吃掉。
+          setTokenStatus("🔒 还没填口令，管理类接口都是锁着的", false);
+          throw new Error("还没填管理口令");
+        }
         // 那行字在窄屏只有 11px，不一定看得见；让输入框自己也变红——不依赖文字的第二次反馈（#96）。
         document.getElementById("adminToken").style.borderColor = "#e0414a";
         // 服务端那句 detail 已经写清了该干什么，原样递给人看
