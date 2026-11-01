@@ -113,6 +113,13 @@ def batch_b_signed_cookie():
             c.check("B2-bis 登录回执里那一枚就是签过的", ("ct_student=" + signed) in ck1, repr(ck1)[:70])
             c.check("B2-ter 拿签过的值访问 ⇒ 认这个身份",
                     _whoami(make_client(headers={"Cookie": "ct_student=" + signed})) == KNOWN, "")
+            # ★ 2026-11-01（#102 实测出来的起点耦合）：真实数据里用户当天自己用 admin2 建过待办，
+            #   于是 `student/admin2/todos.json` 被 copytree 带进沙箱，下面 B3-ter 整条变红。
+            #   那条判的是"认不出身份时**这一次请求**不许往别人的目录里写"，不是"真实数据里
+            #   本来没有"——按 `_harness` 的规矩自种起点：先把这份属于"别人"的文件清掉。
+            _seed = data_path("student", "admin2", "todos.json")
+            if os.path.exists(_seed):
+                os.remove(_seed)
             c.check("B3 手改成明文的别人学号 ⇒ 当没身份（名单 + 签名叠起来要挡的就是这一下）",
                     _whoami(make_client(headers={"Cookie": "ct_student=admin2"})) == "", "")
             c.check("B3-bis 改了学号没重签 ⇒ 同样当没身份",
