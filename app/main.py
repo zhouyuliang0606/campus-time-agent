@@ -133,6 +133,8 @@ from app.modules.planner import (
     unsupported_period,
     _asking_what_to_do,
     what_to_do_suggestion,
+    asks_capability,                 # #103：第五道排除的判据（也用来决定这句走不走固定话术）
+    capability_intro,                #        「你能做什么」的那句确定性答复，不花模型
     _bare_clock_note,
     todo_remove_batch_proposal,
     todo_done_batch_proposal,
@@ -3640,6 +3642,27 @@ async def _chat_impl(req: Request, meta: dict, emit=None):
                            note="校园问答：知识库里没有这一条",
                            phase="📚 问的是校园信息 → 知识库里没有这一条（老实说没查到）",
                            step_answer="知识库未命中")
+
+        # #103：「你好，你能做啥」这类**问能力**的话，先在这里落地。
+        #   ⚠️ 位置必须在 `_asking_what_to_do` **之前**：两族共用疑问代词（啥/什么/嘛），
+        #   判反了就会被空档那档抢走 —— 用户报的就是这个：连问两次都回同一段「我不替你决定 + 这几段是空着的」，
+        #   看着像坏了。
+        #   ⚠️ "不花模型"这句只说**这一段答复**：它是一段写死的话术，不查周表、不靠模型输出。
+        #   但这一支在判定层**之后**（单据 §1.2 只要求排在 `_asking_what_to_do` 之前），
+        #   所以整次请求照旧会过一次语义判断 —— 真要把那一次也省掉，得把这类短句在判定层前短路，另立一单。
+        if asks_capability(message):
+            answer = capability_intro()
+            append_conversation(session_id, "user", message)
+            append_conversation(session_id, "assistant", answer)
+            return {
+                "module": "planner",
+                "session_id": session_id,
+                "answer": answer,
+                "trace": [{"step": 1, "phase": "👋 这句在问『你能做什么』→ 报能力清单（一段写死的话术，不查周表、不建卡）",
+                           "answer": "没出卡、没写库"}],
+                "options": [],
+                "awaiting_choice": False,
+            }
 
         if _asking_what_to_do(message):
             answer, _free = what_to_do_suggestion(message)
