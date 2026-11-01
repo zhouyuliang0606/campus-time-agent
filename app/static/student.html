@@ -2070,10 +2070,17 @@ html.gx-glass[data-gx-refine="on"] .composer, html.gx-glass[data-gx-refine="on"]
     async function initStudentIdentity() {
       const chip = document.getElementById("whoChip");
       const btn = document.getElementById("logoutBtn");
-      let sid = "";
+      let sid = "", known = false;
       try {
         sid = (await (await fetch("/api/whoami")).json()).student || "";
+        known = true;
       } catch (e) { sid = ""; }   // 读不到就按"没身份"办：宁可标灰，不许拿上一位的显示凑
+      // #98：外观偏好按学号分键。只有**请求成功**才复套 + 回写这把钥匙 ——
+      // 把"请求挂了"当成"没身份"会把背景打回默认，还会把下一位的键认错人。
+      if (known) {
+        try { if (sid) localStorage.setItem('campustime_student', sid); else localStorage.removeItem('campustime_student'); } catch (e) {}
+        gxSetSid(sid);
+      }
       chip.textContent = sid ? ("👤 " + sid) : "👤 未登录 · 演示公共库";
       chip.title = sid ? ("现在看到的是学号 " + sid + " 的课表与待办；退出登录可以换一个人")
                        : "没有学号时用的是演示公共库（所有人共用）；点这里去登录页输一个";
@@ -3362,7 +3369,9 @@ html.gx-glass[data-gx-refine="on"] .composer, html.gx-glass[data-gx-refine="on"]
     /* ============ 背景与动效层（2026-10-11，玻璃质感改版） ============
        纯视觉：只写 CSS 变量、只往 .gx-fx 里塞装饰节点，不碰任何接口与业务状态。
        选择记在 localStorage（沿用 ct_* 命名），刷新与下次打开都还在；
-       换设备/清缓存就回到默认，这是刻意的 —— 它是偏好，不是数据。 */
+       换设备/清缓存就回到默认，这是刻意的 —— 它是偏好，不是数据。
+       #98：这些键**按学号分开**（ct_bg@<学号>）。localStorage 是浏览器级的，早先一律写裸键
+       ⇒ 同一台机器换账号，第二位继承上一位的背景。没有学号（演示公共库）仍用裸键。 */
     // 每档自带出处标签（lic，标在档名后面）与一行署名文案（credit，选中才显示）。
     // 为什么把许可放进界面而不只写在 NOTICE：这张表是学生自己能拧的，
     // 「银河那张要署名」这件事写在文档里他永远看不到；标在档上，选的时候就知道自己选了个什么。
@@ -3398,7 +3407,37 @@ html.gx-glass[data-gx-refine="on"] .composer, html.gx-glass[data-gx-refine="on"]
     const GX_BIRD = '<svg viewBox="0 0 40 20" aria-hidden="true"><path class="wg" d="M20 12 C15 11 9 8 1.4 2.2 C7 10 13 13 20 14 Z"/><path class="wg" d="M20 12 C25 11 31 8 38.6 2.2 C33 10 27 13 20 14 Z"/><ellipse cx="20" cy="13.4" rx="2.3" ry="1.15"/></svg>';
     const GX_LEAF = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 20A7 7 0 0 1 4 13C4 8 8.5 4 13.5 4c3 0 6 1.5 6 1.5s-.5 9-8.5 14.5z"/></svg>';
     const GX_TIERS = { far:{w:[10,14],op:.5,t:[20,27],sc:.85}, mid:{w:[15,22],op:.8,t:[13,20],sc:1}, near:{w:[24,34],op:.95,t:[9,14],sc:1.15} };
-    function gxVal(k, d){ const v = localStorage.getItem(k); return (v===null||v==='') ? d : v; }
+    // ---------- 外观偏好按学号分开（#98） ----------
+    // localStorage 是**浏览器级**的：早先 ct_bg / ct_gx_* 写的是裸键，同一台机器换账号，
+    // 第二位会继承上一位的背景。现在键名带上学号（ct_bg@<学号>）。
+    // 学号先取登录页写下的 campustime_student（同步可用，首屏就能套对背景）；
+    // cookie 才是权威 —— whoami 回来若不同，gxSetSid 会换键重套一次。
+    const GX_SID_KEYS = ['ct_bg','ct_gx_scrim','ct_gx_vm','ct_gx_bd','ct_gx_core','ct_gx_lv','ct_gx_fx','ct_gx_refine'];
+    let gxSid = '';
+    try { gxSid = localStorage.getItem('campustime_student') || ''; } catch (e) { gxSid = ''; }
+    function gxKey(k){ return gxSid ? (k + '@' + gxSid) : k; }
+    // 老版本的裸键认领给**第一位打开它的学号**，认领完就删掉 —— 不删的话下一位没有自己的键、
+    // 又会回落到上一位留下的那份。没学号（演示公共库）不搬，裸键照旧给所有人共用。
+    function gxAdopt(){
+      if (!gxSid) return;
+      GX_SID_KEYS.forEach(function(k){
+        try {
+          const legacy = localStorage.getItem(k);
+          if (legacy === null) return;
+          if (localStorage.getItem(k + '@' + gxSid) === null) localStorage.setItem(k + '@' + gxSid, legacy);
+          localStorage.removeItem(k);
+        } catch (e) { /* 隐私模式读不到就保持原样 */ }
+      });
+    }
+    gxAdopt();
+    function gxSetSid(sid){
+      sid = sid || '';
+      if (sid === gxSid) return;
+      gxSid = sid;
+      gxAdopt();
+      applyBackdrop();
+    }
+    function gxVal(k, d){ const v = localStorage.getItem(gxKey(k)); return (v===null||v==='') ? d : v; }
     function buildGxFx(kind){
       const stage = document.getElementById('gxStage'); if(!stage) return;
       stage.innerHTML = '';
@@ -3518,7 +3557,7 @@ html.gx-glass[data-gx-refine="on"] .composer, html.gx-glass[data-gx-refine="on"]
       // 换图时把四个旋钮与 ct_gx_fx 清掉：让它们回到**那张图自己的**反解默认值，
       // 否则会出现「在银河上沿用雾松林的薄遮罩」这种调性打架的组合。
       (function(){
-        function resetTunes(){ ['ct_gx_scrim','ct_gx_vm','ct_gx_bd','ct_gx_core','ct_gx_fx'].forEach(function(k){ localStorage.removeItem(k); }); }
+        function resetTunes(){ ['ct_gx_scrim','ct_gx_vm','ct_gx_bd','ct_gx_core','ct_gx_fx'].forEach(function(k){ localStorage.removeItem(gxKey(k)); }); }
         var cur=gxVal('ct_bg','forest'), bl=document.getElementById('setBgList');
         // 老值（比如已撤掉的 park）回落 forest —— 与 applyBackdrop 用同一套白名单，别在这里拼出第三种样子
         var curBg = GX_BGS[cur] || GX_BGS.forest;
@@ -3529,7 +3568,7 @@ html.gx-glass[data-gx-refine="on"] .composer, html.gx-glass[data-gx-refine="on"]
         }).join('');
         document.getElementById('setBgLic').innerHTML='<span class="small">'+esc(curBg.credit)+'</span>';
         bl.querySelectorAll('.persona').forEach(function(el){ el.addEventListener('click', function(){
-          localStorage.setItem('ct_bg', el.dataset.bg); resetTunes();
+          localStorage.setItem(gxKey('ct_bg'), el.dataset.bg); resetTunes();
           applyBackdrop(); loadSettingsView();
         }); });
 
@@ -3544,7 +3583,7 @@ html.gx-glass[data-gx-refine="on"] .composer, html.gx-glass[data-gx-refine="on"]
           sl.value=gxNow(sl.dataset.p);
           var lab=tw.querySelector('[data-v="'+sl.dataset.p+'"]'); if(lab) lab.textContent=sl.value+'%';
           sl.addEventListener('input', function(){
-            localStorage.setItem(sl.dataset.k,(sl.value/100).toFixed(2));
+            localStorage.setItem(gxKey(sl.dataset.k),(sl.value/100).toFixed(2));
             applyBackdrop();
             sl.value=gxNow(sl.dataset.p); if(lab) lab.textContent=sl.value+'%';
           });
@@ -3555,7 +3594,7 @@ html.gx-glass[data-gx-refine="on"] .composer, html.gx-glass[data-gx-refine="on"]
           return '<div class="persona '+(x[0]===curLv?'active':'')+'" data-lv="'+x[0]+'"><span>'+esc(x[1])+'</span></div>';
         }).join('');
         lv.querySelectorAll('.persona').forEach(function(el){ el.addEventListener('click', function(){
-          localStorage.setItem('ct_gx_lv', el.dataset.lv); applyBackdrop(); loadSettingsView();
+          localStorage.setItem(gxKey('ct_gx_lv'), el.dataset.lv); applyBackdrop(); loadSettingsView();
         }); });
 
         var fs=document.getElementById('setGxFx');
@@ -3563,11 +3602,11 @@ html.gx-glass[data-gx-refine="on"] .composer, html.gx-glass[data-gx-refine="on"]
           var on=(x[0]===gxVal('ct_gx_fx',(GX_BGS[gxVal('ct_bg','forest')]||GX_BGS.forest).fx));
           return '<option value="'+x[0]+'"'+(on?' selected':'')+'>'+esc(x[1])+'</option>';
         }).join('');
-        fs.addEventListener('change', function(){ localStorage.setItem('ct_gx_fx', fs.value); applyBackdrop(); });
+        fs.addEventListener('change', function(){ localStorage.setItem(gxKey('ct_gx_fx'), fs.value); applyBackdrop(); });
 
         var rf=document.getElementById('setGxRefine');
         rf.checked = gxVal('ct_gx_refine','on')==='on';
-        rf.addEventListener('change', function(){ localStorage.setItem('ct_gx_refine', rf.checked?'on':'off'); applyBackdrop(); });
+        rf.addEventListener('change', function(){ localStorage.setItem(gxKey('ct_gx_refine'), rf.checked?'on':'off'); applyBackdrop(); });
       })();
       (async function(){
         var personas=[]; try{ personas=(await (await fetch("/api/student-personas")).json()).personas||[]; }catch(e){}

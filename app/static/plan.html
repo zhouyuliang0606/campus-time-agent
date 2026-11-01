@@ -249,13 +249,30 @@
   <script src="/static/esc.js"></script>
   <script>
 
-    // —— 背景图（2026-10-31）：与学生端读同一个 localStorage 键 ct_bg，图路径来自 /static/bg.js。
+    // —— 背景图（2026-10-31；#98 起按学号分开）：与学生端读同一套键（ct_bg / ct_bg@<学号>），
+    //    图路径来自 /static/bg.js。学号取登录页写下的 campustime_student；没有就按公共库读裸键。
     //    只认表里有的 key，认不出回落 forest（**不拼路径**：撤过的 park/space 会拼出 404 白屏）。
     //    「不用图」= 摘掉 html.gx-glass 总闸 ⇒ 上面那整段玻璃规则全部失效，页面回到浅色原样。
+    function planBgKey() {
+      let s = '';
+      try { s = localStorage.getItem('campustime_student') || ''; } catch (e) { s = ''; }
+      return s ? ('ct_bg@' + s) : 'ct_bg';
+    }
+    // 老版本所有学号共用 ct_bg：本页先打开时也要认领一次，否则会读到默认、与学生端不一致。
+    (function planAdopt(){
+      const k = planBgKey();
+      if (k === 'ct_bg') return;
+      try {
+        const legacy = localStorage.getItem('ct_bg');
+        if (legacy === null) return;
+        if (localStorage.getItem(k) === null) localStorage.setItem(k, legacy);
+        localStorage.removeItem('ct_bg');
+      } catch (e) { /* 隐私模式读不到就用默认 */ }
+    })();
     function applyPlanBackdrop() {
       const root = document.documentElement, img = document.getElementById('gxBg');
       let key = 'forest';
-      try { key = localStorage.getItem('ct_bg') || 'forest'; } catch (e) { /* 隐私模式读不到就用默认 */ }
+      try { key = localStorage.getItem(planBgKey()) || 'forest'; } catch (e) { /* 隐私模式读不到就用默认 */ }
       const on = (key !== 'none') && window.CT_BG_SRC && window.CT_BG_SRC[key];
       root.classList.toggle('gx-glass', !!on);
       if (img) {
