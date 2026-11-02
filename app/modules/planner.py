@@ -5999,11 +5999,11 @@ def wants_remove_course(text: str) -> bool:
 
 
 def parse_remove_course(text: str) -> dict | None:
-    """把"删除周一第一节课"/"去掉周二的高数"解析成一张删课确认卡。
+    """把"删除周一第一节课"/"删除明天第一节"/"去掉周二的高数"解析成一张删课确认卡。
 
     返回的是**提案**（含服务端算好的新课表），本函数一个字节都不写库；
     学生点弹窗上的确认、或回一句"确认删除"，才由系统真正落库。
-    解析不出（没说星期/当天好几节课又没说哪节）就如实返回 None，
+    解析不出（没说哪天/当天好几节课又没说哪节）就如实返回 None，
     由上层追问，绝不把话交给模型自作主张。
 
     课名的来历按可信度排四层：
@@ -6015,6 +6015,16 @@ def parse_remove_course(text: str) -> dict | None:
     """
     t = (text or "").strip()
     day = _pick_day(t)
+    if day is None:
+        # ★ #110：学生说的是「明天早上第一节」，不是「周二第一节」——他未必记得明天周几，
+        #   也没理由先说星期。`_pick_day` 只认周X（`636fc2e` 把删课从模型改成确定性分支时，
+        #   "认哪些说法"跟着收窄了，这一档是补回归不是加功能）。
+        #   换算用现成的 `_iso_weekday`，别再抄一份 fromisoformat：`_pick_date` 不做日历校验，
+        #   「2月30日」这种它会回 '2026-02-30'，裸换算直接抛 ValueError 把整条请求打挂。
+        # ⚠️ 不许把这段塞进 `_pick_day`：它另外 4 个调用点是加课那一路
+        #   （`wants_add_course` / `parse_add_course`）、删课意图判据（`wants_remove_course`）
+        #   和 main 的一处分支判据，改它会一起动。
+        day = _iso_weekday(_pick_date(t) or "") or None
     if day is None:
         return None
     cur = list(get_timetable())
