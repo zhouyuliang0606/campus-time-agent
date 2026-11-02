@@ -47,11 +47,16 @@ DAY_NAMES = {1: "周一", 2: "周二", 3: "周三", 4: "周四", 5: "周五", 6:
 # 学生习惯用节次指时间：「在原本第一节课的位置加入健身代办」。
 # 演示课表按两节课一个时段算：
 # 第1-2节 08:00、第3-4节 10:00、第5-6节 14:00、第7-8节 16:00；晚上的课学生会直接说时间。
-# 这一份表**排待办和删课共用**：删课只要起点（拿去周表里反查那节课叫什么），
-# 排待办要整段（学生指的就是那"一整节课的位置"）。
+# 节次这个词**两头口径不一样**（#113 定下来的）：
+#   · 排待办要的是"那一节课的位置"= 一个时间段 → 走 `_PERIOD_SPAN`（`period_span` → `candidate_slots`）；
+#   · 删课要的是"那天第几门课" → 走 `_course_by_period`（按周表实际开课时间数），
+#     **不再查 `_PERIOD_START`** —— 那张表假设"两小节一门课"，而库里的课是一门 100 分钟，
+#     实测「删除周二第二节」会指着第一门（08:00 线性代数）而不是学生要的第二门（10:05 体育）。
 _PERIOD_RE = re.compile(r"第\s*([一二三四五六七八1-8])\s*节")
 _PERIOD_NUM = {"一": 1, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8,
                "1": 1, "2": 2, "3": 3, "4": 4, "5": 5, "6": 6, "7": 7, "8": 8}
+# ⚠️ `_PERIOD_START` 从 #113 起**没有任何代码读它**（只剩这张定义）。留着等拍板：
+#    删掉 = 少一张会把人引回旧口径的表；留着 = 万一将来真按小节存课表可以复用。
 _PERIOD_START = {1: "08:00", 2: "08:00", 3: "10:00", 4: "10:00",
                  5: "14:00", 6: "14:00", 7: "16:00", 8: "16:00"}
 _PERIOD_SPAN = {1: ("08:00", "09:40"), 2: ("08:00", "09:40"),
@@ -5961,8 +5966,10 @@ def parse_add_course(text: str) -> dict | None:
 
 
 # ---- 删课：确定性解析（跟加课同一个思路：能由代码定死的，就别交给模型）----
-# "第N节"→ 上课时间：表在文件开头（`_PERIOD_START` / `_PERIOD_SPAN`），
-# 排待办和删课共用同一份，改一处两边都生效。
+# "第N节"→ 上课时间：表在文件开头（`_PERIOD_START` / `_PERIOD_SPAN`）。
+# ⚠️ #113 之后**只有排待办那一头还在用这两张表**（`period_span` → `candidate_slots`，
+# 那边"两小节一门课"的假设是对的）；删课不再拿它反查课名，改按"那天第几门课"取
+# —— 见下面 `_course_by_period`。所以"改一处两边都生效"这句已经不成立了。
 
 # 删课意图词。刻意不收"不上"（"明天不上课"是闲聊不是指令）、
 # 不收光杆"删"（"把这条消息删了"跟课没关系），误伤比漏收难看。
@@ -5996,6 +6003,23 @@ def wants_remove_course(text: str) -> bool:
     # 跟课有关就行：说了"课"字、提到了"第N节"、或点名了星期/课程——
     # "去掉周二的高数""把周五的心理学选修删了"没写"课"字，但都是删课。
     return ("课" in t) or bool(_PERIOD_RE.search(t)) or _pick_day(t) is not None
+
+
+def _course_by_period(cur: list, day: int, n: int) -> tuple:
+    """「第N节」→ 那天按开课时间排序的**第N门课**（人话：学生看课表看到的是"明天有三门课"）。
+
+    为什么不再用 `_PERIOD_START` 反查：那张表是"两小节一门课"的作息表，和库里
+    "一门课 100 分钟"的存法对不上 —— 实测「删除周二第二节」会指到第一门（08:00 线性代数），
+    而学生要的是第二门（10:05 体育）。口径统一到"第几门"两边才对齐。
+    课表若真按小节存（一天 8 条），这个函数退化成旧口径，不会更差。
+    越界（那天没这么多门课）返回 ("", "")，由上层追问 —— 绝不拿"第一门"顶替。
+    """
+    day_courses = sorted([c for c in (cur or []) if int(c.get("day", 0)) == day],
+                         key=lambda c: str(c.get("start") or ""))
+    if 1 <= n <= len(day_courses):
+        hit = day_courses[n - 1]
+        return str(hit.get("course", "")), str(hit.get("start", ""))
+    return "", ""
 
 
 def parse_remove_course(text: str) -> dict | None:
@@ -6035,16 +6059,19 @@ def parse_remove_course(text: str) -> dict | None:
     if m and 1 <= len(m.group(1)) <= 20:
         course = m.group(1).strip()
 
-    # ② "第N节" → 该时段的开课时间，课名从周表里反查
+    # ② "第N节" → 那天第 N 门课（#113：不再按 `_PERIOD_START` 反查时段）
     start = ""
     pm = _PERIOD_RE.search(t)
     if pm:
-        start = _PERIOD_START.get(_PERIOD_NUM.get(pm.group(1)) or 0, "")
-        if not course:
-            hits = [c for c in cur
-                    if int(c.get("day", 0)) == day and c.get("start") == start]
-            if len(hits) == 1:
-                course = str(hits[0].get("course", ""))
+        n = _PERIOD_NUM.get(pm.group(1)) or 0
+        _c, _s = _course_by_period(cur, day, n)
+        if _c:
+            # ★ #113：命中就课名 + 开课时间一起拿走。`start` 一定要跟着带 ——
+            #   同名两门（周三两门《数据结构》、周四两门《高等数学》）只靠课名分不开，
+            #   实测「删除周三第二节『数据结构』」就是靠这个 start 才落到 10:05 那门。
+            course = course or _c
+            start = _s
+        # 越界（那天没这么多门课）→ course/start 都留空，交给 ③④ 继续，最后如实追问
 
     # ③ 文本里剩下的那截当课名（去掉意图词/星期/节次后还剩下的汉字）
     if not course:
