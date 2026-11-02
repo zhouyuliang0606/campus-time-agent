@@ -43,20 +43,28 @@ WD = "一二三四五六日"
 
 
 def _seed_week():
-    """每天两节：08:00（第一节、第二节都换算到它）和 10:00（第三节），名字里带周几。
+    """每天两节：08:00 与 10:00，名字里带周几 + 第几门。
 
-    为什么一天两节而不是只种 08:00：②「第N节反查」和④「那天只有一节课」是两条不同的路，
+    为什么一天两节而不是只种 08:00：②「第N节」和④「那天只有一节课」是两条不同的路，
     一天两节能把④关掉 —— 免得"没说哪节"也被反查蒙过去。
+    ⚠️ #113 之后「第二节」= 那天**第二门**（10:00 那节），不再是"作息表第二节 = 08:00"。
+    这一份种下去正好让"第N门"和旧"第N小节"两种口径**给出不同答案**，
+    所以这几条断言同时是 #113 的回归靶（旧口径下 T3/T2-bis 会红）。
     """
     return ([{"day": d, "start": "08:00", "end": "09:00",
-              "course": f"周{WD[d - 1]}上午课", "location": "A101"} for d in range(1, 8)]
+              "course": f"周{WD[d - 1]}第一门", "location": "A101"} for d in range(1, 8)]
             + [{"day": d, "start": "10:00", "end": "11:00",
-                "course": f"周{WD[d - 1]}早二课", "location": "A102"} for d in range(1, 8)])
+                "course": f"周{WD[d - 1]}第二门", "location": "A102"} for d in range(1, 8)])
 
 
 def _course(day: int) -> str:
-    """那天 08:00 那一节叫什么（第一/第二节都落在这儿）。"""
-    return f"周{WD[day - 1]}上午课"
+    """那天**第一门**（08:00）叫什么。"""
+    return f"周{WD[day - 1]}第一门"
+
+
+def _second(day: int) -> str:
+    """那天**第二门**（10:00）叫什么（#113：「第二节」现在指这一门）。"""
+    return f"周{WD[day - 1]}第二门"
 
 
 def _rel(day_off: int) -> int:
@@ -102,15 +110,18 @@ def batch_a_relative_words():
         c.check(f"T2 「删除今天第一节」→ 周{WD[today_d - 1]}（『今天』的偏移是 0，不是 1）",
                 not b3 and bool(s3) and _course(today_d) in s3, b3 or str(s3))
         s4, b4 = _sum(PR, "删除后天上午第二节课")
-        c.check(f"T2-bis 「删除后天…第二节课」→ 周{WD[after_d - 1]}（『后天』= +2）",
-                not b4 and bool(s4) and _course(after_d) in s4, b4 or str(s4))
+        c.check(f"T2-bis 「删除后天…第二节课」→ 周{WD[after_d - 1]}（『后天』= +2）；"
+                "#113 之后『第二节』指那天**第二门**（10:00），不是作息表第二节(08:00)",
+                not b4 and bool(s4) and _second(after_d) in s4 and "10:00" in s4, b4 or str(s4))
 
         for word, n in (("周二", 2), ("周一", 1)):
-            sa, ba = _sum(PR, f"删除{word}第二节")
-            sb, bb = _sum(PR, f"删除{word}第一节")
-            c.check(f"T3 原有的「删除{word}第N节」没有退化（改前实测：第一/第二节都换算到 08:00 那一节）",
-                    not (ba or bb) and sa == sb == f"删除{word} 08:00 的《{_course(n)}》",
-                    ba or bb or str(sa))
+            sa, ba = _sum(PR, f"删除{word}第一节")
+            sb, bb = _sum(PR, f"删除{word}第二节")
+            c.check(f"T3 「删除{word}第一/第二节」按**第几门**分开了（#113 改口："
+                    "旧口径两节都换算到 08:00 同一门，学生说第二节拿到的是第一门的卡）",
+                    not (ba or bb) and sa == f"删除{word} 08:00 的《{_course(n)}》"
+                    and sb == f"删除{word} 10:00 的《{_second(n)}》" and sa != sb,
+                    ba or bb or f"{sa!r} / {sb!r}")
     return c
 
 
