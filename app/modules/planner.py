@@ -421,7 +421,19 @@ def _day_slots(date: str, prefer: str = "", limit: int = 3,
                 begin = max(begin, not_before)
             finish = min(begin + length, to_minutes(s["end"]), phi)
             if finish - begin < min_needed:
-                continue
+                # ★ #114：`phi` 是"这一档到哪儿为止"（上午 12:00 / 下午 18:00 / 晚上 22:00），
+                #   它本来只是**排序用的偏好带**，不是禁区（`find_free_slots` 与 `_span_free`
+                #   只避课和已排待办，午休/傍晚从来不拦）。可它把**装不下的长请求整段吃掉**：
+                #   实测 11-14（周六）07:00-14:00 有 **420 分钟**连续空档，
+                #   要 4 小时（240）却一段都出不来 —— 上午档被 `phi=12:00` 卡成 180，
+                #   下午档 `begin=14:00` 又正好撞上空档尾 ⇒ `_day_slots(…, length=240) == []`。
+                #   学生的观感是"这周末根本没查过"，而系统手里明明有那句
+                #   「没有 ≥240 分钟的空档了」（`find_free_slots` 的 info）。
+                #   所以只在**档内确实装不下**时才允许越过 `phi`；装得下就还是原来那一刀 ⇒
+                #   短线请求（≤180 的上午/晚上、≤240 的下午）行为一字不变（护栏 B 批钉着）。
+                finish = min(begin + length, to_minutes(s["end"]))
+                if finish - begin < min_needed:
+                    continue
             out.append({"part": name, "date": date,
                         "weekday": _weekday_name(date),
                         "start": to_hhmm(begin), "end": to_hhmm(finish),
@@ -547,7 +559,12 @@ def candidate_slots(text: str = "", max_slots: int = 3, days_ahead: int = 5) -> 
         #      只看这周末最多两段，学生说了"周末"却只挑两个，这周末课排满就直接归零。
         #      放到 14 天 = 连下个字周末一起摊开（段数仍由 `max_slots` 封顶）。
         days_ahead = max(days_ahead, 14)
-    picked_day = None if workday_mode else _pick_date(t)
+    # ★ #114：「周末」在场时也不许让具体日子锁死 —— 与下面 `plan_todo_slot` 那一半同权
+    #   （两边抄一半就会出现"候选卡不排周末、兜底却排周末"那种一侧对一侧错的怪事）。
+    #   现场：合并句「周末打篮球，四个小时，周三是明天，我说的周末」里
+    #   `_pick_date` 抓到 11-04（那是学生用来**指出我们排错了**的「明天」），
+    #   `picked_day` 一锁死 ⇒ 后面 `weekend_mode` 那 14 天根本用不上，候选直接归零（§0.7）。
+    picked_day = None if (workday_mode or weekend_mode) else _pick_date(t)
     # 学生说了时长（"大概三小时"）→ 候选段就按 3 小时找；没说才回落 90 分钟。
     # 这里必须认，不然候选卡上全是 90 分钟，学生会拿到「不是我想要的 3 小时」。
     # 2026-10-10：钟点/时长/档统一从 `parse_time_spec` 一次读出来（日期仍按老样子
@@ -1051,7 +1068,7 @@ def todo_slots_proposal(text: str, max_slots: int = 3,
     # 裸钟点（只说"三点"）先记一句"没听清"：下面的候选段一律按常规档排，
     # 但**不能什么都不说** —— 学生会以为自己报的钟点被听见了。
     bare_clock = _bare_clock_note(t)
-    day = _pick_date(_FREQ_RE.sub(" ", t))
+    day = _pick_date(_strip_freq_keep_range(t))
     # `times` 允许调用方从上一轮那张卡上递进来（#73）：补充句常常只剩「三次」这种
     # 没有"周"字的省略写法，`weekly_times` 结构上看不到上一轮，读出来是 None，
     # 于是这一句从频次分支掉回普通分支 —— 段数和预勾两处一起变，学生看到的卡就"没循环确认"。
@@ -1059,7 +1076,11 @@ def todo_slots_proposal(text: str, max_slots: int = 3,
     # 「一周三次」里的"一周"会被 `_pick_date` 当成相对日期（一周后 = 2026-10-14），
     # 于是频次模式被"他指定了哪天"这道闸误拦，候选还全挤到那一天去。
     # 所以判"有没有点名哪天"、以及去找空档，都用**去掉频次短语之后**的那句话。
-    plain = _FREQ_RE.sub(" ", t)
+    # ★ #114：这一路原来写的是裸 `_FREQ_RE.sub(" ", t)`，而它**把「周末」一起擦掉了**
+    #   （前缀就是「周」）——「周末安排两次…」擦完只剩「打乒乓球一次三小时」，
+    #   下游 `candidate_slots:536` 那句 `"周末" in t` 判不出来 ⇒ 从今天起逐天铺 ⇒ 周三。
+    #   频次读对了（`weekly_times` 回 2）、日子却丢了，是"听懂了没传下去"那种断链。
+    plain = _strip_freq_keep_range(t)
     # ==== 「每个周天都写作业」：固定星期几 + 无限重复（2026-10-10 加）====
     # 与「一周三次」是两回事：那种没有固定日子，只能在这一周里铺 N 条（下一条分支）；
     # 这种点名的就是"每周的某一天"，所以勾中一段只写**一条** repeat=weekly 的记录，
@@ -1255,18 +1276,39 @@ def plan_todo_slot(title: str, text: str = "",
         return None
     want = minutes or wanted_minutes(t) or AUTO_SLOT_LENGTH
     want = max(5, min(int(want), 8 * 60))
+    said = bool(minutes or wanted_minutes(t))     # 他到底报过时长没有（没报就别在卡上替他宣称）
     today = clock.today()
     day = _pick_date(t)
-    # 「平时 / 工作日」→ 单条兜底那条路同样只在工作日里找（跟候选卡同一条规矩）。
-    _workday_mode = any(w in (t or "") for w in ("平时", "工作日"))
+    # ★ #114：「周末」/「平时」在场时，具体日子**退让**（与 `candidate_slots:567` 同一条规矩）。
+    #   `_pick_date` 只认「明天/后天/周X」，不认「周末」，两样同时出现它一定拿到那个日子。
+    #   现场（单据 §0.7，用户 21:05 截图）：学生说「周三是明天，我说的周末」——
+    #   「明天」是他用来**指出我们排错了**的词，不是他要排的那天；
+    #   可它照样把 `days=[11-04]` 锁死，于是这句纠正**根本没被听见**，两轮回答一字不差。
+    #   原来这里只让「工作日」退让，周末那一半没抄 ⇒ 单边对单边错。
+    _workday_mode = any(w in t for w in _WORKDAY_WORDS)
+    _weekend_mode = any(w in t for w in _WEEKEND_WORDS)
+    if _workday_mode and _weekend_mode:
+        # 一句里两样都报了（「平时和周末都行」）= 他压根没限制。
+        # 与 `candidate_slots:549-553` 一样**一起关掉**：留着任何一个，
+        # 工作日被这边跳过、周末被那边跳过，整段范围被轮流吃光 ⇒ 一张卡都出不来。
+        _workday_mode = _weekend_mode = False
+    if _workday_mode or _weekend_mode:
+        day = ""
     if day:
         days = [day]
+    elif _weekend_mode:
+        # 周末放 14 天：一个周末只有两天，而"今天要是周日，下一个周末在 6 天后"
+        # （`candidate_slots:554-561` 踩过这个坑，宽度照抄它，别在这儿自创一套）。
+        days = [(today + datetime.timedelta(days=i)).isoformat()
+                for i in range(14)
+                if (today + datetime.timedelta(days=i)).isoweekday() >= 6]
     elif _workday_mode:
         days = [(today + datetime.timedelta(days=i)).isoformat()
                 for i in range(7)
                 if (today + datetime.timedelta(days=i)).isoweekday() <= 5]
     else:
         days = [(today + datetime.timedelta(days=i)).isoformat() for i in range(6)]
+    _partial = None          # 装不满的备胎：先记下**第一个**，全都没有才用它
     for d in days:
         # 今天要留出缓冲（"此刻+30 分"之后才算空），不然会给他排一段已经开始的时段
         nb = (_now_minutes() + 30) if d == today.isoformat() else None
@@ -1274,31 +1316,55 @@ def plan_todo_slot(title: str, text: str = "",
                               length=want, not_before=nb)
         if not slot:
             continue
-        part = next((n for n, plo, phi in DAY_PARTS
-                     if plo <= to_minutes(slot["start"]) < phi), "")
-        wd = slot["weekday"]
-        # 说清"为什么排在这儿"：学生看到一个自己没指定的时间，第一反应就是"凭什么"。
-        # 日期一律写成 9/25（周五）这种短样子——卡片上写 2026-09-25 太长了。
-        #
-        # ⚠️ 这句话会**原样进确认条**（那是纯文本渲染，不认 markdown），
-        #    所以这里一个星号都不能加——加了卡片上就会看到「**1 小时**」这种字面量。
-        head = f"{_mmdd(d)}（{wd}）"
-        why = (f"{head}{part}这一段是空的（你的课和已经排好的事都避开了）。")
-        if minutes or wanted_minutes(t):
-            why = f"按你说的 {format_minutes(want)} 排的，{why}"
-        return {
-            "kind": "todo_add",
-            "title": name,
-            "date": d,
-            "start": slot["start"],
-            "end": slot["end"],
-            "weekday": wd,
-            "minutes": slot["minutes"],
-            "auto": True,      # 时间不是学生给的，是系统规划的 —— 卡片上要说清楚
-            "reason": why,
-            "summary": f"{name}｜{d}（{wd}）{slot['start']}-{slot['end']}",
-        }
+        # ★ #114：`pick_free_slot` 的**准入线**是 `minutes`（这里传的是 `min(want, 60)`），
+        #   `length` 只是"能排多长就排多长"。所以"要 3 小时、这天只挤得出 125 分钟"也会被接住 ——
+        #   接住本身不是错（总比什么都不排强），错的是原来那句 `reason` **无条件**写
+        #   「按你说的 3 小时 排的」：卡片上明明是 08:00-10:05。
+        #   排错日子学生会骂，**卡上写假话他会签字**（点【确认加入】就等于认了"这就是 3 小时"）。
+        #   所以：装得下的那天排前面；装不满的留作备胎，且话术说真话。
+        if slot["minutes"] < want:
+            if _partial is None:
+                _partial = (d, slot)
+            continue
+        return _auto_card(name, d, slot, want, said, full=True)
+    if _partial is not None:
+        return _auto_card(name, _partial[0], _partial[1], want, said, full=False)
     return None
+
+
+def _auto_card(name: str, d: str, slot: dict, want: int, said: bool, full: bool) -> dict:
+    """单条兜底卡（#114 从 `plan_todo_slot` 里拆出来，只为让 `reason` 能说实话）。
+
+    `full` = 这段真装得下他要的时长。装不下就不能写「按你说的 3 小时 排的」——
+    那是当轮实测的现场：卡片 08:00-10:05（125 分钟），嘴上说 3 小时（单据 §0.5）。
+    ⚠️ 这句 `reason` 会**原样进确认条**（纯文本渲染，不认 markdown），一个星号都不许加。
+    """
+    part = next((n for n, plo, phi in DAY_PARTS
+                 if plo <= to_minutes(slot["start"]) < phi), "")
+    wd = slot["weekday"]
+    # 日期一律写成 9/25（周五）这种短样子——卡片上写 2026-09-25 太长了。
+    head = f"{_mmdd(d)}（{wd}）"
+    say = format_minutes(want)
+    if full:
+        why = f"{head}{part}这一段是空的（你的课和已经排好的事都避开了）。"
+        if said:
+            why = f"按你说的 {say} 排的，{why}"
+    else:
+        why = (f"{head}{part}只排得出 {format_minutes(slot['minutes'])}"
+               f"（前后都是课或已经排好的事），不足你说的 {say}。"
+               "要凑满就得挪开别的安排 —— 先摆这一段，不合适就说「换个时间」或「缩短一点」。")
+    return {
+        "kind": "todo_add",
+        "title": name,
+        "date": d,
+        "start": slot["start"],
+        "end": slot["end"],
+        "weekday": wd,
+        "minutes": slot["minutes"],
+        "auto": True,      # 时间不是学生给的，是系统规划的 —— 卡片上要说清楚
+        "reason": why,
+        "summary": f"{name}｜{d}（{wd}）{slot['start']}-{slot['end']}",
+    }
 
 
 # 「这件事怎么定时间」的两条路，学生可能**不点按钮、直接在聊天里回一句**。
@@ -2338,6 +2404,33 @@ _FREQ_RE = re.compile(
     r"(?:之?内|里)?[^，,。；;！!？?\d]{0,6}?"
     r"(?<!第)(\d{1,2}|[一二两三四五六七八九十]{1,2})\s*(?:次|回|趟|遍|练)(?!课)"
 )
+
+
+def _strip_freq_keep_range(text: str) -> str:
+    """擦掉「一周 N 次」那一段，但把「周末/双休/平时/工作日」原样留住。
+
+    `_FREQ_RE` 的前缀就是「周」（那张正则里"带前缀"与"光杆周"两个分支都是），
+    所以「**周末**安排两次」整片会被匹配走 ——
+    擦完这句就没有「周末」这个词了。而下游 `candidate_slots` 判周末靠 `"周末" in t`
+    （函数开头那几行 `weekend_mode = any(w in t for w in _WEEKEND_WORDS)`），
+    判不出来就从今天起逐天铺：用户 2026-11-03 20:2x 那句「周末安排两次打乒乓球一次三小时」
+    就是这么排到**周三 08:00-10:05** 的（单据 §0.2）。
+    少的是一个**约束**，而两处 `.sub` 都擦、谁也没觉得少了什么 —— 这是最难发现的一类断链。
+
+    为什么补词而不改正则：`_FREQ_RE` 引用它的地方现读**九处**
+    （`grep -n _FREQ_RE app/modules/planner.py`：周期否决、本函数这两处、`mode_to_card` 的频次闸、
+    `parse_todo_patch`、`weekly_repeat_day` 一带…），而里面那个 `(?![一二三四五六日天])` 是
+    **故意的**（「周三」得读成日子、不能读成"礼拜三次"），动它会牵连 `unsupported_period`
+    和三处候选分支。这里只在"加待办摊候选"这条链上补，影响面跑不出去。
+    """
+    t = text or ""
+    plain = _FREQ_RE.sub(" ", t)
+    for w in _WEEKEND_WORDS + _WORKDAY_WORDS:
+        if w in t and w not in plain:
+            plain = f"{plain} {w}"
+    return plain
+
+
 # 数量本身（"三次"/"3 回"）。`(?<!第)` 挡「周四下午第一次上课」——
 # 那是节次不是频次；`(?!课)` 挡「这周还有两次课」——那是课，不是要排的待办。
 _COUNT_UNIT_RE = re.compile(
