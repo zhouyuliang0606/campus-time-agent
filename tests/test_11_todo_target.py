@@ -148,8 +148,9 @@ def batch_d_index_unit():
             r["status"] == "ok" and r["proposal"]["title"] == "T2",
             r.get("proposal", {}).get("title"))
     r2 = resolve_todo_remove_reply("23", cands)
-    c.check("回「23」→ 不当名字乱找（列出 2 条、一次只能删一条）",
-            r2["status"] == "many" and len(r2["todos"]) == 2, r2.get("status"))
+    c.check("回「23」→ 不当名字乱找（拆成第 2、3 条两张，按清单顺序取）",
+            r2["status"] == "pick" and [t["title"] for t in r2["todos"]] == ["T2", "T3"],
+            r2.get("status"))
     r3 = resolve_todo_remove_reply("随便说点啥", cands)
     c.check("手里有清单时乱答也不报「没找到」（回 unclear 且带上清单）",
             r3["status"] == "unclear" and len(r3["todos"]) == 4, r3.get("status"))
