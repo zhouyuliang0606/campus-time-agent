@@ -4650,6 +4650,33 @@ async def _chat_impl(req: Request, meta: dict, emit=None):
                     "awaiting_choice": True,
                 }
 
+            # ★ #117：标记完成那一族的同一处（与上面删待办那笔**成对**——
+            #   `resolve_todo_done_reply` 里原本抄了一份一模一样的降级，
+            #   只改删的那半会让"删两条"和"完成两条"两种说法行为分叉）。
+            #   `todo_done_batch_proposal` 早就有，可它全仓只被 `status == "all"` 调用过。
+            if status == "pick" and len(res.get("todos") or []) > 1:
+                todos = res["todos"]
+                proposal = todo_done_batch_proposal(todos)
+                save_pending(session_id, [proposal])
+                append_conversation(session_id, "user", message)
+                append_conversation(session_id, "assistant",
+                                    f"已生成标记完成提案：{proposal['summary']}")
+                return {
+                    "module": "planner",
+                    "session_id": session_id,
+                    "answer": (
+                        f"✅ 好，你点的是**这 {proposal['count']} 条**。"
+                        "我把它们一条条列在下面的确认条上了——"
+                        "点【确认完成全部】我才改状态；点【取消】原封不动。"
+                        "（也可以直接在聊天框回一句「确认」，一样会执行。）"
+                    ),
+                    "trace": [{"step": 1,
+                               "phase": f"✅ 学生从清单里点了 {proposal['count']} 条 → 一张批量确认条",
+                               "answer": proposal["summary"]}],
+                    "options": [proposal],
+                    "awaiting_choice": True,
+                }
+
             # 命中好几条：**列清单，问是下面哪一条，列完就停**。
             # 这一支就是规格第 2 条——"不许猜"。清单同时记进暂存，
             # 学生回"第二条"时系统接得住（见上面的 resolve_todo_done_reply）。
@@ -4899,6 +4926,37 @@ async def _chat_impl(req: Request, meta: dict, emit=None):
                     ),
                     "trace": [{"step": 1,
                                "phase": "🗑️ 学生说「都」→ 生成批量删除提案（系统判定）",
+                               "answer": proposal["summary"]}],
+                    "options": [proposal],
+                    "awaiting_choice": True,
+                }
+
+            # ★ #117：他从清单里**点名了几条**（「1和2」「第1和第2条」）—— 就是"这几条都要删"，
+            #   挂**一张**批量条、点一次删完。跟上面 `all`（"都删"）同一个构造器、同一套规矩，
+            #   只有开头那句不一样：这里要说清"是你点的这几条"，别让他以为是全删。
+            #   为什么必须排在 `many` 之前：`many` 的条件是 `status in ("many","unclear")`，
+            #   `pick` 不在里面，可旧写法把"点了多条"整个降级成 `many`（`planner.py:5748`），
+            #   于是这句既没人接、又没人告诉他"你说了两条我只当一条"——
+            #   实测它因此掉给模型，模型调两次 `propose_todo_remove` 挂两张卡要他点两次
+            #   （用户 2026-11-03 21:34 截图：打乒乓球 + 健身房，两个【删除这条】）。
+            if status == "pick" and len(res.get("todos") or []) > 1:
+                todos = res["todos"]
+                proposal = todo_remove_batch_proposal(todos)
+                save_pending(session_id, [proposal])
+                append_conversation(session_id, "user", message)
+                append_conversation(session_id, "assistant",
+                                    f"已生成删待办提案：{proposal['summary']}")
+                return {
+                    "module": "planner",
+                    "session_id": session_id,
+                    "answer": (
+                        f"🗑️ 好，你点的是**这 {proposal['count']} 条**。"
+                        "我把它们一条条列在下面的确认条上了——"
+                        "点【确认删除全部】我才删；点【取消】日程原封不动。"
+                        "（也可以直接在聊天框回一句「确认」，一样会执行。）"
+                    ),
+                    "trace": [{"step": 1,
+                               "phase": f"🗑️ 学生从清单里点了 {proposal['count']} 条 → 一张批量确认条",
                                "answer": proposal["summary"]}],
                     "options": [proposal],
                     "awaiting_choice": True,

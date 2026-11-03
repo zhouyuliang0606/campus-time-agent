@@ -4853,15 +4853,29 @@ def _pick_todo_indexes(text: str, cap: int | None = None) -> list:
     if "最后一条" in t or "最后一个" in t or "最后那条" in t:
         return [-1]
     # ① 明确的「第N条/个/项」，可能一次点了多个（"第2、3条" → [2,3]）
-    m = re.search(r"第\s*([0-9一二三四五六七八九十两\s、,，/和跟与]{1,20}?)\s*(?:条|个|项)", t)
+    # ★ #117：字符类里补一个「第」。原来不含「第」，于是「第1和第2条」在第一个「第」处
+    #   起头时捕获到「1和」就卡住（后面那个字符不是 条/个/项，而「第」又不许进捕获组），
+    #   整段只能从**第二个**「第」重新起头 ⇒ 实测只回 [2]、把 1 吞了。
+    m = re.search(r"第\s*([0-9一二三四五六七八九十两\s、,，/和跟与第]{1,20}?)\s*(?:条|个|项)", t)
+    out = []
     if m:
-        out = []
         for tok in re.findall(r"[0-9]{1,2}|[一二三四五六七八九十两]{1,3}", m.group(1)):
             n = int(tok) if tok.isdigit() else _cn_num(tok)
-            if n and 1 <= n <= 20:
+            if n and 1 <= n <= 20 and n not in out:
                 out.append(n)
-        if out:
-            return out
+    # ①-bis 再逐个把「第N条」点出来并入 —— 单据 §1.3 期望「第一条和第二条」→ [1,2]，
+    #   但只补字符类**做不到**：那段懒捕获在第一个「条」处就收口了（「条」不在字符类里），
+    #   实测「第一条和第二条」「第1条和第2条」「第一条、第二条」都只回 [1] ——
+    #   学生说了两条、系统只挑一条，而且**不声不响**（status=ok，直接挂一张单条卡），
+    #   比原来 [2] 吞 1 更糟。这里补一趟"每个量词各自匹配"，与 ① 取并集、保序去重；
+    #   ① 不能删：它管着「第2、3条」这种后半段不带「第」的连写（①-bis 只回 [2]）。
+    #   量词（条/个/项）必须挨着数字 ⇒ 「第1次跑完第2圈」「第3节课」都进不来。
+    for tok in re.findall(r"第\s*([0-9一二三四五六七八九十两]{1,3})\s*(?:条|个|项)", t):
+        n = _cn_num(tok) if not tok.isdigit() else int(tok)
+        if n and 1 <= n <= 20 and n not in out:
+            out.append(n)
+    if out:
+        return out
     # ② 光秃秃的数字串（可带 、,/ 空格 等分隔）：只在"整句基本就是一个序号"时才算
     if cap is None:
         return []
@@ -5746,8 +5760,15 @@ def resolve_todo_remove_reply(text: str, candidates: list | None = None) -> dict
             return {"status": "ok", "proposal": _todo_remove_proposal(picked[0]),
                     "todos": [picked[0]]}
         if len(picked) > 1:
-            # 学生一次点了好几条：一次只删一条（不猜、不批量），列出来请他挑一条
-            return {"status": "many", "todos": picked, "reason": "一次只能删一条"}
+            # ★ #117：他从清单里点了**几条**，意思就是"这几条我都要删"——
+            #   挂一张批量条、一次点头删完，别让他点两次。
+            #   旧写法降级成 `many`（注释原话「一次只删一条（不猜、不批量）」），
+            #   上层只能把清单再列一遍反问"你要删哪一条"；实测这一句因此掉给模型，
+            #   模型调两次 `propose_todo_remove` 挂出两张卡（用户 21:34 截图：
+            #   打乒乓球 + 健身房，两个【删除这条】）。
+            #   这里**不存在猜**：`picked` 是他自己报的序号、按屏上清单顺序取的。
+            #   红线没破：这只是提案，他点【确认删除全部】之前一条都不会删。
+            return {"status": "pick", "todos": picked}
         return {"status": "unclear", "todos": list(candidates), "reason": "序号超出范围"}
     # ★「每个删一个 / 每组删一个 / 重复的删掉一个」——这是**去重**，不是全删。
     #   必须排在"都/全"那条**前面**：这句话里也带量词，谁先接就归谁。
@@ -5921,7 +5942,10 @@ def resolve_todo_done_reply(text: str, candidates: list | None = None) -> dict:
             return {"status": "ok", "proposal": _todo_done_proposal(picked[0]),
                     "todos": [picked[0]]}
         if len(picked) > 1:
-            return {"status": "many", "todos": picked, "reason": "一次只能改一条"}
+            # ★ #117：与删待办同一处、同一个改法（这两段本来就是一份逻辑抄了两遍）。
+            #   「标记完成 1和2」以前也是挂两张卡要点两次；`todo_done_batch_proposal`
+            #   早就有，可它全仓只被 `status == "all"` 那一支调用过。
+            return {"status": "pick", "todos": picked}
         return {"status": "unclear", "todos": list(candidates), "reason": "序号超出范围"}
     # 「都完成了 / 全标记完成」同删待办：接着上一句清单指代"这几条都要办"。
     if candidates and _wants_all_candidates(t):
