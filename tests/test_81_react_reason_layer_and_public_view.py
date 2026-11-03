@@ -457,8 +457,18 @@ def batch_c_engine_fork():
                     if "候选时间段" in str(m.get("content"))), "")
         c.check("C2 而模型手里**还是原文**（「已向前端展示…等学生确认」是它下一步的依据）",
                 "已向前端展示" in raw and "等学生确认" in raw, repr(raw)[:80])
+    # ★ #115 改口：原来写的是 `engine.options == cand`（一字不改原样退回）。
+    #   本单要守的本意是「给人看的那份进 trace、原文回灌给模型」这一处分叉**不许顺手把卡改没**，
+    #   而不是"卡的字段一个都不能多"。而"一个都没多"恰恰是 bug：裸卡没有 `kind`，
+    #   前端每一档 `filter(o.kind === "X")` 全筛空 ⇒ 穿到老的【确认所选】⇒ 没有确认条弹窗
+    #   （2026-11-03 20:58 学生截图）。所以改成钉两头：卡还在、事实没丢；补出来的 kind 由
+    #   `test_115` 的 C 批负责验，不在这一条里混。
+    _c3 = engine.options or []
     c.check("C3 分叉没碰捕获：`engine.options` 仍然是那一张候选（改了展示副本不能顺手把卡改没）",
-            engine.options == cand, str(engine.options)[:80])
+            len(_c3) == len(cand)
+            and all(_c3[i].get(k) == cand[i][k]
+                    for i in range(len(cand)) for k in ("title", "date", "start", "end")),
+            str(engine.options)[:80])
     c.check("C4 整条 trace 里没有 600 字的原始语料（原始只进服务端日志）",
             not any("已向前端展示" in str(t.get("result") or "") for t in engine.trace))
     return c

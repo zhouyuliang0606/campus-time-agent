@@ -163,7 +163,20 @@ def test_engine_captures_propose_slots():
         engine.llm.chat = fake_chat
 
         result = asyncio.run(engine.run("帮我排复习线代", history=[]))
-        c.check("引擎捕获到 options", result.get("options") == fake_options)
+        # ★ #115 改口：原来这条是 `result.get("options") == fake_options`，钉的是"一字不改原样退回"。
+        #   而"原样"恰恰是 bug：那份裸 JSON 没有 `kind`，前端 `renderOptions` 每一档都按
+        #   `o.kind === "X"` 过滤，一路穿透到老的【确认所选】内联勾选框 ⇒ 没有确认条弹窗，
+        #   勾两条只生效一条（2026-11-03 20:58 学生截图）。
+        #   本意是"引擎把工具参数捕获成 options 带回去"，所以改成钉两头：
+        #   ① 模型给的那几件事实一条都没丢；② 补出来的形状是前端接得住的。
+        _got = (result.get("options") or [{}])[0]
+        c.check("引擎捕获到 options（模型给的事实一条没丢：事名/日期/起止/时长/编号原样在）",
+                len(result.get("options") or []) == len(fake_options)
+                and all(_got.get(k) == fake_options[0][k]
+                        for k in ("id", "title", "date", "start", "end", "minutes")),
+                json.dumps(_got, ensure_ascii=False)[:160])
+        c.check("捕获出来的那条带 kind（没有它前端每一档 filter 都不接，只能穿到【确认所选】那一档）",
+                _got.get("kind") == "todo_add", str(_got.get("kind")))
         c.check("awaiting_choice 置真", result.get("awaiting_choice") is True)
         c.check("返回里同时带 answer 和 trace", "answer" in result and "trace" in result)
     return c.summary("第四批（引擎捕获候选）")
