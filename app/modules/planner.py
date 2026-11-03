@@ -1738,7 +1738,18 @@ def _guess_title(msg: str) -> str:
     # 先去掉「日期 起-止」（形如 2026-09-24 14:00-15:30）。必须在清理冒号之前做，
     # 否则时间里的冒号被当分隔符吃掉后，这段就再也匹配不上了。
     t = _DATE_RE.sub("", t)
-    t = re.sub(r"\s+", " ", t).strip(" -·")
+    # ★ #118：排期条件不算事名。「周末打篮球，四个小时」的卡上名字应该是「打篮球」——
+    # 「周末/双休」是排哪天的约束、「四个小时」是时长、「周三下午/晚上」是日子与时段，
+    # 原样留在标题里会跟着确认回传（§3 也走本函数抠名）原样写进日程库。
+    # 「分」那颗只在「N分钟」整词里剥（_DURATION_RE 要求带单位），「三分球」这类不受影响。
+    for w in _WEEKEND_WORDS + _WORKDAY_WORDS:
+        t = t.replace(w, " ")
+    t = _WEEKDAY_RE.sub(" ", t)
+    t = _DURATION_RE.sub(" ", t)
+    for w in ("上午", "早上", "早晨", "一早", "中午", "下午",
+              "傍晚", "晚上", "夜里", "今晚", "今夜"):
+        t = t.replace(w, " ")
+    t = re.sub(r"\s+", " ", t).strip(" -·，,。")
     # 去掉口语前缀，标题更干净
     t = re.sub(r"^(我要|我想|帮我|我想让|请帮我|给我)\s*", "", t)
     # 去掉开头可能残留的冒号 / 全角冒号等分隔符（确认词后面的「：」）
@@ -1796,12 +1807,25 @@ def mock_planner(message: str, history: list | None = None, persona_key: str = N
             "options": [], "awaiting_choice": False,
         }
 
-    # 5) 学生提出一件要做的事 → 查近三天空档，给最多 3 个候选
+    # 5) 学生提出一件要做的事 → 查空档，给最多 3 个候选。
+    #    ★ #118 之前这里写死「今天 +0/1/2、每段准入 60 分钟」：
+    #    「周末打篮球，四个小时」在周三说，候选落在周三/四/五、每段 60 分钟——
+    #    他说得最死的两个约束（哪天、多久）全被当成没说（用户 2026-11-04 实测）。
     base = clock.today()
-    days = [(base + datetime.timedelta(days=off)).isoformat() for off in (0, 1, 2)]
+    want = wanted_minutes(msg)
+    min_min = want if want is not None else 60
+    weekend = any(w in msg for w in _WEEKEND_WORDS)
+    if weekend:
+        # 「周末/双休」→ 下一个即将到来的周六+周日，同一把尺没有特例：
+        #   周三说 → 周六(+3)/周日(+4)；今天就是周六 → 今天+明天；
+        #   今天是周日 → 按下周六日算(+6/+7)（这个周末只剩今天，与"往后找"同解）。
+        sat_off = (5 - base.weekday()) % 7
+        days = [(base + datetime.timedelta(days=sat_off + k)).isoformat() for k in (0, 1)]
+    else:
+        days = [(base + datetime.timedelta(days=off)).isoformat() for off in (0, 1, 2)]
     opts = []
     for d in days:
-        for s in find_free_slots(d, 60):
+        for s in find_free_slots(d, min_min):
             if "error" in s or "info" in s:
                 continue
             opts.append({
@@ -1819,6 +1843,21 @@ def mock_planner(message: str, history: list | None = None, persona_key: str = N
             break
 
     if not opts:
+        # ★ #118：凑不出时把原因说成人话（原来是干巴巴一句"排满了"）。
+        # 真机现状：周六被游泳/乒乓/健身/背单词排到 22:00，只剩 50 分钟——
+        # 「周末打篮球，四个小时」走的就是这条诚实话，不是出卡。
+        probe = []
+        for d in days:
+            for s in find_free_slots(d, 1):
+                if "error" not in s and "info" not in s:
+                    probe.append(s["minutes"])
+        if want is not None and probe:
+            return {
+                "answer": (f"{'这个周末' if weekend else '最近几天'}的空档最长只有一段约 "
+                           f"{max(probe)} 分钟，放不下你说的 {want} 分钟。"
+                           "换个短点的时长，或者说个别的日子我帮你看看？"),
+                "options": [], "awaiting_choice": False,
+            }
         return {"answer": mock_phrase(persona_key, "empty"), "options": [], "awaiting_choice": False}
 
     lines = "\n".join(
