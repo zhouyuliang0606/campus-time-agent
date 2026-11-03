@@ -4294,6 +4294,11 @@ def is_add_todo_answer(text: str) -> bool:
 _RETIME_WORDS = ("改成", "改到", "换成", "换到", "换个时间", "换个点", "挪到", "改改",
                  "调整到", "调到", "重排", "改一下", "重来")
 
+# ★ #111：把一句改期的话在**换时间词**处切一刀 —— 左边说的是"改哪一条"，右边说的是"改到哪"。
+#   从 `_RETIME_WORDS` 推出来，不另抄一份词表（两张表各长各的，迟早漂 —— #110 那条结论）。
+#   调用方在 `main`（确定性分支算 anchor 用），所以它也必须是模块级的。
+_RETIME_SPLIT_RE = re.compile("(?:" + "|".join(re.escape(w) for w in _RETIME_WORDS) + ")")
+
 
 def wants_retime_todo(text: str) -> bool:
     """判断这句是不是"换时间/换天"（人话：上一条确认条的点他不满意）。"""
@@ -5198,9 +5203,68 @@ def parse_remove_todo(text: str) -> dict | None:
     return res.get("proposal") if res.get("status") == "ok" else None
 
 
+def _hit_when(items: list, weekday: int = 0, date: str = "") -> list:
+    """按「周几」或「某一天」从候选里筛（#111，改期定位共用的一条口径）。
+
+    ⚠️ **给了周几就只按周几筛，不再回头看那个 ISO**。`_pick_date` 对「周二」算的是**下一个周二**
+    （它那句 `% 7 or 7`）：今天就是周二时它给的是**下周二**，而学生屏幕上那条候选正是今天这条。
+    拿那个 ISO 去精确匹配 ⇒ 「把周二的健身房改到周六」永远对不上（2026-11-03 实测）。
+    同一天真有两条候选时，这一筛会留下两条 → 上层继续问，**不猜**。
+    """
+    if weekday:
+        return [x for x in items if _iso_weekday(str(x.get("date") or "")) == int(weekday)]
+    if date:
+        return [x for x in items if str(x.get("date") or "") == str(date)]
+    return []
+
+
+_POINT_ERASE_RE = re.compile(
+    r"(?:那条|那个|那一条|那一个|这条|这个|要改|想改|的|了|吧|呢|[，,。.、；;！!？?\s])"
+    r"|(?:周|星期|礼拜)[一二三四五六日天]"
+    r"|(?:大后天|后天|明天|明晚|明早|今晚|今夜|今天|昨天|前天)")
+
+
+def pick_retime_candidate(todos: list, text: str) -> dict | None:
+    """把学生对着刚列出来的候选清单回的那一句，翻成清单里的**某一条**（#111）。
+
+    为什么必须有它：改期遇到同名多条时系统列了清单，学生最自然的答法就是
+    「第一条」「周三那条」「图书馆」—— 可这一支原来**什么都不记**，下一句只能按名字重新筛，
+    重新筛出来的还是那几条，于是同一句追问问三遍（实测六种续答六次全回到原地）。
+
+    三种答法，每一种都要求这句**就是个选择**，不带别的内容：
+      ① 整句基本就是个序号（「第一条」「2」「最后一个」）—— 按**屏上那份列表的同一顺序**取，
+         所以调用方必须把它刚显示出来的那一份 `todos` 递进来；错位就是改错条（#111 §四.3 的原话）；
+      ② 纯指认日子（「周三那条」「明天那个」）—— 擦掉日子和指代词后**这句没剩别的字**才算，
+         否则「今天天气怎么样」也带着「今天」，会被当成"点了那天那条"（实测过，就是这样冤的）；
+         并且恰好筛出一条才算命中，两天都有 / 都没有 → None；
+      ③ 整句就是那条的名字（「图书馆」「图书馆那条」）—— 只认**唯一命中**。
+    都不行 → None，由调用方继续追问。**绝不兜到第一条。**
+    """
+    t = (text or "").strip()
+    if not t or not todos:
+        return None
+    idxs = _pick_todo_indexes(t, len(todos))
+    if len(idxs) == 1:
+        i = len(todos) + idxs[0] if idxs[0] < 0 else idxs[0] - 1
+        if 0 <= i < len(todos):
+            return todos[i]
+    bare = _POINT_ERASE_RE.sub("", t)          # 擦掉"日子 + 指代词"后剩下什么
+    wd, d = _pick_day(t), _pick_date(t)
+    if wd or d:
+        if bare:                              # 这句还有别的内容 ⇒ 不是在选择
+            return None
+        hit = _hit_when(todos, wd or 0, "" if wd else (d or ""))
+        return hit[0] if len(hit) == 1 else None
+    if bare:                                  # ③ 报名字：整句就是那个名字
+        hit = [x for x in todos if str(x.get("title") or "").strip() == bare]
+        return hit[0] if len(hit) == 1 else None
+    return None
+
+
 def build_retime_existing_proposal(text: str, sem: dict | None = None,
                                    hint_title: str = "", auto_slot: bool = False,
-                                   anchor_date: str = "") -> dict:
+                                   anchor_date: str = "", anchor_weekday: int = 0,
+                                   pick_id: str = "") -> dict:
     """把"把周四那个健身挪到周五"解析成一张**改期提案**（人话：已排进日程的待办想换时间）。
 
     跟 `retime_todo_proposal` 的区别：那条是"学生嫌**待确认卡**的点不合适、
@@ -5250,11 +5314,24 @@ def build_retime_existing_proposal(text: str, sem: dict | None = None,
       · 只作用在**名字命中之后**那一份池子上。占位名（「待办/日程/事项」）那一支不缩，
         否则「改 11-09 那天那个」会把那天的**任何一条**当成答案 —— 那是 X1 那格假命中的放大版。
 
+    `anchor_weekday`（#111）：**「周X」那种说法专用的第二把尺**。`anchor_date` 是精确日期，
+      而 `_pick_date("周二的")` 在**今天就是周二**时给的是下周二 —— 学生指的那条候选正是今天这条。
+      调用方（`main` 的确定性分支）从"换时间词左边"那截抠出周几递进来；**给了它就不再看 `anchor_date`**
+      （同一句话里两把尺只能有一把说话，理由见 `_hit_when`）。默认 0 ⇒ #87 那条工具路逐字不变。
+
+    `pick_id`（#111）：学生刚从**我们列给他看的那份候选清单**里点定的那一条 —— 最硬的一维，
+      直接按 id 在全库里定位；取不到（那条已被删/被改）就**当这个参数没给**，照旧走名字那一维。
+      为什么光有 `anchor_date` 不够：同名两条可能排在**同一天**（11-03 的 19:00 和 20:40 各一次健身房），
+      那时"哪天"这一维分不开它们，回「第一条」就只有 id 分得开。
+
     只读，一个字节都不写库——执行权永远在"学生点头"之后。
     """
     t = (text or "").strip()
     # 先把"改成/挪到/换到"这类换时间的词擦掉，免得粘在名字里
     #（"把瑜伽挪到周五"不擦会变成"瑜伽挪到"，对不上库里的"瑜伽"）。
+    # ⚠️ 这张表和上面那张 `_RETIME_SPLIT_RE` **故意差一颗「改改」**：切句那张多一颗无所谓
+    #   （左边只会更短），而这里多擦一颗就把 #82补 F5 钉的那条诚实出口改掉了
+    #   （「周末改改」的残渣 name 非空 ⇒ hint 不接手 ⇒ empty；擦干净了 hint 就接手 ⇒ ok）。
     t_clean = re.sub(r"(改成|改到|换成|换到|换个时间|换个点|挪到|调整到|调到|重排|改一下|重来)", " ", t)
     # 目标名字：优先用语义层读出来的（模型偶尔回怪名字），不像话就退回从话里抠
     name = (sem or {}).get("title") or ""
@@ -5278,7 +5355,14 @@ def build_retime_existing_proposal(text: str, sem: dict | None = None,
     # 候选池：按名字在**全部**待办里找（话里既可能有旧日期也可能有新日期，
     # 不能拿 _pick_date 去缩池，否则容易把"周五"当成定位条件反而不匹配）。
     pool = list_todos()
-    if name and name not in ("", "待办", "日程", "事项"):
+    # ★ #111：`pick_id` 是"学生刚从我们列出来的那份清单里点了一条"——比名字、比哪天都硬，先看它。
+    #   取不到（这一轮之间那条被删了）就**当这个参数没给**，落回名字那一维；绝不因为 id 没碰上
+    #   就报"没找到那条待办"（#84 那句假话就是这么长出来的）。
+    _by_id = [x for x in pool if pick_id and str(x.get("id") or "") == str(pick_id)]
+    _named = False                 # 池子是"按名字筛出来的"吗 —— #87 那一维只在它成立时才用
+    if _by_id:
+        pool = _by_id
+    elif name and name not in ("", "待办", "日程", "事项"):
         hits = [x for x in pool if _todo_name_match(name, x.get("title", ""))]
         if not hits:
             # 语义层/样本库给的名字没命中（典型：样本库把"瑜伽"误记成"健身"——
@@ -5300,16 +5384,26 @@ def build_retime_existing_proposal(text: str, sem: dict | None = None,
             #   谁把那句提上来，test_96 A2 会当场红（它钉的是"这一处带的是全库条数"）。
             return {"status": "empty", "todos": [], "pool_n": len(pool)}
         pool = hits
-        # ★ #87：库里真有两条同名时，"名字"这一维已经用尽 —— 模型下一轮**还是只能传同一个
-        #   title**，于是 `many → need_pick → many` 无限循环（真机实测三次调用三次同两条候选）。
-        #   学生原话「改 2026-11-09 那天那个」里的日子就是第二维，从这里切一刀。
-        #   ⚠️ 只**收窄**、不判"改去哪天"（那是 new_date 的语义，两者不许混）；
-        #   `if _hit:` 那句是命门：收窄落空必须**原样退回**，否则"那天没有这条"会被说成
-        #   "库里没找到" —— 正是 #84 花一整张单修掉的那句假话。
-        if anchor_date and len(pool) > 1:
-            _hit = [x for x in pool if x.get("date") == anchor_date]
-            if _hit:
-                pool = _hit
+        _named = True
+    # ★ #87：库里真有两条同名时，"名字"这一维已经用尽 —— 模型下一轮**还是只能传同一个
+    #   title**，于是 `many → need_pick → many` 无限循环（真机实测三次调用三次同两条候选）。
+    #   学生原话「改 2026-11-09 那天那个」里的日子就是第二维，从这里切一刀。
+    #   ⚠️ 只**收窄**、不判"改去哪天"（那是 new_date 的语义，两者不许混）；
+    #   `if _hit:` 那句是命门：收窄落空必须**原样退回**，否则"那天没有这条"会被说成
+    #   "库里没找到" —— 正是 #84 花一整张单修掉的那句假话。
+    #   #111 两处改动：
+    #     · 这一刀原来锁在"按名字筛过"那一支里 ⇒ 「把周三那条挪到周六」这种**没报名字**的
+    #       说法压根走不到收窄（实测：还是把两条同名的一条不落地倒回给他）。
+    #       现在 `anchor_weekday` 那一把尺**不看名字**（他说的"周三那条"本身就是定位），
+    #       而引擎传来的 `anchor_date` 照旧只在按名字筛过时才用 —— 占位名 + 一个日子
+    #       就把那天**任何一条**当成答案，那是 X1 那格假命中的放大版（#87 原话）。
+    #     · 原来只认精确日期，而 `_pick_date("周二的")` 给的是**下周二**（今天就是周二时），
+    #       屏上那条候选偏偏是今天这条 ⇒ 「把周二的健身房改到周六」照样问第二遍。
+    #       两把尺的先后交给 `_hit_when`：句子里有「周X」就按周几筛，否则按那一天筛。
+    if not _by_id and len(pool) > 1 and (anchor_weekday or (_named and anchor_date)):
+        _hit = _hit_when(pool, anchor_weekday, anchor_date)
+        if _hit:
+            pool = _hit
     if not pool:
         # 库里真的一条都没有 ⇒ pool_n=0，调用方那句"没找到、你先加进日程"在这一档是实话
         return {"status": "empty", "todos": [], "pool_n": 0}

@@ -161,6 +161,8 @@ from app.modules.planner import (
     _pick_date,
     _pick_todo_indexes,
     _pick_todo_name,
+    _RETIME_SPLIT_RE,          # #111：改期那句在"换时间词"处切一刀，左边才是"哪一条"
+    pick_retime_candidate,     # #111：把「第一条」「周三那条」翻成候选清单里的某一条
     _todo_name_match,
     _wants_colliding,
     _wants_rechoose,
@@ -551,11 +553,65 @@ def _pending_todo(session_id: str) -> dict | None:
     return None
 
 
-# ⚠️ #59：这两份"候选清单"**不是卡** —— 它们是学生回「第二条 / 换一条」时的依据，
+# ⚠️ #59：这几份"候选清单"**不是卡** —— 它们是学生回「第二条 / 换一条」时的依据，
 # 挂在暂存里但没有 date/start/end，前端也没有对应的渲染分支。
 # 恢复接口（`/api/pending/{sid}`）按这份表把它们**跳过**（是"不选中"，**不是删掉**：
 # 删掉就等于把「第二条」那个出口砍了）。加新的辅助项请一并登记在这里。
-_PENDING_AUX_KINDS = {"todo_remove_candidates", "todo_done_candidates"}
+_PENDING_AUX_KINDS = {"todo_remove_candidates", "todo_done_candidates",
+                      "todo_retime_candidates"}      # ← #111 改期那份清单
+
+
+def _pending_retime_list(session_id: str) -> tuple:
+    """暂存里那份"改期候选清单"（#111）：返回 `(清单, 学生那句原话, 已点定的那条 id)`。
+
+    存它的理由和删待办那份一模一样（`_pending_remove_candidates`）：系统刚列出 2 条同名的，
+    学生回「第一条」/「周三那条」就是在**回答我们**。可这一支原来什么都不记，
+    下一句只能按名字重新筛 —— 重新筛出来的还是那几条，于是同一句追问问三遍
+    （2026-11-02 实测：六种续答六次全回到原地）。
+    `want` 记的是**第一句原话**（「把健身房挪到周六」里的"周六"）：点完那条就直接出卡，
+    不必再问一遍"改到几点"；`picked` 记的是"条已定、只差新时间"那一档（见 `_retime_followup`）。
+    """
+    entry = peek_pending(session_id) or {}
+    for o in entry.get("options") or []:
+        if isinstance(o, dict) and o.get("kind") == "todo_retime_candidates":
+            todos = o.get("todos")
+            if isinstance(todos, list):
+                return todos, str(o.get("want") or ""), str(o.get("picked") or "")
+    return [], "", ""
+
+
+def _retime_followup(session_id: str, message: str, other_intent: bool = False) -> tuple:
+    """学生这一句是在回答改期的追问吗 → `(点定的那条, 拿去解析新时间的原话)`，不是则 `(None, "")`。
+
+    两档都**只看紧挨着的上一句**（#109 的教训：标记赖在窗口里，隔几轮的无关话会被当成
+    "在回答追问"，把别的路挤掉），差别在"还要不要挑"：
+      · 上一句是「改期缺细节」（刚列了清单）→ 这句是在点名，按清单解析；
+      · 上一句是「改期时间没说清」/「改期日子排不下」→ 条已经定了，这句给的就是新时间。
+    ⚠️ 这里**不学删待办那一档**（"手上还攥着清单就算"）：改期这一支的入口排在删待办**之前**，
+      清单赖着不走的话，学生后来回「第二条」想删东西会被这儿先抢走（谁先判谁先抢）。
+    :param other_intent: 这句自己带了别的动作意图（删/加/标记完成）—— 由调用方算好递进来，
+      本函数不重认一遍（那些判据在 `_chat_impl` 里已经算过一次，全站只许有一份）。
+    """
+    todos, want, picked = _pending_retime_list(session_id)
+    if not todos or other_intent:
+        return None, ""
+    last = _last_bot_message(session_id)
+    if last == "改期缺细节":
+        hit = pick_retime_candidate(todos, message)
+    elif last in ("改期时间没说清", "改期日子排不下") and picked:
+        hit = next((x for x in todos if str(x.get("id") or "") == picked), None)
+        want = ""                          # 这一档学生补的就是新时间，原话已经用过了
+    else:
+        return None, ""
+    if hit is None:
+        return None, ""
+    # ⚠️ 清单是**上一轮**的快照：这一轮之间那条可能已经被删掉了。这时候**不许**退回"按名字再筛一遍"
+    #   —— 实测那种退出会端出一张指向**另一条同名待办**的卡（他点的是第一条，卡是隔壁那条）。
+    #   宁可把这份过期清单丢掉、下一句重新列（编号也跟着重排），不给一张指错条的卡。
+    if not any(str(x.get("id") or "") == str(hit.get("id") or "") for x in list_todos()):
+        clear_pending(session_id)
+        return None, ""
+    return hit, (want or message)
 
 
 def _pending_remove_candidates(session_id: str) -> list:
@@ -689,6 +745,17 @@ def _is_system_note(text: str) -> bool:
 _SELF_PICK_RE = re.compile(
     r"我自己(?:定|挑|选)|自己挑|自己选|列(?:几个|出来)|换几个|"
     r"还有别的(?:空档|时间)|其他空档|别的时间")
+
+
+def _last_bot_message(session_id: str) -> str:
+    """上一句**系统说的话**（人话：学生这句是不是在回答我上一个问题）。
+
+    只看紧挨着的那一句，不看"窗口里有没有" —— #109 实测过那一幕：追问的标记赖在窗口里，
+    隔几轮说一句「今天几号」也被当成"在回答删课追问"。判据收成一处（标记完成那一档原来
+    就地写着同样的表达式，同一个判据两份是这类 bug 的老家）。
+    """
+    return next((m.get("content") or "" for m in reversed(get_conversation(session_id))
+                 if m.get("role") == "assistant"), "").strip()
 
 
 def _recent_add_request(session_id: str, span: int = 8) -> str:
@@ -3745,13 +3812,41 @@ async def _chat_impl(req: Request, meta: dict, emit=None):
         #     不是日程里某条既有待办 —— 以前这一档先截走，然后按名字找不到那条，
         #     回一句「没找到那条待办」，他这句补充就蒸发了（实测）。
         #     纯换日子的「把周四那个健身挪到周五」不在此列，照旧走按名字改期。
+        #     ★ #111：这一支原来**只认"名字"这一维**，而演示数据里「健身房」有两条同名 ——
+        #     于是学生不管回「周三那条」「第一条」「周二的」，进来以后都只能按名字重新筛，
+        #     筛出来还是那两条 ⇒ 同一句追问问三遍（实测六种续答六次）。现在补三样：
+        #       ① 「换时间词**左边**」那截拿去定位（右边那个日子是"改去哪"，混用会把池子筛空）；
+        #       ② 句子里是「周X」时按**周几**筛，不按 `_pick_date` 那个 ISO（它对「周二」给的是
+        #          下周二，而屏上那条候选正是今天这条 —— 2026-11-03 实测这一条让 ① 整条失效）；
+        #       ③ 列过清单之后他的续答（序号 / 周几 / 名字）按**那份清单**点定一条，
+        #          并把他第一句的原话（带着新时间）一起用上 ⇒ 直接出卡，不再问第二遍。
+        _rt_follow, _rt_say = _retime_followup(
+            session_id, message,
+            # 这句自己带了**删/标记完成**的意图 → 不是在选择那一条，让路（改期是"删旧+加新"，
+            # 他要的是删干净，那句该归删的那一族）。⚠️ **不含"加"**：实测「挪到周一晚上八点」这种
+            # 报新时间的话 `wants_add_todo` 也是 True，把加算进来正好把本单要治的那一跳又堵死了；
+            # 而"加"那一句在 `pick_retime_candidate` 的**形状判据**那儿本来就过不去（除了日子还有别的话）。
+            bool(_done_claim or wants_remove_todo(message) or wants_remove_todo_loose(message)
+                 or wants_remove_course(message)))
         if (((wants_retime_todo(message) and not _rule_veto)
-                or _sem_intent == INTENT_RETIME) and not held_add and not _patch73_freq):
+                or _sem_intent == INTENT_RETIME
+                or (_rt_follow is not None and not _rule_veto))
+                and not held_add and not _patch73_freq):
             from app.modules.planner import build_retime_existing_proposal, _weekday_name as _wd2
-            # ★ #77：这句没点名时，把**上文最近唯一提到的那条**递进去（判据见 `_recent_todo_title`）。
-            _rt = build_retime_existing_proposal(
-                message, _sem if _sem_intent == INTENT_RETIME else None,
-                hint_title=_recent_todo_title(session_id))
+            if _rt_follow is not None:
+                # 学生从清单里点了一条：定位用**那条自己的 id**（最硬的一维，同一天两条同名也分得开），
+                # 新时间从他上一句原话里读 —— 不再按名字重筛一遍（那正是"再问一遍"的来源）。
+                _rt = build_retime_existing_proposal(
+                    _rt_say, None, hint_title=str(_rt_follow.get("title") or ""),
+                    pick_id=str(_rt_follow.get("id") or ""))
+            else:
+                # ★ #77：这句没点名时，把**上文最近唯一提到的那条**递进去（判据见 `_recent_todo_title`）。
+                _rt_left = _RETIME_SPLIT_RE.split(message)[0]
+                _rt = build_retime_existing_proposal(
+                    message, _sem if _sem_intent == INTENT_RETIME else None,
+                    hint_title=_recent_todo_title(session_id),
+                    anchor_date=_pick_date(_rt_left) or "",
+                    anchor_weekday=_pick_day(_rt_left) or 0)
             _rt_status = _rt.get("status")
             if _rt_status == "ok":
                 _rt_prop = _rt["proposal"]
@@ -3784,21 +3879,33 @@ async def _chat_impl(req: Request, meta: dict, emit=None):
                     _rt_lead = f"🕘 日程里有好几条都叫「{next(iter(_rt_titles))}」，你要改哪一条？\n\n"
                 else:
                     _rt_lead = "🕘 你要改的是哪一条？\n\n"
+                # ★ #111：清单**编上号**，而且存进暂存 —— 这两件事是一对：
+                #   屏上有号，学生才回得出「第二条」；存了号对上的那份清单，下一句才接得住
+                #   （`_retime_followup` 用的就是这一份，顺序一字不差）。
+                _rt_cands = _rt.get("todos", [])[:6]
                 _rt_lines = "\n".join(
-                    f"· **{x.get('title', '')}**｜{x.get('date', '')}"
+                    f"{_i}. **{x.get('title', '')}**｜{x.get('date', '')}"
                     f"（{_wd2(x.get('date', ''))}）"
                     f"{x.get('start', '')}-{x.get('end', '')}"
-                    for x in _rt.get("todos", [])[:6])
+                    for _i, x in enumerate(_rt_cands, 1))
+                save_pending(session_id, [{"kind": "todo_retime_candidates",
+                                           "todos": _rt_cands, "want": _rt_say or message,
+                                           "picked": "", "summary": "改期候选"}])
                 append_conversation(session_id, "user", message)
                 append_conversation(session_id, "assistant", "改期缺细节")
+                # ★ #111：例子不许写死「周四那条」—— 库里没有周四那条，原话却在教学生说一个不存在的说法。
+                #   现取清单里第一条的那个星期（`_wd2` 回的就是「周三」这种整词，别再叠一个「周」字）。
+                _rt_eg = _wd2(_rt_cands[0].get("date", "")) if _rt_cands else "周三"
                 return {
                     "module": "planner", "session_id": session_id,
                     # ★ #77：`many` 有**两种来源**，话术必须分开。原先这一句写死"好几条同名的"，
                     #   而实测「换个时间」在四条**各不相同名**的待办上也会走到这儿（他压根没说名字），
                     #   那句是在骗人 —— 学生听完只会觉得系统没听懂上文。
-                    "answer": (_rt_lead + f"{_rt_lines}\n\n回我一个（比如「周四那条」），我帮你改。"),
+                    "answer": (_rt_lead + f"{_rt_lines}\n\n"
+                               + (f"回我一个（比如「{_rt_eg}那条」或「第一条」），我帮你改。" if _rt_cands
+                                  else "回我一个名字或日子，我帮你改。")),
                     "trace": [{"step": 1, "phase": "🕘 改期遇到多条同名（不猜）",
-                               "answer": "等学生点名"}],
+                               "answer": f"候选 {len(_rt_cands)} 条，等学生点名"}],
                     "options": [], "awaiting_choice": False,
                 }
             if _rt_status == "empty":
@@ -3871,6 +3978,14 @@ async def _chat_impl(req: Request, meta: dict, emit=None):
                 _rt_mark = "改期时间没说清"
             append_conversation(session_id, "user", message)
             append_conversation(session_id, "assistant", _rt_mark)
+            # ★ #111：**目标已经定了、只差新时间** —— 把这一条记进暂存（清单收成一条 + picked 记下 id）。
+            #   下一句他只要说「周六晚上八点」，就落回同一条上；不按名字重筛一遍 ——
+            #   重筛会把那两条同名的又翻出来，追问又回到"你要改哪一条"（那正是这一单要拆的循环）。
+            if _rt_old_label and _rt_old.get("id"):
+                save_pending(session_id, [{"kind": "todo_retime_candidates",
+                                           "todos": [_rt_old], "want": _rt_say or message,
+                                           "picked": str(_rt_old.get("id") or ""),
+                                           "summary": "改期候选"}])
             return {
                 "module": "planner", "session_id": session_id,
                 "answer": _rt_ask,
@@ -4453,8 +4568,8 @@ async def _chat_impl(req: Request, meta: dict, emit=None):
         # ⚠️ 必须排在删待办（3g）前面：学生说"把周二那条**待办**标记完成"也带"周二"，
         #     让删待办先接会误判成"要删"，跑偏。标记完成不是删除，顺序摆正。
         # ⚠️ "学生在回答是哪一条吗" 也只看**紧挨着的上一句**（同删待办的串味教训）。
-        _last_bot = next((m.get("content") or "" for m in reversed(get_conversation(session_id))
-                          if m.get("role") == "assistant"), "").strip()
+        #    表达式收在 `_last_bot_message`（#111：改期那一支也要用同一个判据，别抄第二份）。
+        _last_bot = _last_bot_message(session_id)
         asking_done = _last_bot == "标记完成缺细节"
         done_intent = ((_done_claim and not _rule_veto)
                        or _sem_intent == INTENT_DONE)
