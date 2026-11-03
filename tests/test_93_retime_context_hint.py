@@ -246,10 +246,13 @@ def batch_b_link():
             sid2 = "b-e2"
             d2 = ask(cli, "换个时间", sid2)
             ans2 = d2.get("answer") or ""
+            # ★ #111 改口：清单从「· 」改成**编号**「1. 」—— 学生要回「第二条」，
+            #   屏上就得先有号可数（数条数那把尺跟着换成每条都有的 `**｜`，判据一点没放宽）。
             c.check("B2 E2 新会话（无上文）→ 列候选，文案是「你要改的是哪一条？」，"
-                    "**不许**出现「同名的」（那四条各不相同，那句在骗人）",
+                    "**不许**出现「同名的」（那四条各不相同，那句在骗人），而且清单**编了号**",
                     "同名的" not in ans2 and "你要改的是哪一条" in ans2
-                    and ans2.count("·") == 4, ans2.replace("\n", " ⏎ ")[:120])
+                    and ans2.count("**｜") == 4 and "1. " in ans2,
+                    ans2.replace("\n", " ⏎ ")[:120])
             c.check("B2-bis 这一支仍是确定性（options 为空、没让渡给引擎）",
                     not cards(d2) and d2.get("awaiting_choice") is False,
                     str([cards(d2), d2.get("awaiting_choice")])[:80])
@@ -259,7 +262,7 @@ def batch_b_link():
             d3 = ask(cli, "换个时间", sid3)
             ans3 = d3.get("answer") or ""
             c.check("B3 E3 两条**真同名**「健身」+ 没说名字 → 文案说「都叫「健身」」（这时这句话才是真的）",
-                    "都叫「健身」" in ans3 and ans3.count("·") == 2, ans3.replace("\n", " ⏎ ")[:130])
+                    "都叫「健身」" in ans3 and ans3.count("**｜") == 2, ans3.replace("\n", " ⏎ ")[:130])
 
             seed_todos(FOUR)
             sid4 = "b-p2"
@@ -280,7 +283,8 @@ def batch_b_link():
             sid6 = "b-p3"
             d6 = ask(cli, "换个时间", sid6)
             c.check("B6 P3 新会话这句不报错、不返回「没找到」：many 走列候选（HTTP 200 由 client 保证）",
-                    "没找到" not in (d6.get("answer") or "") and "·" in (d6.get("answer") or ""),
+                    "没找到" not in (d6.get("answer") or "")
+                    and ". **" in (d6.get("answer") or ""),
                     (d6.get("answer") or "").replace("\n", " ⏎ ")[:100])
     return c.summary("B 批（端到端）")
 
@@ -363,10 +367,18 @@ def batch_s_static():
     c.check("S3 调用点只有一处递 hint（`hint_title=_recent_todo_title(session_id)` 恰 1 处，V4 射它）",
             mn.count("hint_title=_recent_todo_title(session_id)") == 1,
             str(mn.count("hint_title=_recent_todo_title(session_id)")))
-    c.check("S3-bis main 里带括号的 `build_retime_existing_proposal(` 恰好一处 —— 就是这一支的调用点"
-            "（import 那行写的是名字、不带括号，所以我第一版按 2 去数是错的）",
-            mn.count("build_retime_existing_proposal(") == 1,
-            str(mn.count("build_retime_existing_proposal(")))
+    # ★ #111 起这一支有**两个**调用点（学生直接说全 = 按 anchor 定位 / 从清单点定 = 按 pick_id 定位），
+    #   "恰好一处"这条已经不成立。判据换成位置性质：调用点**全部落在 3d-ret 这一支内**
+    #   （跑到别处就是又抄了一份判定），且两处各带一种定位。条数不是目的，"只有一支在调它"才是。
+    _z_ret = mn[mn.find("# 3d-ret)"):mn.find("# 3c-ter)")]
+    c.check("S3-bis main 里对 `build_retime_existing_proposal(` 的调用**全部落在 3d-ret 这一支内**，"
+            "两处各带一种定位（anchor_date / pick_id）；别处冒出一处就是又抄了一份判定",
+            len(_z_ret) > 0 and _z_ret.count("build_retime_existing_proposal(")
+            == mn.count("build_retime_existing_proposal(")
+            and _z_ret.count("build_retime_existing_proposal(") == 2
+            and "anchor_date=" in _z_ret and "pick_id=" in _z_ret,
+            str([_z_ret.count("build_retime_existing_proposal("),
+                 mn.count("build_retime_existing_proposal(")]))
     pt = ast.parse(pn)
     lf = next((n for n in ast.walk(pt) if isinstance(n, ast.FunctionDef)
                and n.name == "build_retime_existing_proposal"), None)

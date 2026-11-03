@@ -553,9 +553,19 @@ def batch_e_static():
 
     zone = mn[mn.find("wants_retime_todo(message)"):]
     zone = zone[:zone.find("# 3c-ter)")]
-    c.check("E8 三条 unclear 说法都不写库、也不挂暂存：这一族里 `save_pending` 只许出现一次"
-            "（只在 ok 那一支挂卡）",
-            zone.count("save_pending(") == 1, str(zone.count("save_pending(")))
+    # ★ #111 改口：这一族的 `save_pending` 从一处变成三处 —— 但**挂卡还是只有 ok 那一支**，
+    #   另两处挂的是"候选清单"那种辅助项（many 用它接「第二条」，unclear 用它记住已点定的那条）。
+    #   原来那句"只许出现一次"管的是"unclear 不许挂卡"，判据换成三条性质：卡一处 /
+    #   辅助项都在 `_PENDING_AUX_KINDS` 里登记过 / 这一族不出现任何写库调用。
+    _aux_seg = mn[mn.find("_PENDING_AUX_KINDS = {"):mn.find("_PENDING_AUX_KINDS = {") + 240]
+    c.check("E8 三条 unclear 说法都不写库、也**不挂卡**：卡只在 ok 那一支挂（一处），"
+            "另外两处挂的必须是 `_PENDING_AUX_KINDS` 里**登记过的辅助项**"
+            "（登记过 ⇒ 刷新接口 `/api/pending` 不会把它当卡端出去，前端也就没有那张 undefined 卡）",
+            zone.count("save_pending(session_id, [_rt_prop])") == 1
+            and zone.count('save_pending(session_id, [{"kind": "todo_retime_candidates"') == 2
+            and "todo_retime_candidates" in _aux_seg,
+            str([zone.count("save_pending("), zone.count("save_pending(session_id, [_rt_prop])"),
+                 "todo_retime_candidates" in _aux_seg]))
     c.check("E8-bis 这一族里三个分支**各设各的 phase**，且 no_slot 那句不许和 no_time 共用一条"
             "（轨迹那行是给评委看的解释：行为对了它也能当众说错话）—— "
             "「改期新时间缺失」与「改期：目标日子排不下」都在，_rt_phase 赋值恰三处，"
