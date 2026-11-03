@@ -178,7 +178,15 @@ class AgentEngine:
                                 except Exception:
                                     raw = None
                             if isinstance(raw, list):
-                                self.options = raw
+                                # ★ #115：模型传的是**它自己拼的 JSON**，工具描述只要求
+                                #   title/date/start/end 四个字段（`planner.py:6643`），
+                                #   而前端要 `weekday` 和 `minutes` 才画得出
+                                #   「2026-11-07（周六）· 约 90 分钟」，更要 `kind`
+                                #   才接得上确认条那一支（没 kind 就穿透到老的【确认所选】，
+                                #   屏幕上既没弹窗、勾两条也只写一条）。
+                                #   缺的字段系统算得出来，补在这里一处，前端一个字不用改。
+                                from app.modules.planner import normalize_slot_cards
+                                self.options = normalize_slot_cards(raw)
 
                         # 课表修改提案：同样抓参数给前端渲染「确认修改」卡。
                         # 学生点确认后由前端直接调 /api/timetable/apply 写入——

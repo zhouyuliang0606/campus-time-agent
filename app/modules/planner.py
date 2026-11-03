@@ -1583,6 +1583,49 @@ def update_todo_status(todo_id: str, status: str) -> str:
     return f"已更新《{item['title']}》的状态为 {status}"
 
 
+def normalize_slot_cards(cards: list) -> list:
+    """把模型自己拼的候选卡补成前端画得出来的形状（人话：缺的字段由系统算，不让模型编）。
+
+    为什么必须补：`propose_slots` 的入参是模型**自由拼的 JSON**，工具描述（`:6643`）
+    只要求 title / date / start / end / 可选 note 四个字段。可前端画的是
+    `date（weekday）start-end · 约 N 分钟` —— 两个字段一缺就成
+    「2026-11-07（）」「约 ? 分钟」（学生截图 2026-11-03 20:58，三行全空）。
+
+    `kind` 补成 `todo_add` **不是为了好看**：`main.py:_collapse_same_title_adds`
+    的分组条件是 `kind != "todo_add"` 就跳过，而这条路以前交出来的卡一个 kind 都没有
+    ⇒ 收敛一次也没发生过 ⇒ 屏幕上是几张裸卡各带一颗【确认所选】，
+    点下去拼成一句多行聊天，后端只认第一条（"勾了两个只生效一个"的来历）。
+    补上以后同名几张并成一张 `todo_slots`，那一段自带 label/weekday/minutes，
+    前端 `renderOptions` 的 `slotsCards` 那一支才接得住（走确认条 + 多选 + `/api/todos/batch`）。
+
+    为什么不让模型自己填 weekday：它会写「星期六」也会写「周六」「六」，
+    三种写法前端都得认一遍；而**日期→星期是系统算得出来的事**，算比认便宜、也不会错。
+    """
+    out = []
+    for c in cards or []:
+        if not isinstance(c, dict):
+            continue
+        d = str(c.get("date") or "").strip()
+        s0 = str(c.get("start") or "").strip()
+        e0 = str(c.get("end") or "").strip()
+        item = dict(c)
+        item.setdefault("kind", "todo_add")
+        # 认不出来的日期留给空着 —— 填一句「未知」是替系统编了个它不知道的星期
+        if d and not item.get("weekday") and _iso_weekday(d):
+            item["weekday"] = _weekday_name(d)
+        if item.get("minutes") is None and s0 and e0:
+            m = to_minutes(e0) - to_minutes(s0)
+            # 上限一天：`to_minutes` 认 "99:00"（算出 5940），起止被模型写反或写歪时
+            # 减法照样得正数，填进去就是一句「约 5340 分钟」的假话。算不出来就不填，
+            # 留给前端那个 "?" —— 空着比编一个强。
+            if 0 < m <= 24 * 60:
+                item["minutes"] = m
+        if not item.get("title"):
+            item["title"] = "待办"
+        out.append(item)
+    return out
+
+
 def propose_slots(options_json: str) -> str:
     """把候选时间段以结构化方式交给前端，渲染成可勾选的卡片（而不是挤在一段话里）。
 
