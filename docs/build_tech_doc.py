@@ -121,6 +121,10 @@ def _count_kinds():
 
 MD_TOTAL, DROPIN, SNAPSHOT = _count_prompts()
 COMMITS, DEV_DAYS, COMMITS_NOTE = _git_stat()
+# ★ 自指问题：生成这份 PDF 的那一笔提交，在构建时还没发生。
+#   写死一个数必然在下一次提交后过期；写成「N+」则永远成立——
+#   N 是构建那一刻的 HEAD 计数，评委翻仓库只可能 ≥ N。
+COMMITS_TXT = f"{COMMITS}+"
 KINDS = _count_kinds()
 KIND_COUNT = len(KINDS)
 
@@ -219,7 +223,7 @@ def table(data, col_w, header=True):
     return t
 
 # ---------------- 流程图（reportlab 原生矢量，不依赖外部字体/图片） ----------------
-from reportlab.graphics.shapes import Drawing, Rect, String, Line, Polygon
+from reportlab.graphics.shapes import Drawing, Rect, String, Line, Polygon, Circle
 
 BOX_FILL   = colors.HexColor("#f3f6fb")
 BOX_HI     = colors.HexColor("#dbe7f7")
@@ -316,6 +320,31 @@ def status_machine():
                  fontName=FONT, fontSize=6.6, fillColor=colors.HexColor("#666666"), textAnchor="start"))
     return d
 
+def timeline(nodes, total_w=168, fs=6.6):
+    """横向时间轴。nodes = [(日期, 标题), ...]；标题可含换行。
+
+    ⚠️ 两头的框会顶出画布：_box 是「以 x 为中心」画的，所以 left 必须让出半个框宽。
+    2026-11-04 第一版就是 left 直接给了 8mm，最左边那个「引入判定层」整块压到页面外。
+    """
+    n = len(nodes)
+    W = total_w * mm
+    H = 45 * mm
+    d = Drawing(W, H)
+    bw = (total_w / n - 2.2) * mm
+    left = bw / 2 + 2 * mm
+    right = W - left
+    cy = H - 12.5 * mm
+    d.add(Line(left, cy, right, cy, strokeColor=EDGE_LIGHT, strokeWidth=1.1))
+    step = (right - left) / max(1, n - 1)
+    for i, (date, title) in enumerate(nodes):
+        x = left + i * step
+        d.add(Line(x, cy - 1.8 * mm, x, cy - 3.4 * mm, strokeColor=EDGE_LIGHT, strokeWidth=0.8))
+        d.add(Circle(x, cy, 1.9 * mm, fillColor=BOX_HI, strokeColor=BOX_EDGE, strokeWidth=0.8))
+        d.add(String(x, cy + 2.4 * mm, date, fontName=FONT, fontSize=fs - 0.1,
+                     fillColor=colors.HexColor("#1a3c6e"), textAnchor="middle"))
+        _box(d, x - bw / 2, cy - 17.5 * mm, bw, 13.5 * mm, title, hi=(i == n - 1), fs=fs)
+    return d
+
 def layers():
     """判定层 / 执行层 两层边界（替代原先用字符画的框：字符宽度在不同字体下会错位）。"""
     W, H = 168 * mm, 60 * mm
@@ -364,7 +393,7 @@ meta = [
     ["定位", "校园 AI 服务助手（学生活端 / 驿站商户侧 / 管理控制台）"],
     ["技术栈", "Python + FastAPI + 原生 HTML/JS + 自写轻量 ReAct Agent + DeepSeek"],
     ["仓库", "github.com/zhouyuliang0606/campus-time-agent（Public）"],
-    ["规模", f"{API_COUNT} 个 API + {PAGE_COUNT} 个页面（共 {ROUTE_COUNT} 条路由） / <b>{COMMITS}</b> 个细粒度 commit，横跨 <b>{DEV_DAYS} 个开发日</b>（2026-09-23 → 11-04） / <b>{SNAPSHOT}</b> 份 Prompt 快照 + <b>{DROPIN}</b> 份施工单原件{COMMITS_NOTE}"],
+    ["规模", f"{API_COUNT} 个 API + {PAGE_COUNT} 个页面（共 {ROUTE_COUNT} 条路由） / <b>{COMMITS_TXT}</b> 个细粒度 commit，横跨 <b>{DEV_DAYS} 个开发日</b>（2026-09-23 → 11-04） / <b>{SNAPSHOT}</b> 份 Prompt 快照 + <b>{DROPIN}</b> 份施工单原件{COMMITS_NOTE}"],
     ["自检", f"tests/run_all.py：<b>通过 {TEST_TOTAL} 项，失败 0 项（{TEST_BATCHES} 批）</b>，{TEST_WHEN}"],
     ["文档版本", "2026-11-04"],
 ]
@@ -394,7 +423,7 @@ story += [H1("摘要"),
     H2("提交清单对照"),
     table([
         ["比赛要求", "本项目落地情况"],
-        ["Public 仓库 + 细粒度提交历史", f"GitHub Public，<b>{COMMITS}</b> 个独立 commit，横跨 <b>{DEV_DAYS} 个开发日</b>（2026-09-23 → 11-04），禁止一次性打包"],
+        ["Public 仓库 + 细粒度提交历史", f"GitHub Public，<b>{COMMITS_TXT}</b> 个独立 commit，横跨 <b>{DEV_DAYS} 个开发日</b>（2026-09-23 → 11-04），禁止一次性打包"],
         ["AI 对话历史 Prompt 快照", "ai-prompts/ 共 <b>232</b> 个 .md = <b>189</b> 份 Prompt 快照 + <b>42</b> 份施工单原件 + 1 份索引，与代码分开提交"],
         ["README 复现指南", "仓库根 README.md（环境 / Key 两种配法 / 启动 / 自检 / 演示话术）"],
         ["5-8 分钟演示视频（含 AI 协同）", "docs/演示视频分镜.md（逐镜 + 解说词，本地录屏）"],
@@ -680,6 +709,15 @@ story += [H1("6. 意图控制策略"),
         ["③ 规则兜底", "30 多张词表 + _QUICK_MAP，命中即走", "零", "硬判一个错的分类，或装没听见", "兜底"],
         ["④ 模型 ReAct", "拿只读工具自己查，产出提案", "多轮", "编造事实、表演执行", "不可用"],
     ], [20*mm, 56*mm, 16*mm, 44*mm, 19*mm]),
+    KeepTogether([P("<b>图 6-1　四层判定链</b>（越靠左越便宜、越可解释、没网也能跑）", small_st),
+        chain([
+            ("① 样本库\n零成本 · 可指认来源\n历史成功原话模糊匹配", False),
+            ("② 语义层\n一次 LLM 调用\n只要 {module, intent}", False),
+            ("③ 规则兜底\n零成本\n30 多张词表 + _QUICK_MAP", False),
+            ("④ 模型 ReAct\n多轮工具调用\n产出提案（最贵、最难复现）", False),
+        ], box_h=20, fs=6.8,
+            note="顺序不按「谁更准」排，按「谁更便宜 / 可解释 / 离线可用」排。"
+                 "越靠前越只许下百分百确定的结论，拿不准就往后交——所以语义层反过来能复核规则层。")]),
     P("<b>顺序的判据不是「谁更准」，而是「谁更便宜、谁更可解释、谁在没有网络时还活着」。</b>"
       "越靠前越便宜、越能被指认来源、越能离线跑；越靠后越聪明、越不可复现。"
       "所以设计取向是：能用便宜的就别用贵的，而<b>便宜的必须「宁漏不误」</b>——"
@@ -785,6 +823,17 @@ story += [H1("8. 关键迭代：六次架构级改动（2026-09-26 → 11-04）"
     P("这里挑的是<b>改变「判定层 / 执行层」边界</b>的那六次；其余较大的功能与工程改动"
       "（知识库分块检索 #40、流式 #07、时区收口 #56、可观测性 #64）"
       "在第 9 / 10 节与 ai-prompts/ 索引里逐单可查。"),
+    KeepTogether([P("<b>图 8-1　六次架构级改动的时间轴</b>（每一次都由一句学生报障触发，不是规划出来的）", small_st),
+        timeline([
+            ("09-26", "引入判定层\n类型与意图分开"),
+            ("09-27", "类型判定重做\n语义优先"),
+            ("09-30", "错别字纠正\n过程透明"),
+            ("10-28", "规则层学会\n「交出去」"),
+            ("10-28~30", "改期：从说假话\n到能办事"),
+            ("11-01~04", "候选与批量\n把话说全"),
+        ])]),
+    P("这六次的共同点：<b>每次都不是「加功能」，而是把某件事的判断权从一个地方挪到另一个地方</b>——"
+      "从词表挪到语义层、从模型挪回系统、从「我猜」挪到「我自己知道不会什么」。", small_st),
     H2("8.1 第一次：引入判定层（09-26）"),
     P("问题：学生反馈「很多的字都是接不住的，你现在能接住的都是我测试给的」。"
       "研判确认 planner.py 已堆 30 多张词表、router 里 50 多个硬编码词（09-26 当时的统计），"
@@ -984,7 +1033,7 @@ story += [H1("9. 测试策略"),
 story += [H1("10. AI 协同开发与交付流程"),
     P("本项目全程在人与 AI 协同下完成。为满足「细粒度提交 + Prompt 快照」要求，约定："),
     bullets([
-        f"每做一步逻辑改动就<b>单独 commit</b>，绝不在最后一次性打包（本文档版本日为 <b>{COMMITS} 个</b>，此后持续增加）。",
+        f"每做一步逻辑改动就<b>单独 commit</b>，绝不在最后一次性打包（本文档版本日为 <b>{COMMITS_TXT} 笔</b>；带「+」是因为生成这一版的那笔提交自己还没被算进去——写死一个数必然下次就过期）。",
         "每次开发会话写一份 <b>Prompt 快照</b>（ai-prompts/YYYY-MM-DD-&lt;主题&gt;.md），"
         "记录「<b>用户 Prompt → AI 研判 → 改动 → 验证</b>」四段。",
         "快照文件<b>与代码分开提交</b>（单独 commit），评审把任意快照与其 commit 对照即可还原那一步协同过程。",
@@ -1041,7 +1090,7 @@ story += [H1("11. 可复现性论证"),
     H2("11.1 三个可复现对象"),
     table([
         ["对象", "怎么复现", "复现失败的样子"],
-        ["代码", f"<b>{COMMITS} 个细粒度 commit</b>，横跨 {DEV_DAYS} 个开发日；按 commit 顺序读，即可看到每一次判断被推翻与重建", "一次性大提交：只能看到最终形态，看不到取舍"],
+        ["代码", f"<b>{COMMITS_TXT} 个细粒度 commit</b>，横跨 {DEV_DAYS} 个开发日；按 commit 顺序读，即可看到每一次判断被推翻与重建", "一次性大提交：只能看到最终形态，看不到取舍"],
         ["过程", f"<b>{SNAPSHOT} 份 Prompt 快照</b> + <b>{DROPIN} 份施工单原件</b>，与代码<b>分开提交</b>；任取一份都能与它对应的 commit 对照", "只有结果没有过程：无法判断哪些结论是推出来的、哪些是猜中的"],
         ["结果", "<b>tests/run_all.py 总账</b>：通过 / 失败 / 批次数三项；<b>干净克隆侧复跑</b>后逐字比对", "「我这儿全绿」——但绿的是别人的环境"],
     ], [16*mm, 84*mm, 55*mm]),
@@ -1060,9 +1109,17 @@ story += [H1("11. 可复现性论证"),
     P("第一条是本项目「可复现性」最硬的证据：<b>连 app/data/student/ 目录都不存在的克隆，跑出来的失败数与开发机同为 0</b>。"
       "这条能成立，靠的是一个刻意的设计——依赖起始状态的批次<b>必须在沙箱里自种一份已知数据</b>"
       "（seed_todos / wipe_todos / write_timetable），而不是依赖「开发机上恰好有几条待办」。"),
-    P("<b>版本提示</b>：本文档早先有一版记的是「干净克隆 3102/0、本机 3102/0」，那是 <b>2026-11-01 那次的子集口径</b>"
-      "（克隆侧跳过依赖可选浏览器的那一批，且当时全量还没到 3000 项以上），与本版不是同一个统计范围。"
-      "此处统一以 <b>11-04 的全量读数</b>为准，全篇其它地方引用的「11.2 节的 6039 项 / 111 批」指的也是本表第一行。"),
+    P("<b>版本提示</b>：本文档早先有一版记的是「干净克隆 3102/0、本机 3102/0」——"
+      "那次跑的是<b>子集</b>，统计口径与本次不同，具体对应哪一笔提交已无从考据，"
+      "故此处只以<b>本版全量读数</b>为准，不再解释其来由。"
+      "全篇其它地方引用的「11.2 节的 6039 项 / 111 批」指的也是本表第一行。"),
+    KeepTogether([P("<b>图 11-1　同一批测试，两台机器逐字对账</b>（差的那 4 项是长期已知项，不是回归）", small_st),
+        chain([
+            ("本机开发机\n6039 项 / 0 失败 · 111 批", False),
+            ("差 4 项\ntest_86「C 批（数据）」6↔2\n运行时样本库不入库", True),
+            ("干净克隆\ntracked-only @ ff6e22a\n6035 项 / 0 失败 · 111 批", False),
+        ], box_h=20, fs=6.8,
+            note="两侧都 0 失败，才叫「可复现」；只剩差值能对上（且能解释清楚是哪几项），才叫「不是运气」。")]),
     P("顺带说明为什么「能起服务」不作为判据：门是 fail-closed 的，没配口令 ≠ 放行。"
       "真正的验收是<b>正反两面</b>——对口令 200、错口令 401。只测前者，等于只测了「页面打得开」。"),
     H2("11.3 为什么必须在克隆侧复跑"),
