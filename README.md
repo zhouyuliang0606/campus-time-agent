@@ -3,6 +3,8 @@
 一个校园 AI 服务助手：把**课表、待办、快递、外卖、校园问答**收口到同一个助手，
 并且守一条硬规矩 —— **AI 只出提案，学生点了确认，系统才写库**。
 
+**代码仓库**：<https://github.com/zhouyuliang0606/campus-time-agent> （Public，无需登录即可克隆；跑起来见第五节）
+
 > 提交物导航（AI 创新应用挑战赛 · 个人赛）
 > | 交付物 | 位置 |
 > |---|---|
@@ -310,7 +312,7 @@ CampusTime/
 > 那一步快慢取决于你的网络（国内建议照下面用阿里云镜像）；其余步骤都是秒级。
 >
 > ```bash
-> git clone <仓库地址> && cd campus-time-agent       # 目录名取仓库名，不是 CampusTime
+> git clone https://github.com/zhouyuliang0606/campus-time-agent.git && cd campus-time-agent   # 目录名取仓库名，不是 CampusTime
 > python -m venv .venv && .venv\Scripts\activate     # macOS/Linux: source .venv/bin/activate
 > pip install -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple/
 > uvicorn app.main:app                                # 启动约 2 秒，不用配任何东西
