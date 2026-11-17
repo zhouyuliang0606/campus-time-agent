@@ -579,7 +579,8 @@ pytest
 > | [链 C · 候选卡不许是空的](ai-prompts/03_链C_候选卡不许是空的.md) | **人划边界**：一句「这块我自己在改」，AI 一个字没碰 |
 >
 > 协同方式与三条链导航见 [`ai-prompts/00_先读我.md`](ai-prompts/00_先读我.md)，
-> 逐份总索引见 [`ai-prompts/README.md`](ai-prompts/README.md)。
+> 逐份总索引见 [`ai-prompts/README.md`](ai-prompts/README.md)（索引里还有一张
+> **21 条「用户原话 → 系统当时错在哪 → 改成什么」** 的速查表）。
 
 ---
 
