@@ -30,6 +30,7 @@ from reportlab.platypus import (
     Image, KeepTogether, ListFlowable, ListItem, PageBreak, Paragraph,
     SimpleDocTemplate, Spacer, Table, TableStyle,
 )
+from reportlab.platypus.flowables import HRFlowable
 
 # ---------------------------------------------------------------- 字体（与
 # 技术文档同一套：优先嵌系统 TTF，嵌不进去才退回 CID。CID 不嵌入，
@@ -66,6 +67,29 @@ BASE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(BASE)
 OUT = os.path.join(BASE, "作品介绍文档.pdf")
 
+# 粗体：把 msyhbd 也登记进来，并**声明字族映射**。
+# reportlab 遇到 <b> 是按字族找粗体面的；只登记一个常规面的话 <b> 会被静默吃掉
+# （中文照常出字、只是不粗），于是「重点」在纸上根本看不出来 —— 这就是上一版看着发闷的原因之一。
+FONT_B = FONT
+try:
+    from reportlab.pdfbase.ttfonts import TTFont as _TTFont
+    for _pb, _pidx in (("C:/Windows/Fonts/msyhbd.ttc", 0), ("C:/Windows/Fonts/simhei.ttf", None)):
+        if not os.path.exists(_pb):
+            continue
+        try:
+            if _pidx is None:
+                pdfmetrics.registerFont(_TTFont("DocCN-Bold", _pb))
+            else:
+                pdfmetrics.registerFont(_TTFont("DocCN-Bold", _pb, subfontIndex=_pidx))
+            FONT_B = "DocCN-Bold"
+            break
+        except Exception:
+            continue
+    pdfmetrics.registerFontFamily("DocCN", normal="DocCN", bold=FONT_B,
+                                  italic="DocCN", boldItalic=FONT_B)
+except Exception:
+    pass
+
 # ---------------------------------------------------------------- 现算的事实
 _MAIN = io.open(os.path.join(ROOT, "app", "main.py"), encoding="utf-8", errors="replace").read()
 ROUTES = len(re.findall(r"^@app\.(?:get|post|put|delete|patch)\(", _MAIN, re.M))
@@ -100,39 +124,142 @@ def _prompts():
 
 PROMPT_ALL, PROMPT_DROPIN, PROMPT_SNAP = _prompts()
 
-# ---------------------------------------------------------------- 样式
+# ---------------------------------------------------------------- 版式系统
+# 一套颜色只用四个值：深藏蓝（标题/表头）、墨绿（强调/栏目线）、浅灰蓝（斑马与底）、
+# 暖赭（数字）。多了就花，少了就闷 —— 上一版就是只有黑白灰，所以"看着呆"。
 S = getSampleStyleSheet()
-INK = colors.HexColor("#1b2333")
-GREY = colors.HexColor("#5b6478")
-BLUE = colors.HexColor("#2a4d9b")
-LIGHT = colors.HexColor("#f4f6fb")
-RULE = colors.HexColor("#d6dcea")
+INK = colors.HexColor("#20293a")
+GREY = colors.HexColor("#5d6779")
+DEEP = colors.HexColor("#1c2b4a")
+ACCENT = colors.HexColor("#1f9e77")
+WARM = colors.HexColor("#b9762f")
+LIGHT = colors.HexColor("#f5f7fa")
+TINT = colors.HexColor("#eef2f9")
+RULE = colors.HexColor("#dce2ec")
 
-H1 = ParagraphStyle("H1", parent=S["Heading1"], fontName=FONT, fontSize=17,
-                    leading=25, textColor=INK, spaceAfter=12, spaceBefore=2)
-H2 = ParagraphStyle("H2", parent=S["Heading2"], fontName=FONT, fontSize=12.8,
-                    leading=19, textColor=BLUE, spaceBefore=13, spaceAfter=5)
+# ⚠️ wordWrap="CJK" 是这份文档必须的：reportlab 默认按「空格分词」换行，中文整段没有空格，
+# 于是它把一整句当成一个超长单词硬切 —— 表现出来的就是「第一行只到半截、第二行很长、第三行又短」，
+# 看着像排版坏了。中文按字断行要显式打开这个开关（上一版就是这个毛病）。
+CJK = dict(wordWrap="CJK")
+
+H1 = ParagraphStyle("H1", parent=S["Heading1"], fontName=FONT, fontSize=16.5,
+                    leading=23, textColor=DEEP, spaceBefore=0, spaceAfter=0, **CJK)
+H1NUM = ParagraphStyle("H1NUM", parent=H1, fontName=FONT_B, fontSize=15, leading=20,
+                       textColor=colors.white, alignment=TA_CENTER)
+H2 = ParagraphStyle("H2", parent=S["Heading2"], fontName=FONT_B, fontSize=12, leading=18,
+                    textColor=DEEP, spaceBefore=0, spaceAfter=0, **CJK)
 BODY = ParagraphStyle("BODY", parent=S["BodyText"], fontName=FONT, fontSize=9.8,
-                      leading=15.6, textColor=INK, spaceAfter=5)
-SMALL = ParagraphStyle("SMALL", parent=BODY, fontSize=8.6, leading=13, textColor=GREY)
-CELL = ParagraphStyle("CELL", parent=BODY, fontSize=8.8, leading=13.2, spaceAfter=0)
-CELLB = ParagraphStyle("CELLB", parent=CELL, textColor=INK)
-TH = ParagraphStyle("TH", parent=CELL, textColor=colors.white)
-TITLE = ParagraphStyle("TITLE", parent=H1, fontSize=25, leading=34, alignment=TA_CENTER,
-                       spaceAfter=6)
-SUB = ParagraphStyle("SUB", parent=BODY, fontSize=10.5, leading=17, alignment=TA_CENTER,
-                     textColor=GREY)
-CAP = ParagraphStyle("CAP", parent=SMALL, alignment=TA_CENTER, spaceBefore=4)
+                      leading=15.4, textColor=INK, spaceAfter=4.4, **CJK)
+SMALL = ParagraphStyle("SMALL", parent=BODY, fontSize=8.6, leading=13.4, textColor=GREY, **CJK)
+CELL = ParagraphStyle("CELL", parent=BODY, fontSize=8.7, leading=13.2, spaceAfter=0, **CJK)
+CELLB = ParagraphStyle("CELLB", parent=CELL, textColor=INK, **CJK)
+TH = ParagraphStyle("TH", parent=CELL, fontName=FONT_B, textColor=colors.white, **CJK)
+CAP = ParagraphStyle("CAP", parent=SMALL, fontSize=8.3, textColor=GREY, **CJK)
+TITLE = ParagraphStyle("TITLE", parent=H1, fontSize=16.5, leading=23)   # 兼容旧调用
+SUB = ParagraphStyle("SUB", parent=BODY, textColor=GREY)
+
+# 封面专用
+COVERTITLE = ParagraphStyle("COVERTITLE", parent=H1, fontName=FONT_B, fontSize=31,
+                            leading=44, textColor=colors.white, **CJK)
+COVERSUB = ParagraphStyle("COVERSUB", parent=COVERTITLE, fontSize=12.5, leading=21,
+                          textColor=colors.HexColor("#c9d6ea"))
+COVERKICK = ParagraphStyle("COVERKICK", parent=COVERTITLE, fontSize=9.5, leading=14,
+                           textColor=colors.HexColor("#7fd3b4"))
+COVERLEAD = ParagraphStyle("COVERLEAD", parent=COVERTITLE, fontSize=11, leading=19,
+                           textColor=colors.HexColor("#dfe7f4"))
+STATNUM = ParagraphStyle("STATNUM", parent=H1, fontName=FONT_B, fontSize=19, leading=25,
+                         textColor=ACCENT)
+STATLAB = ParagraphStyle("STATLAB", parent=SMALL, fontSize=8, leading=12, textColor=GREY)
 
 
 def bullets(items, style=BODY):
     return ListFlowable(
-        [ListItem(Paragraph(t, style), leftIndent=14, value="•") for t in items],
-        bulletType="bullet", start="•", leftIndent=14, bulletFontSize=8,
-        bulletOffsetY=-1, spaceAfter=6)
+        [ListItem(Paragraph(t, style), leftIndent=15, value="•") for t in items],
+        bulletType="bullet", start="•", leftIndent=15, bulletFontSize=9,
+        bulletColor=ACCENT, bulletOffsetY=-1.5, spaceAfter=7)
 
 
-def kv_table(rows, widths, header=True, zebra=True):
+_NUM_RE = re.compile(r"^([一二三四五六七八九十]+)、")
+
+
+def h1_block(text):
+    """章标题：左侧深色方块写章序，右侧标题，下面压一条强调色细线。"""
+    m = _NUM_RE.match(text)
+    num, rest = (m.group(1), text[m.end():]) if m else ("", text)
+    _rule = HRFlowable(width="100%", thickness=1.2, color=ACCENT,
+                       spaceBefore=2 * mm, spaceAfter=3.6 * mm)
+    if not num:
+        # 没有章序的页（如「本文件怎么读」）直接用文字，不要留一个空格子把标题顶得往里缩
+        return [Spacer(1, 3 * mm), Paragraph(rest, H1), _rule]
+    row = [Paragraph(num, H1NUM), Paragraph(rest, H1)]
+    t = Table([row], colWidths=[11 * mm, W - 11 * mm])
+    t.setStyle(TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("BACKGROUND", (0, 0), (0, 0), DEEP),
+        ("LEFTPADDING", (0, 0), (0, 0), 0), ("RIGHTPADDING", (0, 0), (0, 0), 0),
+        ("LEFTPADDING", (1, 0), (1, 0), 4.5 * mm), ("RIGHTPADDING", (1, 0), (1, 0), 0),
+        ("TOPPADDING", (0, 0), (-1, -1), 0), ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+    ]))
+    return [Spacer(1, 3 * mm), t, _rule]
+
+
+def h2_block(text):
+    """小节标题：一条强调色竖条 + 标题，比裸文字有层次，但不抢章标题。"""
+    t = Table([["", Paragraph(text, H2)]], colWidths=[1.7 * mm, W - 1.7 * mm])
+    t.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (0, 0), ACCENT),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING", (0, 0), (0, 0), 0), ("RIGHTPADDING", (0, 0), (0, 0), 0),
+        ("LEFTPADDING", (1, 0), (1, 0), 3.2 * mm), ("RIGHTPADDING", (1, 0), (1, 0), 0),
+        ("TOPPADDING", (0, 0), (-1, -1), 0.4 * mm), ("BOTTOMPADDING", (0, 0), (-1, -1), 0.4 * mm),
+    ]))
+    return [Spacer(1, 3 * mm), t]
+
+
+def decorate(flowables):
+    """把裸的 H1/H2 段落换成带视觉块的版本（正文文字一个字不动）。"""
+    out = []
+    for f in flowables:
+        name = getattr(getattr(f, "style", None), "name", "")
+        if name == "H1":
+            out += h1_block(f.text)
+        elif name == "H2":
+            out += h2_block(f.text)
+        else:
+            out.append(f)
+    return out
+
+
+def stat_strip(items):
+    """一排大数字：一眼能看出的规模感，比写在正文里可靠。"""
+    n = len(items)
+    cells = [[Paragraph(a, STATNUM), Paragraph(b, STATLAB)] for a, b in items]
+    t = Table([cells], colWidths=[W / n] * n)
+    t.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), TINT),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("TOPPADDING", (0, 0), (-1, -1), 5 * mm), ("BOTTOMPADDING", (0, 0), (-1, -1), 5 * mm),
+        ("LEFTPADDING", (0, 0), (-1, -1), 4 * mm), ("RIGHTPADDING", (0, 0), (-1, -1), 2 * mm),
+        ("LINEAFTER", (0, 0), (-2, -1), 1.2, colors.white),
+    ]))
+    return t
+
+
+def note(text, color=ACCENT):
+    """底色提示块：左边一条竖线 + 浅底，用来收住「一句话结论」。"""
+    t = Table([["", Paragraph(text, SMALL)]], colWidths=[1.4 * mm, W - 1.4 * mm])
+    t.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (0, 0), color),
+        ("BACKGROUND", (1, 0), (1, 0), LIGHT),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("LEFTPADDING", (0, 0), (0, 0), 0), ("RIGHTPADDING", (0, 0), (0, 0), 0),
+        ("LEFTPADDING", (1, 0), (1, 0), 3.6 * mm), ("RIGHTPADDING", (1, 0), (1, 0), 3.6 * mm),
+        ("TOPPADDING", (0, 0), (-1, -1), 2.6 * mm), ("BOTTOMPADDING", (0, 0), (-1, -1), 2.6 * mm),
+    ]))
+    return t
+
+
+def kv_table(rows, widths, header=True, zebra=True, tint_first=False):
     data = []
     for i, r in enumerate(rows):
         st = TH if (header and i == 0) else (CELLB if r and str(r[0]).startswith("**") else CELL)
@@ -141,33 +268,68 @@ def kv_table(rows, widths, header=True, zebra=True):
     t = Table(data, colWidths=widths, repeatRows=1 if header else 0)
     style = [
         ("VALIGN", (0, 0), (-1, -1), "TOP"),
-        ("TOPPADDING", (0, 0), (-1, -1), 4.5),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 4.5),
-        ("LEFTPADDING", (0, 0), (-1, -1), 6),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 6),
-        ("GRID", (0, 0), (-1, -1), 0.4, RULE),
-        ("LINEBELOW", (0, 0), (-1, 0), 0.8, BLUE),
+        ("TOPPADDING", (0, 0), (-1, -1), 4.2),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4.2),
+        ("LEFTPADDING", (0, 0), (-1, -1), 7),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 7),
+        # 不画竖线、只画极浅的分行线：表格密的时候，网格线会把字压得喘不过气
+        ("LINEBELOW", (0, 0), (-1, -1), 0.4, RULE),
+        ("BOX", (0, 0), (-1, -1), 0, colors.white),
     ]
     if header:
-        style.append(("BACKGROUND", (0, 0), (-1, 0), BLUE))
+        style += [("BACKGROUND", (0, 0), (-1, 0), DEEP),
+                  ("LINEBELOW", (0, 0), (-1, 0), 0, colors.white)]
     if zebra:
         for i in range(1, len(rows)):
             if i % 2 == 0:
                 style.append(("BACKGROUND", (0, i), (-1, i), LIGHT))
+    if tint_first:
+        style.append(("BACKGROUND", (0, 1 if header else 0), (0, -1), TINT))
     t.setStyle(TableStyle(style))
+    return t
+
+
+def shot_card(img_path, cap, iw, ih):
+    """截图统一装进一张白底细框的卡里，图注放框内底部 —— 散着贴图最显乱。"""
+    tw = W - 12 * mm
+    th = tw * ih / iw
+    # 高度压到 88 mm：一张卡连图注约 107 mm，两卡并排一页（214 mm）才稳稳放得下 ——
+    # 定 96 mm 时两卡 230 mm 正好卡在版面高度上，结果一页只放得下一张，下面空小半页。
+    if th > 88 * mm:
+        th = 88 * mm
+        tw = th * iw / ih
+    t = Table([[Image(img_path, width=tw, height=th)], [Paragraph(cap, CAP)]],
+              colWidths=[W])
+    t.setStyle(TableStyle([
+        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("BACKGROUND", (0, 0), (-1, -1), colors.white),
+        ("BOX", (0, 0), (-1, -1), 0.6, RULE),
+        ("LEFTPADDING", (0, 0), (-1, -1), 6 * mm), ("RIGHTPADDING", (0, 0), (-1, -1), 6 * mm),
+        ("TOPPADDING", (0, 0), (0, 0), 5 * mm), ("BOTTOMPADDING", (0, 0), (0, 0), 2 * mm),
+        ("TOPPADDING", (0, 1), (0, 1), 0), ("BOTTOMPADDING", (0, 1), (0, 1), 4.5 * mm),
+    ]))
     return t
 
 
 def footer(canvas, doc):
     canvas.saveState()
-    canvas.setFont(FONT, 7.8)
-    canvas.setFillColor(GREY)
-    canvas.drawString(20 * mm, 12 * mm, "校园时间管家 CampusTime · 作品介绍")
-    canvas.drawRightString(A4[0] - 20 * mm, 12 * mm, "第 %d 页" % doc.page)
     canvas.setStrokeColor(RULE)
-    canvas.setLineWidth(0.4)
-    canvas.line(20 * mm, 16 * mm, A4[0] - 20 * mm, 16 * mm)
+    canvas.setLineWidth(0.5)
+    canvas.line(20 * mm, 16.5 * mm, A4[0] - 20 * mm, 16.5 * mm)
+    canvas.setFillColor(ACCENT)
+    canvas.rect(20 * mm, 12.2 * mm, 8 * mm, 1.6 * mm, stroke=0, fill=1)
+    canvas.setFont(FONT, 7.6)
+    canvas.setFillColor(GREY)
+    canvas.drawString(30 * mm, 11.6 * mm, "校园时间管家 CampusTime · 作品介绍")
+    canvas.setFillColor(DEEP)
+    canvas.setFont(FONT, 7.6)
+    canvas.drawRightString(A4[0] - 20 * mm, 11.6 * mm,
+                           "第 %d 页 / 共 %d 页" % (doc.page, TOTAL or doc.page))
     canvas.restoreState()
+
+
+TOTAL = 0
 
 
 W = A4[0] - 40 * mm   # 可用宽度
@@ -176,28 +338,81 @@ W = A4[0] - 40 * mm   # 可用宽度
 story = []
 
 # ===== 封面 =====
-story += [Spacer(1, 55 * mm)]
-story.append(Paragraph("校园时间管家", TITLE))
-story.append(Paragraph("CampusTime · 一句话把日程、课表、问答、快递外卖办完", SUB))
-story += [Spacer(1, 7 * mm)]
-story.append(Paragraph(
-    "一个把「学生说的那句人话」变成「日程里真的一条」的校园助手。<br/>"
-    "AI 只提案，系统才执行 —— 写库这件事从头到尾不归模型管。", SUB))
-story += [Spacer(1, 30 * mm)]
+_cover_head = [
+    Paragraph("2026 传智杯 · AI 创新应用赛道 · 校赛作品", COVERKICK),
+    Spacer(1, 6 * mm),
+    Paragraph("校园时间管家", COVERTITLE),
+    Spacer(1, 2.6 * mm),
+    Paragraph("CampusTime · 一句话把日程、课表、问答、快递外卖办完", COVERSUB),
+    Spacer(1, 9 * mm),
+    Paragraph("一个把「学生说的那句人话」变成「日程里真的一条」的校园助手。", COVERLEAD),
+    Paragraph("AI 只提案，系统才执行 —— 写库这件事从头到尾不归模型管。", COVERLEAD),
+]
+_block = Table([[_cover_head]], colWidths=[W])
+_block.setStyle(TableStyle([
+    ("BACKGROUND", (0, 0), (-1, -1), DEEP),
+    ("LEFTPADDING", (0, 0), (-1, -1), 13 * mm), ("RIGHTPADDING", (0, 0), (-1, -1), 13 * mm),
+    ("TOPPADDING", (0, 0), (-1, -1), 15 * mm), ("BOTTOMPADDING", (0, 0), (-1, -1), 15 * mm),
+]))
+story += [Spacer(1, 22 * mm), _block, Spacer(1, 3 * mm),
+          HRFlowable(width="100%", thickness=3, color=ACCENT, spaceBefore=0, spaceAfter=0)]
 
-info = kv_table([
-    ["作品名称", "校园时间管家（CampusTime）"],
-    ["作品类型", "AI 创新应用 · Web 应用（Python / FastAPI）"],
-    ["参赛形式", "个人赛"],
-    ["参赛者", "周彧良"],
-    ["代码仓库", "github.com/zhouyuliang0606/campus-time-agent"],
-    ["代码规模", "{} 个提交 · {} 天开发 · 84 条路由（{} 个 API + {} 个页面）".format(
-        COMMITS, DEV_DAYS, ROUTES, APIS, PAGES)],
-    ["自测规模", "6039 项护栏 · 111 批 · 一次全量约 17 分钟"],
-    ["文档版本", "2026-11-18"],
-], [34 * mm, W - 34 * mm], header=False, zebra=False)
-story += [info]
+story.append(Spacer(1, 13 * mm))
+_meta = [
+    ("作品名称", "校园时间管家（CampusTime）"),
+    ("作品类型", "AI 创新应用 · Web 应用（Python / FastAPI）"),
+    ("参赛形式", "个人赛　|　参赛者：周彧良"),
+    ("代码仓库", "github.com/zhouyuliang0606/campus-time-agent"),
+    ("代码规模", "{} 个提交 · {} 天开发 · {} 条路由（{} 个 API + {} 个页面）".format(
+        COMMITS, DEV_DAYS, ROUTES, APIS, PAGES)),
+    ("自测规模", "6039 项护栏 · 111 批 · 一次全量约 17 分钟"),
+    ("文档版本", "2026-11-18"),
+]
+_mt = Table([[Paragraph("<b>" + k + "</b>", CELL), Paragraph(v, CELL)] for k, v in _meta],
+            colWidths=[30 * mm, W - 30 * mm])
+_mt.setStyle(TableStyle([
+    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+    ("TOPPADDING", (0, 0), (-1, -1), 6), ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+    ("LEFTPADDING", (0, 0), (0, 0), 0), ("LEFTPADDING", (1, 0), (1, 0), 4 * mm),
+    ("LINEBELOW", (0, 0), (-1, -2), 0.4, RULE),
+]))
+story.append(_mt)
+story.append(Spacer(1, 10 * mm))
+story.append(Paragraph(
+    "本文件对应 2026 传智杯校赛《作品介绍文档》一节；代码、护栏与技术细节见仓库 "
+    "<font face='%s'>docs/技术文档.pdf</font>（27 页）与 <font face='%s'>ai-prompts/</font>（%d 份材料）。"
+    % (FONT, FONT, PROMPT_ALL), CAP))
 story.append(PageBreak())
+
+# ===== 第 2 页：一眼看 + 与表单七条要求的对应 =====
+story.append(Paragraph("本文件怎么读", H1))
+story.append(stat_strip([
+    (str(COMMITS), "个提交"),
+    (str(ROUTES), "条路由"),
+    ("6039", "项自测护栏"),
+    ("%d" % PROMPT_ALL, "份 Prompt 材料"),
+]))
+story.append(Spacer(1, 6 * mm))
+story.append(Paragraph(
+    "本文件对应表单第 6 项的七条要求，<b>逐条一节、顺序与要求一致</b>，"
+    "可以对着要求打勾读；架构细节不在这里（那是仓库里 27 页技术文档的事）。", BODY))
+_rows = [
+    ["表单要求", "章节", "一句话"],
+    ["(1) 项目详情及使用方式", "一", "它替学生省掉哪一步、谁在用、怎么起来、三条主要路径"],
+    ["(2) 项目亮点", "二", "四条；第一条是「AI 只提案，系统才执行」，且由护栏钉住"],
+    ["(3) AI 技术落地使用情况", "三", "模型干什么、不干什么；没配 Key 怎么降级；Prompt 怎么迭代"],
+    ["(4) 涉及的关键技术", "四", "十项技术，各自用在哪、要点是什么"],
+    ["(5) 项目相关图片", "五", "八张真机界面，本地起服务现截，未做美化"],
+    ["(6) 是否发表或获奖", "六", "首次参赛；校赛初审通过、进入省赛推荐名单"],
+    ["(7) 是否基于其他项目", "七", "不是；从零开发，外部依赖逐个点名"],
+]
+story.append(kv_table(_rows, [42 * mm, 22 * mm, W - 64 * mm]))
+story.append(Spacer(1, 5 * mm))
+story.append(note(
+    "全篇的数字（提交数、路由数、Prompt 材料份数）都是<b>构建文档时现算</b>的，不是手抄 —— "
+    "仓库里出现过「封面 81 条路由 / 附录 84 条」那种自相矛盾，就是因为一半数字是手写的。"))
+story.append(PageBreak())
+
 
 # ===== 一、项目详情与使用方式（要求 1）=====
 story.append(Paragraph("一、项目详情与使用方式", H1))
@@ -375,9 +590,10 @@ story.append(kv_table([
     ["纯前端（无框架）", "五个页面", "原生 HTML/CSS/JS，一个 <font face='%s'>esc.js</font> 统一转义，"
                                     "无构建步骤" % FONT],
 ], [40 * mm, 40 * mm, W - 80 * mm]))
-story.append(Paragraph(
-    "技术选型的一条原则：<b>能写成确定性代码的，不交给模型</b>。"
-    "模型只出现在“听懂人话”和“组织答案”这两个位置上，别处一律让位给可复现的实现。", SMALL))
+story.append(Spacer(1, 3 * mm))
+story.append(note(
+    "<b>技术选型的一条原则：能写成确定性代码的，不交给模型。</b>"
+    "模型只出现在“听懂人话”和“组织答案”这两个位置上，别处一律让位给可复现的实现。"))
 story.append(PageBreak())
 
 # ===== 五、界面截图（要求 5）=====
@@ -421,16 +637,7 @@ for fn, cap in _shots:
         iw, ih = im.size
     jp = os.path.join(_JPG_DIR, os.path.splitext(fn)[0] + ".jpg")
     im.save(jp, "JPEG", quality=88, optimize=True, progressive=True)
-    tw = W * 0.92
-    th = tw * ih / iw
-    if th > 118 * mm:
-        th = 118 * mm
-        tw = th * iw / ih
-    story.append(KeepTogether([
-        Image(jp, width=tw, height=th),
-        Paragraph(cap, CAP),
-        Spacer(1, 5 * mm),
-    ]))
+    story.append(KeepTogether([shot_card(jp, cap, iw, ih), Spacer(1, 6 * mm)]))
 
 if _found == 0:
     story.append(Paragraph(
@@ -475,15 +682,31 @@ story.append(Paragraph(
 
 
 # ---------------------------------------------------------------- 构建
+def _doc(target):
+    return SimpleDocTemplate(target, pagesize=A4,
+                             leftMargin=20 * mm, rightMargin=20 * mm,
+                             topMargin=18 * mm, bottomMargin=20 * mm,
+                             title="校园时间管家 · 作品介绍", author="周彧良")
+
+
 def build():
-    doc = SimpleDocTemplate(OUT, pagesize=A4,
-                            leftMargin=20 * mm, rightMargin=20 * mm,
-                            topMargin=18 * mm, bottomMargin=20 * mm,
-                            title="校园时间管家 · 作品介绍", author="周彧良")
-    doc.build(story, onFirstPage=footer, onLaterPages=footer)
-    print("字体：%s" % FONT_SRC)
+    """两遍构建：第一遍只为量出总页数（页脚要写「第 n 页 / 共 N 页」），第二遍才落盘。
+
+    ⚠️ reportlab 的 build() 会把传入的 story 列表**逐项弹空**（这就是上一版
+    `len(story)` 打印出 0 的原因），所以第一遍必须喂深拷贝，否则第二遍没内容可排。
+    """
+    global TOTAL
+    import copy
+    flow = decorate(story)
+
+    probe = _doc(io.BytesIO())
+    probe.build(copy.deepcopy(flow), onFirstPage=footer, onLaterPages=footer)
+    TOTAL = probe.page
+
+    _doc(OUT).build(flow, onFirstPage=footer, onLaterPages=footer)
+    print("字体：%s / 粗体 %s" % (FONT_SRC, FONT_B))
     print("写出：%s" % OUT)
-    print("大小：%.1f KB" % (os.path.getsize(OUT) / 1024))
+    print("大小：%.1f KB（%d 页）" % (os.path.getsize(OUT) / 1024, TOTAL))
     print("截图命中：%d / %d" % (_found, len(_shots)))
     print("现算：提交 %s / 路由 %d / 快照 %d（原件 %d）" % (COMMITS, ROUTES, PROMPT_ALL, PROMPT_DROPIN))
 
